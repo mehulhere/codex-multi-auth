@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
-import * as authModule from '../lib/auth/auth.js';
+import * as refreshQueueModule from '../lib/refresh-queue.js';
 import {
     shouldRefreshToken,
     refreshAndUpdateToken,
@@ -73,21 +73,25 @@ describe('Fetch Helpers Module', () => {
 		it('throws when client auth setter is missing', async () => {
 			const auth: Auth = { type: 'oauth', access: 'old', refresh: 'oldr', expires: 0 };
 			const client = {} as any;
+			const refreshSpy = vi.spyOn(refreshQueueModule, 'queuedRefresh');
 
 			await expect(refreshAndUpdateToken(auth, client)).rejects.toThrow();
+			expect(refreshSpy).not.toHaveBeenCalled();
 		});
 
 		it('throws when client auth.set is not a function', async () => {
 			const auth: Auth = { type: 'oauth', access: 'old', refresh: 'oldr', expires: 0 };
 			const client = { auth: { set: 'bad' } } as any;
+			const refreshSpy = vi.spyOn(refreshQueueModule, 'queuedRefresh');
 
 			await expect(refreshAndUpdateToken(auth, client)).rejects.toThrow();
+			expect(refreshSpy).not.toHaveBeenCalled();
 		});
 
 		it('throws when refresh fails', async () => {
 			const auth: Auth = { type: 'oauth', access: 'old', refresh: 'bad', expires: 0 };
 			const client = { auth: { set: vi.fn() } } as any;
-			vi.spyOn(authModule, 'refreshAccessToken').mockResolvedValue({ type: 'failed' } as any);
+			vi.spyOn(refreshQueueModule, 'queuedRefresh').mockResolvedValue({ type: 'failed' } as any);
 
 			await expect(refreshAndUpdateToken(auth, client)).rejects.toThrow();
 		});
@@ -95,7 +99,7 @@ describe('Fetch Helpers Module', () => {
 		it('updates stored auth on success', async () => {
 			const auth: Auth = { type: 'oauth', access: 'old', refresh: 'oldr', expires: 0 };
 			const client = { auth: { set: vi.fn() } } as any;
-			vi.spyOn(authModule, 'refreshAccessToken').mockResolvedValue({
+			vi.spyOn(refreshQueueModule, 'queuedRefresh').mockResolvedValue({
 				type: 'success',
 				access: 'new',
 				refresh: 'newr',

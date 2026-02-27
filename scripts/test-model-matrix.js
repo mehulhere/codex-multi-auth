@@ -112,22 +112,27 @@ function runQuiet(command, commandArgs) {
 }
 
 let stopCodexServersQueue = Promise.resolve();
+const spawnedCodexPids = new Set();
+
+export function registerSpawnedCodex(pid) {
+	if (!Number.isInteger(pid) || pid <= 0) return;
+	spawnedCodexPids.add(pid);
+}
+
+export function __resetTrackedCodexPidsForTests() {
+	spawnedCodexPids.clear();
+}
 
 function stopCodexServersInternal() {
-	if (process.platform === "win32") {
-		const userName = process.env.USERNAME;
-		const args = ["/F", "/IM", "Codex.exe"];
-		if (userName && userName.trim().length > 0) {
-			args.push("/FI", `USERNAME eq ${userName.trim()}`);
+	const tracked = [...spawnedCodexPids];
+	spawnedCodexPids.clear();
+	for (const pid of tracked) {
+		if (process.platform === "win32") {
+			runQuiet("taskkill", ["/F", "/T", "/PID", String(pid)]);
+			continue;
 		}
-		runQuiet("taskkill", args);
-		return;
+		runQuiet("kill", ["-9", String(pid)]);
 	}
-	if (typeof process.getuid === "function") {
-		runQuiet("pkill", ["-u", String(process.getuid()), "-f", "Codex"]);
-		return;
-	}
-	runQuiet("pkill", ["-f", "Codex"]);
 }
 
 export function stopCodexServers() {

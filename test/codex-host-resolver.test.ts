@@ -15,16 +15,22 @@ describe("bench codex-host resolver", () => {
 
 	it("uses lowercase codex command on non-windows", async () => {
 		const platformSpy = vi.spyOn(process, "platform", "get").mockReturnValue("linux");
-		const mod = await import("../scripts/bench-format/codex-host.mjs");
-		expect(mod.resolveCodexExecutable()).toEqual({ command: "codex", shell: false });
-		platformSpy.mockRestore();
+		try {
+			const mod = await import("../scripts/bench-format/codex-host.mjs");
+			expect(mod.resolveCodexExecutable()).toEqual({ command: "codex", shell: false });
+		} finally {
+			platformSpy.mockRestore();
+		}
 	});
 
 	it("uses lowercase codex fallback when Windows where has no path candidates", async () => {
 		const platformSpy = vi.spyOn(process, "platform", "get").mockReturnValue("win32");
 		spawnSync.mockReturnValue({ stdout: "", stderr: "INFO: no match\n", status: 1 });
-		const mod = await import("../scripts/bench-format/codex-host.mjs");
-		expect(mod.resolveCodexExecutable()).toEqual({ command: "codex", shell: false });
-		platformSpy.mockRestore();
+		try {
+			const mod = await import("../scripts/bench-format/codex-host.mjs");
+			expect(mod.resolveCodexExecutable()).toEqual({ command: "codex", shell: false });
+		} finally {
+			platformSpy.mockRestore();
+		}
 	});
 });

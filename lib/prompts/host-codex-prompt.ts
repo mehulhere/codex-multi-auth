@@ -6,7 +6,7 @@
  */
 
 import { join } from "node:path";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile, rename, rm } from "node:fs/promises";
 import { logDebug } from "../logger.js";
 import { getCodexCacheDir } from "../runtime-paths.js";
 import { sleep } from "../utils.js";
@@ -122,6 +122,63 @@ async function writeFileWithRetry(filePath: string, content: string): Promise<vo
 	throw lastError instanceof Error ? lastError : new Error("Failed to write prompt cache file");
 }
 
+async function renameWithRetry(fromPath: string, toPath: string): Promise<void> {
+	let lastError: unknown;
+	for (let attempt = 0; attempt < WRITE_RETRY_ATTEMPTS; attempt += 1) {
+		try {
+			await rename(fromPath, toPath);
+			return;
+		} catch (error) {
+			if (!isRetryableFsError(error) || attempt + 1 >= WRITE_RETRY_ATTEMPTS) {
+				throw error;
+			}
+			lastError = error;
+			await sleep(WRITE_RETRY_BASE_DELAY_MS * 2 ** attempt);
+		}
+	}
+	throw lastError instanceof Error ? lastError : new Error("Failed to rename prompt cache file");
+}
+
+async function removeFileQuietly(path: string): Promise<void> {
+	try {
+		await rm(path, { force: true });
+	} catch {
+		// Best-effort cleanup only.
+	}
+}
+
+async function writeCacheFilesAtomically(content: string, meta: CacheMeta): Promise<void> {
+	await mkdir(CACHE_DIR, { recursive: true });
+
+	const nonce = `${Date.now()}-${process.pid}-${Math.random().toString(36).slice(2, 8)}`;
+	const contentTmp = `${CACHE_FILE}.${nonce}.tmp`;
+	const metaTmp = `${CACHE_META_FILE}.${nonce}.tmp`;
+	const metaJson = JSON.stringify(meta, null, 2);
+
+	await writeFileWithRetry(contentTmp, content);
+	try {
+		await writeFileWithRetry(metaTmp, metaJson);
+	} catch (error) {
+		await removeFileQuietly(contentTmp);
+		throw error;
+	}
+
+	let renamedContent = false;
+	try {
+		await renameWithRetry(contentTmp, CACHE_FILE);
+		renamedContent = true;
+		await renameWithRetry(metaTmp, CACHE_META_FILE);
+	} catch (error) {
+		if (renamedContent) {
+			// If only one rename succeeded, restore consistency by rewriting the content file.
+			await writeFileWithRetry(CACHE_FILE, content);
+		}
+		await removeFileQuietly(contentTmp);
+		await removeFileQuietly(metaTmp);
+		throw error;
+	}
+}
+
 function resolvePromptSources(): string[] {
 	const sources: string[] = [];
 	const seen = new Set<string>();
@@ -166,11 +223,13 @@ async function readDiskCache(): Promise<CacheSnapshot | null> {
 	for (const legacy of LEGACY_CACHE_FILES) {
 		const legacyCache = await tryRead(legacy.content, legacy.meta);
 		if (!legacyCache) continue;
-		await mkdir(CACHE_DIR, { recursive: true });
-		await Promise.all([
-			writeFileWithRetry(CACHE_FILE, legacyCache.content),
-			writeFileWithRetry(CACHE_META_FILE, JSON.stringify(legacyCache.meta, null, 2)),
-		]);
+		try {
+			await writeCacheFilesAtomically(legacyCache.content, legacyCache.meta);
+		} catch (error) {
+			logDebug("Failed to migrate legacy host-codex prompt cache; using legacy cache in memory", {
+				error: String(error),
+			});
+		}
 		return legacyCache;
 	}
 
@@ -182,17 +241,13 @@ async function saveDiskCache(
 	etag: string,
 	sourceUrl: string,
 ): Promise<CacheMeta> {
-	await mkdir(CACHE_DIR, { recursive: true });
 	const meta: CacheMeta = {
 		etag,
 		lastFetch: new Date().toISOString(),
 		lastChecked: Date.now(),
 		sourceKey: sourceCacheKey(sourceUrl),
 	};
-	await Promise.all([
-		writeFileWithRetry(CACHE_FILE, content),
-		writeFileWithRetry(CACHE_META_FILE, JSON.stringify(meta, null, 2)),
-	]);
+	await writeCacheFilesAtomically(content, meta);
 	return meta;
 }
 
@@ -337,6 +392,4 @@ export function prewarmHostCodexPrompt(): void {
 		logDebug("Codex prompt prewarm failed", { error: String(error) });
 	});
 }
-
-
 

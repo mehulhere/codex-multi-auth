@@ -84,6 +84,37 @@ describe("Storage Paths Module", () => {
 			expect(result).toBe(fallback);
 		});
 
+		it("prefers Windows fallback with accounts when primary only has non-account signals", () => {
+			const originalHome = process.env.HOME;
+			const originalUserProfile = process.env.USERPROFILE;
+			process.env.HOME = "C:\\Users\\test";
+			process.env.USERPROFILE = "C:\\Users\\test";
+			process.env.CODEX_HOME = "C:\\Users\\test\\.codex";
+			const primary = path.win32.join("C:\\Users\\test\\.codex", "multi-auth");
+			const fallback = path.win32.join("C:\\Users\\test", "DevTools", "config", "codex", "multi-auth");
+
+			mockedExistsSync.mockImplementation((candidate) => {
+				if (typeof candidate !== "string") return false;
+				if (candidate === path.win32.join(primary, "settings.json")) return true;
+				if (candidate === path.win32.join(primary, "openai-codex-accounts.json")) return false;
+				if (candidate === path.win32.join(primary, "codex-accounts.json")) return false;
+				if (candidate === path.win32.join(primary, "config.json")) return false;
+				if (candidate === path.win32.join(primary, "dashboard-settings.json")) return false;
+				if (candidate === path.win32.join(primary, "projects")) return false;
+				return candidate === path.win32.join(fallback, "openai-codex-accounts.json");
+			});
+
+			try {
+				const result = getConfigDir();
+				expect(result).toBe(fallback);
+			} finally {
+				if (originalHome === undefined) delete process.env.HOME;
+				else process.env.HOME = originalHome;
+				if (originalUserProfile === undefined) delete process.env.USERPROFILE;
+				else process.env.USERPROFILE = originalUserProfile;
+			}
+		});
+
 	});
 
 	describe("getProjectConfigDir", () => {

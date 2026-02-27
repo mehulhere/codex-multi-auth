@@ -26,45 +26,63 @@ describe("test-model-matrix script helpers", () => {
 
 	it("filters non-path where output on Windows", async () => {
 		const platformSpy = vi.spyOn(process, "platform", "get").mockReturnValue("win32");
-		spawnSync.mockReturnValue({
-			stdout: "INFO: noise\r\nC:\\Users\\neil\\AppData\\Roaming\\npm\\Codex.exe\r\n",
-			stderr: "INFO: Could not find files\r\n",
-			status: 0,
-		});
+		try {
+			spawnSync.mockReturnValue({
+				stdout: "INFO: noise\r\nC:\\Users\\neil\\AppData\\Roaming\\npm\\Codex.exe\r\n",
+				stderr: "INFO: Could not find files\r\n",
+				status: 0,
+			});
 
-		const mod = await import("../scripts/test-model-matrix.js");
-		expect(mod.resolveCodexExecutable()).toEqual({
-			command: "C:\\Users\\neil\\AppData\\Roaming\\npm\\Codex.exe",
-			shell: false,
-		});
-		platformSpy.mockRestore();
+			const mod = await import("../scripts/test-model-matrix.js");
+			expect(mod.resolveCodexExecutable()).toEqual({
+				command: "C:\\Users\\neil\\AppData\\Roaming\\npm\\Codex.exe",
+				shell: false,
+			});
+		} finally {
+			platformSpy.mockRestore();
+		}
 	});
 
 	it("returns fallback command when where has no executable candidates", async () => {
 		const platformSpy = vi.spyOn(process, "platform", "get").mockReturnValue("win32");
-		spawnSync.mockReturnValue({ stdout: "", stderr: "INFO: not found\n", status: 1 });
+		try {
+			spawnSync.mockReturnValue({ stdout: "", stderr: "INFO: not found\n", status: 1 });
 
-		const mod = await import("../scripts/test-model-matrix.js");
-		expect(mod.resolveCodexExecutable()).toEqual({ command: "codex", shell: false });
-		platformSpy.mockRestore();
+			const mod = await import("../scripts/test-model-matrix.js");
+			expect(mod.resolveCodexExecutable()).toEqual({ command: "codex", shell: false });
+		} finally {
+			platformSpy.mockRestore();
+		}
 	});
 
-	it("serializes stopCodexServers calls and scopes Windows taskkill to current user", async () => {
+	it("serializes stopCodexServers calls and kills only tracked Windows PIDs", async () => {
 		const platformSpy = vi.spyOn(process, "platform", "get").mockReturnValue("win32");
-		vi.stubEnv("USERNAME", "neil");
-		spawnSync.mockReturnValue({ status: 0, stdout: "", stderr: "" });
+		try {
+			spawnSync.mockReturnValue({ status: 0, stdout: "", stderr: "" });
 
-		const mod = await import("../scripts/test-model-matrix.js");
-		spawnSync.mockClear();
-		await Promise.all([mod.stopCodexServers(), mod.stopCodexServers()]);
+			const mod = await import("../scripts/test-model-matrix.js");
+			mod.__resetTrackedCodexPidsForTests();
+			mod.registerSpawnedCodex(1001);
+			mod.registerSpawnedCodex(2002);
+			spawnSync.mockClear();
 
-		expect(spawnSync).toHaveBeenCalledTimes(2);
-		expect(spawnSync).toHaveBeenNthCalledWith(
-			1,
-			"taskkill",
-			expect.arrayContaining(["/F", "/IM", "Codex.exe", "/FI", "USERNAME eq neil"]),
-			expect.objectContaining({ windowsHide: true, stdio: "ignore" }),
-		);
-		platformSpy.mockRestore();
+			await Promise.all([mod.stopCodexServers(), mod.stopCodexServers()]);
+
+			expect(spawnSync).toHaveBeenCalledTimes(2);
+			expect(spawnSync).toHaveBeenNthCalledWith(
+				1,
+				"taskkill",
+				["/F", "/T", "/PID", "1001"],
+				expect.objectContaining({ windowsHide: true, stdio: "ignore" }),
+			);
+			expect(spawnSync).toHaveBeenNthCalledWith(
+				2,
+				"taskkill",
+				["/F", "/T", "/PID", "2002"],
+				expect.objectContaining({ windowsHide: true, stdio: "ignore" }),
+			);
+		} finally {
+			platformSpy.mockRestore();
+		}
 	});
 });

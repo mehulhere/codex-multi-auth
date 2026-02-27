@@ -1,10 +1,12 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile, rename, rm } from "node:fs/promises";
 
 vi.mock("node:fs/promises", () => ({
   mkdir: vi.fn().mockResolvedValue(undefined),
   readFile: vi.fn(),
   writeFile: vi.fn().mockResolvedValue(undefined),
+  rename: vi.fn().mockResolvedValue(undefined),
+  rm: vi.fn().mockResolvedValue(undefined),
 }));
 
 const mockFetch = vi.fn();
@@ -14,6 +16,10 @@ describe("host-codex-prompt", () => {
   beforeEach(() => {
     vi.resetModules();
     vi.clearAllMocks();
+    vi.mocked(mkdir).mockResolvedValue(undefined);
+    vi.mocked(writeFile).mockResolvedValue(undefined);
+    vi.mocked(rename).mockResolvedValue(undefined);
+    vi.mocked(rm).mockResolvedValue(undefined);
   });
 
   afterEach(() => {
@@ -89,6 +95,43 @@ describe("host-codex-prompt", () => {
         expect.stringContaining("legacy-etag"),
         "utf-8",
       );
+      expect(mockFetch).not.toHaveBeenCalled();
+    });
+
+    it("keeps working when legacy migration write partially fails", async () => {
+      const { getHostCodexPrompt } = await import("../lib/prompts/host-codex-prompt.js");
+
+      vi.mocked(readFile).mockImplementation(async (filePath) => {
+        const file = String(filePath);
+        if (file.includes("host-codex-prompt")) {
+          throw new Error("ENOENT");
+        }
+        if (file.includes("opencode-codex-prompt-meta.json")) {
+          return JSON.stringify({
+            etag: '"legacy-etag"',
+            lastChecked: Date.now() - 1000,
+          });
+        }
+        if (file.includes("opencode-codex-prompt.txt")) {
+          return "Legacy cached content";
+        }
+        throw new Error("ENOENT");
+      });
+
+      const busy = Object.assign(new Error("busy"), { code: "EBUSY" });
+      vi.mocked(writeFile).mockImplementation(async (filePath) => {
+        const file = String(filePath);
+        if (file.includes("host-codex-prompt-meta.json") && file.includes(".tmp")) {
+          throw busy;
+        }
+      });
+
+      const result = await getHostCodexPrompt();
+
+      expect(result).toBe("Legacy cached content");
+      expect(writeFile).toHaveBeenCalled();
+      expect(rename).not.toHaveBeenCalled();
+      expect(rm).toHaveBeenCalled();
       expect(mockFetch).not.toHaveBeenCalled();
     });
 
@@ -241,8 +284,9 @@ describe("host-codex-prompt", () => {
           "utf-8"
         )
       );
-      const second = await getHostCodexPrompt();
-      expect(second).toBe("New content");
+      await vi.waitFor(async () => {
+        await expect(getHostCodexPrompt()).resolves.toBe("New content");
+      });
     });
 
     it("deduplicates stale refresh calls when requested concurrently", async () => {
@@ -384,6 +428,4 @@ describe("host-codex-prompt", () => {
     });
   });
 });
-
-
 
