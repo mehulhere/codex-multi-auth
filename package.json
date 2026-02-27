@@ -1,5 +1,5 @@
 {
-  "name": "codex-multi-auth",
+  "name": "@ndycode/codex-multi-auth",
   "version": "0.1.0",
   "description": "Codex CLI-first multi-account OAuth rotation plugin for OpenCode",
   "main": "./dist/index.js",

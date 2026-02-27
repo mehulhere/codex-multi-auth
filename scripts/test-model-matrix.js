@@ -17,7 +17,7 @@ const scenarioTemplates = {
 
 const defaultPromptPrefix = "Reply exactly:";
 const modelProviderId = "openai";
-const pluginPackageName = "codex-multi-auth";
+const pluginPackageName = "@ndycode/codex-multi-auth";
 
 function resolveOpencodeExecutable() {
 	const envOverride = process.env.OPENCODE_BIN;
