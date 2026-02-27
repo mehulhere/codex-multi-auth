@@ -77,6 +77,10 @@ function parseArgs(argv) {
 			i += 1;
 		} else if (arg === "--dry-run") {
 			args.dryRun = true;
+		} else if (arg.startsWith("--")) {
+			throw new Error(`Unknown flag: ${arg}`);
+		} else {
+			throw new Error(`Unexpected positional argument: ${arg}`);
 		}
 	}
 
@@ -222,18 +226,20 @@ function getTrackedPaths(rootPath) {
 async function check(rootPath) {
 	let hasError = false;
 
-	const tracked = new Set(getTrackedPaths(rootPath));
-	const trackedViolations = [];
-	for (const name of TRACKED_SCRATCH_FILES) {
-		if (tracked.has(name)) {
-			trackedViolations.push(name);
+	const tracked = getTrackedPaths(rootPath);
+	const trackedViolations = new Set();
+	for (const trackedPath of tracked) {
+		const normalized = trackedPath.replaceAll("\\", "/");
+		const basename = normalized.split("/").pop() ?? normalized;
+		if (TRACKED_SCRATCH_FILES.has(basename)) {
+			trackedViolations.add(normalized);
 		}
 	}
 
-	if (trackedViolations.length > 0) {
+	if (trackedViolations.size > 0) {
 		hasError = true;
 		console.error("repo-hygiene check failed: tracked scratch files present:");
-		for (const item of trackedViolations) {
+		for (const item of [...trackedViolations].sort()) {
 			console.error(`  - ${item}`);
 		}
 	}

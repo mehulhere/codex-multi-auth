@@ -4,7 +4,7 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import process from "node:process";
-import { execFileSync, spawnSync } from "node:child_process";
+import { execFileSync, spawn, spawnSync } from "node:child_process";
 
 const scriptPath = path.resolve(process.cwd(), "scripts", "repo-hygiene.js");
 const requiredGitignore = [
@@ -25,6 +25,27 @@ const requiredGitignore = [
 function runRepoHygiene(args: string[]) {
 	return spawnSync(process.execPath, [scriptPath, ...args], {
 		encoding: "utf-8",
+	});
+}
+
+function runRepoHygieneAsync(args: string[]): Promise<{ status: number | null; stdout: string; stderr: string }> {
+	return new Promise((resolve, reject) => {
+		const child = spawn(process.execPath, [scriptPath, ...args], {
+			stdio: ["ignore", "pipe", "pipe"],
+		});
+		let stdout = "";
+		let stderr = "";
+
+		child.stdout.on("data", (chunk: Buffer | string) => {
+			stdout += chunk.toString();
+		});
+		child.stderr.on("data", (chunk: Buffer | string) => {
+			stderr += chunk.toString();
+		});
+		child.once("error", reject);
+		child.once("close", (status) => {
+			resolve({ status, stdout, stderr });
+		});
 	});
 }
 
@@ -128,17 +149,59 @@ describe("repo-hygiene script", () => {
 		expect(result.stderr).toContain("task_plan.md");
 	});
 
+	it("flags nested tracked scratch files regardless of path separators", async () => {
+		fixtureRoot = makeRepoFixture();
+		const root = fixtureRoot;
+		await fs.writeFile(path.join(root, ".gitignore"), requiredGitignore);
+		await fs.mkdir(path.join(root, "nested"), { recursive: true });
+		await fs.writeFile(path.join(root, "nested", "task_plan.md"), "temp plan\n");
+		execFileSync("git", ["add", ".gitignore"], { cwd: root, stdio: "ignore" });
+		execFileSync("git", ["add", "-f", path.join("nested", "task_plan.md")], {
+			cwd: root,
+			stdio: "ignore",
+		});
+
+		const result = runRepoHygiene(["check", "--root", root]);
+		expect(result.status).toBe(1);
+		expect(result.stderr).toMatch(/nested[\\/]+task_plan\.md/);
+	});
+
 	it("fails check when git is unavailable for ls-files", async () => {
 		fixtureRoot = makeRepoFixture();
 		const root = fixtureRoot;
 		await fs.writeFile(path.join(root, ".gitignore"), requiredGitignore);
 
 		const originalPath = process.env.PATH ?? "";
-		process.env.PATH = "";
-		const result = runRepoHygiene(["check", "--root", root]);
-		process.env.PATH = originalPath;
+		let result;
+		try {
+			process.env.PATH = "";
+			result = runRepoHygiene(["check", "--root", root]);
+		} finally {
+			process.env.PATH = originalPath;
+		}
 
 		expect(result.status).toBe(1);
 		expect(result.stderr).toContain("git ls-files failed in getTrackedPaths");
+	});
+
+	it("has deterministic outcomes when check and clean run concurrently", async () => {
+		fixtureRoot = makeRepoFixture();
+		const root = fixtureRoot;
+		await fs.writeFile(path.join(root, ".gitignore"), requiredGitignore);
+		await fs.writeFile(path.join(root, "task_plan.md"), "temp plan\n");
+		await fs.writeFile(path.join(root, ".tmp-audit.json"), "{}");
+		execFileSync("git", ["add", ".gitignore"], { cwd: root, stdio: "ignore" });
+		execFileSync("git", ["add", "-f", "task_plan.md"], { cwd: root, stdio: "ignore" });
+
+		const [checkResult, cleanResult] = await Promise.all([
+			runRepoHygieneAsync(["check", "--root", root]),
+			runRepoHygieneAsync(["clean", "--mode", "aggressive", "--root", root]),
+		]);
+
+		expect(checkResult.status).toBe(1);
+		expect(checkResult.stderr).toContain("tracked scratch files present");
+		expect(cleanResult.status).toBe(0);
+		await expect(fs.stat(path.join(root, ".tmp-audit.json"))).rejects.toThrow();
+		await expect(fs.stat(path.join(root, "task_plan.md"))).rejects.toThrow();
 	});
 });

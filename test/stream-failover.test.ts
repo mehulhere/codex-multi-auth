@@ -114,6 +114,40 @@ describe("stream failover", () => {
 		await assertion;
 	});
 
+	it("calls fallback exactly once when read-error and timeout race", async () => {
+		vi.useFakeTimers();
+		const raceResponse = new Response(
+			new ReadableStream<Uint8Array>({
+				start(controller) {
+					controller.enqueue(encoder.encode("data: first\n\n"));
+					setTimeout(() => {
+						controller.error(new Error("primary read failure"));
+					}, 20);
+				},
+			}),
+			{
+				headers: {
+					"content-type": "text/event-stream",
+				},
+			},
+		);
+		const fallback = vi.fn(async () => makeSseResponse("data: fallback\n\n"));
+		const response = withStreamingFailover(raceResponse, fallback, {
+			maxFailovers: 1,
+			softTimeoutMs: 10,
+			hardTimeoutMs: 20,
+		});
+
+		const textPromise = response.text();
+		await vi.advanceTimersByTimeAsync(1_200);
+		const text = await textPromise;
+
+		expect(fallback).toHaveBeenCalledTimes(1);
+		expect((text.match(/codex-multi-auth failover 1/g) ?? []).length).toBe(1);
+		expect(text).toContain("data: first");
+		expect(text).toContain("data: fallback");
+	});
+
 	it("releases underlying reader when wrapped stream is cancelled", async () => {
 		let sourceCancelled = 0;
 		const response = withStreamingFailover(
