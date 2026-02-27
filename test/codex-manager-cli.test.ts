@@ -1193,6 +1193,52 @@ describe("codex manager cli commands", () => {
 		);
 	});
 
+	it("discards account-list draft changes when Q cancels the panel", async () => {
+		setInteractiveTTY(true);
+		const now = Date.now();
+		loadAccountsMock.mockResolvedValue({
+			version: 3,
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0 },
+			accounts: [
+				{
+					email: "cancel-settings@example.com",
+					accountId: "acc_cancel_settings",
+					refreshToken: "refresh-cancel-settings",
+					accessToken: "access-cancel-settings",
+					expiresAt: now + 3_600_000,
+					addedAt: now - 1_000,
+					lastUsed: now - 1_000,
+					enabled: true,
+				},
+			],
+		});
+		promptLoginModeMock
+			.mockResolvedValueOnce({ mode: "settings" })
+			.mockResolvedValueOnce({ mode: "cancel" });
+
+		let selectCall = 0;
+		selectMock.mockImplementation(async (_items, options) => {
+			selectCall += 1;
+			if (selectCall === 1) return { type: "account-list" };
+			if (selectCall === 2) return { type: "toggle", key: "menuShowStatusBadge" };
+			if (selectCall === 3) {
+				const onInput = (options as { onInput?: (raw: string) => unknown } | undefined)?.onInput;
+				const action = onInput?.("q");
+				expect(action).toEqual({ type: "cancel" });
+				return action ?? { type: "cancel" };
+			}
+			return { type: "back" };
+		});
+
+		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+		const exitCode = await runCodexMultiAuthCli(["auth", "login"]);
+
+		expect(exitCode).toBe(0);
+		expect(saveDashboardDisplaySettingsMock).not.toHaveBeenCalled();
+		expect(savePluginConfigMock).not.toHaveBeenCalled();
+	});
+
 	it("keeps last account enabled during fix to avoid lockout", async () => {
 		const now = Date.now();
 		loadAccountsMock.mockResolvedValueOnce({
