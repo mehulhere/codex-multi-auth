@@ -24,6 +24,7 @@ Use this portal to navigate user docs, references, and maintainer docs.
 | [troubleshooting.md](troubleshooting.md) | What to do when login/switch/limits fail |
 | [privacy.md](privacy.md) | Where data is stored and what is sent over network |
 | [upgrade.md](upgrade.md) | How to migrate from older flows and legacy paths |
+| [releases/v0.1.0-beta.0.md](releases/v0.1.0-beta.0.md) | GitHub-ready release notes for the first beta |
 
 * * *
 
