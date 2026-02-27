@@ -64,6 +64,22 @@ describe("Storage Paths Module", () => {
 			const result = getConfigDir();
 			expect(result).toBe(fallback);
 		});
+
+		it("prefers fallback with accounts when primary only has non-account signals", () => {
+			const primary = path.join(homedir(), ".codex", "multi-auth");
+			const fallback = path.join(homedir(), "DevTools", "config", "codex", "multi-auth");
+
+			mockedExistsSync.mockImplementation((candidate) => {
+				if (typeof candidate !== "string") return false;
+				if (candidate === path.join(primary, "settings.json")) return true;
+				if (candidate === path.join(primary, "openai-codex-accounts.json")) return false;
+				if (candidate === path.join(primary, "codex-accounts.json")) return false;
+				return candidate === path.join(fallback, "openai-codex-accounts.json");
+			});
+
+			const result = getConfigDir();
+			expect(result).toBe(fallback);
+		});
 	});
 
 	describe("getProjectConfigDir", () => {

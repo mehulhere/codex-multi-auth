@@ -59,6 +59,7 @@ function deduplicatePaths(paths: string[]): string[] {
 function hasStorageSignals(dir: string): boolean {
 	const signals = [
 		"openai-codex-accounts.json",
+		"codex-accounts.json",
 		"settings.json",
 		"config.json",
 		"dashboard-settings.json",
@@ -69,6 +70,16 @@ function hasStorageSignals(dir: string): boolean {
 		}
 	}
 	return existsSync(join(dir, "projects"));
+}
+
+function hasAccountsStorage(dir: string): boolean {
+	const accountFiles = ["openai-codex-accounts.json", "codex-accounts.json"];
+	for (const fileName of accountFiles) {
+		if (existsSync(join(dir, fileName))) {
+			return true;
+		}
+	}
+	return false;
 }
 
 /**
@@ -109,14 +120,23 @@ export function getCodexMultiAuthDir(): string {
 	}
 
 	const primary = join(getCodexHomeDir(), "multi-auth");
-	if (hasStorageSignals(primary)) {
-		return primary;
-	}
-
 	const fallbackCandidates = deduplicatePaths([
 		...getFallbackCodexHomeDirs().map((dir) => join(dir, "multi-auth")),
 		getLegacyCodexDir(),
 	]);
+	const orderedCandidates = deduplicatePaths([primary, ...fallbackCandidates]);
+
+	// Prefer candidates that actually contain account storage. This prevents
+	// accidentally switching to a fresh empty directory that only has settings files.
+	for (const candidate of orderedCandidates) {
+		if (hasAccountsStorage(candidate)) {
+			return candidate;
+		}
+	}
+
+	if (hasStorageSignals(primary)) {
+		return primary;
+	}
 
 	for (const candidate of fallbackCandidates) {
 		if (candidate === primary) continue;
