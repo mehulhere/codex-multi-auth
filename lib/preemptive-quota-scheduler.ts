@@ -144,6 +144,7 @@ export class PreemptiveQuotaScheduler {
 	private primaryRemainingPercentThreshold: number;
 	private secondaryRemainingPercentThreshold: number;
 	private maxDeferralMs: number;
+	private lastPruneAt = 0;
 
 	constructor(options: QuotaSchedulerOptions = {}) {
 		this.enabled = true;
@@ -196,8 +197,15 @@ export class PreemptiveQuotaScheduler {
 		}
 	}
 
+	private maybePrune(now = Date.now()): void {
+		if (now - this.lastPruneAt < 60_000) return;
+		this.prune(now);
+		this.lastPruneAt = now;
+	}
+
 	update(key: string, snapshot: QuotaSchedulerSnapshot): void {
 		if (!key) return;
+		this.maybePrune(snapshot.updatedAt || Date.now());
 		this.snapshots.set(key, snapshot);
 	}
 
@@ -216,6 +224,7 @@ export class PreemptiveQuotaScheduler {
 	}
 
 	getDeferral(key: string, now = Date.now()): QuotaDeferralDecision {
+		this.maybePrune(now);
 		if (!this.enabled) {
 			return { defer: false, waitMs: 0 };
 		}

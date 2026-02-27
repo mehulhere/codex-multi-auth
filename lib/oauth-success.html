@@ -29,7 +29,8 @@
                   radial-gradient(1000px 560px at 100% 0%, #0a2019 0%, transparent 60%),
                   linear-gradient(180deg, var(--bg), var(--bg2));
       color: var(--text);
-      overflow: hidden;
+      overflow-x: hidden;
+      overflow-y: auto;
     }
 
     .grid {
@@ -310,7 +311,7 @@
         <ul class="steps" aria-label="Completion steps">
           <li>Authorization code received</li>
           <li>Token exchange complete</li>
-          <li>Credentials encrypted and saved</li>
+          <li>Credentials saved to local Codex auth storage</li>
           <li>Session ready</li>
         </ul>
       </article>

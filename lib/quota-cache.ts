@@ -167,6 +167,9 @@ export async function loadQuotaCache(): Promise<QuotaCacheData> {
 		if (!isRecord(parsed)) {
 			return { byAccountId: {}, byEmail: {} };
 		}
+		if (parsed.version !== 1) {
+			return { byAccountId: {}, byEmail: {} };
+		}
 
 		return {
 			byAccountId: normalizeEntryMap(parsed.byAccountId),

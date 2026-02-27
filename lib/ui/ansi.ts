@@ -54,8 +54,22 @@ export function parseKey(data: Buffer): KeyAction {
 
 	if (input === "\x1b[A" || input === "\x1bOA") return "up";
 	if (input === "\x1b[B" || input === "\x1bOB") return "down";
-	if (input === "\x1b[H" || input === "\x1bOH") return "home";
-	if (input === "\x1b[F" || input === "\x1bOF") return "end";
+	if (
+		input === "\x1b[H" ||
+		input === "\x1bOH" ||
+		input === "\x1b[1~" ||
+		input === "\x1b[7~"
+	) {
+		return "home";
+	}
+	if (
+		input === "\x1b[F" ||
+		input === "\x1bOF" ||
+		input === "\x1b[4~" ||
+		input === "\x1b[8~"
+	) {
+		return "end";
+	}
 	if (input === "\r" || input === "\n") return "enter";
 	if (input === "\x03") return "escape";
 	if (input === "\x1b") return "escape-start";

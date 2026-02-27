@@ -254,8 +254,16 @@ function formatDuration(ms: number): string {
 export function logRequest(stage: string, data: Record<string, unknown>): void {
 	if (!LOGGING_ENABLED) return;
 
-	if (!existsSync(LOG_DIR)) {
-		mkdirSync(LOG_DIR, { recursive: true, mode: 0o700 });
+	try {
+		if (!existsSync(LOG_DIR)) {
+			mkdirSync(LOG_DIR, { recursive: true, mode: 0o700 });
+		}
+	} catch (error) {
+		logToConsole("warn", `[${PLUGIN_NAME}] Failed to ensure log directory`, {
+			path: LOG_DIR,
+			error: error instanceof Error ? error.message : String(error),
+		});
+		return;
 	}
 
 	const timestamp = new Date().toISOString();

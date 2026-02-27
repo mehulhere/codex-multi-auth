@@ -77,7 +77,9 @@ Use `* * *` separators between major blocks for scanability.
    - `docs/features.md`
    - relevant reference pages
 2. Any new setting/flag/path must be reflected in reference docs.
-3. Validate commands before merging documentation changes.
+3. Keep `docs/upgrade.md` updated for command/path migration changes.
+4. Keep `SECURITY.md` path guidance aligned with runtime paths.
+5. Validate commands before merging documentation changes.
 
 * * *
 

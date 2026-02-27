@@ -53,8 +53,8 @@ npm run bench:edit-formats:render
 ## Interpretation Checklist
 
 1. Compare latency per format.
-2. Compare token/size overhead.
-3. Compare success/error rates.
+2. Measure token/size overhead.
+3. Review success/error rates.
 4. Validate output consistency.
 5. Confirm no regressions in editing fidelity.
 

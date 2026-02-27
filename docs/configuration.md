@@ -145,6 +145,22 @@ codex auth report --json
 
 * * *
 
+## Build and Upgrade References
+
+If settings or runtime behavior changed locally:
+
+```bash
+npm run lint
+npm run typecheck
+npm test
+```
+
+For migration between older command/path layouts, follow:
+
+- [upgrade.md](upgrade.md)
+
+* * *
+
 ## Related
 
 - [reference/settings.md](reference/settings.md)

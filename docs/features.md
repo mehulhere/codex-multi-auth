@@ -79,7 +79,7 @@ This page is the authoritative index of implemented feature areas.
 | ID | Feature | What it gives you | Entry point |
 | --- | --- | --- | --- |
 | 34 | TUI quick-switch hotkeys (1-9) | Immediate account switch from dashboard | Auth dashboard |
-| 35 | TUI search and help toggles | Fast filtering and keyboard help | `/`, `?`, `H` |
+| 35 | TUI search and help toggles | Fast filtering and keyboard help | `/`, `?` |
 | 36 | TUI account detail hotkeys (S/R/E/D) | Fast per-account actions | Account detail menu |
 | 37 | TUI settings hub (list/summary/behavior/theme) | In-dashboard customization | Settings menu |
 | 38 | Dashboard display customization | Toggle/sort/layout/field options | Dashboard settings |

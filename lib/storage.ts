@@ -626,12 +626,9 @@ async function loadAccountsInternal(
   } catch (error) {
     const code = (error as NodeJS.ErrnoException).code;
 	const path = getStoragePath();
-    if (code === "ENOENT") {
-      const migrated = persistMigration
-        ? await migrateLegacyProjectStorageIfNeeded(persistMigration)
-        : null;
+    if (code === "ENOENT" && persistMigration) {
+      const migrated = await migrateLegacyProjectStorageIfNeeded(persistMigration);
       if (migrated) return migrated;
-      return null;
     }
 
 	const recoveredFromWal = await loadAccountsFromJournal(path);
@@ -684,7 +681,9 @@ async function loadAccountsInternal(
 		}
 	}
 
-    log.error("Failed to load account storage", { error: String(error) });
+    if (code !== "ENOENT") {
+      log.error("Failed to load account storage", { error: String(error) });
+    }
     return null;
   }
 }
@@ -828,14 +827,27 @@ export async function saveAccounts(storage: AccountStorageV3): Promise<void> {
  */
 export async function clearAccounts(): Promise<void> {
   return withStorageLock(async () => {
-    try {
-      const path = getStoragePath();
-      await fs.unlink(path);
-    } catch (error) {
-      const code = (error as NodeJS.ErrnoException).code;
-      if (code !== "ENOENT") {
-        log.error("Failed to clear account storage", { error: String(error) });
+    const path = getStoragePath();
+    const walPath = getAccountsWalPath(path);
+    const backupPath = getAccountsBackupPath(path);
+    const clearPath = async (targetPath: string): Promise<void> => {
+      try {
+        await fs.unlink(targetPath);
+      } catch (error) {
+        const code = (error as NodeJS.ErrnoException).code;
+        if (code !== "ENOENT") {
+          log.error("Failed to clear account storage artifact", {
+            path: targetPath,
+            error: String(error),
+          });
+        }
       }
+    };
+
+    try {
+      await Promise.all([clearPath(path), clearPath(walPath), clearPath(backupPath)]);
+    } catch {
+      // Individual path cleanup is already best-effort with per-artifact logging.
     }
   });
 }

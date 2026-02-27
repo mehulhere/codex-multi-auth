@@ -56,7 +56,7 @@ Main menu minimum:
 - `Enter`
 - `Q`
 - `/` search
-- `?` or `H` help
+- `?` help
 - `1-9` quick switch
 
 Account detail minimum:
@@ -109,10 +109,10 @@ Add-account flow must support:
 Before release:
 
 1. Walk all menu paths manually.
-2. Verify hotkeys in terminal variants.
-3. Verify color/focus consistency across all result screens.
-4. Verify settings persist and reload correctly.
-5. Verify command aliases still route correctly.
+2. Validate hotkeys in terminal variants.
+3. Check color/focus consistency across all result screens.
+4. Ensure settings persist and reload correctly.
+5. Confirm command aliases still route correctly.
 
 * * *
 

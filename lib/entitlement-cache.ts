@@ -73,6 +73,10 @@ export class EntitlementCache {
 	): void {
 		const normalizedModel = normalizeModel(model);
 		if (!accountKey || !normalizedModel) return;
+		const normalizedTtlMs =
+			typeof ttlMs === "number" && Number.isFinite(ttlMs)
+				? Math.max(1_000, Math.floor(ttlMs))
+				: DEFAULT_BLOCK_TTL_MS;
 		if (this.blocksByAccount.size >= MAX_ACCOUNT_BUCKETS && !this.blocksByAccount.has(accountKey)) {
 			const first = this.blocksByAccount.keys().next().value;
 			if (typeof first === "string") this.blocksByAccount.delete(first);
@@ -80,7 +84,7 @@ export class EntitlementCache {
 		const existing = this.blocksByAccount.get(accountKey) ?? new Map<string, EntitlementBlock>();
 		existing.set(normalizedModel, {
 			model: normalizedModel,
-			blockedUntil: now + Math.max(1_000, Math.floor(ttlMs)),
+			blockedUntil: now + normalizedTtlMs,
 			reason,
 			updatedAt: now,
 		});
@@ -143,7 +147,9 @@ export class EntitlementCache {
 		this.prune(now);
 		const accounts: Record<string, EntitlementBlock[]> = {};
 		for (const [accountKey, blocks] of this.blocksByAccount.entries()) {
-			accounts[accountKey] = Array.from(blocks.values()).sort((a, b) => a.model.localeCompare(b.model));
+			accounts[accountKey] = Array.from(blocks.values())
+				.map((block) => ({ ...block }))
+				.sort((a, b) => a.model.localeCompare(b.model));
 		}
 		return { accounts };
 	}

@@ -15,6 +15,9 @@ const loadDashboardDisplaySettingsMock = vi.fn();
 const saveDashboardDisplaySettingsMock = vi.fn();
 const loadQuotaCacheMock = vi.fn();
 const saveQuotaCacheMock = vi.fn();
+const loadPluginConfigMock = vi.fn();
+const savePluginConfigMock = vi.fn();
+const selectMock = vi.fn();
 
 vi.mock("../lib/logger.js", () => ({
 	createLogger: vi.fn(() => ({
@@ -110,10 +113,50 @@ vi.mock("../lib/dashboard-settings.js", () => ({
 	saveDashboardDisplaySettings: saveDashboardDisplaySettingsMock,
 }));
 
+vi.mock("../lib/config.js", async () => {
+	const actual = await vi.importActual("../lib/config.js");
+	return {
+		...(actual as Record<string, unknown>),
+		loadPluginConfig: loadPluginConfigMock,
+		savePluginConfig: savePluginConfigMock,
+	};
+});
+
 vi.mock("../lib/quota-cache.js", () => ({
 	loadQuotaCache: loadQuotaCacheMock,
 	saveQuotaCache: saveQuotaCacheMock,
 }));
+
+vi.mock("../lib/ui/select.js", () => ({
+	select: selectMock,
+}));
+
+const stdinIsTTYDescriptor = Object.getOwnPropertyDescriptor(process.stdin, "isTTY");
+const stdoutIsTTYDescriptor = Object.getOwnPropertyDescriptor(process.stdout, "isTTY");
+
+function setInteractiveTTY(enabled: boolean): void {
+	Object.defineProperty(process.stdin, "isTTY", {
+		value: enabled,
+		configurable: true,
+	});
+	Object.defineProperty(process.stdout, "isTTY", {
+		value: enabled,
+		configurable: true,
+	});
+}
+
+function restoreTTYDescriptors(): void {
+	if (stdinIsTTYDescriptor) {
+		Object.defineProperty(process.stdin, "isTTY", stdinIsTTYDescriptor);
+	} else {
+		delete (process.stdin as unknown as { isTTY?: boolean }).isTTY;
+	}
+	if (stdoutIsTTYDescriptor) {
+		Object.defineProperty(process.stdout, "isTTY", stdoutIsTTYDescriptor);
+	} else {
+		delete (process.stdout as unknown as { isTTY?: boolean }).isTTY;
+	}
+}
 
 describe("codex manager cli commands", () => {
 	beforeEach(() => {
@@ -132,6 +175,9 @@ describe("codex manager cli commands", () => {
 		saveDashboardDisplaySettingsMock.mockReset();
 		loadQuotaCacheMock.mockReset();
 		saveQuotaCacheMock.mockReset();
+		loadPluginConfigMock.mockReset();
+		savePluginConfigMock.mockReset();
+		selectMock.mockReset();
 		fetchCodexQuotaSnapshotMock.mockResolvedValue({
 			status: 200,
 			model: "gpt-5-codex",
@@ -158,11 +204,16 @@ describe("codex manager cli commands", () => {
 			menuSortPinCurrent: true,
 			menuSortQuickSwitchVisibleRow: true,
 		});
+		loadPluginConfigMock.mockReturnValue({});
+		savePluginConfigMock.mockResolvedValue(undefined);
+		selectMock.mockResolvedValue(undefined);
+		restoreTTYDescriptors();
 		setStoragePathMock.mockReset();
 		getStoragePathMock.mockReturnValue("/mock/openai-codex-accounts.json");
 	});
 
 	afterEach(() => {
+		restoreTTYDescriptors();
 		vi.restoreAllMocks();
 	});
 
@@ -1071,5 +1122,279 @@ describe("codex manager cli commands", () => {
 		expect(payload.accounts.total).toBe(2);
 		expect(payload.accounts.enabled).toBe(1);
 		expect(payload.accounts.disabled).toBe(1);
+	});
+
+	it("drives interactive settings hub across sections and persists dashboard/backend changes", async () => {
+		setInteractiveTTY(true);
+		const now = Date.now();
+		const storage = {
+			version: 3,
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0 },
+			accounts: [
+				{
+					email: "settings@example.com",
+					accountId: "acc_settings",
+					refreshToken: "refresh-settings",
+					accessToken: "access-settings",
+					expiresAt: now + 3_600_000,
+					addedAt: now - 1_000,
+					lastUsed: now - 1_000,
+					enabled: true,
+				},
+			],
+		};
+		loadAccountsMock.mockImplementation(async () => structuredClone(storage));
+		promptLoginModeMock
+			.mockResolvedValueOnce({ mode: "settings" })
+			.mockResolvedValueOnce({ mode: "cancel" });
+
+		const selectResults: Array<Record<string, unknown>> = [
+			{ type: "account-list" },
+			{ type: "toggle", key: "menuShowStatusBadge" },
+			{ type: "cycle-sort-mode" },
+			{ type: "cycle-layout-mode" },
+			{ type: "save" },
+			{ type: "summary-fields" },
+			{ type: "move-down", key: "last-used" },
+			{ type: "toggle", key: "status" },
+			{ type: "save" },
+			{ type: "behavior" },
+			{ type: "toggle-pause" },
+			{ type: "toggle-menu-limit-fetch" },
+			{ type: "set-menu-quota-ttl", ttlMs: 300_000 },
+			{ type: "set-delay", delayMs: 1_000 },
+			{ type: "save" },
+			{ type: "theme" },
+			{ type: "set-palette", palette: "blue" },
+			{ type: "set-accent", accent: "cyan" },
+			{ type: "save" },
+			{ type: "backend" },
+			{ type: "open-category", key: "rotation-quota" },
+			{ type: "toggle", key: "preemptiveQuotaEnabled" },
+			{ type: "bump", key: "preemptiveQuotaRemainingPercent5h", direction: 1 },
+			{ type: "back" },
+			{ type: "save" },
+			{ type: "back" },
+		];
+		selectMock.mockImplementation(async () => selectResults.shift() ?? { type: "back" });
+		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+
+		const exitCode = await runCodexMultiAuthCli(["auth", "login"]);
+		expect(exitCode).toBe(0);
+		expect(selectResults).toHaveLength(0);
+		expect(saveDashboardDisplaySettingsMock).toHaveBeenCalled();
+		expect(savePluginConfigMock).toHaveBeenCalledTimes(1);
+		expect(savePluginConfigMock).toHaveBeenCalledWith(
+			expect.objectContaining({
+				preemptiveQuotaEnabled: expect.any(Boolean),
+				preemptiveQuotaRemainingPercent5h: expect.any(Number),
+			}),
+		);
+	});
+
+	it("keeps last account enabled during fix to avoid lockout", async () => {
+		const now = Date.now();
+		loadAccountsMock.mockResolvedValueOnce({
+			version: 3,
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0 },
+			accounts: [
+				{
+					email: "solo@example.com",
+					refreshToken: "refresh-solo",
+					addedAt: now - 1_000,
+					lastUsed: now - 1_000,
+					enabled: true,
+				},
+			],
+		});
+		queuedRefreshMock.mockResolvedValueOnce({
+			type: "failed",
+			reason: "http_error",
+			statusCode: 401,
+			message: "unauthorized",
+		});
+		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+
+		const exitCode = await runCodexMultiAuthCli(["auth", "fix", "--json"]);
+		expect(exitCode).toBe(0);
+		expect(saveAccountsMock).toHaveBeenCalledTimes(1);
+		expect(saveAccountsMock.mock.calls[0]?.[0]?.accounts?.[0]?.enabled).toBe(true);
+
+		const payload = JSON.parse(String(logSpy.mock.calls[0]?.[0])) as {
+			reports: Array<{ outcome: string; message: string }>;
+		};
+		expect(payload.reports[0]?.outcome).toBe("warning-soft-failure");
+		expect(payload.reports[0]?.message).toContain("avoid lockout");
+	});
+
+	it("runs live fix path with probe success and probe fallback warning", async () => {
+		const now = Date.now();
+		loadAccountsMock.mockResolvedValueOnce({
+			version: 3,
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0 },
+			accounts: [
+				{
+					email: "live-ok@example.com",
+					accountId: "acc_live_ok",
+					refreshToken: "refresh-live-ok",
+					accessToken: "access-live-ok",
+					expiresAt: now + 3_600_000,
+					addedAt: now - 5_000,
+					lastUsed: now - 5_000,
+					enabled: true,
+				},
+				{
+					email: "live-warn@example.com",
+					accountId: "acc_live_warn",
+					refreshToken: "refresh-live-warn",
+					accessToken: "access-live-warn",
+					expiresAt: now - 5_000,
+					addedAt: now - 4_000,
+					lastUsed: now - 4_000,
+					enabled: true,
+				},
+			],
+		});
+		queuedRefreshMock.mockResolvedValueOnce({
+			type: "success",
+			access: "access-live-warn-next",
+			refresh: "refresh-live-warn-next",
+			expires: now + 7_200_000,
+		});
+		fetchCodexQuotaSnapshotMock
+			.mockResolvedValueOnce({
+				status: 200,
+				model: "gpt-5-codex",
+				primary: { usedPercent: 20, windowMinutes: 300, resetAtMs: now + 1_000 },
+				secondary: { usedPercent: 10, windowMinutes: 10080, resetAtMs: now + 2_000 },
+			})
+			.mockRejectedValueOnce(new Error("live probe temporary failure"));
+
+		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+		const exitCode = await runCodexMultiAuthCli(["auth", "fix", "--live", "--json"]);
+
+		expect(exitCode).toBe(0);
+		expect(fetchCodexQuotaSnapshotMock).toHaveBeenCalledTimes(2);
+		expect(queuedRefreshMock).toHaveBeenCalledTimes(1);
+		expect(saveQuotaCacheMock).toHaveBeenCalledTimes(1);
+
+		const payload = JSON.parse(String(logSpy.mock.calls[0]?.[0])) as {
+			reports: Array<{ outcome: string; message: string }>;
+		};
+		expect(
+			payload.reports.some(
+				(report) =>
+					report.outcome === "healthy" &&
+					report.message.includes("live session OK"),
+			),
+		).toBe(true);
+		expect(
+			payload.reports.some(
+				(report) =>
+					report.outcome === "warning-soft-failure" &&
+					report.message.includes("refresh succeeded but live probe failed"),
+			),
+		).toBe(true);
+	});
+
+	it("deletes an account from manage mode and persists storage", async () => {
+		const now = Date.now();
+		loadAccountsMock.mockResolvedValue({
+			version: 3,
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0 },
+			accounts: [
+				{
+					email: "first@example.com",
+					refreshToken: "refresh-first",
+					addedAt: now - 2_000,
+					lastUsed: now - 2_000,
+					enabled: true,
+				},
+				{
+					email: "second@example.com",
+					refreshToken: "refresh-second",
+					addedAt: now - 1_000,
+					lastUsed: now - 1_000,
+					enabled: true,
+				},
+			],
+		});
+		promptLoginModeMock
+			.mockResolvedValueOnce({ mode: "manage", deleteAccountIndex: 1 })
+			.mockResolvedValueOnce({ mode: "cancel" });
+
+		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+		const exitCode = await runCodexMultiAuthCli(["auth", "login"]);
+
+		expect(exitCode).toBe(0);
+		expect(saveAccountsMock).toHaveBeenCalledTimes(1);
+		expect(saveAccountsMock.mock.calls[0]?.[0]?.accounts).toHaveLength(1);
+		expect(saveAccountsMock.mock.calls[0]?.[0]?.accounts?.[0]?.email).toBe("first@example.com");
+	});
+
+	it("toggles account enabled state from manage mode", async () => {
+		const now = Date.now();
+		loadAccountsMock.mockResolvedValue({
+			version: 3,
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0 },
+			accounts: [
+				{
+					email: "toggle@example.com",
+					refreshToken: "refresh-toggle",
+					addedAt: now - 1_000,
+					lastUsed: now - 1_000,
+					enabled: true,
+				},
+			],
+		});
+		promptLoginModeMock
+			.mockResolvedValueOnce({ mode: "manage", toggleAccountIndex: 0 })
+			.mockResolvedValueOnce({ mode: "cancel" });
+
+		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+		const exitCode = await runCodexMultiAuthCli(["auth", "login"]);
+
+		expect(exitCode).toBe(0);
+		expect(saveAccountsMock).toHaveBeenCalledTimes(1);
+		expect(saveAccountsMock.mock.calls[0]?.[0]?.accounts?.[0]?.enabled).toBe(false);
+	});
+
+	it("keeps settings unchanged in non-interactive mode and returns to menu", async () => {
+		const now = Date.now();
+		loadAccountsMock.mockResolvedValue({
+			version: 3,
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0 },
+			accounts: [
+				{
+					email: "non-tty@example.com",
+					accountId: "acc_non_tty",
+					refreshToken: "refresh-non-tty",
+					accessToken: "access-non-tty",
+					expiresAt: now + 3_600_000,
+					addedAt: now - 1_000,
+					lastUsed: now - 1_000,
+					enabled: true,
+				},
+			],
+		});
+		promptLoginModeMock
+			.mockResolvedValueOnce({ mode: "settings" })
+			.mockResolvedValueOnce({ mode: "cancel" });
+
+		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+		const exitCode = await runCodexMultiAuthCli(["auth", "login"]);
+
+		expect(exitCode).toBe(0);
+		expect(selectMock).not.toHaveBeenCalled();
+		expect(saveDashboardDisplaySettingsMock).not.toHaveBeenCalled();
+		expect(savePluginConfigMock).not.toHaveBeenCalled();
 	});
 });

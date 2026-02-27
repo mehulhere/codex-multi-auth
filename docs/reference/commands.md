@@ -63,7 +63,7 @@ Common flags:
 | `Enter` | Select/open |
 | `1-9` | Quick switch visible/source account |
 | `/` | Search accounts |
-| `?` / `H` | Toggle help |
+| `?` | Toggle help |
 | `Q` | Back/cancel |
 
 ### Account Detail Menu
@@ -120,6 +120,7 @@ codex auth verify-flagged --json
 
 ```bash
 where codex
+which codex
 codex --version
 codex auth status
 codex multi auth status

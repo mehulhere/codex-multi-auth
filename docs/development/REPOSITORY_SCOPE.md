@@ -77,3 +77,4 @@ When adding a new feature:
 3. Update user docs (`docs/features.md` + relevant guides).
 4. Update references if command/setting/path changed.
 5. Update architecture/config flow docs for cross-cutting behavior.
+6. Update `docs/upgrade.md` and any npm-script references when command flow/build steps changed.

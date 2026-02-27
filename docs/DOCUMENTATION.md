@@ -79,6 +79,9 @@ When runtime behavior changes:
 3. Update command/settings/path references if any CLI/config/storage behavior changed.
 4. Update `docs/troubleshooting.md` with new failure signatures.
 5. Update development docs when architecture/config flow changed.
+6. Update `docs/upgrade.md` when migration steps, command routing, or paths changed.
+7. Keep `SECURITY.md` aligned with current storage paths and credential handling.
+8. Update npm script references whenever build/install workflow changes.
 
 * * *
 

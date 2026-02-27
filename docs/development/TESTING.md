@@ -96,9 +96,9 @@ Optional plugin-host smoke:
 ## Docs QA (when docs change)
 
 1. Verify every command snippet is runnable.
-2. Verify path references against runtime modules.
-3. Verify cross-links are valid.
-4. Verify feature matrix stays in sync with implemented features.
+2. Cross-check path references against runtime modules.
+3. Confirm cross-links are valid.
+4. Keep feature matrix in sync with implemented features.
 
 * * *
 

@@ -201,6 +201,15 @@ Used only for host plugin mode through the host runtime config file.
 
 * * *
 
+## Concurrency and Windows Notes
+
+- Storage writes use temp-file + rename semantics; Windows may surface transient `EPERM`/`EBUSY` during rename.
+- Cross-process refresh coordination relies on lease/state files; avoid manually editing those files while the CLI is running.
+- Live account sync combines `fs.watch` with polling fallback to handle Windows watcher edge cases.
+- Backup/WAL artifacts may exist briefly during writes and recovery; they are part of normal safety behavior.
+
+* * *
+
 ## Related
 
 - [CONFIG_FLOW.md](CONFIG_FLOW.md)

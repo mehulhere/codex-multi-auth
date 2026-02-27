@@ -399,6 +399,11 @@ export async function fetchCodexQuotaSnapshot(
 				throw new Error(extractErrorMessage(bodyText, response.status));
 			}
 
+			try {
+				await response.body?.cancel();
+			} catch {
+				// Best effort cancellation.
+			}
 			lastError = new Error("Codex response did not include quota headers");
 		} catch (error) {
 			lastError = error instanceof Error ? error : new Error(String(error));

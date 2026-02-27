@@ -303,10 +303,16 @@ function normalizeQuotaPercent(value: number | undefined): number | null {
  * @returns The parsed percentage clamped to 0–100, or `null` if the label or a valid percentage is not found
  */
 function parseLeftPercentFromSummary(summary: string, windowLabel: "5h" | "7d"): number | null {
-	const match = summary.match(new RegExp(`(?:^|\\|)\\s*${windowLabel}\\s+(\\d{1,3})%`, "i"));
-	const parsed = Number.parseInt(match?.[1] ?? "", 10);
-	if (!Number.isFinite(parsed)) return null;
-	return Math.max(0, Math.min(100, parsed));
+	const segments = summary.split("|");
+	for (const segment of segments) {
+		const trimmed = segment.trim().toLowerCase();
+		if (!trimmed.startsWith(`${windowLabel} `)) continue;
+		const percentToken = trimmed.slice(windowLabel.length).trim().split(/\s+/)[0] ?? "";
+		const parsed = Number.parseInt(percentToken.replace("%", ""), 10);
+		if (!Number.isFinite(parsed)) continue;
+		return Math.max(0, Math.min(100, parsed));
+	}
+	return null;
 }
 
 /**

@@ -46,19 +46,15 @@ function isFresh(lastChecked: number): boolean {
 	return Date.now() - lastChecked < CACHE_TTL_MS;
 }
 
-/**
- * Validates and normalizes a candidate prompt source URL.
- *
- * Returns the trimmed input string if it is a syntactically valid URL using the `http:` or `https:` protocol; returns `undefined` for missing, empty, invalid, or unsupported-protocol inputs.
- *
- * Notes:
- * - This function never throws; it catches URL parsing errors and returns `undefined`.
- * - It is pure and safe to call concurrently.
- * - It logs debug entries containing the trimmed `source` when the input is invalid or uses an unsupported protocol; callers should avoid passing secrets or tokens in `source` because those values will appear in logs.
- *
- * @param source - The candidate URL string to validate and normalize
- * @returns The trimmed URL string if valid and using HTTP(S), or `undefined` otherwise
- */
+function redactSourceForLog(source: string): string {
+	try {
+		const parsed = new URL(source);
+		return `${parsed.origin}${parsed.pathname}`;
+	} catch {
+		return "<invalid-url>";
+	}
+}
+
 function parseSourceUrl(source: string | undefined): string | undefined {
 	if (!source) return undefined;
 	const trimmed = source.trim();
@@ -67,34 +63,19 @@ function parseSourceUrl(source: string | undefined): string | undefined {
 		const parsed = new URL(trimmed);
 		if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
 			logDebug("Ignoring OpenCode codex prompt source override due to protocol", {
-				source: trimmed,
+				source: redactSourceForLog(trimmed),
 			});
 			return undefined;
 		}
 		return trimmed;
 	} catch {
 		logDebug("Ignoring invalid OpenCode codex prompt source override", {
-			source: trimmed,
+			source: redactSourceForLog(trimmed),
 		});
 		return undefined;
 	}
 }
 
-/**
- * Build an ordered, de-duplicated list of candidate prompt source URLs.
- *
- * The list is constructed from (in order): the configured override URL, the legacy override URL,
- * the cached source URL (if present), and the default URL list. Each entry is validated and
- * normalized to an http/https URL; invalid or unsupported sources are omitted.
- *
- * Concurrency: pure and safe to call concurrently (no shared state mutation).
- * Filesystem: does not access the filesystem and is unaffected by Windows path/case semantics.
- * Security: returned URLs are normalized but not redacted; callers must redact sensitive tokens
- * (e.g., query credentials) before logging or displaying.
- *
- * @param cachedMeta - Optional cache metadata whose `sourceUrl` will be preferred after overrides
- * @returns An ordered array of normalized http/https source URLs with duplicates removed
- */
 function resolvePromptSources(cachedMeta: CacheMeta | null): string[] {
 	const sources: string[] = [];
 	const seen = new Set<string>();
@@ -170,9 +151,9 @@ async function refreshPrompt(
 		try {
 			response = await fetch(sourceUrl, { headers });
 		} catch (error) {
-			lastFailure = `${sourceUrl}: ${String(error)}`;
+			lastFailure = `${redactSourceForLog(sourceUrl)}: ${String(error)}`;
 			logDebug("OpenCode prompt source fetch failed", {
-				sourceUrl,
+				sourceUrl: redactSourceForLog(sourceUrl),
 				error: String(error),
 			});
 			continue;
@@ -196,9 +177,9 @@ async function refreshPrompt(
 		}
 
 		if (!response.ok) {
-			lastFailure = `${sourceUrl}: HTTP ${response.status}`;
+			lastFailure = `${redactSourceForLog(sourceUrl)}: HTTP ${response.status}`;
 			logDebug("OpenCode prompt source returned non-OK response", {
-				sourceUrl,
+				sourceUrl: redactSourceForLog(sourceUrl),
 				status: response.status,
 			});
 			continue;

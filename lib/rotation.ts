@@ -358,12 +358,13 @@ export function selectHybridAccount(
       typeof options.scoreBoostByAccount?.[account.index] === "number"
         ? options.scoreBoostByAccount[account.index] ?? 0
         : 0;
+    const safeCapabilityBoost = Number.isFinite(capabilityBoost) ? capabilityBoost : 0;
 
     let score =
       health * cfg.healthWeight +
       tokens * cfg.tokenWeight +
       hoursSinceUsed * cfg.freshnessWeight +
-      capabilityBoost;
+      safeCapabilityBoost;
 
     // PID-based offset distributes selection across parallel agents
     if (options.pidOffsetEnabled) {

@@ -33,8 +33,9 @@ If legacy config exists, compatibility load and migration path still apply.
 For plugin runtime values:
 
 1. Environment override
-2. Unified/compat config value
-3. Hardcoded default in `DEFAULT_PLUGIN_CONFIG`
+2. `CODEX_MULTI_AUTH_CONFIG_PATH` (when set)
+3. Unified/compat config value
+4. Hardcoded default in `DEFAULT_PLUGIN_CONFIG`
 
 For dashboard display values:
 
@@ -58,6 +59,7 @@ For dashboard display values:
 2. Normalize alias args (`multi auth`, `multi-auth`, `multiauth`).
 3. If command belongs to auth manager scope, run local manager.
 4. Otherwise forward invocation to official Codex CLI binary.
+5. Direct `codex-multi-auth ...` also routes to the same auth manager handler.
 
 * * *
 

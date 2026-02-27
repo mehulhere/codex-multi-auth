@@ -23,13 +23,13 @@ const MAX_REQUEST_INSTANCE_ID_LENGTH = 64;
  * @returns The result of `reader.read()`: an object with `done` and `value` (`Uint8Array | undefined`).
  */
 async function readChunkWithTimeout(
-	reader: ReadableStreamDefaultReader<Uint8Array>,
+	readPromise: Promise<Awaited<ReturnType<ReadableStreamDefaultReader<Uint8Array>["read"]>>>,
 	timeoutMs: number,
 ): Promise<Awaited<ReturnType<ReadableStreamDefaultReader<Uint8Array>["read"]>>> {
 	let timeoutId: ReturnType<typeof setTimeout> | undefined;
 	try {
 		return await Promise.race([
-			reader.read(),
+			readPromise,
 			new Promise<never>((_, reject) => {
 				timeoutId = setTimeout(() => {
 					reject(new Error(`SSE stream stalled for ${timeoutMs}ms`));
@@ -72,6 +72,22 @@ function normalizeRequestInstanceId(value: string | undefined): string | null {
 	return trimmed.slice(0, MAX_REQUEST_INSTANCE_ID_LENGTH);
 }
 
+async function readChunkWithSoftHardTimeout(
+	reader: ReadableStreamDefaultReader<Uint8Array>,
+	softTimeoutMs: number,
+	hardTimeoutMs: number,
+): Promise<Awaited<ReturnType<ReadableStreamDefaultReader<Uint8Array>["read"]>>> {
+	const readPromise = reader.read();
+	try {
+		return await readChunkWithTimeout(readPromise, softTimeoutMs);
+	} catch (error) {
+		if (!isStallTimeoutError(error) || hardTimeoutMs <= softTimeoutMs) {
+			throw error;
+		}
+		return readChunkWithTimeout(readPromise, hardTimeoutMs - softTimeoutMs);
+	}
+}
+
 /**
  * Wraps an SSE-like streaming Response so the stream can switch to fallback sources on stalls or errors to keep the client session alive.
  *
@@ -107,6 +123,7 @@ export function withStreamingFailover(
 	}
 
 	let closed = false;
+	let releaseCurrentReaderForCancel: (() => Promise<void>) | null = null;
 	const body = new ReadableStream<Uint8Array>({
 		start(controller) {
 			let currentReader = initialResponse.body?.getReader() ?? null;
@@ -127,6 +144,7 @@ export function withStreamingFailover(
 				}
 				currentReader = null;
 			};
+			releaseCurrentReaderForCancel = releaseCurrentReader;
 
 			const tryFailover = async (): Promise<boolean> => {
 				if (failoverAttempt >= maxFailovers) {
@@ -150,7 +168,11 @@ export function withStreamingFailover(
 			const pump = async (): Promise<void> => {
 				while (!closed && currentReader) {
 					try {
-						const result = await readChunkWithTimeout(currentReader, softTimeoutMs);
+						const result = await readChunkWithSoftHardTimeout(
+							currentReader,
+							softTimeoutMs,
+							hardTimeoutMs,
+						);
 						if (result.done) {
 							closed = true;
 							controller.close();
@@ -162,24 +184,6 @@ export function withStreamingFailover(
 							controller.enqueue(result.value);
 						}
 					} catch (error) {
-						if (isStallTimeoutError(error) && hardTimeoutMs > softTimeoutMs) {
-							try {
-								const result = await readChunkWithTimeout(currentReader, hardTimeoutMs);
-								if (result.done) {
-									closed = true;
-									controller.close();
-									await releaseCurrentReader();
-									return;
-								}
-								if (result.value && result.value.byteLength > 0) {
-									emittedBytes += result.value.byteLength;
-									controller.enqueue(result.value);
-									continue;
-								}
-							} catch {
-								// Fall through to failover path.
-							}
-						}
 						const switched = await tryFailover();
 						if (switched) {
 							continue;
@@ -196,6 +200,9 @@ export function withStreamingFailover(
 		},
 		cancel() {
 			closed = true;
+			if (releaseCurrentReaderForCancel) {
+				void releaseCurrentReaderForCancel();
+			}
 		},
 	});
 

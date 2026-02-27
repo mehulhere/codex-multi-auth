@@ -41,28 +41,28 @@ npm run build
 npm link
 ```
 
-2. Confirm command routing:
+1. Confirm command routing:
 
 ```bash
 codex --version
 codex auth status
 ```
 
-3. Re-login and rebuild account pool:
+1. Re-login and rebuild account pool:
 
 ```bash
 codex auth login
 codex auth check
 ```
 
-4. Validate active behavior:
+1. Validate active behavior:
 
 ```bash
 codex auth list
 codex auth forecast --live
 ```
 
-5. (Optional) refresh plugin-host config:
+1. (Optional) refresh plugin-host config:
 
 ```bash
 codex-multi-auth --modern
@@ -89,7 +89,7 @@ Optional plugin-host smoke test (only if you use host mode):
 
 | Problem | Action |
 | --- | --- |
-| `codex auth` not found | `where codex`, ensure wrapper path is active |
+| `codex auth` not found | `where codex` (Windows) or `which codex` (macOS/Linux), ensure wrapper path is active |
 | Old command habits | Use `codex auth ...` as canonical workflow |
 | Accounts look stale | `codex auth doctor --fix` then re-login impacted accounts |
 | Mixed path confusion | Check [reference/storage-paths.md](reference/storage-paths.md) |

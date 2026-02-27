@@ -133,5 +133,50 @@ describe("refresh-guardian", () => {
 		await vi.advanceTimersByTimeAsync(15_000);
 		expect(tickSpy).toHaveBeenCalledTimes(1);
 	});
+
+	it("resolves refreshed account using stable refresh token when indices shift", async () => {
+		const originalA = createManagedAccount(0);
+		const originalB = createManagedAccount(1);
+		const liveB = { ...originalB, index: 0 };
+		const liveA = { ...originalA, index: 1 };
+		const snapshots = [[originalA, originalB], [liveB, liveA]];
+		let readCount = 0;
+		const manager = {
+			getAccountsSnapshot: vi.fn(() => snapshots[Math.min(readCount++, snapshots.length - 1)]),
+			getAccountByIndex: vi.fn((index: number) => [liveB, liveA].find((account) => account.index === index) ?? null),
+			clearAuthFailures: vi.fn(),
+			markAccountCoolingDown: vi.fn(),
+			saveToDiskDebounced: vi.fn(),
+		} as unknown as AccountManager;
+		const { RefreshGuardian } = await import("../lib/refresh-guardian.js");
+		const guardian = new RefreshGuardian(() => manager, { bufferMs: 60_000, intervalMs: 5_000 });
+
+		refreshExpiringAccountsMock.mockResolvedValue(
+			new Map([
+				[
+					1,
+					{
+						refreshed: true,
+						reason: "success",
+						tokenResult: {
+							type: "success",
+							access: "access-shifted",
+							refresh: "refresh-shifted",
+							expires: Date.now() + 3_600_000,
+						},
+					},
+				],
+			]),
+		);
+
+		await guardian.tick();
+
+		expect(applyRefreshResultMock).toHaveBeenCalledTimes(1);
+		expect(applyRefreshResultMock).toHaveBeenCalledWith(
+			liveB,
+			expect.objectContaining({ type: "success" }),
+		);
+		expect((manager.clearAuthFailures as ReturnType<typeof vi.fn>)).toHaveBeenCalledWith(liveB);
+	});
 });
 

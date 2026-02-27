@@ -47,7 +47,13 @@ function commandExists(command: string): boolean {
 		const pathext = (process.env.PATHEXT || ".EXE;.CMD;.BAT;.COM")
 			.split(";")
 			.filter(Boolean);
+		const hasExtension = /\.[^\\/]+$/.test(command);
 		for (const entry of entries) {
+			if (hasExtension) {
+				const directCandidate = path.join(entry, command);
+				if (fs.existsSync(directCandidate)) return true;
+				continue;
+			}
 			for (const ext of pathext) {
 				const candidate = path.join(entry, `${command}${ext}`);
 				if (fs.existsSync(candidate)) return true;
@@ -59,7 +65,16 @@ function commandExists(command: string): boolean {
 
 	for (const entry of entries) {
 		const candidate = path.join(entry, command);
-		if (fs.existsSync(candidate)) return true;
+		if (!fs.existsSync(candidate)) continue;
+		try {
+			const stats = fs.statSync(candidate);
+			if (!stats.isFile()) continue;
+			// On POSIX, ensure at least one executable bit is set.
+			if ((stats.mode & 0o111) === 0) continue;
+			return true;
+		} catch {
+			continue;
+		}
 	}
 	return false;
 }
@@ -80,6 +95,9 @@ export function openBrowserUrl(url: string): boolean {
 	try {
 		// Windows: use PowerShell Start-Process to avoid cmd/start quirks with URLs containing '&' or ':'
 		if (process.platform === "win32") {
+			if (!commandExists("powershell.exe")) {
+				return false;
+			}
 			// Escape PowerShell special characters: backticks, double quotes, and $ (sub-expression injection)
 			const psUrl = url
 				.replace(/`/g, "``")
@@ -126,6 +144,9 @@ export function copyTextToClipboard(text: string): boolean {
 		if (!text) return false;
 
 		if (process.platform === "win32") {
+			if (!commandExists("powershell.exe")) {
+				return false;
+			}
 			const psText = text
 				.replace(/`/g, "``")
 				.replace(/\$/g, "`$")

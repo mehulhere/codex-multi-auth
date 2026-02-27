@@ -263,6 +263,34 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 		return Number.isFinite(parsed) ? parsed : undefined;
 	};
 
+	const sanitizeResponseHeadersForLog = (headers: Headers): Record<string, string> => {
+		const allowed = new Set([
+			"content-type",
+			"x-request-id",
+			"x-openai-request-id",
+			"x-codex-plan-type",
+			"x-codex-active-limit",
+			"x-codex-primary-used-percent",
+			"x-codex-primary-window-minutes",
+			"x-codex-primary-reset-at",
+			"x-codex-primary-reset-after-seconds",
+			"x-codex-secondary-used-percent",
+			"x-codex-secondary-window-minutes",
+			"x-codex-secondary-reset-at",
+			"x-codex-secondary-reset-after-seconds",
+			"retry-after",
+			"x-ratelimit-reset",
+			"x-ratelimit-reset-requests",
+		]);
+		const sanitized: Record<string, string> = {};
+		for (const [rawName, rawValue] of headers.entries()) {
+			const name = rawName.toLowerCase();
+			if (!allowed.has(name)) continue;
+			sanitized[name] = rawValue;
+		}
+		return sanitized;
+	};
+
 	type RuntimeMetrics = {
 		startedAt: number;
 		totalRequests: number;
@@ -1521,10 +1549,6 @@ while (attempted.size < Math.max(1, accountCount)) {
 								const capabilityModelKey = model ?? modelFamily;
 								const quotaDeferral = preemptiveQuotaScheduler.getDeferral(quotaScheduleKey);
 								if (quotaDeferral.defer && quotaDeferral.waitMs > 0) {
-									preemptiveQuotaScheduler.markRateLimited(
-										quotaScheduleKey,
-										quotaDeferral.waitMs,
-									);
 									accountManager.markRateLimitedWithReason(
 										account,
 										quotaDeferral.waitMs,
@@ -1644,7 +1668,7 @@ while (attempted.size < Math.max(1, accountCount)) {
 													ok: response.ok,
 													statusText: response.statusText,
 													latencyMs: fetchLatencyMs,
-													headers: Object.fromEntries(response.headers.entries()),
+													headers: sanitizeResponseHeadersForLog(response.headers),
 												});
 												const quotaSnapshot = readQuotaSchedulerSnapshot(
 													response.headers,

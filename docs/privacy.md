@@ -6,7 +6,7 @@
 
 ## Telemetry
 
-- No custom hosted analytics pipeline in this project.
+- No custom-hosted analytics pipeline in this project.
 - No project-owned remote database.
 - Network calls only go to required OAuth/backend/update endpoints.
 

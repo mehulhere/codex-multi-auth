@@ -31,6 +31,11 @@ Override root:
 | Codex CLI accounts | `~/.codex/accounts.json` |
 | Codex CLI auth | `~/.codex/auth.json` |
 
+Notes:
+
+- `~/.codex/multi-auth/*` is owned by this project.
+- `~/.codex/auth.json` and `~/.codex/accounts.json` are owned by official Codex CLI and may be synced by this project.
+
 * * *
 
 ## Project-Scoped Account Paths
@@ -47,6 +52,11 @@ When project-scoped behavior is enabled, account files are namespaced under:
 
 Legacy compatibility paths may still be detected/read during migration.
 Exact legacy path values are internal compatibility details and are not part of the canonical user workflow.
+
+Example legacy roots that might be discovered in older installs:
+
+- `~/.opencode/`
+- `~/DevTools/config/codex/`
 
 Canonical behavior should be documented against `~/.codex/multi-auth`.
 

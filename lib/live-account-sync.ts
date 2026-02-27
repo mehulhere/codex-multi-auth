@@ -48,9 +48,14 @@ async function readMtimeMs(path: string): Promise<number | null> {
 		return Number.isFinite(stats.mtimeMs) ? stats.mtimeMs : null;
 	} catch (error) {
 		const code = (error as NodeJS.ErrnoException).code;
-		if (code === "ENOENT") return null;
+		if (code === "ENOENT" || code === "EBUSY" || code === "EACCES") return null;
 		throw error;
 	}
+}
+
+function summarizeWatchPath(path: string | null): string {
+	if (!path) return "<unknown>";
+	return basename(path);
 }
 
 /**
@@ -103,7 +108,7 @@ export class LiveAccountSync {
 		} catch (error) {
 			this.errorCount += 1;
 			log.warn("Failed to start fs.watch for account storage", {
-				path,
+				path: summarizeWatchPath(path),
 				error: error instanceof Error ? error.message : String(error),
 			});
 		}
@@ -166,7 +171,7 @@ export class LiveAccountSync {
 		} catch (error) {
 			this.errorCount += 1;
 			log.debug("Live account sync poll failed", {
-				path: this.currentPath,
+				path: summarizeWatchPath(this.currentPath),
 				error: error instanceof Error ? error.message : String(error),
 			});
 		}
@@ -174,6 +179,7 @@ export class LiveAccountSync {
 
 	private async runReload(reason: "watch" | "poll"): Promise<void> {
 		if (!this.running || !this.currentPath) return;
+		const targetPath = this.currentPath;
 		if (this.reloadInFlight) {
 			await this.reloadInFlight;
 			return;
@@ -184,16 +190,16 @@ export class LiveAccountSync {
 				await this.reload();
 				this.lastSyncAt = Date.now();
 				this.reloadCount += 1;
-				this.lastKnownMtimeMs = await readMtimeMs(this.currentPath as string);
+				this.lastKnownMtimeMs = await readMtimeMs(targetPath);
 				log.debug("Reloaded account manager from live storage update", {
 					reason,
-					path: this.currentPath,
+					path: summarizeWatchPath(targetPath),
 				});
 			} catch (error) {
 				this.errorCount += 1;
 				log.warn("Live account sync reload failed", {
 					reason,
-					path: this.currentPath,
+					path: summarizeWatchPath(targetPath),
 					error: error instanceof Error ? error.message : String(error),
 				});
 			}

@@ -151,7 +151,15 @@ function formatAccountLabel(account: ExistingAccountInfo, index: number): string
  * @returns The numeric source index to use for account operations
  */
 function resolveAccountSourceIndex(account: ExistingAccountInfo): number {
-	return typeof account.sourceIndex === "number" ? account.sourceIndex : account.index;
+	const sourceIndex =
+		typeof account.sourceIndex === "number" && Number.isFinite(account.sourceIndex)
+			? Math.max(0, Math.floor(account.sourceIndex))
+			: undefined;
+	if (typeof sourceIndex === "number") return sourceIndex;
+	if (typeof account.index === "number" && Number.isFinite(account.index)) {
+		return Math.max(0, Math.floor(account.index));
+	}
+	return -1;
 }
 
 /**
@@ -293,27 +301,47 @@ export async function promptLoginMode(
 			case "select-account": {
 				const accountAction = await showAccountDetails(action.account);
 				if (accountAction === "delete") {
-					return { mode: "manage", deleteAccountIndex: resolveAccountSourceIndex(action.account) };
+					const index = resolveAccountSourceIndex(action.account);
+					if (index >= 0) return { mode: "manage", deleteAccountIndex: index };
+					continue;
 				}
 				if (accountAction === "set-current") {
-					return { mode: "manage", switchAccountIndex: resolveAccountSourceIndex(action.account) };
+					const index = resolveAccountSourceIndex(action.account);
+					if (index >= 0) return { mode: "manage", switchAccountIndex: index };
+					continue;
 				}
 				if (accountAction === "refresh") {
-					return { mode: "manage", refreshAccountIndex: resolveAccountSourceIndex(action.account) };
+					const index = resolveAccountSourceIndex(action.account);
+					if (index >= 0) return { mode: "manage", refreshAccountIndex: index };
+					continue;
 				}
 				if (accountAction === "toggle") {
-					return { mode: "manage", toggleAccountIndex: resolveAccountSourceIndex(action.account) };
+					const index = resolveAccountSourceIndex(action.account);
+					if (index >= 0) return { mode: "manage", toggleAccountIndex: index };
+					continue;
 				}
 				continue;
 			}
-			case "set-current-account":
-				return { mode: "manage", switchAccountIndex: resolveAccountSourceIndex(action.account) };
-			case "refresh-account":
-				return { mode: "manage", refreshAccountIndex: resolveAccountSourceIndex(action.account) };
-			case "toggle-account":
-				return { mode: "manage", toggleAccountIndex: resolveAccountSourceIndex(action.account) };
-			case "delete-account":
-				return { mode: "manage", deleteAccountIndex: resolveAccountSourceIndex(action.account) };
+			case "set-current-account": {
+				const index = resolveAccountSourceIndex(action.account);
+				if (index >= 0) return { mode: "manage", switchAccountIndex: index };
+				continue;
+			}
+			case "refresh-account": {
+				const index = resolveAccountSourceIndex(action.account);
+				if (index >= 0) return { mode: "manage", refreshAccountIndex: index };
+				continue;
+			}
+			case "toggle-account": {
+				const index = resolveAccountSourceIndex(action.account);
+				if (index >= 0) return { mode: "manage", toggleAccountIndex: index };
+				continue;
+			}
+			case "delete-account": {
+				const index = resolveAccountSourceIndex(action.account);
+				if (index >= 0) return { mode: "manage", deleteAccountIndex: index };
+				continue;
+			}
 			case "search":
 				continue;
 			case "delete-all":

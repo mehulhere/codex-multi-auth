@@ -54,4 +54,28 @@ describe("quota cache", () => {
 		const fileContent = await fs.readFile(getQuotaCachePath(), "utf8");
 		expect(fileContent).toContain("\"version\": 1");
 	});
+
+	it("ignores cache files with unsupported version", async () => {
+		const { loadQuotaCache, getQuotaCachePath } = await import("../lib/quota-cache.js");
+		await fs.writeFile(
+			getQuotaCachePath(),
+			JSON.stringify({
+				version: 2,
+				byAccountId: {
+					acc_1: {
+						updatedAt: Date.now(),
+						status: 200,
+						model: "gpt-5-codex",
+						primary: { usedPercent: 10 },
+						secondary: { usedPercent: 5 },
+					},
+				},
+				byEmail: {},
+			}),
+			"utf8",
+		);
+
+		const loaded = await loadQuotaCache();
+		expect(loaded).toEqual({ byAccountId: {}, byEmail: {} });
+	});
 });

@@ -24,34 +24,16 @@ interface ActiveSelection {
 	idToken?: string;
 }
 
-/**
- * Determines whether a value is a plain object (non-null and not an array).
- *
- * @param value - The value to test
- * @returns `true` if `value` is an object and not `null` or an array, `false` otherwise
- */
 function isRecord(value: unknown): value is Record<string, unknown> {
 	return !!value && typeof value === "object" && !Array.isArray(value);
 }
 
-/**
- * Normalize a value into a non-empty trimmed string.
- *
- * @param value - The input to coerce; only string inputs are considered.
- * @returns The input string trimmed of surrounding whitespace if it contains at least one character after trimming, `undefined` otherwise.
- */
 function readTrimmedString(value: unknown): string | undefined {
 	if (typeof value !== "string") return undefined;
 	const trimmed = value.trim();
 	return trimmed.length > 0 ? trimmed : undefined;
 }
 
-/**
- * Parses the given value and returns it as a finite number when possible.
- *
- * @param value - A value that may be a number or a numeric string
- * @returns The finite numeric value parsed from `value`, or `undefined` if it cannot be interpreted as a finite number
- */
 function readNumber(value: unknown): number | undefined {
 	if (typeof value === "number" && Number.isFinite(value)) return value;
 	if (typeof value === "string") {
@@ -61,16 +43,6 @@ function readNumber(value: unknown): number | undefined {
 	return undefined;
 }
 
-/**
- * Selects the first non-empty, trimmed string value from `record` for the provided candidate `keys`.
- *
- * Treats the result as sensitive (token) data: callers must redact it before logging or persisting.
- * The function is pure and has no side effects, so it is safe for concurrent calls and has no filesystem or platform-specific behavior (including Windows).
- *
- * @param record - A heterogenous key/value map to search for string values.
- * @param keys - Ordered candidate keys to probe in `record`; the first key with a non-empty trimmed string wins.
- * @returns The first matching trimmed string value, or `undefined` if none found.
- */
 function extractTokenFromRecord(
 	record: Record<string, unknown>,
 	keys: string[],
@@ -82,28 +54,12 @@ function extractTokenFromRecord(
 	return undefined;
 }
 
-/**
- * Normalizes an email-like string by trimming surrounding whitespace and converting to lowercase.
- *
- * @param value - The input to normalize; only string inputs are processed.
- * @returns The trimmed, lowercased string if `value` is a non-empty string, `undefined` otherwise.
- */
 function normalizeEmail(value: unknown): string | undefined {
 	if (typeof value !== "string") return undefined;
 	const trimmed = value.trim().toLowerCase();
 	return trimmed.length > 0 ? trimmed : undefined;
 }
 
-/**
- * Extracts a trimmed, non-empty account identifier from a heterogeneous record.
- *
- * @param record - Object to inspect for common account identifier keys
- * @returns The first matching trimmed identifier (`accountId`, `account_id`, `workspace_id`, `organization_id`, or `id`) or `undefined` if none found
- *
- * Concurrency: pure and side-effect-free (callers are responsible for any concurrent access coordination).
- * Filesystem: not applicable (no filesystem I/O; behavior same on Windows).
- * Token redaction: this function does not handle redaction or sensitive-data masking.
- */
 function readAccountId(record: Record<string, unknown>): string | undefined {
 	const keys = ["accountId", "account_id", "workspace_id", "organization_id", "id"];
 	for (const key of keys) {
@@ -115,16 +71,6 @@ function readAccountId(record: Record<string, unknown>): string | undefined {
 	return undefined;
 }
 
-/**
- * Produce an ActiveSelection by extracting common fields and token variants from an account record.
- *
- * @param record - Account object that may contain fields at top level or inside `auth.tokens`; keys may be camelCase or snake_case.
- * @returns An ActiveSelection with any discovered properties (`accountId`, `email`, `accessToken`, `refreshToken`, `expiresAt`, `idToken`); missing values are `undefined`.
- *
- * Concurrency: pure and side-effect-free; safe for concurrent use.
- * Filesystem/OS note: callers performing atomic file writes should handle platform-specific rename semantics (Windows may replace in-use targets).
- * Security: tokens are returned verbatim and must be redacted or secured by callers before logging or persisting.
- */
 function extractSelectionFromAccountRecord(record: Record<string, unknown>): ActiveSelection {
 	const auth = isRecord(record.auth) ? record.auth : undefined;
 	const tokens = auth && isRecord(auth.tokens) ? auth.tokens : undefined;
@@ -160,18 +106,6 @@ function extractSelectionFromAccountRecord(record: Record<string, unknown>): Act
 	};
 }
 
-/**
- * Locate the zero-based index of an account in `accounts` that matches the provided `selection`.
- *
- * Matches by `selection.accountId` first (exact trimmed account identifier), then by normalized `selection.email`.
- * The function operates on the provided in-memory snapshot and does not perform any I/O; callers should pass a stable array (no concurrent mutation during the call).
- * Note: this routine does not expose or redact token values — token handling/redaction must be performed by callers when logging or persisting results.
- * On Windows where account lists may be read from files, ensure the caller supplies the parsed array with platform-normalized paths/line endings.
- *
- * @param accounts - An array of account entries (each expected to be an object record); non-record entries are ignored.
- * @param selection - ActiveSelection containing `accountId` and/or `email` to match against accounts.
- * @returns The zero-based index of the first matching account, or `-1` if no match is found.
- */
 function resolveMatchIndex(
 	accounts: unknown[],
 	selection: ActiveSelection,
@@ -198,12 +132,6 @@ function resolveMatchIndex(
 	return -1;
 }
 
-/**
- * Produce an ISO 8601 timestamp for the given millisecond epoch or for the current time when the input is missing or invalid.
- *
- * @param ms - Milliseconds since the Unix epoch; if `undefined`, not finite, or not greater than zero, the current time is used.
- * @returns The timestamp as an ISO 8601 string corresponding to `ms`, or the current time if `ms` is absent or invalid.
- */
 function toIsoTime(ms: number | undefined): string {
 	if (typeof ms === "number" && Number.isFinite(ms) && ms > 0) {
 		return new Date(ms).toISOString();
@@ -211,20 +139,40 @@ function toIsoTime(ms: number | undefined): string {
 	return new Date().toISOString();
 }
 
-/**
- * Persist the provided authentication tokens and metadata into the Codex CLI auth state file.
- *
- * Performs an atomic replace of the target JSON file (temp file + rename) and updates a numeric
- * sync version timestamp stored as `codexMultiAuthSyncVersion`. The function clears any existing
- * `OPENAI_API_KEY` field. Callers must treat token values as sensitive — they will be written to
- * disk with file mode 0600. The write is atomic but concurrent writers can race; callers should
- * serialize calls when possible. On Windows the rename may replace the target file.
- *
- * @param path - Filesystem path to the auth state JSON file to update.
- * @param selection - ActiveSelection containing token fields (`accessToken`, `refreshToken`, `idToken`),
- *   optional `accountId`, `email`, and `expiresAt` used to populate persisted tokens and metadata.
- * @returns `true` if the auth state was validated and written successfully, `false` otherwise.
- */
+async function atomicWriteJson(path: string, payload: Record<string, unknown>): Promise<void> {
+	const tempPath = `${path}.${Date.now()}.${Math.random().toString(36).slice(2, 8)}.tmp`;
+	await fs.mkdir(dirname(path), { recursive: true });
+	try {
+		await fs.writeFile(tempPath, JSON.stringify(payload, null, 2), {
+			encoding: "utf-8",
+			mode: 0o600,
+		});
+
+		let lastRenameError: NodeJS.ErrnoException | null = null;
+		for (let attempt = 0; attempt < 5; attempt += 1) {
+			try {
+				await fs.rename(tempPath, path);
+				return;
+			} catch (error) {
+				const code = (error as NodeJS.ErrnoException).code;
+				if (code === "EPERM" || code === "EBUSY") {
+					lastRenameError = error as NodeJS.ErrnoException;
+					await new Promise((resolve) => setTimeout(resolve, 10 * 2 ** attempt));
+					continue;
+				}
+				throw error;
+			}
+		}
+		if (lastRenameError) throw lastRenameError;
+	} finally {
+		try {
+			await fs.unlink(tempPath);
+		} catch {
+			// Best effort temp-file cleanup.
+		}
+	}
+}
+
 async function writeCodexAuthState(
 	path: string,
 	selection: ActiveSelection,
@@ -286,25 +234,11 @@ async function writeCodexAuthState(
 	next.last_refresh = toIsoTime(selection.expiresAt);
 	next.codexMultiAuthSyncVersion = syncVersion;
 
-	const tempPath = `${path}.${Date.now()}.${Math.random().toString(36).slice(2, 8)}.tmp`;
-	await fs.mkdir(dirname(path), { recursive: true });
-	await fs.writeFile(tempPath, JSON.stringify(next, null, 2), {
-		encoding: "utf-8",
-		mode: 0o600,
-	});
-	await fs.rename(tempPath, path);
+	await atomicWriteJson(path, next);
 	lastCodexCliSelectionWriteAt = syncVersion;
 	return true;
 }
 
-/**
- * Persist the provided active selection into Codex CLI accounts and/or auth stores on disk.
- *
- * Writes are atomic (temp file + rename); at least one store must be successfully written for the function to return `true`. Callers should expect concurrent writers; on Windows rename semantics may fail if the target file is open. Sensitive token values from `selection` may be persisted to disk and are treated as sensitive for telemetry/logging — this function does not scrub tokens elsewhere.
- *
- * @param selection - Partial active selection with any of: accountId, email, accessToken, refreshToken, expiresAt, idToken. Provided fields are merged with discovered account data when updating the accounts store.
- * @returns `true` if changes were written to at least one persistent Codex CLI store (accounts or auth), `false` otherwise.
- */
 export async function setCodexCliActiveSelection(
 	selection: ActiveSelection,
 ): Promise<boolean> {
@@ -399,13 +333,7 @@ export async function setCodexCliActiveSelection(
 						});
 						next.codexMultiAuthSyncVersion = syncVersion;
 
-						const tempPath = `${accountsPath}.${Date.now()}.${Math.random().toString(36).slice(2, 8)}.tmp`;
-						await fs.mkdir(dirname(accountsPath), { recursive: true });
-						await fs.writeFile(tempPath, JSON.stringify(next, null, 2), {
-							encoding: "utf-8",
-							mode: 0o600,
-						});
-						await fs.rename(tempPath, accountsPath);
+						await atomicWriteJson(accountsPath, next);
 						lastCodexCliSelectionWriteAt = syncVersion;
 						wroteAccounts = true;
 						log.debug("Persisted Codex CLI accounts selection", {
@@ -475,21 +403,6 @@ export async function setCodexCliActiveSelection(
 	}
 }
 
-/**
- * Retrieve the most recent timestamp when a Codex CLI active selection was written.
- *
- * This value is maintained in-process and represents the last successful atomic write performed
- * by this process; it may not reflect writes made by other processes or external edits to the
- * underlying files. The timestamp is expressed as milliseconds since the Unix epoch (UTC).
- *
- * Notes:
- * - Concurrency: best-effort, process-local tracking — external concurrent writers are not observed.
- * - Windows filesystem: semantics reflect the process clock and do not imply any platform-specific
- *   atomicity guarantees beyond the writer's atomic rename behavior.
- * - Token redaction: this value contains no credential data and is safe to expose for observability.
- *
- * @returns The last write time as milliseconds since epoch, or `0` if no write has occurred.
- */
 export function getLastCodexCliSelectionWriteTimestamp(): number {
 	return lastCodexCliSelectionWriteAt;
 }
