@@ -108,7 +108,7 @@ describe("Storage Paths Module", () => {
 
 			try {
 				const result = getConfigDir();
-				expect(result).toBe(fallback);
+				expect(normalizePath(result)).toBe(normalizePath(fallback));
 			} finally {
 				if (originalHome === undefined) delete process.env.HOME;
 				else process.env.HOME = originalHome;
