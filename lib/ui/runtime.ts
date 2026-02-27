@@ -32,6 +32,22 @@ const DEFAULT_OPTIONS: UiRuntimeOptions = {
 
 let runtimeOptions: UiRuntimeOptions = { ...DEFAULT_OPTIONS };
 
+/**
+ * Update UI runtime options and recompute the derived theme.
+ *
+ * Unspecified fields in `options` retain their current values; the exported `runtimeOptions`
+ * object is replaced with a new object containing the resolved fields and a newly created
+ * `theme` based on `colorProfile`, `glyphMode`, `palette`, and `accent`.
+ *
+ * Concurrency: callers should synchronize externally if multiple callers may update options
+ * concurrently (updates are a single replacement and may race). Filesystem: this function
+ * performs no filesystem operations and is unaffected by Windows filesystem semantics.
+ * Token handling: this function does not perform token redaction or logging—sensitive
+ * values should be redacted by the caller before passing them in.
+ *
+ * @param options - Partial runtime options (omit `theme`); any omitted fields keep their current values
+ * @returns The resolved `UiRuntimeOptions` including the recomputed `theme`
+ */
 export function setUiRuntimeOptions(
 	options: Partial<Omit<UiRuntimeOptions, "theme">>,
 ): UiRuntimeOptions {
@@ -55,6 +71,13 @@ export function getUiRuntimeOptions(): UiRuntimeOptions {
 	return runtimeOptions;
 }
 
+/**
+ * Reset the UI runtime options to the default configuration.
+ *
+ * This replaces the global runtime options with a fresh shallow copy of DEFAULT_OPTIONS. Concurrent callers may observe the updated options immediately; callers that need isolation should clone the returned object. This operation performs no filesystem access (including on Windows). The runtime options contain only configuration fields and do not include sensitive tokens.
+ *
+ * @returns The new runtime options object set to the defaults
+ */
 export function resetUiRuntimeOptions(): UiRuntimeOptions {
 	runtimeOptions = { ...DEFAULT_OPTIONS };
 	return runtimeOptions;

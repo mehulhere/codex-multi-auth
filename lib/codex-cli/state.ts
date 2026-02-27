@@ -156,18 +156,51 @@ export function isCodexCliSyncEnabled(): boolean {
 	return true;
 }
 
+/**
+ * Resolves the filesystem path to the Codex CLI accounts file.
+ *
+ * If the environment variable CODEX_CLI_ACCOUNTS_PATH is set to a non-empty value it will be returned; otherwise the default is "$HOME/.codex/accounts.json".
+ *
+ * Concurrency: callers should treat the returned path as a location that may be concurrently read or written by other processes.
+ * Windows: returns a path using the platform path separators (may contain backslashes on Windows).
+ * Token redaction: this function only returns the file path; it does not read or expose token contents and callers must redact sensitive fields when logging the file contents.
+ *
+ * @returns The resolved path to the accounts JSON file, either the overridden value from CODEX_CLI_ACCOUNTS_PATH or the platform-specific "$HOME/.codex/accounts.json".
+ */
 export function getCodexCliAccountsPath(): string {
 	const override = (process.env.CODEX_CLI_ACCOUNTS_PATH ?? "").trim();
 	if (override.length > 0) return override;
 	return join(homedir(), ".codex", "accounts.json");
 }
 
+/**
+ * Resolve the filesystem path for the Codex CLI auth JSON file, allowing an environment override.
+ *
+ * If the environment variable `CODEX_CLI_AUTH_PATH` is set to a non-empty value (after trimming) that value is returned;
+ * otherwise the default path is homedir/.codex/auth.json. The returned path may reference a file containing authentication tokens—
+ * treat it as sensitive (avoid logging full paths or file contents without redaction). The function returns a platform-native path
+ * (path separators follow the current OS); callers should handle concurrent access to the file when reading or writing.
+ *
+ * @returns The resolved path to the Codex CLI `auth.json` file.
+ */
 export function getCodexCliAuthPath(): string {
 	const override = (process.env.CODEX_CLI_AUTH_PATH ?? "").trim();
 	if (override.length > 0) return override;
 	return join(homedir(), ".codex", "auth.json");
 }
 
+/**
+ * Parses a Codex CLI accounts JSON payload and converts it into a CodexCliState snapshot.
+ *
+ * @param path - Filesystem path of the source payload (used in the returned state). May be a Unix or Windows path; this function does not alter or normalize path separators.
+ * @param parsed - The already-parsed JSON value expected to contain an `accounts` array and optional metadata.
+ * @param sourceUpdatedAtMs - Optional source modification timestamp (ms) to attach to the returned state.
+ * @returns A populated `CodexCliState` when `parsed` contains a valid accounts array, or `null` when the payload is not in the expected shape.
+ *
+ * Notes:
+ * - This function performs no synchronization or locking; callers are responsible for concurrency control and should assume the returned state can be stale relative to on-disk changes.
+ * - Tokens are preserved as found in the payload; this function does not redact sensitive values — callers must redact tokens before logging or exposing the returned state.
+ */
 function parseCodexCliState(
 	path: string,
 	parsed: unknown,
@@ -206,6 +239,26 @@ function parseCodexCliState(
 	};
 }
 
+/**
+ * Parse an auth-style Codex CLI payload into a CodexCliState snapshot.
+ *
+ * The returned state represents a point-in-time conversion of the provided payload and may include raw tokens
+ * and derived metadata (account id, email, expiration, sync version, and optional sourceUpdatedAtMs).
+ *
+ * Concurrency: the result reflects the payload at the time of parsing; callers should not assume it remains
+ * valid if the underlying file changes concurrently.
+ *
+ * Windows/filesystem note: filesystem-derived timestamps (sourceUpdatedAtMs) may be coarse or approximate on some
+ * platforms (notably Windows); treat them as best-effort indicators of source modification time.
+ *
+ * Token handling: the returned state includes raw access/refresh tokens. Callers must redact or avoid logging tokens
+ * or other sensitive fields when emitting logs, telemetry, or external diagnostics.
+ *
+ * @param path - Filesystem path that served as the source of `parsed`; stored verbatim on the returned state.
+ * @param parsed - The parsed JSON payload from an auth-style file; expected to contain a `tokens` object.
+ * @param sourceUpdatedAtMs - Optional best-effort source modification timestamp (milliseconds since epoch).
+ * @returns A CodexCliState built from the auth payload, or `null` if `parsed` is not a valid auth payload containing no tokens.
+ */
 function parseCodexCliAuthState(
 	path: string,
 	parsed: unknown,
@@ -256,6 +309,27 @@ function parseCodexCliAuthState(
 	};
 }
 
+/**
+ * Loads Codex CLI authentication state from disk, with an in-memory TTL cache and optional force refresh.
+ *
+ * Reads either the accounts JSON or the legacy auth JSON (whichever is present) and returns a normalized
+ * CodexCliState including tokens, active account, optional sync version, and source file modification time.
+ * Uses an in-memory cache valid for CACHE_TTL_MS; if `forceRefresh` is true the cache is bypassed.
+ *
+ * Concurrency: callers may race to read/update the in-memory cache; this function performs best-effort caching
+ * and does not provide external synchronization primitives.
+ *
+ * Windows filesystem notes: file modification timestamps (sourceUpdatedAtMs) are derived from fs.stat().mtimeMs
+ * and may have coarser resolution on some Windows filesystems.
+ *
+ * Token redaction: returned state may contain token values (accessToken, refreshToken); consumers should treat
+ * these values as sensitive and redact or avoid logging them.
+ *
+ * @param options - Optional settings.
+ * @param options.forceRefresh - If true, bypass the in-memory TTL cache and re-read files from disk.
+ * @returns The parsed CodexCliState when a valid accounts/auth payload is found, or `null` if sync is disabled,
+ * no valid payload exists, or a read/parse error occurred.
+ */
 export async function loadCodexCliState(
 	options?: { forceRefresh?: boolean },
 ): Promise<CodexCliState | null> {

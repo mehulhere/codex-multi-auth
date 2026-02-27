@@ -27,10 +27,27 @@ export interface QuotaSchedulerOptions {
 const DEFAULT_REMAINING_PERCENT_THRESHOLD = 5;
 const DEFAULT_MAX_DEFERRAL_MS = 2 * 60 * 60_000;
 
+/**
+ * Clamp a number to the inclusive integer range [min, max] after flooring.
+ *
+ * @param value - The input number to be floored and clamped
+ * @param min - The inclusive lower bound
+ * @param max - The inclusive upper bound
+ * @returns The integer result equal to `Math.floor(value)` constrained to the range between `min` and `max`
+ */
 function clampInt(value: number, min: number, max: number): number {
 	return Math.max(min, Math.min(max, Math.floor(value)));
 }
 
+/**
+ * Parses a header value as a finite number and returns it when valid.
+ *
+ * This function is pure: it has no concurrency or filesystem side effects, does not access the Windows filesystem, and does not perform any token redaction.
+ *
+ * @param headers - The Headers object to read the header from
+ * @param name - The name of the header to parse
+ * @returns The parsed finite number from the header, or `undefined` if the header is absent or not a finite number
+ */
 function parseFiniteNumberHeader(headers: Headers, name: string): number | undefined {
 	const raw = headers.get(name);
 	if (!raw) return undefined;
@@ -38,6 +55,13 @@ function parseFiniteNumberHeader(headers: Headers, name: string): number | undef
 	return Number.isFinite(parsed) ? parsed : undefined;
 }
 
+/**
+ * Parse an HTTP header value as a base-10 integer.
+ *
+ * @param headers - The Headers object to read the value from.
+ * @param name - The header name to parse.
+ * @returns The parsed integer if the header exists and is a finite base-10 integer, `undefined` otherwise.
+ */
 function parseFiniteIntHeader(headers: Headers, name: string): number | undefined {
 	const raw = headers.get(name);
 	if (!raw) return undefined;
@@ -45,6 +69,17 @@ function parseFiniteIntHeader(headers: Headers, name: string): number | undefine
 	return Number.isFinite(parsed) ? parsed : undefined;
 }
 
+/**
+ * Parse a reset timestamp header for the given prefix and return it as milliseconds since the epoch.
+ *
+ * This reads either `<prefix>-reset-after-seconds` (relative seconds) or `<prefix>-reset-at` (absolute seconds or HTTP-date)
+ * and normalizes the result to a millisecond UNIX timestamp. Concurrency: callers should treat headers as immutable snapshots.
+ * Filesystem: behavior is independent of Windows filesystem semantics. Sensitive header values (tokens) are not logged or persisted by this function.
+ *
+ * @param headers - The Headers object to read values from.
+ * @param prefix - Header name prefix (for example `"x-rate-limit"` to read `"x-rate-limit-reset-at"`).
+ * @returns The reset time in milliseconds since epoch, or `undefined` if no valid value is present.
+ */
 function parseResetAtMs(headers: Headers, prefix: string): number | undefined {
 	const resetAfterSeconds = parseFiniteIntHeader(headers, `${prefix}-reset-after-seconds`);
 	if (typeof resetAfterSeconds === "number" && resetAfterSeconds > 0) {
@@ -63,6 +98,21 @@ function parseResetAtMs(headers: Headers, prefix: string): number | undefined {
 	return Number.isFinite(parsedDate) ? parsedDate : undefined;
 }
 
+/**
+ * Builds a quota snapshot from HTTP headers when quota signals are present.
+ *
+ * Parses primary/secondary used-percent and reset timestamps from headers and returns a snapshot
+ * containing those values and the provided status and timestamp; returns `null` if no quota signals are found.
+ *
+ * @param headers - HTTP headers to read quota signals from; may contain sensitive values
+ * @param status - HTTP status code associated with the snapshot
+ * @param now - Millisecond epoch used as the snapshot's `updatedAt` timestamp
+ * @returns A QuotaSchedulerSnapshot built from available header values, or `null` when no signals are present
+ *
+ * Concurrency: pure and has no side effects; safe to call concurrently.
+ * Filesystem: does not access the filesystem (no Windows-specific behavior).
+ * Token handling: does not log or persist header contents; callers should redact sensitive header values before logging or storing.
+ */
 export function readQuotaSchedulerSnapshot(headers: Headers, status: number, now = Date.now()): QuotaSchedulerSnapshot | null {
 	const primaryPrefix = "x-codex-primary";
 	const secondaryPrefix = "x-codex-secondary";

@@ -13,6 +13,16 @@ interface CapabilityEntry extends CapabilityPolicySnapshot {
 const MAX_ENTRIES = 2048;
 const PASSIVE_RECOVERY_PER_MIN = 0.5;
 
+/**
+ * Normalize a model identifier into a compact, canonical token for key construction.
+ *
+ * This is a pure, side-effect-free utility: safe for concurrent use and does not access the filesystem.
+ * It treats only forward slashes ("/") as segment separators (backslashes are not recognized) and applies
+ * token redaction by removing common trailing qualifiers (`-none`, `-minimal`, `-low`, `-medium`, `-high`, `-xhigh`).
+ *
+ * @param model - An optional model string (may include path-like segments and qualifiers)
+ * @returns The normalized model token, or `null` if `model` is missing or empty after trimming
+ */
 function normalizeModel(model: string | undefined): string | null {
 	if (!model) return null;
 	const trimmed = model.trim().toLowerCase();
@@ -21,6 +31,18 @@ function normalizeModel(model: string | undefined): string | null {
 	return stripped.replace(/-(none|minimal|low|medium|high|xhigh)$/i, "");
 }
 
+/**
+ * Compose a storage key from an account key and a normalized model identifier.
+ *
+ * The function is pure and safe to call concurrently. It does not perform any
+ * secret/token redaction — do not pass sensitive values in `accountKey` or `model`.
+ * Note: the returned key includes a colon separator (`accountKey:normalizedModel`)
+ * and may not be suitable as a Windows filename without further encoding.
+ *
+ * @param accountKey - The account identifier used as the key prefix
+ * @param model - The model string to normalize and append; may be undefined
+ * @returns The combined key string, or `null` if `accountKey` is falsy or `model` cannot be normalized
+ */
 function makeKey(accountKey: string, model: string | undefined): string | null {
 	const normalized = normalizeModel(model);
 	if (!accountKey || !normalized) return null;

@@ -27,6 +27,19 @@ interface ParsedSemver {
   prerelease: string[];
 }
 
+/**
+ * Reads the package version from the repository's nearest package.json.
+ *
+ * Attempts to load package.json located one level above this module and returns its `version` field.
+ * If the file cannot be read or parsed, returns `"0.0.0"`.
+ *
+ * Notes:
+ * - Safe for concurrent calls (read-only filesystem access).
+ * - Path resolution is OS-aware (uses the runtime module directory); behavior on Windows follows normal path semantics.
+ * - This function returns only the version string and does not expose or redact tokens or other secrets.
+ *
+ * @returns The package `version` string from package.json, or `"0.0.0"` when unavailable.
+ */
 function getCurrentVersion(): string {
   try {
     const packageJsonPath = join(import.meta.dirname ?? __dirname, "..", "package.json");
@@ -47,6 +60,18 @@ function loadCache(): UpdateCheckCache | null {
   }
 }
 
+/**
+ * Persists the update check cache to disk, creating the cache directory if needed.
+ *
+ * Writes `cache` as prettified JSON to the configured cache file, overwriting any existing file.
+ * This function swallows errors and logs a warning on failure.
+ *
+ * Concurrency: callers should avoid concurrent writes to the cache file (no file-locking is applied).
+ * Windows: path creation uses recursive directory creation and works on Windows path semantics.
+ * Security: the function does not redact tokens or secrets; callers must ensure `cache` contains no sensitive data.
+ *
+ * @param cache - The update check cache object to persist (lastCheck, latestVersion, currentVersion)
+ */
 function saveCache(cache: UpdateCheckCache): void {
   try {
     if (!existsSync(CACHE_DIR)) {
@@ -58,6 +83,16 @@ function saveCache(cache: UpdateCheckCache): void {
   }
 }
 
+/**
+ * Parse a semantic version string into numeric core segments and prerelease identifiers.
+ *
+ * The function normalizes input by removing a leading `v` and dropping build metadata (the `+` suffix).
+ * Non-numeric core segments are treated as `0`. Missing core segments default to `0`. Prerelease identifiers
+ * are split on `.` and empty segments are ignored.
+ *
+ * @param version - The version string to parse (e.g., "v1.2.3-alpha.1+build.123")
+ * @returns An object with `core` as `[major, minor, patch]` numbers and `prerelease` as an array of identifier strings
+ */
 function parseSemver(version: string): ParsedSemver {
   const normalized = version.trim().replace(/^v/i, "");
   const [withoutBuild] = normalized.split("+");
@@ -79,6 +114,18 @@ function parseSemver(version: string): ParsedSemver {
   };
 }
 
+/**
+ * Compare two prerelease identifier arrays to determine which represents a greater semver prerelease.
+ *
+ * Compares segments in order using numeric comparison for numeric segments and lexical comparison for non-numeric segments. A missing segment is considered lower than an existing segment.
+ *
+ * @param current - The current version's prerelease segments (e.g., ["alpha", "1"])
+ * @param latest - The candidate/latest version's prerelease segments
+ * @returns `1` if `latest` is greater, `-1` if `current` is greater, `0` if they are equivalent
+ *
+ * @remarks
+ * - Pure and side-effect free; safe for concurrent use.
+ * - Does not perform any filesystem or network operations and does not handle or redact tokens.
 function comparePrerelease(current: string[], latest: string[]): number {
   const maxLen = Math.max(current.length, latest.length);
 
@@ -114,6 +161,18 @@ function comparePrerelease(current: string[], latest: string[]): number {
   return 0;
 }
 
+/**
+ * Compares two semantic version strings and determines their ordering.
+ *
+ * Compares major, minor, and patch in order; treats a version without a prerelease
+ * as greater than the same version with a prerelease. If both have prereleases,
+ * prerelease segments are compared with numeric segments ordered numerically and
+ * non-numeric segments ordered lexically.
+ *
+ * @param current - The currently installed version string (e.g., "1.2.3" or "1.2.3-beta.1")
+ * @param latest - The version string to compare against
+ * @returns `1` if `latest` is greater than `current`, `-1` if `current` is greater, `0` if they are equal
+ */
 function compareVersions(current: string, latest: string): number {
   const parsedCurrent = parseSemver(current);
   const parsedLatest = parseSemver(latest);
@@ -138,6 +197,22 @@ function compareVersions(current: string, latest: string): number {
   return comparePrerelease(parsedCurrent.prerelease, parsedLatest.prerelease);
 }
 
+/**
+ * Retrieves the latest published version string for the package from the NPM registry.
+ *
+ * Performs an HTTP GET to the configured registry URL with a 5-second timeout and returns
+ * the `version` field from the registry response, or `null` if the request fails or the
+ * value is missing.
+ *
+ * Notes:
+ * - Safe to call concurrently; each invocation uses its own AbortController and timer.
+ * - This function performs network I/O only and does not interact with the filesystem,
+ *   so Windows path semantics are not applicable.
+ * - No authentication tokens or Authorization headers are sent; logs emitted on failure
+ *   include only status codes or error messages and should not contain sensitive tokens.
+ *
+ * @returns The latest version string from the registry if available, `null` otherwise.
+ */
 async function fetchLatestVersion(): Promise<string | null> {
   try {
     const controller = new AbortController();

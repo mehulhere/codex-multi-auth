@@ -8,8 +8,14 @@ import { join } from "node:path";
 import { homedir } from "node:os";
 
 /**
- * Get the XDG data directory for Codex storage.
- * Falls back to ~/.local/share on Linux/Mac, or APPDATA on Windows.
+ * Determine the base XDG-style data directory used for Codex storage.
+ *
+ * This function is pure and side-effect free; it is safe to call concurrently from multiple processes.
+ * On Windows it prefers the APPDATA environment variable and falls back to the user's AppData/Roaming directory.
+ * On other platforms it prefers XDG_DATA_HOME and falls back to ~/.local/share.
+ * Returned paths may include the user's home directory; callers should redact or avoid logging any sensitive tokens contained in file names or paths.
+ *
+ * @returns The filesystem path to use as the base data directory for Codex storage.
  */
 function getXdgData(): string {
   const platform = process.platform;

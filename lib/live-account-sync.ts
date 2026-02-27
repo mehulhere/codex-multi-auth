@@ -18,12 +18,28 @@ export interface LiveAccountSyncSnapshot {
 	errorCount: number;
 }
 
+/**
+ * Convert an fs.watch filename value to a UTF-8 string or null.
+ *
+ * @param filename - The value supplied by fs.watch listeners; may be a `string`, `Buffer`, or `null`. Buffers are decoded as UTF-8.
+ * @returns `filename` as a UTF-8 string, or `null` when the input is `null`.
+ */
 function normalizeFsWatchFilename(filename: string | Buffer | null): string | null {
 	if (filename === null) return null;
 	if (typeof filename === "string") return filename;
 	return filename.toString("utf-8");
 }
 
+/**
+ * Read the file modification time (mtime) for a given filesystem path in milliseconds.
+ *
+ * Note: the returned mtime is a point-in-time observation and may change immediately after reading.
+ * On some platforms (notably Windows) timestamp resolution can be coarse; callers should account for that.
+ * Treat `path` as sensitive when logging and redact any tokens before emitting it.
+ *
+ * @param path - Filesystem path to inspect
+ * @returns The file's mtime in milliseconds, or `null` if the path does not exist or the mtime is not finite
+ */
 async function readMtimeMs(path: string): Promise<number | null> {
 	try {
 		const stats = await fs.stat(path);

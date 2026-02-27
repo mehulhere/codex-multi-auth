@@ -3,8 +3,11 @@ import { join } from "node:path";
 import { existsSync } from "node:fs";
 
 /**
- * Runtime path helpers for Codex CLI-first layout.
- * Legacy OpenCode paths are retained only for migration compatibility.
+ * Resolve the Codex home directory path used by the CLI, honoring an environment override or a sensible default.
+ *
+ * This function is safe to call concurrently and returns a filesystem path string as-is; on Windows the underlying filesystem is case-insensitive so callers should avoid relying on case for equality. The returned path may contain sensitive identifiers; redact or avoid logging it in plaintext.
+ *
+ * @returns The resolved Codex home directory path: the value of `CODEX_HOME` when set and non-empty, otherwise the user's home directory joined with `.codex`.
  */
 
 export function getCodexHomeDir(): string {
@@ -12,6 +15,19 @@ export function getCodexHomeDir(): string {
 	return fromEnv.length > 0 ? fromEnv : join(homedir(), ".codex");
 }
 
+/**
+ * Returns a deduplicated list of path strings preserving the first occurrence order.
+ *
+ * Trims each input entry and ignores empty results; comparison for uniqueness is
+ * case-insensitive on Windows and case-sensitive on other platforms. This function
+ * performs no I/O and is safe to call concurrently.
+ *
+ * Note: entries are preserved as trimmed strings and are not modified for token
+ * redaction or normalization beyond trimming and optional lowercasing on Windows.
+ *
+ * @param paths - Array of path strings to deduplicate
+ * @returns An array of unique, trimmed path strings in their original first-seen order
+ */
 function deduplicatePaths(paths: string[]): string[] {
 	const seen = new Set<string>();
 	const result: string[] = [];
@@ -26,6 +42,20 @@ function deduplicatePaths(paths: string[]): string[] {
 	return result;
 }
 
+/**
+ * Detects whether a directory contains known Codex storage indicators.
+ *
+ * Checks for the presence of known signal files (for example: openai-codex-accounts.json, settings.json, config.json, dashboard-settings.json)
+ * or a "projects" subdirectory to determine if the directory appears to hold Codex data.
+ *
+ * Notes:
+ * - The check only tests filesystem existence; it does not read file contents (no token or secret inspection/redaction is performed).
+ * - Results can change if other processes modify the filesystem concurrently; callers should tolerate races.
+ * - On Windows, filesystem case-insensitivity affects existence checks.
+ *
+ * @param dir - Filesystem path of the directory to probe
+ * @returns `true` if any known signal file or a "projects" subdirectory exists, `false` otherwise.
+ */
 function hasStorageSignals(dir: string): boolean {
 	const signals = [
 		"openai-codex-accounts.json",
@@ -41,6 +71,16 @@ function hasStorageSignals(dir: string): boolean {
 	return existsSync(join(dir, "projects"));
 }
 
+/**
+ * Builds a deduplicated list of fallback candidate directories that may contain Codex runtime data.
+ *
+ * The returned list preserves evaluation order (primary Codex home first, then DevTools config, then legacy ~/.codex).
+ * Comparison is normalized for case-insensitive filesystems (Windows) during deduplication. Callers should treat
+ * these paths as suggestions only; concurrent callers may observe different filesystem states and should handle
+ * races. Paths may contain sensitive tokens; callers must redact or avoid logging them.
+ *
+ * @returns An array of unique, trimmed directory paths to probe for Codex home data, in prioritized order.
+ */
 function getFallbackCodexHomeDirs(): string[] {
 	return deduplicatePaths([
 		getCodexHomeDir(),
@@ -49,6 +89,28 @@ function getFallbackCodexHomeDirs(): string[] {
 	]);
 }
 
+/**
+ * Resolve the directory to use for Codex multi-auth data.
+ *
+ * The resolution prefers an explicit CODEX_MULTI_AUTH_DIR environment override. If that is not set,
+ * it probes the primary multi-auth location under the user's Codex home and returns it if that
+ * location contains existing storage indicators (signal files or a projects directory). If the
+ * primary location does not appear to contain storage, the function iterates a deduplicated list of
+ * fallback candidates (including legacy and alternate user config locations) and returns the first
+ * candidate that contains storage signals. If no existing storage is found, the primary location is
+ * returned.
+ *
+ * Concurrency: safe to call concurrently from multiple processes or threads; the function only
+ * performs read checks and does not create or mutate directories.
+ *
+ * Windows behavior: fallback deduplication and existence checks are performed with case-insensitive
+ * comparison on Windows; returned paths preserve the platform-native casing.
+ *
+ * Logging and secrets: returned paths may include user-specific data; callers should redact or avoid
+ * logging full paths if they can reveal sensitive tokens or identifiers.
+ *
+ * @returns The resolved multi-auth directory path to use for Codex data
+ */
 export function getCodexMultiAuthDir(): string {
 	const fromEnv = (process.env.CODEX_MULTI_AUTH_DIR ?? "").trim();
 	if (fromEnv.length > 0) {
@@ -75,14 +137,48 @@ export function getCodexMultiAuthDir(): string {
 	return primary;
 }
 
+/**
+ * Resolves the Codex cache directory used for storing cached multi-auth artifacts.
+ *
+ * The returned path is derived from the resolved multi-auth directory. Callers should avoid concurrent
+ * mutations to the returned directory path (concurrent reads are safe). On Windows, path comparison
+ * is case-insensitive elsewhere in this module; the returned path itself preserves platform casing.
+ *
+ * Token or secret redaction is not performed on the path; do not log paths that may contain secrets.
+ *
+ * @returns The filesystem path to the Codex cache directory.
+ */
 export function getCodexCacheDir(): string {
 	return join(getCodexMultiAuthDir(), "cache");
 }
 
+/**
+ * Resolve the filesystem path for Codex log files.
+ *
+ * This returns the `logs` subdirectory within the resolved multi-auth directory.
+ * Callers may need to create the directory before writing logs; this function only computes the path.
+ *
+ * Concurrency: safe to call concurrently; it does not perform IO or creation.
+ * Windows: other helpers perform case-insensitive deduplication on Windows; this function returns a path using the platform path separator.
+ * Secrets: treat the returned path as sensitive if it may contain tokens or credentials and redact it before logging or diagnostics.
+ *
+ * @returns The path to the Codex `logs` directory (i.e., `<multi-auth-dir>/logs`)
+ */
 export function getCodexLogDir(): string {
 	return join(getCodexMultiAuthDir(), "logs");
 }
 
+/**
+ * Resolve the legacy OpenCode home directory path.
+ *
+ * The returned path points to the per-user legacy OpenCode folder (typically `<home>/.opencode`).
+ *
+ * Concurrency: no atomicity guarantees — callers must handle concurrent filesystem access.
+ * Windows: path comparisons may be case-insensitive on Windows filesystems.
+ * Security: do not embed or log secrets/tokens in this path; redact any tokens before logging or telemetry.
+ *
+ * @returns The filesystem path for the legacy OpenCode directory (e.g. `/home/alice/.opencode`).
+ */
 export function getLegacyOpenCodeDir(): string {
 	return join(homedir(), ".opencode");
 }

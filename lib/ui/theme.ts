@@ -43,6 +43,14 @@ const truecolor = (r: number, g: number, b: number): string => `\x1b[38;2;${r};$
 const ansi256Bg = (code: number): string => `\x1b[48;5;${code}m`;
 const truecolorBg = (r: number, g: number, b: number): string => `\x1b[48;2;${r};${g};${b}m`;
 
+/**
+ * Determine the effective glyph mode, interpreting `"auto"` based on the environment.
+ *
+ * Resolves `"auto"` to `"unicode"` when the terminal environment suggests Unicode is likely supported (Windows Terminal, VS Code integrated terminal, or TERM containing "xterm"); otherwise resolves to `"ascii"`. This function is synchronous and safe for concurrent use, performs no filesystem operations (including on Windows), and does not expose or log sensitive tokens.
+ *
+ * @param mode - The requested glyph mode (`"ascii"`, `"unicode"`, or `"auto"`).
+ * @returns The resolved glyph mode: `"unicode"` when Unicode is likely safe, `"ascii"` otherwise; if `mode` is not `"auto"`, returns it unchanged.
+ */
 function resolveGlyphMode(mode: UiGlyphMode): Exclude<UiGlyphMode, "auto"> {
 	if (mode !== "auto") return mode;
 	const isLikelyUnicodeSafe =
@@ -52,6 +60,14 @@ function resolveGlyphMode(mode: UiGlyphMode): Exclude<UiGlyphMode, "auto"> {
 	return isLikelyUnicodeSafe ? "unicode" : "ascii";
 }
 
+/**
+ * Selects a glyph set appropriate for the given glyph mode.
+ *
+ * This function has no concurrency implications, performs no filesystem I/O (including on Windows), and does not perform any token redaction.
+ *
+ * @param mode - The resolved glyph mode; `'unicode'` yields Unicode glyphs, otherwise ASCII glyphs
+ * @returns The `UiGlyphSet` matching the requested `mode`
+ */
 function getGlyphs(mode: Exclude<UiGlyphMode, "auto">): UiGlyphSet {
 	if (mode === "unicode") {
 		return {
@@ -71,6 +87,15 @@ function getGlyphs(mode: Exclude<UiGlyphMode, "auto">): UiGlyphSet {
 	};
 }
 
+/**
+ * Selects the ANSI escape sequence for the requested accent color according to the color profile.
+ *
+ * This function is pure and has no side effects: it is safe for concurrent use, performs no filesystem operations (including on Windows), and does not perform any token redaction.
+ *
+ * @param profile - The color profile to use (`"truecolor"`, `"ansi256"`, or `"ansi16"`)
+ * @param accent - The accent name to resolve (`"green"`, `"cyan"`, `"blue"`, or `"yellow"`)
+ * @returns The escape sequence for the accent color suitable for use as a foreground color
+ */
 function accentColorForProfile(profile: UiColorProfile, accent: UiAccent): string {
 	switch (profile) {
 		case "truecolor":
@@ -109,6 +134,16 @@ function accentColorForProfile(profile: UiColorProfile, accent: UiAccent): strin
 	}
 }
 
+/**
+ * Produce a set of terminal color tokens and focus/background values appropriate for the given color profile, palette, and accent.
+ *
+ * This function is safe for concurrent use (no shared mutable state), performs no filesystem operations (including on Windows), and returns color tokens that may contain ANSI escape sequences — treat those sequences as sensitive when logging or emitting to external telemetry and redact them as needed.
+ *
+ * @param profile - The color capability profile to target (`"ansi16" | "ansi256" | "truecolor"`)
+ * @param palette - The UI palette selection that influences primary/success/border colors (`"green" | "blue"`)
+ * @param accent - The accent color choice used for the `accent` token (`"green" | "cyan" | "blue" | "yellow"`)
+ * @returns A UiThemeColors object containing resolved color tokens (e.g., `reset`, `dim`, `muted`, `heading`, `primary`, `accent`, `success`, `warning`, `danger`, `border`, `focusBg`, and `focusText`)
+ */
 function getColors(profile: UiColorProfile, palette: UiPalette, accent: UiAccent): UiThemeColors {
 	const accentColor = accentColorForProfile(profile, accent);
 	const isBluePalette = palette === "blue";
@@ -161,6 +196,21 @@ function getColors(profile: UiColorProfile, palette: UiPalette, accent: UiAccent
 	}
 }
 
+/**
+ * Create a UI theme object for terminal rendering.
+ *
+ * @param options - Optional configuration:
+ *   - profile: color profile to use; defaults to `"truecolor"`.
+ *   - glyphMode: glyph rendering mode; defaults to `"ascii"`.
+ *   - palette: overall palette variant; defaults to `"green"`.
+ *   - accent: accent color selection; defaults to `"green"`.
+ * @returns The constructed UiTheme object containing `profile`, `glyphMode`, `glyphs`, and `colors`.
+ *
+ * @remarks
+ * - Concurrency: creation is pure and side-effect free, safe to call concurrently.
+ * - Windows filesystem: theme creation does not access the filesystem and has no platform-specific file behavior.
+ * - Token redaction: this function does not handle or emit secrets or sensitive tokens.
+ */
 export function createUiTheme(options?: {
 	profile?: UiColorProfile;
 	glyphMode?: UiGlyphMode;

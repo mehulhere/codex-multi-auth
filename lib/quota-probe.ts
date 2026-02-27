@@ -21,6 +21,17 @@ export interface CodexQuotaSnapshot {
 
 const DEFAULT_QUOTA_PROBE_MODELS = ["gpt-5-codex", "gpt-5.3-codex", "gpt-5.2-codex"] as const;
 
+/**
+ * Parses the value of an HTTP header and returns it as a finite number.
+ *
+ * @param headers - The Headers object to read the header from.
+ * @param name - The header name to parse.
+ * @returns The header value parsed as a finite number, or `undefined` if the header is missing or not a finite number.
+ *
+ * Notes:
+ * - Synchronous and has no filesystem or concurrency side effects.
+ * - Does not perform any token redaction; callers are responsible for handling sensitive header values.
+ */
 function parseFiniteNumberHeader(headers: Headers, name: string): number | undefined {
 	const raw = headers.get(name);
 	if (!raw) return undefined;
@@ -28,6 +39,13 @@ function parseFiniteNumberHeader(headers: Headers, name: string): number | undef
 	return Number.isFinite(parsed) ? parsed : undefined;
 }
 
+/**
+ * Parses the specified HTTP header as a base-10 integer and returns it when finite.
+ *
+ * @param headers - The Headers object to read from
+ * @param name - The header name to parse
+ * @returns The parsed integer value, or `undefined` if the header is missing or not a finite integer
+ */
 function parseFiniteIntHeader(headers: Headers, name: string): number | undefined {
 	const raw = headers.get(name);
 	if (!raw) return undefined;
@@ -35,6 +53,17 @@ function parseFiniteIntHeader(headers: Headers, name: string): number | undefine
 	return Number.isFinite(parsed) ? parsed : undefined;
 }
 
+/**
+ * Determines the absolute millisecond timestamp when a quota window resets based on Codex HTTP headers.
+ *
+ * @param headers - Response headers containing reset information (e.g., `<prefix>-reset-after-seconds` or `<prefix>-reset-at`)
+ * @param prefix - Header name prefix (for example, `"primary"` or `"secondary"`)
+ * @returns The reset time as a Unix timestamp in milliseconds, or `undefined` if no valid reset header is present
+ *
+ * Concurrency: pure and safe for concurrent use.
+ * Filesystem: performs no filesystem I/O and behaves identically on Windows.
+ * Security: does not log or emit header values; callers must ensure sensitive tokens are redacted when storing headers.
+ */
 function parseResetAtMs(headers: Headers, prefix: string): number | undefined {
 	const resetAfterSeconds = parseFiniteIntHeader(headers, `${prefix}-reset-after-seconds`);
 	if (typeof resetAfterSeconds === "number" && resetAfterSeconds > 0) {
@@ -56,6 +85,14 @@ function parseResetAtMs(headers: Headers, prefix: string): number | undefined {
 	return Number.isFinite(parsedDate) ? parsedDate : undefined;
 }
 
+/**
+ * Detects whether the provided HTTP headers include any Codex quota-related keys.
+ *
+ * Inspects only header presence (no header values are read, logged, or written to disk). Safe to call concurrently; does not interact with the filesystem. Callers must ensure any sensitive tokens in headers are redacted before external logging.
+ *
+ * @param headers - The Headers object to check for Codex quota headers
+ * @returns `true` if at least one Codex quota header is present, `false` otherwise
+ */
 function hasCodexQuotaHeaders(headers: Headers): boolean {
 	const keys = [
 		"x-codex-primary-used-percent",
@@ -70,6 +107,17 @@ function hasCodexQuotaHeaders(headers: Headers): boolean {
 	return keys.some((key) => headers.get(key) !== null);
 }
 
+/**
+ * Parse Codex quota-related HTTP headers into a quota snapshot (excluding the model).
+ *
+ * @param headers - HTTP response headers to read quota fields from; the function does not modify headers and performs no I/O.
+ * @param status - HTTP status code associated with the response; included verbatim in the returned snapshot when present.
+ * @returns An object with `status`, optional `planType`, optional `activeLimit`, and `primary`/`secondary` quota window objects when any Codex quota headers are present; `null` if no quota headers were found.
+ *
+ * Concurrency: safe to call concurrently from multiple tasks (pure header parsing with no shared state).
+ * Filesystem: performs no filesystem operations and is unaffected by platform path semantics (Windows or otherwise).
+ * Token redaction: this function does not redact or log header values; callers must ensure any sensitive tokens in `headers` are redacted before logging or persisting.
+ */
 function parseQuotaSnapshotBase(
 	headers: Headers,
 	status: number,
@@ -96,6 +144,20 @@ function parseQuotaSnapshotBase(
 	return { status, planType, activeLimit, primary, secondary };
 }
 
+/**
+ * Build a deduplicated, trimmed list of candidate probe model names from a primary model and fallbacks.
+ *
+ * Produces a unique array where each entry is a non-empty, trimmed model string. Empty or whitespace-only
+ * inputs are ignored and duplicates are removed while preserving the first occurrence order.
+ *
+ * Concurrency assumptions: pure and side-effect-free — safe to call concurrently.
+ * Windows filesystem behavior: no filesystem interaction.
+ * Token redaction: does not log or retain authentication tokens; callers must redact tokens when logging model names if required.
+ *
+ * @param primaryModel - Optional preferred model name to try first
+ * @param fallbackModels - Optional array of fallback model names; if omitted, a built-in default list is used
+ * @returns An array of unique, trimmed model names to probe, in priority order
+ */
 function normalizeProbeModels(
 	primaryModel: string | undefined,
 	fallbackModels: readonly string[] | undefined,
@@ -108,6 +170,16 @@ function normalizeProbeModels(
 	return Array.from(new Set(merged.map((model) => model.trim())));
 }
 
+/**
+ * Extracts a concise error message from an HTTP response body string for display.
+ *
+ * Operates safely in concurrent contexts and performs no filesystem access; it never logs or persistently stores data.
+ * Token values are not specially redacted by this function — it returns the raw extracted message trimmed from the body.
+ *
+ * @param bodyText - Raw response body text
+ * @param status - HTTP status code associated with the response
+ * @returns The best available error message: `error.message` or `message` from parsed JSON if present, `HTTP <status>` when body is empty, or the trimmed raw body text otherwise
+ */
 function extractErrorMessage(bodyText: string, status: number): string {
 	const trimmed = bodyText.trim();
 	if (!trimmed) return `HTTP ${status}`;
@@ -128,6 +200,14 @@ function extractErrorMessage(bodyText: string, status: number): string {
 	return trimmed;
 }
 
+/**
+ * Produce a short human-friendly label for a quota window duration.
+ *
+ * @param windowMinutes - Duration of the quota window in minutes; if undefined, non-finite, or <= 0 a generic label is returned
+ * @returns A label using days (e.g., `7d`) when divisible by 1440, hours (e.g., `2h`) when divisible by 60, minutes (e.g., `30m`) otherwise, or `"quota"` for unspecified/invalid input
+ *
+ * Notes: no concurrency or filesystem side-effects; output contains no sensitive tokens and is safe for logging/display.
+ */
 function formatQuotaWindowLabel(windowMinutes: number | undefined): string {
 	if (!windowMinutes || !Number.isFinite(windowMinutes) || windowMinutes <= 0) {
 		return "quota";
@@ -137,6 +217,17 @@ function formatQuotaWindowLabel(windowMinutes: number | undefined): string {
 	return `${windowMinutes}m`;
 }
 
+/**
+ * Format a millisecond epoch timestamp into a concise human-readable reset time.
+ *
+ * Returns a 24-hour time "HH:MM" when the timestamp is today, otherwise "HH:MM on Mon DD".
+ *
+ * This function has no side effects, is safe for concurrent use, does not access the filesystem,
+ * and produces no sensitive token data.
+ *
+ * @param resetAtMs - Timestamp in milliseconds since epoch; if `undefined`, non-finite, or <= 0, the function returns `undefined`.
+ * @returns The formatted reset time string, or `undefined` if `resetAtMs` is invalid or not provided.
+ */
 function formatResetAt(resetAtMs: number | undefined): string | undefined {
 	if (!resetAtMs || !Number.isFinite(resetAtMs) || resetAtMs <= 0) return undefined;
 	const date = new Date(resetAtMs);
@@ -159,6 +250,15 @@ function formatResetAt(resetAtMs: number | undefined): string | undefined {
 	return `${time} on ${day}`;
 }
 
+/**
+ * Builds a concise human-readable summary for a quota window.
+ *
+ * Safe for concurrent use; does not access the filesystem and does not include or expose sensitive tokens.
+ *
+ * @param label - Human-friendly label for the window (e.g., "2h", "7d", "quota")
+ * @param window - Quota window fields (e.g., `usedPercent`, `resetAtMs`) used to populate the summary
+ * @returns A single-line summary combining the label, percent left (if available), and reset time (if available), e.g. "2h 40% left (resets 14:05)"
+ */
 function formatWindowSummary(label: string, window: CodexQuotaWindow): string {
 	const used = window.usedPercent;
 	const left =
@@ -172,6 +272,17 @@ function formatWindowSummary(label: string, window: CodexQuotaWindow): string {
 	return summary;
 }
 
+/**
+ * Produce a single-line human-readable summary of a Codex quota snapshot.
+ *
+ * The result includes primary and secondary window summaries, and appends plan type,
+ * active limit, and a "rate-limited" marker when applicable. This function is pure
+ * and deterministic (safe for concurrent use), produces no filesystem side effects
+ * (including on Windows), and does not include or expose any secret tokens.
+ *
+ * @param snapshot - The quota snapshot to format
+ * @returns A concise comma-separated summary string describing primary and secondary windows, optional plan and active limit, and `rate-limited` when the status is 429
+ */
 export function formatQuotaSnapshotLine(snapshot: CodexQuotaSnapshot): string {
 	const primaryLabel = formatQuotaWindowLabel(snapshot.primary.windowMinutes);
 	const secondaryLabel = formatQuotaWindowLabel(snapshot.secondary.windowMinutes);
@@ -195,6 +306,24 @@ export interface ProbeCodexQuotaOptions {
 	timeoutMs?: number;
 }
 
+/**
+ * Probe one or more Codex models to obtain a quota snapshot for the specified account.
+ *
+ * Tries the configured primary model then fallbacks (sequentially) until a response includes quota headers,
+ * and returns the parsed quota snapshot augmented with the model that produced it.
+ * Concurrency: models are probed one-at-a-time (no parallel requests).
+ * Filesystem: this function performs no filesystem access (no Windows filesystem interactions).
+ * Security: `accessToken` is sent in request headers and is treated as sensitive; the function does not persist tokens or write them to disk.
+ *
+ * @param options - Options controlling the probe:
+ *   - accountId: account identifier used for Codex requests
+ *   - accessToken: bearer token for authentication (sensitive)
+ *   - model: optional preferred model name to probe first
+ *   - fallbackModels: optional list of fallback model names to try if the preferred model does not yield quota headers
+ *   - timeoutMs: optional per-model timeout in milliseconds (bounded between 1000 and 60000; default 15000)
+ * @returns The first CodexQuotaSnapshot constructed from response quota headers and the model that produced them.
+ * @throws If all candidate models fail to produce a quota snapshot, throws the last encountered error or a generic failure error.
+ */
 export async function fetchCodexQuotaSnapshot(
 	options: ProbeCodexQuotaOptions,
 ): Promise<CodexQuotaSnapshot> {

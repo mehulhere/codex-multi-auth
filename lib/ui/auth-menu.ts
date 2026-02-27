@@ -70,6 +70,17 @@ export type AuthMenuAction =
 
 export type AccountAction = "back" | "delete" | "refresh" | "toggle" | "set-current" | "cancel";
 
+/**
+ * Formats a millisecond timestamp into a concise, human-friendly relative time string.
+ *
+ * @param timestamp - Milliseconds since the Unix epoch; if `undefined` or falsy, returns `"never"`.
+ * @returns A short relative time: `"today"`, `"yesterday"`, `"Nd ago"`, `"Nw ago"`, or the locale date string for older dates.
+ *
+ * Notes:
+ * - Relies on the current system clock; results may change if the system time is modified concurrently.
+ * - This function performs no filesystem access and is unaffected by Windows filesystem semantics.
+ * - No sensitive tokens are produced or exposed by this function; it is safe with respect to token redaction.
+ */
 function formatRelativeTime(timestamp: number | undefined): string {
 	if (!timestamp) return "never";
 	const days = Math.floor((Date.now() - timestamp) / 86_400_000);
@@ -85,6 +96,14 @@ function formatDate(timestamp: number | undefined): string {
 	return new Date(timestamp).toLocaleDateString();
 }
 
+/**
+ * Render a styled status badge string for an account status using current UI runtime options.
+ *
+ * Produces a short labeled badge (e.g., "active", "rate-limited") styled either via the v2 UI badge renderer or legacy ANSI escape sequences. This function is pure and safe to call concurrently. Note that legacy ANSI styling may not render on older Windows consoles. The output contains only the status label and styling; it does not include or expose secrets or tokens.
+ *
+ * @param status - The account status to render a badge for; if `undefined` an "unknown" badge is returned.
+ * @returns The rendered badge string (styled for v2 UI when enabled, otherwise ANSI-styled text).
+ */
 function statusBadge(status: AccountStatus | undefined): string {
 	const ui = getUiRuntimeOptions();
 	const withTone = (
@@ -140,6 +159,18 @@ function statusBadge(status: AccountStatus | undefined): string {
 	}
 }
 
+/**
+ * Builds a one-line display title for an account prefixed by its quick-switch number.
+ *
+ * Uses quickSwitchNumber when present, otherwise uses index + 1. Chooses the display label in priority order: email, accountLabel, accountId, then the fallback "Account N".
+ *
+ * @param account - AccountInfo whose quickSwitchNumber, index, email, accountLabel, and accountId are used to compose the title.
+ * @returns The account title formatted as "N. Label".
+ *
+ * Concurrency: safe for concurrent reads; the function has no side effects.
+ * Windows filesystem: not applicable.
+ * Token redaction: this function does not mask or redact identifiers; redact sensitive values before calling if required.
+ */
 function accountTitle(account: AccountInfo): string {
 	const accountNumber = account.quickSwitchNumber ?? (account.index + 1);
 	const base =
@@ -150,6 +181,16 @@ function accountTitle(account: AccountInfo): string {
 	return `${accountNumber}. ${base}`;
 }
 
+/**
+ * Builds a lowercase, space-separated search key from an account's identifying fields.
+ *
+ * @param account - Account object; uses `email`, `accountLabel`, `accountId`, and `quickSwitchNumber` (falls back to `index + 1`)
+ * @returns A space-separated, lowercase string suitable for full-text matching (email, label, id, quick-switch number)
+ *
+ * Concurrency: pure and side-effect-free — safe to call concurrently.
+ * Filesystem: no filesystem access or Windows-specific behavior.
+ * Security: resulting string may contain sensitive identifiers; redact tokens/PII before logging or external transmission.
+ */
 function accountSearchText(account: AccountInfo): string {
 	return [
 		account.email,
@@ -162,6 +203,14 @@ function accountSearchText(account: AccountInfo): string {
 		.toLowerCase();
 }
 
+/**
+ * Choose a display color name for an account row based on account status and whether it is the current account.
+ *
+ * This function is pure and safe to call concurrently; it performs no filesystem access and does not emit or expose sensitive tokens.
+ *
+ * @param account - Account metadata used to determine row coloring (status and current-account/highlight flags)
+ * @returns The color name to apply to the account row: `green`, `yellow`, or `red`
+ */
 function accountRowColor(account: AccountInfo): MenuItem<AuthMenuAction>["color"] {
 	if (account.isCurrentAccount && account.highlightCurrentRow !== false) return "green";
 	switch (account.status) {
@@ -180,6 +229,16 @@ function accountRowColor(account: AccountInfo): MenuItem<AuthMenuAction>["color"
 	}
 }
 
+/**
+ * Map an account status to a UI tone used for coloring and emphasis.
+ *
+ * @param status - The account status to map; may be undefined.
+ * @returns `success` for `active`/`ok`, `warning` for `rate-limited`/`cooldown`, `danger` for `disabled`/`error`/`flagged`, `muted` for unknown or `undefined`
+ *
+ * @remarks
+ * - Concurrency: pure and side-effect free; safe for concurrent use.
+ * - Filesystem: has no filesystem interactions or platform-specific behavior (including Windows).
+ * - Security: does not inspect, redact, or transmit tokens or sensitive data.
 function statusTone(status: AccountStatus | undefined): "success" | "warning" | "danger" | "muted" {
 	switch (status) {
 		case "active":
@@ -197,15 +256,42 @@ function statusTone(status: AccountStatus | undefined): "success" | "warning" | 
 	}
 }
 
+/**
+ * Produce the textual status for an account, defaulting to "unknown".
+ *
+ * This function is pure and has no side effects; it is safe for concurrent use,
+ * does not interact with the filesystem (Windows or otherwise), and does not
+ * reveal or redact any tokens or sensitive data.
+ *
+ * @param status - The account status or `undefined`
+ * @returns The provided `status` string, or `"unknown"` if `status` is `undefined`
+ */
 function statusText(status: AccountStatus | undefined): string {
 	return status ?? "unknown";
 }
 
+/**
+ * Normalize a numeric percent to an integer between 0 and 100.
+ *
+ * Accepts a numeric value and returns the nearest integer clamped to the 0–100 range; returns `null` for undefined, non-number, or non-finite inputs.
+ *
+ * This function is pure and side-effect-free: it is safe for concurrent use, performs no filesystem I/O (including on Windows), and does not retain or log tokens or sensitive data.
+ *
+ * @param value - The percent value to normalize (may be undefined)
+ * @returns The rounded percent constrained to 0–100, or `null` if `value` is invalid
+ */
 function normalizeQuotaPercent(value: number | undefined): number | null {
 	if (typeof value !== "number" || !Number.isFinite(value)) return null;
 	return Math.max(0, Math.min(100, Math.round(value)));
 }
 
+/**
+ * Extracts the percentage value for a quota window (e.g., "5h" or "7d") from a summary string.
+ *
+ * @param summary - A summary string containing segments like "5h 80% | 7d 90%"
+ * @param windowLabel - The window label to search for ("5h" or "7d")
+ * @returns The extracted percentage clamped to the range 0–100, or `null` if the label or a valid percent is not present
+ */
 function parseLeftPercentFromSummary(summary: string, windowLabel: "5h" | "7d"): number | null {
 	const match = summary.match(new RegExp(`(?:^|\\|)\\s*${windowLabel}\\s+(\\d{1,3})%`, "i"));
 	const parsed = Number.parseInt(match?.[1] ?? "", 10);
@@ -213,6 +299,16 @@ function parseLeftPercentFromSummary(summary: string, windowLabel: "5h" | "7d"):
 	return Math.max(0, Math.min(100, parsed));
 }
 
+/**
+ * Format a duration in milliseconds into a compact human-readable string (examples: "5s", "2m 30s", "1h 5m", "3d 4h").
+ *
+ * Concurrency: pure and thread-safe; safe for concurrent calls.
+ * Filesystem: does not access the filesystem and is unaffected by Windows path semantics.
+ * Token redaction: produces plain text only and does not include or redact any secrets or tokens.
+ *
+ * @param milliseconds - Duration in milliseconds; negative values are treated as zero.
+ * @returns A compact duration string using units `s`, `m`, `h`, and `d`, showing up to the two largest units (e.g., seconds, minutes+seconds, hours+minutes, or days+hours).
+ */
 function formatDurationCompact(milliseconds: number): string {
 	const totalSeconds = Math.max(0, Math.ceil(milliseconds / 1_000));
 	if (totalSeconds < 60) return `${totalSeconds}s`;
@@ -231,6 +327,16 @@ function formatDurationCompact(milliseconds: number): string {
 	return hours > 0 ? `${days}d ${hours}h` : `${days}d`;
 }
 
+/**
+ * Produces a human-readable cooldown indicator for a future reset timestamp.
+ *
+ * Returns `null` when `resetAtMs` is not a finite number. If the reset time is in the past or now, returns `"reset ready"`. Otherwise returns `"reset {duration}"` where `{duration}` is a compact representation of the remaining time (e.g., `5m`, `2h`).
+ *
+ * Concurrency: callers should expect the result to reflect the current system clock at the moment of invocation; concurrent invocations may yield different remaining times. This function performs no I/O and is unaffected by platform filesystem semantics (including Windows). It does not include or expose sensitive tokens.
+ *
+ * @param resetAtMs - Reset timestamp in milliseconds since the Unix epoch
+ * @returns `null` if `resetAtMs` is invalid, `"reset ready"` if the reset time has passed, or a `"reset {duration}"` string for a future reset
+ */
 function formatLimitCooldown(resetAtMs: number | undefined): string | null {
 	if (typeof resetAtMs !== "number" || !Number.isFinite(resetAtMs)) return null;
 	const remaining = resetAtMs - Date.now();
@@ -238,6 +344,17 @@ function formatLimitCooldown(resetAtMs: number | undefined): string | null {
 	return `reset ${formatDurationCompact(remaining)}`;
 }
 
+/**
+ * Render a 10-character visual bar that represents the percentage of quota remaining.
+ *
+ * @param leftPercent - Percentage of quota left (0–100); pass `null` if unknown.
+ * @param ui - Runtime UI options used to determine rendering mode and color/tone.
+ * @returns A 10-character string composed of filled and empty segments; segments are colorized or painted when `ui.v2Enabled` is true, and dimmed when `leftPercent` is `null`.
+ *
+ * @remarks
+ * - Concurrency: this function is pure and safe to call concurrently.
+ * - Filesystem: performs no filesystem operations and has no Windows-specific filesystem behavior.
+ * - Tokens/redaction: this function does not emit, process, or redact authentication tokens or secrets.
 function formatQuotaBar(
 	leftPercent: number | null,
 	ui: ReturnType<typeof getUiRuntimeOptions>,
@@ -260,6 +377,21 @@ function formatQuotaBar(
 	return `${filledSegment}${emptySegment}`;
 }
 
+/**
+ * Formats a percentage value for display according to the current UI mode.
+ *
+ * Produces a human-readable percent string (e.g., "42%") decorated for either
+ * legacy ANSI or v2 UI painting. The function is pure and safe for concurrent use.
+ *
+ * @param leftPercent - The remaining quota percentage (0–100) or `null` when unavailable
+ * @param ui - Runtime UI options used to decide rendering mode and styling
+ * @returns The formatted percent string with UI styling applied, or `null` if `leftPercent` is `null`
+ *
+ * Notes:
+ * - The returned string may contain ANSI escape sequences or v2 UI painting markers; callers
+ *   should redact sensitive tokens before logging and may need to strip/control codes when
+ *   writing to Windows filesystems or environments that do not support ANSI.
+ */
 function formatQuotaPercent(
 	leftPercent: number | null,
 	ui: ReturnType<typeof getUiRuntimeOptions>,
@@ -274,6 +406,18 @@ function formatQuotaPercent(
 	return paintUiText(ui, percentText, tone);
 }
 
+/**
+ * Builds a compact quota window string showing the window label, a visual bar, an optional percentage, and an optional cooldown indicator.
+ *
+ * The output adapts to the provided UI runtime options (e.g., v2 styling) and omits parts when values are unavailable. Safe to call concurrently; this function performs no filesystem I/O (including on Windows) and does not include or emit sensitive tokens.
+ *
+ * @param label - The quota window label ("5h" or "7d")
+ * @param leftPercent - Remaining quota percent (0–100) or `null` when unknown
+ * @param resetAtMs - Timestamp (ms) when the quota resets, or `undefined` if unknown
+ * @param showCooldown - If `true`, include a cooldown/readiness indicator when applicable
+ * @param ui - Runtime UI options that control styling and rendering
+ * @returns The composed quota window string (label, bar, optional percent, optional cooldown)
+ */
 function formatQuotaWindow(
 	label: "5h" | "7d",
 	leftPercent: number | null,
@@ -298,6 +442,17 @@ function formatQuotaWindow(
 	return `${labelText} ${bar} ${percent} ${cooldownText}`;
 }
 
+/**
+ * Builds a compact, styled quota summary string for an account.
+ *
+ * @param account - Account information used to derive 5h/7d quota segments, cooldowns, and rate-limited status
+ * @param ui - UI runtime options that control styling and v2 vs legacy rendering
+ * @returns The formatted quota summary string (empty string if no quota information is available)
+ *
+ * Concurrency: pure and safe for concurrent calls.
+ * Filesystem: does not perform any filesystem I/O or platform-specific (Windows) operations.
+ * Token redaction: does not inject or expose authentication tokens; only formats provided summary text and numeric quota values.
+ */
 function formatQuotaSummary(account: AccountInfo, ui: ReturnType<typeof getUiRuntimeOptions>): string {
 	const summary = account.quotaSummary ?? "";
 	const showCooldown = account.showQuotaCooldown !== false;
@@ -324,6 +479,17 @@ function formatQuotaSummary(account: AccountInfo, ui: ReturnType<typeof getUiRun
 	return segments.join(separator);
 }
 
+/**
+ * Builds a compact, display-ready status hint for an account consisting of status, last-used time, and quota limits formatted for the current UI mode.
+ *
+ * The returned string is suitable for use as a subtitle or hint line in interactive menus and adapts to `ui.v2Enabled` rendering (including color/tone painting). The composition, ordering, and visibility of parts respect account flags such as `showStatusBadge`, `showLastUsed`, `showHintsForUnselectedRows`, and `statuslineFields`.
+ *
+ * Concurrency: pure, deterministic, and safe to call concurrently from multiple tasks; it does not mutate inputs. Filesystem: no filesystem access or platform-specific behavior (including Windows) is performed. Token redaction: this function formats provided account values as-is and does not perform secret/token redaction.
+ *
+ * @param account - AccountInfo whose fields (status, lastUsed, quota fields, and display flags) determine which hint parts are included and in what order.
+ * @param ui - UI runtime options used to decide painting, v2 styling, and tone mapping.
+ * @returns A composed hint string (possibly multi-part joined by a muted separator) or an empty string when no hint parts apply.
+ */
 function formatAccountHint(account: AccountInfo, ui: ReturnType<typeof getUiRuntimeOptions>): string {
 	const withKey = (
 		key: string,
@@ -372,6 +538,18 @@ function formatAccountHint(account: AccountInfo, ui: ReturnType<typeof getUiRunt
 	return secondLine ? `${firstLine}${separator}${secondLine}` : firstLine;
 }
 
+/**
+ * Prompts the user to enter a search query, returning the trimmed lowercase response or the provided `current` value when not running in a TTY.
+ *
+ * When a TTY is available, displays the current query as a suffix and treats an empty response as a cleared query.
+ *
+ * @param current - The existing query to show as a suffix (shown as ` (current)`); an empty answer clears the query.
+ * @returns The user's trimmed, lowercased query string, or `current` if stdin/stdout are not a TTY.
+ *
+ * Concurrency: prompts share the process stdin/stdout and are not safe to run concurrently; callers should serialize prompt calls.
+ * Windows: behavior is consistent on Windows terminals; line endings are normalized by the readline interface.
+ * Security: user input is not redacted by this function; callers are responsible for redacting or securely handling any tokens or secrets entered.
+ */
 async function promptSearchQuery(current: string): Promise<string> {
 	if (!input.isTTY || !output.isTTY) {
 		return current;
@@ -387,6 +565,19 @@ async function promptSearchQuery(current: string): Promise<string> {
 	}
 }
 
+/**
+ * Produce a stable focus key string for an AuthMenuAction.
+ *
+ * Returns a compact identifier that targets either a specific account or a global action.
+ * The key format is `account:<n>` for account-scoped actions (uses `sourceIndex` when present, otherwise `index`),
+ * and `action:<type>` for non-account actions. The function is pure and side-effect free and safe to call concurrently.
+ *
+ * Note: the returned key may contain the `:` character and therefore should not be used directly as a filename on Windows
+ * (sanitize or replace invalid filename characters first). The key never includes secrets or tokens and is safe for logging.
+ *
+ * @param action - The action to produce a focus key for
+ * @returns `account:<sourceIndex|index>` for account-scoped actions, `action:<type>` for others
+ */
 function authMenuFocusKey(action: AuthMenuAction): string {
 	switch (action.type) {
 		case "select-account":
@@ -410,6 +601,20 @@ function authMenuFocusKey(action: AuthMenuAction): string {
 	}
 }
 
+/**
+ * Present an interactive account management menu and return the user's chosen action.
+ *
+ * @param accounts - List of accounts to display and operate on; each item may include rendering hints and quick-switch numbers.
+ * @param options - Optional menu behavior overrides (e.g., flaggedCount, statusMessage).
+ * @returns The selected AuthMenuAction describing the user's choice (add, select-account, delete-account, refresh-account, set-current-account, toggle-account, delete-all, search, cancel, etc.).
+ *
+ * @remarks
+ * Concurrency: this function is intended for single-user, interactive use and is not safe for concurrent invocations that share the same stdin/stdout streams.
+ *
+ * Filesystem (Windows): no filesystem modification is performed by this function; any downstream actions triggered by the returned action may have platform-specific filesystem considerations on Windows.
+ *
+ * Token redaction: UI output produced by this menu must not expose raw authentication tokens; any sensitive identifiers shown to the user should be redacted or truncated by callers or the formatting helpers before rendering.
+ */
 export async function showAuthMenu(
 	accounts: AccountInfo[],
 	options: AuthMenuOptions = {},
@@ -584,6 +789,18 @@ export async function showAuthMenu(
 	}
 }
 
+/**
+ * Present an interactive action menu for a single account and return the user's chosen action.
+ *
+ * Displays account title, status, added/last-used info, and prompts the user to choose one of: back, toggle enable/disable, set-current, refresh, or delete.
+ *
+ * Concurrency: intended for single interactive use — do not call concurrently from multiple fronts in the same process.
+ * Windows filesystem: no filesystem operations are performed by this function; behavior is not affected by Windows path semantics.
+ * Token redaction: this function does not print or persist authentication tokens; callers are responsible for ensuring any sensitive account fields are redacted before logging.
+ *
+ * @param account - The AccountInfo record to inspect and act upon
+ * @returns The selected AccountAction, or `"cancel"` if the user aborts the interaction
+ */
 export async function showAccountDetails(account: AccountInfo): Promise<AccountAction> {
 	const ui = getUiRuntimeOptions();
 	const header =

@@ -67,6 +67,21 @@ function parseSourceUrl(source: string | undefined): string | undefined {
 	}
 }
 
+/**
+ * Build an ordered, de-duplicated list of candidate prompt source URLs.
+ *
+ * The list is constructed from (in order): the configured override URL, the legacy override URL,
+ * the cached source URL (if present), and the default URL list. Each entry is validated and
+ * normalized to an http/https URL; invalid or unsupported sources are omitted.
+ *
+ * Concurrency: pure and safe to call concurrently (no shared state mutation).
+ * Filesystem: does not access the filesystem and is unaffected by Windows path/case semantics.
+ * Security: returned URLs are normalized but not redacted; callers must redact sensitive tokens
+ * (e.g., query credentials) before logging or displaying.
+ *
+ * @param cachedMeta - Optional cache metadata whose `sourceUrl` will be preferred after overrides
+ * @returns An ordered array of normalized http/https source URLs with duplicates removed
+ */
 function resolvePromptSources(cachedMeta: CacheMeta | null): string[] {
 	const sources: string[] = [];
 	const seen = new Set<string>();

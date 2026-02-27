@@ -22,6 +22,15 @@ export interface EntitlementAccountRef {
 	index?: number;
 }
 
+/**
+ * Produce a normalized model identifier suitable for cache keys and comparisons.
+ *
+ * Trims and lowercases the input, uses the final path segment if a slash is present,
+ * and removes common variant suffixes such as `-none`, `-minimal`, `-low`, `-medium`, `-high`, and `-xhigh`.
+ *
+ * @param model - The raw model string to normalize; may be undefined or empty.
+ * @returns The simplified model identifier, or `null` if `model` is missing or empty after trimming.
+ */
 function normalizeModel(model: string | undefined): string | null {
 	if (!model) return null;
 	const trimmed = model.trim().toLowerCase();
@@ -30,6 +39,19 @@ function normalizeModel(model: string | undefined): string | null {
 	return stripped.replace(/-(none|minimal|low|medium|high|xhigh)$/i, "");
 }
 
+/**
+ * Derives a stable cache key for an entitlement account reference.
+ *
+ * Produces one of three deterministic keys:
+ * - `id:<trimmed accountId>` when `accountId` is present,
+ * - `email:<lowercased trimmed email>` when `email` is present and no `accountId`,
+ * - `idx:<non-negative integer>` otherwise (index defaults to 0).
+ *
+ * This function is pure and concurrency-safe; it performs no I/O and is not affected by Windows filesystem semantics. It does not redact secrets or tokens — values are only trimmed and, for emails, lowercased.
+ *
+ * @param ref - Reference identifying an account (may include `accountId`, `email`, or `index`)
+ * @returns A deterministic string key prefixed with `id:`, `email:`, or `idx:` as described above
+ */
 export function resolveEntitlementAccountKey(ref: EntitlementAccountRef): string {
 	const accountId = typeof ref.accountId === "string" ? ref.accountId.trim() : "";
 	if (accountId) return `id:${accountId}`;

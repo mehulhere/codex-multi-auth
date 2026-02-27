@@ -41,6 +41,13 @@ export interface RefreshLeaseHandle {
 	release: (result?: TokenResult) => Promise<void>;
 }
 
+/**
+ * Parses an environment-style string into a boolean flag.
+ *
+ * @param value - The raw environment value (may be undefined). Comparison is case-insensitive and trims surrounding whitespace.
+ * Accepted truthy values: `"1"`, `"true"`, `"yes"`. Accepted falsy values: `"0"`, `"false"`, `"no"`.
+ * @returns `true` for accepted truthy values, `false` for accepted falsy values, or `undefined` if `value` is `undefined` or not recognized.
+ */
 function parseBooleanEnv(value: string | undefined): boolean | undefined {
 	if (value === undefined) return undefined;
 	const normalized = value.trim().toLowerCase();
@@ -49,26 +56,63 @@ function parseBooleanEnv(value: string | undefined): boolean | undefined {
 	return undefined;
 }
 
+/**
+ * Parse a base-10 integer from an environment-style string, returning undefined for absent or invalid input.
+ *
+ * @param value - The string to parse; may be `undefined`
+ * @returns The parsed integer, or `undefined` if `value` is `undefined` or not a valid base-10 integer
+ */
 function parseEnvInt(value: string | undefined): number | undefined {
 	if (value === undefined) return undefined;
 	const parsed = Number.parseInt(value, 10);
 	return Number.isFinite(parsed) ? parsed : undefined;
 }
 
+/**
+ * Suspends execution for the given duration.
+ *
+ * @param delayMs - Time to wait in milliseconds
+ * @returns No value
+ */
 function sleep(delayMs: number): Promise<void> {
 	return new Promise((resolve) => {
 		setTimeout(resolve, delayMs);
 	});
 }
 
+/**
+ * Produces a stable, redacted identifier for a refresh token using SHA-256.
+ *
+ * The hex-encoded digest can be used as a filename-safe token identifier (suitable for Windows paths),
+ * is deterministic across processes (safe for concurrency checks), and avoids storing the raw token.
+ *
+ * @param refreshToken - The raw refresh token to be redacted before persistence or comparison
+ * @returns The SHA-256 digest of `refreshToken` as a lowercase hex string
+ */
 function hashRefreshToken(refreshToken: string): string {
 	return createHash("sha256").update(refreshToken).digest("hex");
 }
 
+/**
+ * Narrows an unknown value to a Record<string, unknown> (a non-null object with string keys).
+ *
+ * @param value - The value to test
+ * @returns `true` if `value` is a non-null object (narrowable to `Record<string, unknown>`), `false` otherwise.
+ */
 function isRecord(value: unknown): value is Record<string, unknown> {
 	return value !== null && typeof value === "object";
 }
 
+/**
+ * Validates and normalizes a raw lease file payload read from disk into a LeaseFilePayload.
+ *
+ * @param raw - The parsed JSON value from a lease file; expected to be an object with `tokenHash` (non-empty string), `pid`, `acquiredAt`, and `expiresAt` (numeric timestamps).
+ * @returns A normalized LeaseFilePayload with integer `pid`, `acquiredAt`, and `expiresAt` when the input is valid, or `null` if the structure or types are invalid.
+ *
+ * Notes:
+ * - Concurrency: callers should treat the returned payload as a best-effort snapshot; lease files may be modified by other processes after parsing.
+ * - Filesystem quirks: on Windows, mtime/locking semantics may differ; this function only validates in-memory content and does not rely on OS locking behavior.
+ * - Token handling: only the hash (`tokenHash`) is validated and returned; no raw tokens are read or exposed by this function.
 function parseLeasePayload(raw: unknown): LeaseFilePayload | null {
 	if (!isRecord(raw)) return null;
 	const tokenHash = typeof raw.tokenHash === "string" ? raw.tokenHash : "";
@@ -91,6 +135,18 @@ function parseLeasePayload(raw: unknown): LeaseFilePayload | null {
 	};
 }
 
+/**
+ * Validate and convert a raw value (typically JSON from a result file) into a ResultFilePayload.
+ *
+ * This function is pure and side-effect-free; it is safe to call concurrently and does not interact
+ * with the filesystem or exhibit OS-specific behavior (Windows semantics do not apply here).
+ * The `tokenHash` handled by this function is treated as an opaque, hashed identifier and does not
+ * expose any original token material.
+ *
+ * @param raw - The raw input (for example, the result of JSON.parse on a result file)
+ * @returns The parsed ResultFilePayload when `raw` contains a valid `tokenHash` (non-empty string),
+ * `createdAt` (finite number), and a valid `result`; `null` otherwise.
+ */
 function parseResultPayload(raw: unknown): ResultFilePayload | null {
 	if (!isRecord(raw)) return null;
 	const tokenHash = typeof raw.tokenHash === "string" ? raw.tokenHash : "";
@@ -104,6 +160,20 @@ function parseResultPayload(raw: unknown): ResultFilePayload | null {
 	};
 }
 
+/**
+ * Read and parse a JSON file from disk, returning `null` on any read or parse error.
+ *
+ * This is a best-effort helper that swallows all errors (I/O or JSON syntax) and therefore
+ * may return `null` if the file does not exist, is unreadable, locked by another process
+ * (platform-dependent, e.g. Windows file locks), or contains invalid JSON. The file's
+ * contents may change concurrently; callers should handle `null` as an absence of valid data.
+ *
+ * Note: this function does not redact or sanitize file contents; callers must handle
+ * redaction of sensitive tokens or secrets extracted from the returned object.
+ *
+ * @param path - Filesystem path to the JSON file to read
+ * @returns The parsed JSON value, or `null` if the file could not be read or parsed
+ */
 async function readJson(path: string): Promise<unknown | null> {
 	try {
 		const content = await fs.readFile(path, "utf8");
@@ -113,6 +183,15 @@ async function readJson(path: string): Promise<unknown | null> {
 	}
 }
 
+/**
+ * Attempts to remove a filesystem entry at the given path without throwing on failure.
+ *
+ * Performs a best-effort unlink: the function ignores a missing file (ENOENT) and logs other failures at debug level.
+ * Safe to call concurrently from multiple processes; callers should treat it as a non-fatal cleanup helper.
+ * On Windows, unlink can fail for files held open by another process — such failures are logged but not propagated.
+ *
+ * @param path - Filesystem path to remove. Do not embed raw secrets or refresh tokens in this string; prefer hashed identifiers. 
+ */
 async function safeUnlink(path: string): Promise<void> {
 	try {
 		await fs.unlink(path);

@@ -236,7 +236,18 @@ export function isEntitlementError(code: string, bodyText: string): boolean {
 }
 
 /**
- * Creates a user-friendly entitlement error response
+ * Constructs a standardized 403 entitlement error Response indicating the user lacks access to Codex models.
+ *
+ * This function returns a JSON Response with an `error` payload containing a user-facing message, a
+ * `type` of `"entitlement_error"`, and a `code` of `"usage_not_included"`. The message suggests checking
+ * account/workspace access and re-authenticating with `codex login`.
+ *
+ * Concurrency: stateless and safe to call concurrently from multiple threads or requests.
+ * Windows filesystem behavior: none (function does not access the filesystem).
+ * Token redaction: any tokens are not included in the generated payload; do not pass sensitive tokens in `_bodyText`.
+ *
+ * @param _bodyText - Original response body text (accepted for compatibility; ignored when building the response)
+ * @returns A 403 Response with a JSON body describing the entitlement error and guidance for resolving it
  */
 export function createEntitlementErrorResponse(_bodyText: string): Response {
         const message = 
@@ -682,6 +693,22 @@ type ErrorPayload = {
         };
 };
 
+/**
+ * Build a normalized ErrorPayload from a raw response body, status, and diagnostics.
+ *
+ * Produces a structured error object by preferring explicit error fields in `errorBody`, falling back to `bodyText`, `statusText`, or a generic message; special-cases Codex ChatGPT unsupported-model entitlement errors and appends diagnostic info when provided.
+ *
+ * @param errorBody - Parsed response body, if available; may be any JSON-derived value.
+ * @param bodyText - Raw response text used as a fallback message when structured fields are absent.
+ * @param statusText - HTTP status text used as a final fallback for the error message.
+ * @param status - HTTP status code; when 401 adds a short hint to run `codex login`.
+ * @param diagnostics - Optional diagnostic metadata (request IDs, correlation/thread IDs); fields may be redacted for tokens and sensitive values.
+ * @returns The normalized ErrorPayload with an `error.message` and optional `type`, `code`, `unsupported_model`, and `diagnostics` fields.
+ *
+ * Concurrency: pure and safe to call concurrently from multiple threads/tasks.
+ * Filesystem: performs no filesystem I/O and has no Windows-specific behavior.
+ * Token redaction: callers should assume diagnostic fields may be redacted to avoid leaking credentials.
+ */
 function normalizeErrorPayload(
         errorBody: unknown,
         bodyText: string,

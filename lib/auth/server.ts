@@ -10,9 +10,26 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const successHtml = fs.readFileSync(path.join(__dirname, "..", "oauth-success.html"), "utf-8");
 
 /**
- * Start a small local HTTP server that waits for /auth/callback and returns the code
- * @param options - OAuth state for validation
- * @returns Promise that resolves to server info
+ * Start a local HTTP server to capture an OAuth authorization code sent to /auth/callback.
+ *
+ * The server validates the `state` query parameter, serves a static success page on valid requests,
+ * and retains the received authorization code until consumed via `waitForCode`. The server is
+ * bound to 127.0.0.1:1455 and is unref'd so the process can exit if no other work remains. If the
+ * port cannot be bound the function resolves with `ready: false` to allow a manual (paste) fallback.
+ *
+ * Concurrency and lifecycle: only one code is stored at a time on the server instance; call `close`
+ * to abort polling and close the server. `waitForCode` polls for the code and returns as soon as one
+ * is available or `null` on timeout/abort.
+ *
+ * Windows note: the server always binds to 127.0.0.1; port binding may fail on Windows when another
+ * process holds the port or firewall/antivirus prevents local binding.
+ *
+ * Token handling: the captured code is stored transiently on the server and returned by `waitForCode`;
+ * callers should treat it as a secret and redact it from logs and error messages.
+ *
+ * @param options - Object with a `state` string used to validate the OAuth redirect
+ * @returns An OAuthServerInfo describing the server (`port`, `ready`), a `close` function, and a
+ *          `waitForCode` helper that resolves to `{ code: string }` on success or `null` on timeout/failure
  */
 export function startLocalOAuthServer({ state }: { state: string }): Promise<OAuthServerInfo> {
 	let pollAborted = false;

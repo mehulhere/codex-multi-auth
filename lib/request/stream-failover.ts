@@ -13,6 +13,15 @@ const DEFAULT_STALL_TIMEOUT_MS = 45_000;
 const DEFAULT_SOFT_TIMEOUT_MS = 15_000;
 const MAX_REQUEST_INSTANCE_ID_LENGTH = 64;
 
+/**
+ * Read a single chunk from `reader`, rejecting if no chunk is produced within `timeoutMs`.
+ *
+ * Assumes the provided reader is not read concurrently by other callers. This function performs no filesystem I/O (behavior is unaffected by Windows filesystem semantics) and does not perform token redaction or logging of stream contents.
+ *
+ * @param reader - The ReadableStreamDefaultReader to read from.
+ * @param timeoutMs - Maximum time in milliseconds to wait for a chunk before rejecting.
+ * @returns The result of `reader.read()`: an object with `done` and `value` (`Uint8Array | undefined`).
+ */
 async function readChunkWithTimeout(
 	reader: ReadableStreamDefaultReader<Uint8Array>,
 	timeoutMs: number,
@@ -34,11 +43,26 @@ async function readChunkWithTimeout(
 	}
 }
 
+/**
+ * Detects whether an error represents an SSE stream stall timeout.
+ *
+ * Concurrency: safe to call from multiple async contexts. Windows filesystem: N/A. Token redaction: does not inspect or log sensitive tokens.
+ *
+ * @returns `true` if `error` is an `Error` whose message contains "SSE stream stalled for", `false` otherwise.
+ */
 function isStallTimeoutError(error: unknown): boolean {
 	if (!(error instanceof Error)) return false;
 	return error.message.includes("SSE stream stalled for");
 }
 
+/**
+ * Normalize a request instance identifier by trimming whitespace and enforcing a maximum length.
+ *
+ * This function is pure and safe for concurrent use; it performs no I/O or filesystem operations (behavior is OS-independent, including Windows). It truncates long identifiers to MAX_REQUEST_INSTANCE_ID_LENGTH but does not mask or redact content — callers should apply any token-redaction or masking required for logs or telemetry.
+ *
+ * @param value - The raw identifier value which may be undefined or contain surrounding whitespace
+ * @returns The trimmed identifier if non-empty and within the length limit, a truncated identifier if longer than the limit, or `null` if the input is undefined or empty after trimming
+ */
 function normalizeRequestInstanceId(value: string | undefined): string | null {
 	if (!value) return null;
 	const trimmed = value.trim();
@@ -48,9 +72,16 @@ function normalizeRequestInstanceId(value: string | undefined): string | null {
 }
 
 /**
- * Wrap a streaming SSE response and retry with a fallback response source when
- * the stream stalls/errors. This keeps client sessions alive without forcing
- * manual restart.
+ * Wraps an SSE-like streaming Response so the stream can switch to fallback sources on stalls or errors to keep the client session alive.
+ *
+ * The returned Response streams bytes from the initialResponse body and, when the stream stalls or errors, will attempt up to `maxFailovers` failovers by calling `getFallbackResponse(attempt, emittedBytes)`. On each successful failover a textual marker is injected into the stream identifying the failover attempt (and `requestInstanceId` when provided). The function performs best-effort cleanup of underlying readers and enforces soft/hard read timeouts as configured via `options`.
+ *
+ * Concurrency assumptions: the implementation expects a single consumer reading the returned Response body; callers must not concurrently read the same stream body from multiple consumers. Filesystem/platform note: behavior is platform-agnostic; no filesystem access is performed (Windows-specific filesystem semantics do not apply). Token redaction: any request identifiers embedded in the injected marker are limited to the normalized `requestInstanceId` (trimmed and truncated to 64 chars) to avoid leaking long tokens.
+ *
+ * @param initialResponse - The original Response whose body will be streamed and monitored for stalls/errors.
+ * @param getFallbackResponse - Async function invoked for each failover attempt with the 1-based attempt number and total emitted bytes; should return a Response with a streaming body to switch to, or `null`/a Response without a body to indicate no fallback.
+ * @param options - Optional failover configuration (maxFailovers, stall/soft/hard timeout overrides, requestInstanceId). `requestInstanceId` will be normalized and truncated to 64 characters.
+ * @returns A new Response that streams data from the initial response but may switch to fallback responses on stall/error, preserving the original status, statusText, and content-type header.
  */
 export function withStreamingFailover(
 	initialResponse: Response,

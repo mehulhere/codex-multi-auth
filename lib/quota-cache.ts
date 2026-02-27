@@ -31,14 +31,35 @@ interface QuotaCacheFile {
 
 const QUOTA_CACHE_PATH = join(getCodexMultiAuthDir(), "quota-cache.json");
 
+/**
+ * Type guard that narrows a value to a non-null object with string keys.
+ *
+ * This predicate treats arrays and other non-primitive objects as objects (they will pass).
+ * Concurrent-safe; performs no filesystem I/O; does not perform any token redaction.
+ *
+ * @param value - The value to test
+ * @returns `true` if `value` is a non-null object (narrowed to `Record<string, unknown>`), `false` otherwise.
+ */
 function isRecord(value: unknown): value is Record<string, unknown> {
 	return value !== null && typeof value === "object";
 }
 
+/**
+ * Normalizes an unknown value to a finite number.
+ *
+ * @param value - The value to normalize
+ * @returns The input as a finite number, or `undefined` if the value is not a finite number
+ */
 function normalizeNumber(value: unknown): number | undefined {
 	return typeof value === "number" && Number.isFinite(value) ? value : undefined;
 }
 
+/**
+ * Produce a normalized QuotaCacheWindow from an arbitrary value.
+ *
+ * @param value - The raw input to normalize; if not an object, an empty window is returned.
+ * @returns A QuotaCacheWindow whose `usedPercent`, `windowMinutes`, and `resetAtMs` are finite numbers or `undefined` when missing/invalid.
+ */
 function normalizeWindow(value: unknown): QuotaCacheWindow {
 	if (!isRecord(value)) return {};
 	return {
@@ -48,6 +69,12 @@ function normalizeWindow(value: unknown): QuotaCacheWindow {
 	};
 }
 
+/**
+ * Validates and normalizes an arbitrary value into a QuotaCacheEntry.
+ *
+ * @param value - The input to validate and normalize; typically parsed JSON.
+ * @returns A normalized `QuotaCacheEntry` with trimmed `model`, optional `planType`, and normalized `primary`/`secondary` windows if `value` contains valid `updatedAt`, `status`, and `model`; `null` otherwise.
+ */
 function normalizeEntry(value: unknown): QuotaCacheEntry | null {
 	if (!isRecord(value)) return null;
 	const updatedAt = normalizeNumber(value.updatedAt);
@@ -71,6 +98,14 @@ function normalizeEntry(value: unknown): QuotaCacheEntry | null {
 	};
 }
 
+/**
+ * Convert a raw parsed value into a map of validated quota cache entries.
+ *
+ * @param value - Parsed JSON value (typically an object) containing raw entries keyed by identifier; non-objects, empty keys, or invalid entries are ignored.
+ * @returns A record mapping valid string keys to normalized `QuotaCacheEntry` objects; malformed entries are omitted.
+ * 
+ * Note: This function is pure and performs no filesystem I/O. Callers are responsible for any filesystem concurrency or Windows-specific behavior when loading/saving the on-disk cache, and for redacting any sensitive tokens before logging or persisting.
+ */
 function normalizeEntryMap(value: unknown): Record<string, QuotaCacheEntry> {
 	if (!isRecord(value)) return {};
 	const entries: Record<string, QuotaCacheEntry> = {};
@@ -83,10 +118,38 @@ function normalizeEntryMap(value: unknown): Record<string, QuotaCacheEntry> {
 	return entries;
 }
 
+/**
+ * Returns the filesystem path to the quota cache JSON file.
+ *
+ * This is the resolved path to "quota-cache.json" inside the Codex multi-auth directory.
+ * Callers should treat the file according to normal filesystem concurrency semantics (no internal locking is provided here),
+ * and be aware of platform path implications (Windows path may reside under AppData). The file can contain sensitive values;
+ * redact tokens or secrets before logging or exposing its contents.
+ *
+ * @returns The absolute path to the quota-cache.json file
+ */
 export function getQuotaCachePath(): string {
 	return QUOTA_CACHE_PATH;
 }
 
+/**
+ * Loads and returns the normalized quota cache from disk.
+ *
+ * Reads the JSON cache at the configured quota-cache path, validates and normalizes entries,
+ * and returns maps keyed by account ID and email. If the file is missing, invalid, or an I/O
+ * error occurs, returns empty maps and logs a warning.
+ *
+ * Notes:
+ * - Concurrency: callers should expect concurrent readers and writers; the function performs
+ *   a best-effort read and does not perform file locking.
+ * - Windows: uses standard UTF-8 file reads; caller should ensure the quota-cache path is
+ *   compatible with Windows path semantics when used on that platform.
+ * - Redaction: callers should avoid logging or exposing the file contents; any tokens or
+ *   sensitive identifiers contained in the cache should be redacted before external reporting.
+ *
+ * @returns The quota cache as `{ byAccountId, byEmail }` with normalized entries; each map
+ *          will be empty if the on-disk file is absent, malformed, or could not be read.
+ */
 export async function loadQuotaCache(): Promise<QuotaCacheData> {
 	if (!existsSync(QUOTA_CACHE_PATH)) {
 		return { byAccountId: {}, byEmail: {} };
@@ -113,6 +176,25 @@ export async function loadQuotaCache(): Promise<QuotaCacheData> {
 	}
 }
 
+/**
+ * Persist the quota cache to the on-disk JSON file used by the multi-auth runtime.
+ *
+ * Writes a versioned, pretty-printed JSON representation of `data` to the configured
+ * quota cache path. Failures are logged and do not throw, so callers should handle
+ * eventual consistency or retry as needed.
+ *
+ * Concurrency: concurrent writers may race and overwrite each other; callers should
+ * serialize writes if strong consistency is required.
+ *
+ * Filesystem notes: Windows path length, permissions, or antivirus locks may cause
+ * write failures; such errors are logged rather than thrown.
+ *
+ * Security: this function does not redact secrets or tokens — callers must ensure
+ * `data` contains no sensitive plaintext tokens before calling.
+ *
+ * @param data - The quota cache data (byAccountId and byEmail maps) to persist; callers
+ *               should pass normalized QuotaCacheData.
+ */
 export async function saveQuotaCache(data: QuotaCacheData): Promise<void> {
 	const payload: QuotaCacheFile = {
 		version: 1,

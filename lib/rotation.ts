@@ -300,6 +300,21 @@ export interface HybridSelectionOptions {
   scoreBoostByAccount?: Record<number, number>;
 }
 
+/**
+ * Selects the best account from a set using a weighted hybrid score composed of health, token availability, and freshness.
+ *
+ * @param accounts - Candidate accounts with availability (`isAvailable`) and last-used timestamp (`lastUsed`); when none are available the least-recently-used account is returned.
+ * @param healthTracker - Tracker used to obtain per-account health scores (scoped by `quotaKey` when provided).
+ * @param tokenTracker - Tracker used to obtain per-account token counts (scoped by `quotaKey` when provided). Logged token values are rounded for telemetry and sensitive tokens are not emitted.
+ * @param quotaKey - Optional quota key to scope health and token lookups.
+ * @param config - Partial selection weights that override defaults (healthWeight, tokenWeight, freshnessWeight).
+ * @param options - Selection options. `pidOffsetEnabled` adds a small PID-based deterministic offset to distribute selection across processes. `scoreBoostByAccount` is an optional per-account numeric boost keyed by account index.
+ * @returns The chosen AccountWithMetrics for the next request, or `null` if no accounts exist.
+ *
+ * Concurrency & environment notes:
+ * - Selection is deterministic given the same inputs except when `pidOffsetEnabled` is used to bias selection per-process.
+ * - The function is purely in-memory and performs no filesystem operations (no Windows filesystem considerations).
+ */
 export function selectHybridAccount(
   accounts: AccountWithMetrics[],
   healthTracker: HealthScoreTracker,

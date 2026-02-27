@@ -55,10 +55,15 @@ function commandExists(command: string): boolean {
 }
 
 /**
- * Opens a URL in the default browser
- * Silently fails if browser cannot be opened (user can copy URL manually)
- * @param url - URL to open
- * @returns True if a browser launch was attempted
+ * Open a URL in the user's default browser using a platform-appropriate command.
+ *
+ * This is a best-effort, fire-and-forget launcher: child process errors are ignored and the function
+ * returns based on whether a launch was attempted. On Windows this uses PowerShell Start-Process and
+ * escapes PowerShell meta-characters to avoid shell injection and filesystem/command-line quirks.
+ * Callers must redact any sensitive tokens from `url` before calling.
+ *
+ * @param url - The URL to open; redact sensitive tokens (e.g., OAuth codes) before passing.
+ * @returns `true` if a browser launch was attempted, `false` if no suitable opener was available or an exception occurred.
  */
 export function openBrowserUrl(url: string): boolean {
 	try {
@@ -96,9 +101,14 @@ export function openBrowserUrl(url: string): boolean {
 }
 
 /**
- * Copies text to system clipboard (best effort).
- * @param text - Text to copy
- * @returns True if clipboard command was launched
+ * Copy text to the system clipboard using a best-effort, platform-specific command.
+ *
+ * May be called concurrently; concurrent invocations may interleave and there's no atomicity guarantee across processes.
+ * On Windows the text is escaped to avoid PowerShell interpretation of special characters. This function does not redact
+ * or log clipboard contents — callers must remove or mask sensitive tokens before calling.
+ *
+ * @param text - The text to copy; empty or falsy values cause no action and return `false`
+ * @returns `true` if a clipboard command was launched, `false` otherwise
  */
 export function copyTextToClipboard(text: string): boolean {
 	try {

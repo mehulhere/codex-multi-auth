@@ -22,6 +22,11 @@ const AUTH_SUBCOMMANDS = new Set([
 	"doctor",
 ]);
 
+/**
+ * Canonicalizes multi-auth CLI aliases into the canonical "auth" form.
+ * @param {string[]} args - Command-line argument tokens (e.g., user-provided subcommands and flags).
+ * @returns {string[]} The normalized argument array: if the invocation begins with ["multi","auth"] or with "multi-auth"/"multiauth" it returns ["auth", ...rest], otherwise it returns the original `args`.
+ */
 function normalizeAuthAlias(args) {
 	if (args.length >= 2 && args[0] === "multi" && args[1] === "auth") {
 		return ["auth", ...args.slice(2)];
@@ -32,6 +37,11 @@ function normalizeAuthAlias(args) {
 	return args;
 }
 
+/**
+ * Decides whether a Codex CLI invocation should be handled by the multi-auth handler.
+ * @param {string[]} args - Command tokens (typically the argv slice after the node executable and script).
+ * @returns {boolean} `true` if the invocation starts with the `auth` command and either has no subcommand, a subcommand that begins with `-` (an option), or a recognized auth subcommand; `false` otherwise.
+ */
 function shouldHandleMultiAuthAuth(args) {
 	if (args[0] !== "auth") return false;
 	if (args.length === 1) return true;
@@ -41,6 +51,16 @@ function shouldHandleMultiAuthAuth(args) {
 	return AUTH_SUBCOMMANDS.has(subcommand);
 }
 
+/**
+ * Locate the real Codex CLI binary on disk using multiple fallbacks.
+ *
+ * The resolution order is: an explicit `CODEX_MULTI_AUTH_REAL_CODEX_BIN` override,
+ * Node package resolution for `@openai/codex/bin/codex.js`, sibling/conventional
+ * locations relative to the current and invoked script, npm prefix locations,
+ * and finally the global npm root.
+ *
+ * @returns {string|null} The filesystem path to the Codex CLI if found, or `null` if not found.
+ */
 function resolveRealCodexBin() {
 	const override = (process.env.CODEX_MULTI_AUTH_REAL_CODEX_BIN ?? "").trim();
 	if (override.length > 0) {
@@ -99,6 +119,13 @@ function resolveRealCodexBin() {
 	return null;
 }
 
+/**
+ * Run the real Codex CLI with the given arguments and propagate its exit status.
+ *
+ * @param {string} codexBin - Filesystem path to the real Codex CLI entry script.
+ * @param {string[]} args - Command-line arguments to pass through to the real CLI.
+ * @returns {Promise<number>} Exit code: `130` if terminated by `SIGINT`, otherwise the child process exit code if available, or `1` as a fallback.
+ */
 function forwardToRealCodex(codexBin, args) {
 	return new Promise((resolve) => {
 		const child = spawn(process.execPath, [codexBin, ...args], {

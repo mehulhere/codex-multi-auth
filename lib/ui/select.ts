@@ -79,6 +79,14 @@ function truncateAnsi(input: string, maxVisibleChars: number): string {
 	return output + suffix;
 }
 
+/**
+ * Return the ANSI color code string for a menu item color.
+ *
+ * No concurrency effects; does not access the filesystem and performs no token redaction.
+ *
+ * @param color - One of `"red"`, `"green"`, `"yellow"`, `"cyan"`, or undefined/other for no color
+ * @returns The ANSI SGR code for `color`, or an empty string if no color is specified
+ */
 function colorCode(color: MenuItem["color"]): string {
 	switch (color) {
 		case "red":
@@ -94,6 +102,14 @@ function colorCode(color: MenuItem["color"]): string {
 	}
 }
 
+/**
+ * Decodes a raw stdin Buffer into a single "hotkey" character or returns `null` when none found.
+ *
+ * This recognizes common VT-style numpad/keypad escape sequences and, if none match, returns the first printable ASCII character from the input. Safe to call concurrently; it does not access filesystem or external state. Control and non-printable bytes are never returned (they are treated as absent), which prevents leaking raw control sequences.
+ *
+ * @param data - Raw input buffer from stdin (may contain escape sequences or control bytes)
+ * @returns The decoded single-character hotkey (e.g., `"0"`, `"a"`, `"+"`) or `null` if no printable character is present
+ */
 function decodeHotkeyInput(data: Buffer): string | null {
 	const input = data.toString("utf8");
 	// Common VT-style numpad sequences in raw mode.
@@ -125,6 +141,28 @@ function decodeHotkeyInput(data: Buffer): string | null {
 	return null;
 }
 
+/**
+ * Display an interactive terminal menu, allow the user to navigate and choose an item.
+ *
+ * Renders a TTY interactive selection UI to stdout, reads raw input from stdin, and resolves
+ * when the user confirms a choice or cancels. This function mutates terminal state (raw mode,
+ * cursor visibility) and is not safe to run concurrently with other code that expects normal
+ * stdin/stdout terminal state.
+ *
+ * Note on platforms and terminals: the UI emits ANSI control sequences; behavior on Windows
+ * depends on the host terminal's ANSI support. The function does not perform any automatic
+ * redaction of item labels or hints — callers must avoid passing sensitive tokens or redact them
+ * before calling.
+ *
+ * @param items - Array of menu items to display. Items that are disabled, separators, or have
+ *                 kind === "heading" are treated as non-selectable. If exactly one selectable
+ *                 item exists it will be returned immediately.
+ * @param options - Configuration for the prompt (message, subtitle/dynamicSubtitle, theme,
+ *                  focusStyle, initialCursor, allowEscape, onCursorChange, onInput, refreshIntervalMs, etc.).
+ *                  Use `onInput` to handle hotkey input and optionally return a value to finish early;
+ *                  use `onCursorChange` to be notified when the highlighted cursor changes.
+ * @returns The selected item's `value`, or `null` if the prompt was cancelled or could not be started.
+ */
 export async function select<T>(items: MenuItem<T>[], options: SelectOptions<T>): Promise<T | null> {
 	if (!isTTY()) {
 		throw new Error("Interactive select requires a TTY terminal");

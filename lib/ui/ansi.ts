@@ -41,6 +41,14 @@ export type KeyAction =
 	| "escape-start"
 	| null;
 
+/**
+ * Maps a raw stdin Buffer to a normalized keyboard action token.
+ *
+ * Interprets common ANSI/terminal key sequences; safe to call concurrently (stateless). On some Windows terminals sequences may differ from POSIX terminals. Returned tokens are suitable for logging or control flow; redact or avoid logging raw `data` buffers when handling sensitive input.
+ *
+ * @param data - Buffer containing the bytes read from stdin for a single key event
+ * @returns The corresponding `KeyAction` value: `up`, `down`, `home`, `end`, `enter`, `escape`, `escape-start`, or `null` if the input is not recognized
+ */
 export function parseKey(data: Buffer): KeyAction {
 	const input = data.toString();
 

@@ -44,10 +44,34 @@ const EMPTY_RESPONSE_RETRY_DELAY_MS: Record<FailoverMode, number> = {
 	conservative: 600,
 };
 
+/**
+ * Selects the failover mode provided on the input or uses `aggressive` when not set.
+ *
+ * This is a pure, concurrency-safe helper with no filesystem side effects (including on Windows)
+ * and does not log or expose tokens from its input.
+ *
+ * @param input - Failure policy input that may contain an optional `failoverMode`
+ * @returns The chosen failover mode: `aggressive`, `balanced`, or `conservative` (defaults to `aggressive`)
+ */
 function getFailoverMode(input: FailurePolicyInput): FailoverMode {
 	return input.failoverMode ?? "aggressive";
 }
 
+/**
+ * Compute a FailurePolicyDecision that specifies how to handle a failure described by `input`.
+ *
+ * Evaluates the provided failure kind and related hints to decide whether to rotate or remove an account,
+ * refund a token, record or mark the failure, apply a cooldown, retry on the same account (and with what delay),
+ * and choose a handoff strategy.
+ *
+ * Concurrency assumptions: this function is pure and safe to call concurrently from multiple threads/processes.
+ * Filesystem notes: no filesystem access is performed (no Windows-specific behavior).
+ * Token redaction: decisions may set `refundToken` to true/false but this function does not log or expose token values.
+ *
+ * @param input - Configuration and hints for the failure policy (must include `kind`; may include `consecutiveAuthFailures`, `maxAuthFailuresBeforeRemoval`, `serverRetryAfterMs`, and `failoverMode`).
+ * @param overrides - Optional environment overrides: `networkCooldownMs` and `serverCooldownMs` adjust fallback cooldown values.
+ * @returns A FailurePolicyDecision object describing rotation, refund, recording, rate-limit marking, removal, cooldown and retry behavior, and the chosen handoff strategy.
+ */
 export function evaluateFailurePolicy(
 	input: FailurePolicyInput,
 	overrides?: {

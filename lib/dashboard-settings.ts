@@ -78,18 +78,43 @@ export const DEFAULT_DASHBOARD_DISPLAY_SETTINGS: DashboardDisplaySettings = {
 
 const DASHBOARD_SETTINGS_PATH = join(getCodexMultiAuthDir(), "dashboard-settings.json");
 
+/**
+ * Determines whether a value is a non-null object suitable as a string-keyed record.
+ *
+ * @param value - The value to test
+ * @returns `true` if `value` is an object and not `null` (narrowing to `Record<string, unknown>`), `false` otherwise.
+ */
 function isRecord(value: unknown): value is Record<string, unknown> {
 	return value !== null && typeof value === "object";
 }
 
+/**
+ * Coerces a value to a boolean, using a provided fallback when the input is not a boolean.
+ *
+ * @param value - The input to evaluate; only `true` and `false` are accepted as boolean values
+ * @param fallback - The boolean to return when `value` is not a boolean
+ * @returns The boolean `value` if it is a boolean, otherwise `fallback`
+ */
 function normalizeBoolean(value: unknown, fallback: boolean): boolean {
 	return typeof value === "boolean" ? value : fallback;
 }
 
+/**
+ * Normalize an input value into a dashboard theme preset.
+ *
+ * @param value - Untrusted input to coerce to a theme preset
+ * @returns `"blue"` if `value` is exactly `"blue"`, `"green"` otherwise
+ */
 function normalizeThemePreset(value: unknown): DashboardThemePreset {
 	return value === "blue" ? "blue" : "green";
 }
 
+/**
+ * Normalize an input value into an allowed dashboard accent color, defaulting to green.
+ *
+ * @param value - Input value to coerce into an accent color
+ * @returns `'cyan'`, `'blue'`, or `'yellow'` if `value` matches one of those strings; otherwise `'green'`
+ */
 function normalizeAccentColor(value: unknown): DashboardAccentColor {
 	switch (value) {
 		case "cyan":
@@ -103,6 +128,13 @@ function normalizeAccentColor(value: unknown): DashboardAccentColor {
 	}
 }
 
+/**
+ * Determines a valid dashboard layout mode, returning `"expanded-rows"` only when `value` exactly matches that mode.
+ *
+ * @param value - Input to validate as a DashboardLayoutMode
+ * @param fallback - Value to use when `value` is not `"expanded-rows"`
+ * @returns `"expanded-rows"` if `value` strictly equals that string, otherwise `fallback`
+ */
 function normalizeLayoutMode(
 	value: unknown,
 	fallback: DashboardLayoutMode,
@@ -110,16 +142,36 @@ function normalizeLayoutMode(
 	return value === "expanded-rows" ? "expanded-rows" : fallback;
 }
 
+/**
+ * Normalize an arbitrary value to a valid dashboard focus style.
+ *
+ * @param value - The input to coerce into a DashboardFocusStyle
+ * @returns `'row-invert'` if `value` matches the allowed style, `'row-invert'` otherwise
+ */
 function normalizeFocusStyle(value: unknown): DashboardFocusStyle {
 	return value === "row-invert" ? "row-invert" : "row-invert";
 }
 
+/**
+ * Normalize a numeric TTL (milliseconds) into a validated, rounded, bounded integer.
+ *
+ * @param value - The input value to normalize; if not a finite number, the function falls back.
+ * @param fallback - Value returned when `value` is not a finite number.
+ * @returns A rounded integer number of milliseconds between 60,000 and 1,800,000 (30 minutes), or `fallback` if `value` is invalid.
+ */
 function normalizeQuotaTtlMs(value: unknown, fallback: number): number {
 	if (typeof value !== "number" || !Number.isFinite(value)) return fallback;
 	const rounded = Math.round(value);
 	return Math.max(60_000, Math.min(30 * 60_000, rounded));
 }
 
+/**
+ * Normalize a candidate account sort mode to a known mode.
+ *
+ * @param value - The input value to validate as an account sort mode
+ * @param fallback - Mode to use if `value` is not a recognized sort mode
+ * @returns The validated `DashboardAccountSortMode`: `ready-first` or `manual` if `value` matches, otherwise `fallback`
+ */
 function normalizeAccountSortMode(value: unknown, fallback: DashboardAccountSortMode): DashboardAccountSortMode {
 	if (value === "ready-first" || value === "manual") {
 		return value;
@@ -127,12 +179,30 @@ function normalizeAccountSortMode(value: unknown, fallback: DashboardAccountSort
 	return fallback;
 }
 
+/**
+ * Normalize a numeric auto-return timeout to an integer between 0 and 10000 milliseconds.
+ *
+ * Rounds the provided numeric value to the nearest integer and clamps it to the range
+ * 0–10000. If `value` is not a finite number, `fallback` is returned. This function has
+ * no side effects and is safe to call concurrently. Filesystem semantics (including Windows)
+ * and token redaction do not apply to this operation.
+ *
+ * @param value - The untrusted input to normalize
+ * @param fallback - The numeric fallback to use when `value` is invalid
+ * @returns A millisecond timeout value between 0 and 10000 inclusive
+ */
 function normalizeAutoReturnMs(value: unknown, fallback: number): number {
 	if (typeof value !== "number" || !Number.isFinite(value)) return fallback;
 	const rounded = Math.round(value);
 	return Math.max(0, Math.min(10_000, rounded));
 }
 
+/**
+ * Normalize an untrusted value into a deduplicated list of allowed statusline fields.
+ *
+ * @param value - Input to normalize; expected to be an array of strings but may be any value. Non-string entries, unknown fields, and duplicates are removed.
+ * @returns An array of `DashboardStatuslineField` values in the original order with duplicates removed. If the input is not an array or yields no valid fields, returns the default statusline fields.
+ */
 function normalizeStatuslineFields(value: unknown): DashboardStatuslineField[] {
 	const defaultFields = [...(DEFAULT_DASHBOARD_DISPLAY_SETTINGS.menuStatuslineFields ?? [])];
 	if (!Array.isArray(value)) return defaultFields;
@@ -151,6 +221,16 @@ function normalizeStatuslineFields(value: unknown): DashboardStatuslineField[] {
 	return fields.length > 0 ? fields : defaultFields;
 }
 
+/**
+ * Convert a DashboardDisplaySettings object into a plain record suitable for JSON serialization and persistence.
+ *
+ * @param value - The dashboard display settings to serialize
+ * @returns A shallow Record<string, unknown> containing the same keys and values as `value`, ready for JSON encoding
+ *
+ * Notes:
+ * - This function performs no I/O and is safe to call concurrently.
+ * - It does not perform any token redaction or platform-specific path normalization; behavior is identical across platforms (including Windows).
+ */
 function toJsonRecord(value: DashboardDisplaySettings): Record<string, unknown> {
 	const record: Record<string, unknown> = {};
 	for (const [key, fieldValue] of Object.entries(value)) {
@@ -159,10 +239,31 @@ function toJsonRecord(value: DashboardDisplaySettings): Record<string, unknown> 
 	return record;
 }
 
+/**
+ * Filesystem path to the unified dashboard settings file.
+ *
+ * This path is the canonical location used by the load/save helpers. Callers should assume the file may be concurrently modified by other processes and use atomic write strategies when persisting. On Windows the returned path may contain backslashes; redact any sensitive tokens before logging or external reporting.
+ *
+ * @returns The absolute path to the unified dashboard settings file.
+ */
 export function getDashboardSettingsPath(): string {
 	return getUnifiedSettingsPath();
 }
 
+/**
+ * Normalize an untrusted value into a complete, validated DashboardDisplaySettings object.
+ *
+ * Produces a settings object where missing or invalid fields are replaced with sensible defaults,
+ * layout-derived fields are resolved, numeric values are clamped to allowed ranges, and enumerations
+ * are coerced to allowed values.
+ *
+ * Concurrency: pure and deterministic; safe to call concurrently. This function performs no I/O,
+ * so Windows filesystem semantics do not apply. It does not perform token redaction or any
+ * sensitive-data filtering.
+ *
+ * @param value - The input to normalize (may be any type, typically parsed JSON or a partial settings record)
+ * @returns A DashboardDisplaySettings object with all fields validated and defaulted
+ */
 export function normalizeDashboardDisplaySettings(
 	value: unknown,
 ): DashboardDisplaySettings {
@@ -267,6 +368,23 @@ export function normalizeDashboardDisplaySettings(
 	};
 }
 
+/**
+ * Load and return the normalized dashboard display settings, migrating legacy settings when present.
+ *
+ * Attempts to read unified settings first; if absent, loads legacy dashboard-settings.json, normalizes
+ * its contents, and tries to migrate the normalized result to the unified settings store. On any read,
+ * parse, or validation error, or if no settings are found, returns the built-in defaults.
+ *
+ * @returns The normalized DashboardDisplaySettings to apply.
+ *
+ * @remarks
+ * - Concurrency: callers may race with other processes performing migration or writes; callers should
+ *   not assume exclusive access and should tolerate eventual consistency.
+ * - Filesystem (Windows): legacy-path checks use case-insensitive filesystem semantics implicitly; ensure
+ *   any external tooling accounts for that when placing or removing legacy files.
+ * - Token handling: persisted settings are stored as-is; remove or redact any sensitive tokens from
+ *   settings before calling this function if they must not be written unmodified to persistent stores.
+ */
 export async function loadDashboardDisplaySettings(): Promise<DashboardDisplaySettings> {
 	const unifiedSettings = await loadUnifiedDashboardSettings();
 	if (unifiedSettings) {
@@ -300,6 +418,17 @@ export async function loadDashboardDisplaySettings(): Promise<DashboardDisplaySe
 	}
 }
 
+/**
+ * Persist normalized dashboard display settings to the unified settings store.
+ *
+ * Normalizes `settings` and writes the resulting record via the unified settings API.
+ * Concurrent callers may race and overwrite each other; callers should serialize updates
+ * when strong write ordering is required. On Windows, underlying filesystem writes may
+ * not be atomic across processes. Any sensitive tokens or secrets present in settings
+ * are expected to be redacted by the unified settings persistence layer.
+ *
+ * @param settings - The dashboard display settings to normalize and save
+ */
 export async function saveDashboardDisplaySettings(
 	settings: DashboardDisplaySettings,
 ): Promise<void> {

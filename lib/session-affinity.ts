@@ -17,6 +17,14 @@ const DEFAULT_TTL_MS = 20 * 60 * 1000;
 const DEFAULT_MAX_ENTRIES = 512;
 const MAX_SESSION_KEY_LENGTH = 256;
 
+/**
+ * Normalize a session key by trimming surrounding whitespace and enforcing the maximum allowed length.
+ *
+ * This function is pure and has no side effects; it makes no filesystem-specific assumptions (including Windows) and does not perform token redaction. Callers are responsible for any concurrency control.
+ *
+ * @param value - The raw session key (may be `null` or `undefined`)
+ * @returns The trimmed session key truncated to at most `MAX_SESSION_KEY_LENGTH` characters, or `null` if the input is missing or contains only whitespace
+ */
 function normalizeSessionKey(value: string | null | undefined): string | null {
 	if (!value) return null;
 	const trimmed = value.trim();

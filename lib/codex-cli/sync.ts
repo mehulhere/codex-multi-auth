@@ -185,6 +185,16 @@ function normalizeStoredFamilyIndexes(storage: AccountStorageV3): void {
 	}
 }
 
+/**
+ * Extracts the accountId and email from the first snapshot marked as active.
+ *
+ * @param snapshots - Array of Codex CLI account snapshots to search through.
+ * @returns An object with `accountId` and `email` from the first snapshot where `isActive` is true, or empty properties if none found.
+ *
+ * Concurrency: pure and side-effect free; safe to call concurrently.
+ * Filesystem: behavior is independent of OS/filesystem semantics (including Windows).
+ * Security: only `accountId` and `email` are returned; other potentially sensitive snapshot fields (e.g., tokens) are not exposed by this function.
+ */
 function readActiveFromSnapshots(
 	snapshots: CodexCliAccountSnapshot[],
 ): { accountId?: string; email?: string } {
@@ -195,6 +205,17 @@ function readActiveFromSnapshots(
 	};
 }
 
+/**
+ * Determines whether the Codex CLI's active-account selection should override the local selection.
+ *
+ * Considers the state's numeric `syncVersion` or `sourceUpdatedAtMs` and compares the derived Codex timestamp
+ * against local timestamps from recent account saves and last Codex selection writes. Concurrent writes or
+ * clock skew can affect this decision; filesystem timestamp granularity on Windows may reduce timestamp precision.
+ * This function only examines timestamps and identifiers in `state` and does not read or expose token values.
+ *
+ * @param state - Persisted Codex CLI state (may be undefined); the function reads `syncVersion` and `sourceUpdatedAtMs` when present
+ * @returns `true` if the Codex CLI selection should be applied (i.e., Codex state is newer or timestamps are unknown), `false` otherwise
+ */
 function shouldApplyCodexCliSelection(state: Awaited<ReturnType<typeof loadCodexCliState>>): boolean {
 	if (!state) return false;
 	const codexVersion =
@@ -212,6 +233,25 @@ function shouldApplyCodexCliSelection(state: Awaited<ReturnType<typeof loadCodex
 	return codexVersion >= localVersion - 1_000;
 }
 
+/**
+ * Reconciles the provided local account storage with the Codex CLI state and returns the resulting storage and whether it changed.
+ *
+ * This operation:
+ * - Merges accounts from the Codex CLI state into a clone of `current` (or into a new empty storage when `current` is null).
+ * - May update the active account selection and per-family active indexes when the Codex CLI selection is considered applicable.
+ * - Preserves secrets and sensitive fields; any tokens written to storage are subject to the project's token-redaction rules and are not exposed in logs or metrics.
+ *
+ * Concurrency assumptions:
+ * - Caller is responsible for serializing concurrent writes to persistent storage; this function only returns an in-memory storage object and does not perform atomic file-level coordination.
+ *
+ * Windows filesystem notes:
+ * - When the caller persists the returned storage to disk on Windows, standard Windows file-locking and path-length semantics apply; this function does not perform Windows-specific path normalization.
+ *
+ * @param current - The current local AccountStorageV3, or `null` to indicate none exists.
+ * @returns An object containing:
+ *   - `storage`: the reconciled AccountStorageV3 to persist (may be the original `current` when no changes were applied).
+ *   - `changed`: `true` if the reconciled storage differs from `current`, `false` otherwise.
+ */
 export async function syncAccountStorageFromCodexCli(
 	current: AccountStorageV3 | null,
 ): Promise<{ storage: AccountStorageV3 | null; changed: boolean }> {

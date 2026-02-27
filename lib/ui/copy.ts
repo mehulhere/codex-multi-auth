@@ -112,6 +112,15 @@ export const UI_COPY = {
 	},
 } as const;
 
+/**
+ * Builds the "Check Problem Accounts" label, appending the flagged count when greater than zero.
+ *
+ * This function is pure and has no side effects, is safe for concurrent use, performs no filesystem
+ * access (including Windows-specific behavior), and does not perform any token redaction.
+ *
+ * @param flaggedCount - The number of flagged accounts to show; if greater than zero the count is appended in parentheses.
+ * @returns The resulting label string: the base label when `flaggedCount` is 0 or less, otherwise the base label followed by ` (count)`.
+ */
 export function formatCheckFlaggedLabel(flaggedCount: number): string {
 	return flaggedCount > 0
 		? `${UI_COPY.mainMenu.checkFlagged} (${flaggedCount})`

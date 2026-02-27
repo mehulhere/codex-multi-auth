@@ -24,6 +24,18 @@ export function isNonInteractiveMode(): boolean {
 	return false;
 }
 
+/**
+ * Prompts the user whether to add another account and returns whether they answered affirmatively.
+ *
+ * Reads a single line from stdin and treats "y" or "yes" (case-insensitive) as confirmation.
+ *
+ * @param currentCount - The current number of accounts; used to format the prompt message.
+ * @returns `true` if the user responded with "y" or "yes", `false` otherwise.
+ *
+ * Concurrency: uses the global stdin/stdout and is not safe to run concurrently with other interactive prompts.
+ * Windows: input normalization trims CRLF and is case-insensitive.
+ * Token redaction: input is read verbatim; do not enter secrets or tokens into this prompt as it is not redaction-aware.
+ */
 export async function promptAddAnotherAccount(currentCount: number): Promise<boolean> {
 	if (isNonInteractiveMode()) {
 		return false;
@@ -94,6 +106,23 @@ export interface LoginMenuResult {
 	deleteAll?: boolean;
 }
 
+/**
+ * Produce a human-readable, 1-based numbered label for an account.
+ *
+ * Formats as:
+ * - "N. {label} ({email})" when both label and email are present,
+ * - "N. {email}" when only email is present,
+ * - "N. {label}" when only label is present,
+ * - "N. {last6-accountId}" when only accountId is present (uses last 6 characters when longer),
+ * - "N. Account" as a final fallback.
+ *
+ * Safe for concurrent use; does not perform filesystem I/O and is platform-independent (Windows behavior is unaffected).
+ * Note: when falling back to accountId the value is truncated to the last 6 characters to avoid exposing the full token.
+ *
+ * @param account - Stored account metadata used to build the label
+ * @param index - Zero-based index of the account; displayed as a 1-based number in the label
+ * @returns The formatted account label string
+ */
 function formatAccountLabel(account: ExistingAccountInfo, index: number): string {
 	const num = index + 1;
 	const label = account.accountLabel?.trim();
@@ -110,10 +139,29 @@ function formatAccountLabel(account: ExistingAccountInfo, index: number): string
 	return `${num}. Account`;
 }
 
+/**
+ * Resolve the effective source index for an account, preferring `sourceIndex` when present.
+ *
+ * Returns `account.sourceIndex` when it is a number; otherwise falls back to `account.index`.
+ *
+ * This function is pure and safe to call concurrently; it performs no filesystem I/O (no Windows-specific behavior) and does not expose or redact tokens or sensitive fields.
+ *
+ * @param account - Account metadata object which may include `sourceIndex` and `index`
+ * @returns The numeric source index to use for account operations
+ */
 function resolveAccountSourceIndex(account: ExistingAccountInfo): number {
 	return typeof account.sourceIndex === "number" ? account.sourceIndex : account.index;
 }
 
+/**
+ * Prompts the user to type `DELETE` to confirm removing all saved accounts.
+ *
+ * This is an interactive prompt; callers should avoid invoking it concurrently from multiple processes or threads.
+ * The function itself performs no filesystem operations; it only returns the user's confirmation.
+ * Be careful to redact or avoid logging the raw input when capturing responses.
+ *
+ * @returns `true` if the trimmed user input is exactly `DELETE` (case-sensitive), `false` otherwise.
+ */
 async function promptDeleteAllTypedConfirm(): Promise<boolean> {
 	const rl = createInterface({ input, output });
 	try {
@@ -124,6 +172,16 @@ async function promptDeleteAllTypedConfirm(): Promise<boolean> {
 	}
 }
 
+/**
+ * Presents a non-TTY fallback prompt to let the user choose a login mode when interactive menus are unavailable.
+ *
+ * @param existingAccounts - List of saved account metadata; if non-empty the accounts are printed with formatted labels.
+ * @returns The selected LoginMenuResult describing the chosen mode and any associated action indices.
+ *
+ * Concurrency: prompts are sequential and must not be invoked concurrently in the same process.
+ * Windows behavior: prompt I/O uses the process stdio and is expected to behave consistently on Windows consoles.
+ * Security: user input may contain sensitive tokens; callers should redact or sanitize such values before logging or persisting.
+ */
 async function promptLoginModeFallback(existingAccounts: ExistingAccountInfo[]): Promise<LoginMenuResult> {
 	const rl = createInterface({ input, output });
 	try {
@@ -169,6 +227,27 @@ async function promptLoginModeFallback(existingAccounts: ExistingAccountInfo[]):
 	}
 }
 
+/**
+ * Prompt the user to choose an authentication or account management mode via an interactive menu.
+ *
+ * If running in forced non-interactive mode the function selects the "add" mode. If the process
+ * is not attached to a TTY it delegates to a non-interactive fallback prompt. In an interactive
+ * TTY it displays the auth menu and returns a concrete LoginMenuResult based on the user's action;
+ * destructive "delete all" actions require typing the confirmation token before proceeding.
+ *
+ * Concurrency: intended for single-threaded use in the CLI — do not call concurrently from multiple
+ * tasks that share stdin/stdout.
+ *
+ * Windows filesystem: this function performs no filesystem operations and is unaffected by Windows
+ * path/encoding semantics.
+ *
+ * Token redaction: this function does not redact or sanitize fields on ExistingAccountInfo — callers
+ * must redact any secrets or tokens before passing account objects if they must not be displayed.
+ *
+ * @param existingAccounts - Accounts used to populate the menu and account-detail actions.
+ * @param options - Optional menu hints (e.g., flaggedCount, statusMessage) that influence displayed UI.
+ * @returns A LoginMenuResult describing the selected mode and any associated account indices or flags.
+ */
 export async function promptLoginMode(
 	existingAccounts: ExistingAccountInfo[],
 	options: LoginMenuOptions = {},
