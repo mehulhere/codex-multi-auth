@@ -10,7 +10,7 @@ vi.mock("node:fs/promises", () => ({
 const mockFetch = vi.fn();
 vi.stubGlobal("fetch", mockFetch);
 
-describe("opencode-codex", () => {
+describe("host-codex-prompt", () => {
   beforeEach(() => {
     vi.resetModules();
     vi.clearAllMocks();
@@ -21,9 +21,9 @@ describe("opencode-codex", () => {
     vi.unstubAllEnvs();
   });
 
-  describe("getOpenCodeCodexPrompt", () => {
+  describe("getHostCodexPrompt", () => {
     it("fetches fresh content when no cache exists", async () => {
-      const { getOpenCodeCodexPrompt } = await import("../lib/prompts/opencode-codex.js");
+      const { getHostCodexPrompt } = await import("../lib/prompts/host-codex-prompt.js");
       
       vi.mocked(readFile).mockRejectedValue(new Error("ENOENT"));
       mockFetch.mockResolvedValue({
@@ -33,7 +33,7 @@ describe("opencode-codex", () => {
         headers: new Map([["etag", '"abc123"']]),
       });
 
-      const result = await getOpenCodeCodexPrompt();
+      const result = await getHostCodexPrompt();
       
       expect(result).toBe("Fresh prompt content");
       expect(mockFetch).toHaveBeenCalled();
@@ -41,7 +41,7 @@ describe("opencode-codex", () => {
     });
 
     it("uses cache when TTL not expired", async () => {
-      const { getOpenCodeCodexPrompt } = await import("../lib/prompts/opencode-codex.js");
+      const { getHostCodexPrompt } = await import("../lib/prompts/host-codex-prompt.js");
       
       vi.mocked(readFile)
         .mockResolvedValueOnce("Cached content")
@@ -50,14 +50,14 @@ describe("opencode-codex", () => {
           lastChecked: Date.now() - 1000,
         }));
 
-      const result = await getOpenCodeCodexPrompt();
+      const result = await getHostCodexPrompt();
       
       expect(result).toBe("Cached content");
       expect(mockFetch).not.toHaveBeenCalled();
     });
 
     it("uses ETag for conditional request when cache expired", async () => {
-      const { getOpenCodeCodexPrompt } = await import("../lib/prompts/opencode-codex.js");
+      const { getHostCodexPrompt } = await import("../lib/prompts/host-codex-prompt.js");
       
       vi.mocked(readFile)
         .mockResolvedValueOnce("Cached content")
@@ -72,7 +72,7 @@ describe("opencode-codex", () => {
         headers: new Map(),
       });
 
-      const result = await getOpenCodeCodexPrompt();
+      const result = await getHostCodexPrompt();
       
       expect(result).toBe("Cached content");
       expect(mockFetch).toHaveBeenCalledWith(
@@ -84,7 +84,7 @@ describe("opencode-codex", () => {
     });
 
     it("does not trust cached sourceUrl for refetch ordering", async () => {
-      const { getOpenCodeCodexPrompt } = await import("../lib/prompts/opencode-codex.js");
+      const { getHostCodexPrompt } = await import("../lib/prompts/host-codex-prompt.js");
 
       vi.mocked(readFile)
         .mockResolvedValueOnce("Cached content")
@@ -100,7 +100,7 @@ describe("opencode-codex", () => {
         headers: new Map(),
       });
 
-      const result = await getOpenCodeCodexPrompt();
+      const result = await getHostCodexPrompt();
 
       expect(result).toBe("Cached content");
       expect(mockFetch).toHaveBeenCalledTimes(1);
@@ -109,7 +109,7 @@ describe("opencode-codex", () => {
     });
 
     it("falls back to next source when first source returns 404", async () => {
-      const { getOpenCodeCodexPrompt } = await import("../lib/prompts/opencode-codex.js");
+      const { getHostCodexPrompt } = await import("../lib/prompts/host-codex-prompt.js");
 
       vi.mocked(readFile).mockRejectedValue(new Error("ENOENT"));
       mockFetch
@@ -125,7 +125,7 @@ describe("opencode-codex", () => {
           headers: new Map([["etag", '"fallback-etag"']]),
         });
 
-      const result = await getOpenCodeCodexPrompt();
+      const result = await getHostCodexPrompt();
 
       expect(result).toBe("Prompt from fallback source");
       expect(mockFetch).toHaveBeenCalledTimes(2);
@@ -134,7 +134,7 @@ describe("opencode-codex", () => {
     });
 
     it("uses OPENCODE_CODEX_PROMPT_URL override before default sources", async () => {
-      const { getOpenCodeCodexPrompt } = await import("../lib/prompts/opencode-codex.js");
+      const { getHostCodexPrompt } = await import("../lib/prompts/host-codex-prompt.js");
 
       vi.mocked(readFile).mockRejectedValue(new Error("ENOENT"));
       vi.stubEnv("OPENCODE_CODEX_PROMPT_URL", "https://example.com/custom-codex.txt");
@@ -145,7 +145,7 @@ describe("opencode-codex", () => {
         headers: new Map([["etag", '"env-etag"']]),
       });
 
-      const result = await getOpenCodeCodexPrompt();
+      const result = await getHostCodexPrompt();
 
       expect(result).toBe("Prompt from env override");
       expect(mockFetch).toHaveBeenCalledTimes(1);
@@ -153,7 +153,7 @@ describe("opencode-codex", () => {
     });
 
     it("does not persist raw override URL query parameters in cache metadata", async () => {
-      const { getOpenCodeCodexPrompt } = await import("../lib/prompts/opencode-codex.js");
+      const { getHostCodexPrompt } = await import("../lib/prompts/host-codex-prompt.js");
 
       vi.mocked(readFile).mockRejectedValue(new Error("ENOENT"));
       vi.stubEnv(
@@ -167,10 +167,10 @@ describe("opencode-codex", () => {
         headers: new Map([["etag", '"env-etag"']]),
       });
 
-      await getOpenCodeCodexPrompt();
+      await getHostCodexPrompt();
 
       const metaCall = vi.mocked(writeFile).mock.calls.find((call) =>
-        typeof call[0] === "string" && call[0].includes("opencode-codex-meta.json")
+        typeof call[0] === "string" && call[0].includes("host-codex-prompt-meta.json")
       );
       const metaText = String(metaCall?.[1] ?? "");
       expect(metaText).toContain("\"sourceKey\": \"https://example.com/custom-codex.txt\"");
@@ -179,7 +179,7 @@ describe("opencode-codex", () => {
     });
 
     it("serves stale content immediately and refreshes cache in background", async () => {
-      const { getOpenCodeCodexPrompt } = await import("../lib/prompts/opencode-codex.js");
+      const { getHostCodexPrompt } = await import("../lib/prompts/host-codex-prompt.js");
       
       vi.mocked(readFile)
         .mockResolvedValueOnce("Old cached content")
@@ -195,21 +195,21 @@ describe("opencode-codex", () => {
         headers: new Map([["etag", '"new-etag"']]),
       });
 
-      const first = await getOpenCodeCodexPrompt();
+      const first = await getHostCodexPrompt();
       
       expect(first).toBe("Old cached content");
       await new Promise((resolve) => setTimeout(resolve, 0));
-      const second = await getOpenCodeCodexPrompt();
+      const second = await getHostCodexPrompt();
       expect(second).toBe("New content");
       expect(writeFile).toHaveBeenCalledWith(
-        expect.stringContaining("opencode-codex.txt"),
+        expect.stringContaining("host-codex-prompt.txt"),
         "New content",
         "utf-8"
       );
     });
 
     it("falls back to cache on network error", async () => {
-      const { getOpenCodeCodexPrompt } = await import("../lib/prompts/opencode-codex.js");
+      const { getHostCodexPrompt } = await import("../lib/prompts/host-codex-prompt.js");
       
       vi.mocked(readFile)
         .mockResolvedValueOnce("Cached fallback content")
@@ -220,25 +220,25 @@ describe("opencode-codex", () => {
       
       mockFetch.mockRejectedValue(new Error("Network error"));
 
-      const result = await getOpenCodeCodexPrompt();
+      const result = await getHostCodexPrompt();
       
       expect(result).toBe("Cached fallback content");
     });
 
     it("throws when no cache and fetch fails", async () => {
-      const { getOpenCodeCodexPrompt } = await import("../lib/prompts/opencode-codex.js");
+      const { getHostCodexPrompt } = await import("../lib/prompts/host-codex-prompt.js");
       
       vi.mocked(readFile).mockRejectedValue(new Error("ENOENT"));
       mockFetch.mockRejectedValue(new Error("Network error"));
 
-      await expect(getOpenCodeCodexPrompt()).rejects.toThrow(
-        "Failed to fetch OpenCode codex.txt and no cache available"
+      await expect(getHostCodexPrompt()).rejects.toThrow(
+        "Failed to fetch codex.txt and no cache available"
       );
       expect(mockFetch.mock.calls.length).toBeGreaterThan(1);
     });
 
     it("retries transient EBUSY cache write errors and succeeds", async () => {
-      const { getOpenCodeCodexPrompt } = await import("../lib/prompts/opencode-codex.js");
+      const { getHostCodexPrompt } = await import("../lib/prompts/host-codex-prompt.js");
 
       vi.mocked(readFile).mockRejectedValue(new Error("ENOENT"));
       const busy = Object.assign(new Error("busy"), { code: "EBUSY" });
@@ -252,13 +252,13 @@ describe("opencode-codex", () => {
         headers: new Map([["etag", '"abc123"']]),
       });
 
-      const result = await getOpenCodeCodexPrompt();
+      const result = await getHostCodexPrompt();
       expect(result).toBe("Fresh prompt content");
       expect(writeFile).toHaveBeenCalled();
     });
 
     it("falls back to cache on non-OK response", async () => {
-      const { getOpenCodeCodexPrompt } = await import("../lib/prompts/opencode-codex.js");
+      const { getHostCodexPrompt } = await import("../lib/prompts/host-codex-prompt.js");
       
       vi.mocked(readFile)
         .mockResolvedValueOnce("Cached content for 500")
@@ -273,7 +273,7 @@ describe("opencode-codex", () => {
         headers: new Map(),
       });
 
-      const result = await getOpenCodeCodexPrompt();
+      const result = await getHostCodexPrompt();
       
       expect(result).toBe("Cached content for 500");
     });
@@ -281,7 +281,7 @@ describe("opencode-codex", () => {
 
   describe("getCachedPromptPrefix", () => {
     it("returns first N characters of cached content", async () => {
-      const { getCachedPromptPrefix } = await import("../lib/prompts/opencode-codex.js");
+      const { getCachedPromptPrefix } = await import("../lib/prompts/host-codex-prompt.js");
       
       vi.mocked(readFile).mockResolvedValue("This is a long cached prompt content");
 
@@ -291,7 +291,7 @@ describe("opencode-codex", () => {
     });
 
     it("returns null when cache does not exist", async () => {
-      const { getCachedPromptPrefix } = await import("../lib/prompts/opencode-codex.js");
+      const { getCachedPromptPrefix } = await import("../lib/prompts/host-codex-prompt.js");
       
       vi.mocked(readFile).mockRejectedValue(new Error("ENOENT"));
 
@@ -301,7 +301,7 @@ describe("opencode-codex", () => {
     });
 
     it("uses default of 50 characters", async () => {
-      const { getCachedPromptPrefix } = await import("../lib/prompts/opencode-codex.js");
+      const { getCachedPromptPrefix } = await import("../lib/prompts/host-codex-prompt.js");
       
       const longContent = "A".repeat(100);
       vi.mocked(readFile).mockResolvedValue(longContent);
@@ -312,3 +312,5 @@ describe("opencode-codex", () => {
     });
   });
 });
+
+

@@ -182,7 +182,7 @@ import {
 	prewarmCodexInstructions,
 	type ModelFamily,
 } from "./lib/prompts/codex.js";
-import { prewarmOpenCodeCodexPrompt } from "./lib/prompts/opencode-codex.js";
+import { prewarmHostCodexPrompt } from "./lib/prompts/host-codex-prompt.js";
 import type {
 	AccountIdSource,
 	OAuthAuthDetails,
@@ -1143,7 +1143,7 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 					const configuredModels = Object.keys(userConfig.models ?? {});
 					prewarmCodexInstructions(configuredModels);
 					if (codexMode) {
-						prewarmOpenCodeCodexPrompt();
+						prewarmHostCodexPrompt();
 					}
 				}
 
@@ -4117,3 +4117,4 @@ while (attempted.size < Math.max(1, accountCount)) {
 export const OpenAIAuthPlugin = OpenAIOAuthPlugin;
 
 export default OpenAIOAuthPlugin;
+

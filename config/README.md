@@ -2,17 +2,24 @@
 
 These files are example model/provider templates for `codex-multi-auth`.
 
-## Files
+## Primary (Codex-named)
 
 | File | Purpose |
 | --- | --- |
-| [`opencode-modern.json`](./opencode-modern.json) | Modern variant-based template |
-| [`opencode-legacy.json`](./opencode-legacy.json) | Legacy explicit-model template |
-| [`minimal-opencode.json`](./minimal-opencode.json) | Minimal debug template |
+| [`codex-modern.json`](./codex-modern.json) | Modern variant-based template |
+| [`codex-legacy.json`](./codex-legacy.json) | Legacy explicit-model template |
+| [`minimal-codex.json`](./minimal-codex.json) | Minimal debug template |
+
+## Compatibility Aliases
+
+The old filenames are still shipped for backward compatibility:
+
+- `opencode-modern.json`
+- `opencode-legacy.json`
+- `minimal-opencode.json`
 
 ## Notes
 
-- Template filenames are kept for backward compatibility.
 - These templates are optional for the OAuth account manager flow.
 - Core auth commands use `codex auth login`.
 

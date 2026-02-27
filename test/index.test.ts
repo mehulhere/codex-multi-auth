@@ -180,8 +180,8 @@ vi.mock("../lib/prompts/codex.js", () => ({
 	prewarmCodexInstructions: vi.fn(),
 }));
 
-vi.mock("../lib/prompts/opencode-codex.js", () => ({
-	prewarmOpenCodeCodexPrompt: vi.fn(),
+vi.mock("../lib/prompts/host-codex-prompt.js", () => ({
+	prewarmHostCodexPrompt: vi.fn(),
 }));
 
 vi.mock("../lib/recovery.js", () => ({
@@ -1754,3 +1754,4 @@ describe("OpenAIOAuthPlugin event handler edge cases", () => {
 		});
 	});
 });
+

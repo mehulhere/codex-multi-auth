@@ -1,10 +1,10 @@
 import { logDebug, logWarn } from "../logger.js";
 import { TOOL_REMAP_MESSAGE } from "../prompts/codex.js";
-import { CODEX_OPENCODE_BRIDGE } from "../prompts/codex-opencode-bridge.js";
-import { getOpenCodeCodexPrompt } from "../prompts/opencode-codex.js";
+import { CODEX_HOST_BRIDGE } from "../prompts/codex-host-bridge.js";
+import { getHostCodexPrompt } from "../prompts/host-codex-prompt.js";
 import { getNormalizedModel } from "./helpers/model-map.js";
 import {
-	filterOpenCodeSystemPromptsWithCachedPrompt,
+	filterHostSystemPromptsWithCachedPrompt,
 	normalizeOrphanedToolOutputs,
 	injectMissingToolOutputs,
 } from "./helpers/input-utils.js";
@@ -24,8 +24,8 @@ type SupportedReasoningSummary = "auto" | "concise" | "detailed";
 const PLAN_MODE_ONLY_TOOLS = new Set(["request_user_input"]);
 
 export {
-	isOpenCodeSystemPrompt,
-	filterOpenCodeSystemPromptsWithCachedPrompt,
+	isHostSystemPrompt,
+	filterHostSystemPromptsWithCachedPrompt,
 } from "./helpers/input-utils.js";
 
 /**
@@ -380,7 +380,7 @@ function sanitizePlanOnlyTools(tools: unknown, mode: CollaborationMode): unknown
  *
  * NOTE: This plugin follows Codex CLI defaults instead of host defaults because:
  * - We're accessing the ChatGPT backend API (not OpenAI Platform API)
- * - opencode explicitly excludes gpt-5-codex from automatic reasoning configuration
+ * - host defaults may exclude gpt-5-codex from automatic reasoning configuration
  * - Codex CLI has been thoroughly tested against this backend
  *
  * @param originalModel - Original model name before normalization
@@ -736,7 +736,7 @@ function compactInstructionsForFastSession(
  * @param input - Input array
  * @returns Input array without host system prompts
  */
-export async function filterOpenCodeSystemPrompts(
+export async function filterHostSystemPrompts(
 	input: InputItem[] | undefined,
 ): Promise<InputItem[] | undefined> {
 	if (!Array.isArray(input)) return input;
@@ -744,13 +744,13 @@ export async function filterOpenCodeSystemPrompts(
 	// Fetch cached host prompt for verification
 	let cachedPrompt: string | null = null;
 	try {
-		cachedPrompt = await getOpenCodeCodexPrompt();
+		cachedPrompt = await getHostCodexPrompt();
 	} catch {
 		// If fetch fails, fallback to text-based detection only
 		// This is safe because we still have the "starts with" check
 	}
 
-	return filterOpenCodeSystemPromptsWithCachedPrompt(input, cachedPrompt);
+	return filterHostSystemPromptsWithCachedPrompt(input, cachedPrompt);
 }
 
 /**
@@ -771,7 +771,7 @@ export function addCodexBridgeMessage(
 		content: [
 			{
 				type: "input_text",
-				text: CODEX_OPENCODE_BRIDGE,
+				text: CODEX_HOST_BRIDGE,
 			},
 		],
 	};
@@ -933,7 +933,7 @@ export async function transformRequestBody(
 
 		if (codexMode) {
 			// CODEX_MODE: Remove host system prompt, add bridge prompt
-			body.input = await filterOpenCodeSystemPrompts(body.input);
+			body.input = await filterHostSystemPrompts(body.input);
 			body.input = addCodexBridgeMessage(body.input, !!body.tools);
 		} else {
 			// DEFAULT MODE: Keep original behavior with tool remap message
@@ -995,3 +995,5 @@ export async function transformRequestBody(
 
 	return body;
 }
+
+

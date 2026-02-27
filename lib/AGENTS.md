@@ -32,8 +32,8 @@ lib/
 ├── proactive-refresh.ts  # token refresh before expiry
 ├── prompts/
 │   ├── codex.ts          # model-family prompts, GitHub ETag cache
-│   ├── codex-opencode-bridge.ts  # tool remapping instructions
-│   └── opencode-codex.ts # OpenCode-specific prompts
+│   ├── codex-host-bridge.ts  # tool remapping instructions
+│   └── host-codex-prompt.ts # OpenCode-specific prompts
 ├── recovery.ts           # session recovery
 ├── recovery/
 │   ├── constants.ts
@@ -74,7 +74,7 @@ lib/
 | SSE parsing | `request/response-handler.ts` | `response.done` extraction |
 | Rate limit backoff | `request/rate-limit-backoff.ts` | exponential + jitter |
 | Model family detection | `prompts/codex.ts` | GPT-5.x, Codex variants |
-| Bridge prompts | `prompts/codex-opencode-bridge.ts` | tool remapping instructions |
+| Bridge prompts | `prompts/codex-host-bridge.ts` | tool remapping instructions |
 | Account selection | `rotation.ts` | hybrid health + token bucket |
 | Account rate limits | `accounts/rate-limits.ts` | per-account tracking |
 | Storage format | `storage.ts` | V3 with migration from V1/V2 |
@@ -98,3 +98,4 @@ lib/
 - Never import from `dist/`; use source paths.
 - Never suppress type errors.
 - Never hardcode OAuth ports (use `REDIRECT_URI` constant).
+

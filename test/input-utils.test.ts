@@ -3,8 +3,8 @@ import {
 	injectMissingToolOutputs,
 	normalizeOrphanedToolOutputs,
 	getContentText,
-	isOpenCodeSystemPrompt,
-	filterOpenCodeSystemPromptsWithCachedPrompt,
+	isHostSystemPrompt,
+	filterHostSystemPromptsWithCachedPrompt,
 } from "../lib/request/helpers/input-utils.js";
 import type { InputItem } from "../lib/types.js";
 
@@ -241,7 +241,7 @@ describe("Tool Output Normalization", () => {
 		});
 	});
 
-	describe("isOpenCodeSystemPrompt with cached prompt", () => {
+	describe("isHostSystemPrompt with cached prompt", () => {
 		it("returns true when content starts with cached prompt", () => {
 			const cachedPrompt = "You are OpenCode, an agent";
 			const item: InputItem = {
@@ -249,7 +249,7 @@ describe("Tool Output Normalization", () => {
 				role: "system",
 				content: "You are OpenCode, an agent with additional context appended here",
 			};
-			expect(isOpenCodeSystemPrompt(item, cachedPrompt)).toBe(true);
+			expect(isHostSystemPrompt(item, cachedPrompt)).toBe(true);
 		});
 
 		it("returns true when first 200 chars match cached prompt prefix", () => {
@@ -260,7 +260,7 @@ describe("Tool Output Normalization", () => {
 				role: "system",
 				content: longText.slice(0, 200) + "B".repeat(100),
 			};
-			expect(isOpenCodeSystemPrompt(item, cachedPrompt)).toBe(true);
+			expect(isHostSystemPrompt(item, cachedPrompt)).toBe(true);
 		});
 
 		it("returns false for non-system roles even with matching content", () => {
@@ -270,7 +270,7 @@ describe("Tool Output Normalization", () => {
 				role: "user",
 				content: "You are OpenCode, an agent",
 			};
-			expect(isOpenCodeSystemPrompt(item, cachedPrompt)).toBe(false);
+			expect(isHostSystemPrompt(item, cachedPrompt)).toBe(false);
 		});
 
 		it("returns false when content is empty", () => {
@@ -280,7 +280,7 @@ describe("Tool Output Normalization", () => {
 				role: "system",
 				content: "",
 			};
-			expect(isOpenCodeSystemPrompt(item, cachedPrompt)).toBe(false);
+			expect(isHostSystemPrompt(item, cachedPrompt)).toBe(false);
 		});
 
 		it("returns true for developer role with matching signature", () => {
@@ -289,32 +289,32 @@ describe("Tool Output Normalization", () => {
 				role: "developer",
 				content: "You are OpenCode, an interactive CLI agent that does stuff",
 			};
-			expect(isOpenCodeSystemPrompt(item, null)).toBe(true);
+			expect(isHostSystemPrompt(item, null)).toBe(true);
 		});
 	});
 
-	describe("filterOpenCodeSystemPromptsWithCachedPrompt", () => {
+	describe("filterHostSystemPromptsWithCachedPrompt", () => {
 		it("returns undefined for undefined input", () => {
-			expect(filterOpenCodeSystemPromptsWithCachedPrompt(undefined, null)).toBeUndefined();
+			expect(filterHostSystemPromptsWithCachedPrompt(undefined, null)).toBeUndefined();
 		});
 
 		it("preserves user messages unchanged", () => {
 			const input: InputItem[] = [
 				{ type: "message", role: "user", content: "Hello" },
 			];
-			const result = filterOpenCodeSystemPromptsWithCachedPrompt(input, null);
+			const result = filterHostSystemPromptsWithCachedPrompt(input, null);
 			expect(result).toEqual(input);
 		});
 
-		it("filters out OpenCode system prompt without context", () => {
+		it("filters out host system prompt without context", () => {
 			const input: InputItem[] = [
 				{ type: "message", role: "system", content: "You are OpenCode, an agent doing things" },
 			];
-			const result = filterOpenCodeSystemPromptsWithCachedPrompt(input, null);
+			const result = filterHostSystemPromptsWithCachedPrompt(input, null);
 			expect(result).toHaveLength(0);
 		});
 
-		it("preserves context when filtering OpenCode system prompt", () => {
+		it("preserves context when filtering host system prompt", () => {
 			const input: InputItem[] = [
 				{
 					type: "message",
@@ -322,7 +322,7 @@ describe("Tool Output Normalization", () => {
 					content: "You are OpenCode, an agent\n\nHere is some useful information about the environment you are running in:\n<env>test</env>",
 				},
 			];
-			const result = filterOpenCodeSystemPromptsWithCachedPrompt(input, null);
+			const result = filterHostSystemPromptsWithCachedPrompt(input, null);
 			expect(result).toHaveLength(1);
 			expect((result?.[0] as { content: string }).content).toContain("Here is some useful information");
 		});
@@ -337,7 +337,7 @@ describe("Tool Output Normalization", () => {
 					],
 				},
 			];
-			const result = filterOpenCodeSystemPromptsWithCachedPrompt(input, null);
+			const result = filterHostSystemPromptsWithCachedPrompt(input, null);
 			expect(result).toHaveLength(1);
 			const content = (result?.[0] as { content: unknown }).content;
 			// Content is replaced with array containing extracted context
@@ -353,8 +353,10 @@ describe("Tool Output Normalization", () => {
 					content: { weird: "object" } as unknown as string,
 				},
 			];
-			const result = filterOpenCodeSystemPromptsWithCachedPrompt(input, "{ weird: 'object' }");
+			const result = filterHostSystemPromptsWithCachedPrompt(input, "{ weird: 'object' }");
 			expect(result).toBeDefined();
 		});
 	});
 });
+
+

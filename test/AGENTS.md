@@ -33,7 +33,7 @@ test/
 ├── logger.test.ts                 # logging functionality
 ├── model-map.test.ts              # model name normalization
 ├── oauth-server.integration.test.ts # OAuth server (port 1455)
-├── opencode-codex.test.ts         # OpenCode-specific prompts
+├── host-codex-prompt.test.ts         # Host-specific prompts
 ├── parallel-probe.test.ts         # concurrent health checks
 ├── paths.test.ts                  # project root detection
 ├── plugin-config.test.ts          # plugin config defaults
@@ -91,3 +91,5 @@ test/
 - Avoid hardcoding ports other than 1455 for OAuth server tests.
 - Do not rely on `dist/` in tests; use source files.
 - Do not skip tests without justification.
+
+

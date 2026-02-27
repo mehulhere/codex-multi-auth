@@ -11,7 +11,7 @@ import { logDebug } from "../logger.js";
 import { getCodexCacheDir } from "../runtime-paths.js";
 import { sleep } from "../utils.js";
 
-const DEFAULT_OPENCODE_CODEX_URLS = [
+const DEFAULT_HOST_CODEX_PROMPT_URLS = [
 	"https://raw.githubusercontent.com/anomalyco/opencode/dev/packages/opencode/src/session/prompt/codex.txt",
 	"https://raw.githubusercontent.com/sst/opencode/dev/packages/opencode/src/session/prompt/codex.txt",
 	"https://raw.githubusercontent.com/anomalyco/opencode/main/packages/opencode/src/session/prompt/codex.txt",
@@ -22,10 +22,10 @@ const DEFAULT_OPENCODE_CODEX_URLS = [
 	"https://raw.githubusercontent.com/sst/opencode/main/packages/opencode/src/session/prompt/codex.md",
 ] as const;
 const CODEX_PROMPT_URL_OVERRIDE_ENV = "CODEX_PROMPT_SOURCE_URL";
-const LEGACY_OPENCODE_CODEX_URL_OVERRIDE_ENV = "OPENCODE_CODEX_PROMPT_URL";
+const LEGACY_HOST_CODEX_URL_OVERRIDE_ENV = "OPENCODE_CODEX_PROMPT_URL";
 const CACHE_DIR = getCodexCacheDir();
-const CACHE_FILE = join(CACHE_DIR, "opencode-codex.txt");
-const CACHE_META_FILE = join(CACHE_DIR, "opencode-codex-meta.json");
+const CACHE_FILE = join(CACHE_DIR, "host-codex-prompt.txt");
+const CACHE_META_FILE = join(CACHE_DIR, "host-codex-prompt-meta.json");
 const CACHE_TTL_MS = 15 * 60 * 1000;
 const RETRYABLE_FS_ERROR_CODES = new Set(["EBUSY", "EPERM"]);
 const WRITE_RETRY_ATTEMPTS = 5;
@@ -124,8 +124,8 @@ function resolvePromptSources(): string[] {
 	};
 
 	add(process.env[CODEX_PROMPT_URL_OVERRIDE_ENV]);
-	add(process.env[LEGACY_OPENCODE_CODEX_URL_OVERRIDE_ENV]);
-	for (const source of DEFAULT_OPENCODE_CODEX_URLS) {
+	add(process.env[LEGACY_HOST_CODEX_URL_OVERRIDE_ENV]);
+	for (const source of DEFAULT_HOST_CODEX_PROMPT_URLS) {
 		add(source);
 	}
 	return sources;
@@ -252,7 +252,7 @@ function scheduleRefresh(cachedMeta: CacheMeta | null, cachedContent: string | n
  * Rate limit protection: Only checks GitHub if cache is older than 15 minutes
  * @returns The codex.txt content
  */
-export async function getOpenCodeCodexPrompt(): Promise<string> {
+export async function getHostCodexPrompt(): Promise<string> {
 	if (memoryCache && isFresh(memoryCache.meta.lastChecked)) {
 		return memoryCache.content;
 	}
@@ -302,8 +302,10 @@ export async function getCachedPromptPrefix(chars = 50): Promise<string | null> 
 /**
  * Prewarm the prompt cache without blocking startup.
  */
-export function prewarmOpenCodeCodexPrompt(): void {
-	void getOpenCodeCodexPrompt().catch((error) => {
+export function prewarmHostCodexPrompt(): void {
+	void getHostCodexPrompt().catch((error) => {
 		logDebug("Codex prompt prewarm failed", { error: String(error) });
 	});
 }
+
+

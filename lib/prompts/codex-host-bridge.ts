@@ -8,7 +8,7 @@
  * Token Count: ~450 tokens (~90% reduction vs full host prompt)
  */
 
-export const CODEX_OPENCODE_BRIDGE = `# Codex Host Bridge
+export const CODEX_HOST_BRIDGE = `# Codex Host Bridge
 
 You are running Codex through a host terminal coding runtime. The host provides specific tools to help you work efficiently.
 
@@ -148,7 +148,7 @@ Sandbox policies, approval mechanisms, final answer formatting, git commit proto
 - \`request_user_input\` is Plan-mode only; do not call it in Default mode.
 - When uncertain, prefer non-destructive verification first (e.g., confirm file existence with \`list\`, then delete with \`bash\`).`;
 
-export interface CodexOpenCodeBridgeMeta {
+export interface CodexHostBridgeMeta {
 	estimatedTokens: number;
 	reductionVsCurrent: string;
 	reductionVsToolRemap: string;
@@ -156,7 +156,7 @@ export interface CodexOpenCodeBridgeMeta {
 	omits: string[];
 }
 
-export const CODEX_OPENCODE_BRIDGE_META: CodexOpenCodeBridgeMeta = {
+export const CODEX_HOST_BRIDGE_META: CodexHostBridgeMeta = {
 	estimatedTokens: 550,
 	reductionVsCurrent: "88%",
 	reductionVsToolRemap: "10%",
@@ -176,3 +176,4 @@ export const CODEX_OPENCODE_BRIDGE_META: CodexOpenCodeBridgeMeta = {
 		"Git protocols (in Codex)",
 	],
 };
+

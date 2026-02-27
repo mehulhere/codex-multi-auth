@@ -33,7 +33,7 @@ test/
 ├── logger.test.ts                 # Logging functionality tests
 ├── model-map.test.ts              # Model name normalization tests
 ├── oauth-server.integration.test.ts # OAuth server integration (port 1455)
-├── opencode-codex.test.ts         # OpenCode-specific prompt tests
+├── host-codex-prompt.test.ts         # Host-specific prompt tests
 ├── parallel-probe.test.ts         # Concurrent health check tests
 ├── paths.test.ts                  # Project root detection tests
 ├── plugin-config.test.ts          # Plugin config defaults + overrides
@@ -202,4 +202,6 @@ When adding new functionality:
 
 See the `config/` directory for working configuration examples:
 - `opencode-legacy.json`: Legacy complete example with all model variants
-- `opencode-modern.json`: Variant-based example for OpenCode v1.0.210+
+- `opencode-modern.json`: Variant-based example for host runtime v1.0.210+
+
+
