@@ -62,10 +62,18 @@ function parseArgs(argv) {
 	for (let i = 1; i < argv.length; i += 1) {
 		const arg = argv[i];
 		if (arg === "--mode") {
-			args.mode = argv[i + 1] ?? "";
+			const value = argv[i + 1];
+			if (!value || value.startsWith("--")) {
+				throw new Error("--mode requires a value");
+			}
+			args.mode = value;
 			i += 1;
 		} else if (arg === "--root") {
-			args.root = argv[i + 1] ?? "";
+			const value = argv[i + 1];
+			if (!value || value.startsWith("--")) {
+				throw new Error("--root requires a value");
+			}
+			args.root = value;
 			i += 1;
 		} else if (arg === "--dry-run") {
 			args.dryRun = true;
@@ -204,7 +212,10 @@ function getTrackedPaths(rootPath) {
 			stdio: ["ignore", "pipe", "ignore"],
 		});
 		return output.split(/\r?\n/).filter(Boolean);
-	} catch {
+	} catch (error) {
+		console.warn(
+			`repo-hygiene warning: git ls-files failed in getTrackedPaths: ${error instanceof Error ? error.message : String(error)}`,
+		);
 		return [];
 	}
 }
@@ -229,8 +240,21 @@ async function check(rootPath) {
 	}
 
 	const gitignorePath = path.join(rootPath, ".gitignore");
-	const gitignore = await fs.readFile(gitignorePath, "utf-8");
-	const missingPatterns = REQUIRED_GITIGNORE_PATTERNS.filter((pattern) => !gitignore.includes(pattern));
+	let gitignore = "";
+	try {
+		gitignore = await fs.readFile(gitignorePath, "utf-8");
+	} catch (error) {
+		console.warn(
+			`repo-hygiene warning: unable to read .gitignore at ${gitignorePath}: ${error instanceof Error ? error.message : String(error)}`,
+		);
+	}
+	const gitignoreLines = new Set(
+		gitignore
+			.split(/\r?\n/)
+			.map((line) => line.trim())
+			.filter((line) => line.length > 0 && !line.startsWith("#")),
+	);
+	const missingPatterns = REQUIRED_GITIGNORE_PATTERNS.filter((pattern) => !gitignoreLines.has(pattern));
 	if (missingPatterns.length > 0) {
 		hasError = true;
 		console.error("repo-hygiene check failed: missing required .gitignore patterns:");

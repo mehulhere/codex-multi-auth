@@ -64,7 +64,6 @@ describe("stream failover", () => {
 		expect(text).toContain("codex-multi-auth failover 1");
 		expect(text).toContain("data: second");
 		expect(fallback).toHaveBeenCalledTimes(1);
-		vi.useRealTimers();
 	});
 
 	it("includes request id marker when provided", async () => {
@@ -83,7 +82,6 @@ describe("stream failover", () => {
 		await vi.advanceTimersByTimeAsync(1_200);
 		const text = await textPromise;
 		expect(text).toContain("codex-multi-auth failover 1 req:req-123");
-		vi.useRealTimers();
 	});
 
 	it("errors when fallback is unavailable", async () => {
@@ -98,7 +96,6 @@ describe("stream failover", () => {
 		const assertion = expect(textPromise).rejects.toThrow("SSE stream stalled");
 		await vi.advanceTimersByTimeAsync(1_200);
 		await assertion;
-		vi.useRealTimers();
 	});
 
 	it("propagates fallback provider exceptions deterministically", async () => {
@@ -115,7 +112,6 @@ describe("stream failover", () => {
 		const assertion = expect(textPromise).rejects.toThrow("fallback exploded");
 		await vi.advanceTimersByTimeAsync(1_200);
 		await assertion;
-		vi.useRealTimers();
 	});
 
 	it("releases underlying reader when wrapped stream is cancelled", async () => {
