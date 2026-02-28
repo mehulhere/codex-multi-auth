@@ -73,6 +73,44 @@ function isWorktreeGitDirPath(gitDirPath: string): boolean {
 	return normalized.includes("/.git/worktrees/");
 }
 
+function normalizePathForIdentityCheck(pathValue: string): string {
+	const normalizedDelimiters = normalizePathDelimiters(pathValue.trim());
+	if (!normalizedDelimiters) {
+		return normalizedDelimiters;
+	}
+
+	if (isWindowsRootedPath(normalizedDelimiters)) {
+		return win32.normalize(normalizedDelimiters.replace(/\//g, "\\")).toLowerCase();
+	}
+
+	const resolvedPath = resolve(normalizedDelimiters);
+	const normalizedResolved = normalizePathDelimiters(resolvedPath);
+	return process.platform === "win32" ? normalizedResolved.toLowerCase() : normalizedResolved;
+}
+
+function worktreeGitDirBelongsToProject(projectRoot: string, gitDirPath: string): boolean {
+	const gitdirBackRefPath = join(gitDirPath, "gitdir");
+	if (!existsSync(gitdirBackRefPath)) {
+		return false;
+	}
+
+	try {
+		const gitdirBackRefRaw = readFileSync(gitdirBackRefPath, "utf-8").trim();
+		if (!gitdirBackRefRaw) {
+			return false;
+		}
+
+		const resolvedBackRef = resolveGitPath(gitDirPath, gitdirBackRefRaw);
+		const expectedBackRef = join(projectRoot, ".git");
+		return (
+			normalizePathForIdentityCheck(resolvedBackRef) ===
+			normalizePathForIdentityCheck(expectedBackRef)
+		);
+	} catch {
+		return false;
+	}
+}
+
 /**
  * Gets the path to the global Codex multi-auth configuration directory.
  *
@@ -205,6 +243,9 @@ export function resolveProjectStorageIdentityRoot(projectRoot: string): string {
 
 		const gitDirPath = resolveGitPath(projectRoot, gitDirValue);
 		if (!isWorktreeGitDirPath(gitDirPath)) {
+			return projectRoot;
+		}
+		if (!worktreeGitDirBelongsToProject(projectRoot, gitDirPath)) {
 			return projectRoot;
 		}
 

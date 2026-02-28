@@ -786,6 +786,7 @@ describe("storage", () => {
         await fs.mkdir(worktreeRepo, { recursive: true });
         await fs.writeFile(join(worktreeRepo, ".git"), `gitdir: ${worktreeGitDir}\n`, "utf-8");
         await fs.writeFile(join(worktreeGitDir, "commondir"), "../..\n", "utf-8");
+        await fs.writeFile(join(worktreeGitDir, "gitdir"), `${join(worktreeRepo, ".git")}\n`, "utf-8");
 
         setStoragePath(mainRepo);
         const mainPath = getStoragePath();
@@ -1103,9 +1104,15 @@ describe("storage", () => {
         const winGitDirPointer = worktreeGitDir.replace(/\//g, "\\");
         await fs.writeFile(join(worktreeRepo, ".git"), `gitdir: ${winGitDirPointer}\n`, "utf-8");
         await fs.writeFile(join(worktreeGitDir, "commondir"), "..\\..\\\n", "utf-8");
+        await fs.writeFile(
+          join(worktreeGitDir, "gitdir"),
+          `${join(worktreeRepo, ".git").replace(/\//g, "\\")}\n`,
+          "utf-8",
+        );
       } else {
         await fs.writeFile(join(worktreeRepo, ".git"), `gitdir: ${worktreeGitDir}\n`, "utf-8");
         await fs.writeFile(join(worktreeGitDir, "commondir"), "../..\n", "utf-8");
+        await fs.writeFile(join(worktreeGitDir, "gitdir"), `${join(worktreeRepo, ".git")}\n`, "utf-8");
       }
 
       return { fakeHome, mainRepo, worktreeRepo };

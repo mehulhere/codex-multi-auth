@@ -195,6 +195,7 @@ describe("Storage Paths Module", () => {
 				const gitEntry = path.join(projectRoot, ".git");
 				const worktreeGitDir = path.resolve("repo", ".git", "worktrees", "pr-8");
 				const commondirFile = path.join(worktreeGitDir, "commondir");
+				const gitdirBackRefFile = path.join(worktreeGitDir, "gitdir");
 				const sharedRepoRoot = path.resolve("repo");
 				const sharedGitDir = path.join(sharedRepoRoot, ".git");
 				const normalize = (value: string) =>
@@ -205,6 +206,7 @@ describe("Storage Paths Module", () => {
 					const normalizedCandidate = normalize(candidate);
 					if (normalizedCandidate === normalize(gitEntry)) return true;
 					if (normalizedCandidate === normalize(commondirFile)) return true;
+					if (normalizedCandidate === normalize(gitdirBackRefFile)) return true;
 					if (normalizedCandidate === normalize(sharedGitDir)) return true;
 					return false;
 				});
@@ -223,6 +225,9 @@ describe("Storage Paths Module", () => {
 					if (normalizedCandidate === normalize(commondirFile)) {
 						return "../..\n";
 					}
+					if (normalizedCandidate === normalize(gitdirBackRefFile)) {
+						return `${path.join(projectRoot, ".git")}\n`;
+					}
 					throw new Error(`Unexpected read path: ${String(candidate)}`);
 				});
 
@@ -236,6 +241,7 @@ describe("Storage Paths Module", () => {
 				const gitEntry = path.join(projectRoot, ".git");
 				const worktreeGitDir = path.resolve("repo", ".git", "worktrees", "pr-relative");
 				const commondirFile = path.join(worktreeGitDir, "commondir");
+				const gitdirBackRefFile = path.join(worktreeGitDir, "gitdir");
 				const sharedRepoRoot = path.resolve("repo");
 				const sharedGitDir = path.join(sharedRepoRoot, ".git");
 				const normalize = (value: string) =>
@@ -246,6 +252,7 @@ describe("Storage Paths Module", () => {
 					const normalizedCandidate = normalize(candidate);
 					if (normalizedCandidate === normalize(gitEntry)) return true;
 					if (normalizedCandidate === normalize(commondirFile)) return true;
+					if (normalizedCandidate === normalize(gitdirBackRefFile)) return true;
 					if (normalizedCandidate === normalize(sharedGitDir)) return true;
 					return false;
 				});
@@ -264,6 +271,9 @@ describe("Storage Paths Module", () => {
 					if (normalizedCandidate === normalize(commondirFile)) {
 						return "../..\n";
 					}
+					if (normalizedCandidate === normalize(gitdirBackRefFile)) {
+						return `${path.join(projectRoot, ".git")}\n`;
+					}
 					throw new Error(`Unexpected read path: ${String(candidate)}`);
 				});
 
@@ -277,6 +287,7 @@ describe("Storage Paths Module", () => {
 				const gitEntry = path.win32.join(projectRoot, ".git");
 				const worktreeGitDir = path.win32.join("C:\\repo", ".git", "worktrees", "pr-8");
 				const commondirFile = path.win32.join(worktreeGitDir, "commondir");
+				const gitdirBackRefFile = path.win32.join(worktreeGitDir, "gitdir");
 				const sharedRepoRoot = "C:\\repo";
 				const sharedGitDir = path.win32.join(sharedRepoRoot, ".git");
 				const normalize = (value: string) => path.win32.normalize(value).toLowerCase();
@@ -286,6 +297,7 @@ describe("Storage Paths Module", () => {
 					const normalizedCandidate = normalize(candidate);
 					if (normalizedCandidate === normalize(gitEntry)) return true;
 					if (normalizedCandidate === normalize(commondirFile)) return true;
+					if (normalizedCandidate === normalize(gitdirBackRefFile)) return true;
 					if (normalizedCandidate === normalize(sharedGitDir)) return true;
 					return false;
 				});
@@ -304,12 +316,53 @@ describe("Storage Paths Module", () => {
 					if (normalizedCandidate === normalize(commondirFile)) {
 						return "..\\..\\\n";
 					}
+					if (normalizedCandidate === normalize(gitdirBackRefFile)) {
+						return `${path.win32.join(projectRoot, ".git")}\n`;
+					}
 					throw new Error(`Unexpected read path: ${String(candidate)}`);
 				});
 
 				const resolved = resolveProjectStorageIdentityRoot(projectRoot);
 
 				expect(normalize(resolved)).toBe(normalize(sharedRepoRoot));
+			});
+
+			it("falls back to project root for forged worktree pointers", () => {
+				const projectRoot = "/repo/attacker";
+				const gitEntry = path.join(projectRoot, ".git");
+				const foreignWorktreeGitDir = "/repo/victim/.git/worktrees/pr-8";
+				const foreignCommondir = path.join(foreignWorktreeGitDir, "commondir");
+				const foreignGitdirBackRef = path.join(foreignWorktreeGitDir, "gitdir");
+				const victimGitDir = path.join("/repo/victim", ".git");
+
+				mockedExistsSync.mockImplementation((candidate) => {
+					return (
+						candidate === gitEntry ||
+						candidate === foreignCommondir ||
+						candidate === foreignGitdirBackRef ||
+						candidate === victimGitDir
+					);
+				});
+				mockedStatSync.mockImplementation((candidate) => {
+					expect(candidate).toBe(gitEntry);
+					return buildMockStat({ isDirectory: false, isFile: true });
+				});
+				mockedReadFileSync.mockImplementation((candidate) => {
+					if (candidate === gitEntry) {
+						return `gitdir: ${foreignWorktreeGitDir}\n`;
+					}
+					if (candidate === foreignCommondir) {
+						return "../..\n";
+					}
+					if (candidate === foreignGitdirBackRef) {
+						return "/repo/victim/worktrees/pr-8/.git\n";
+					}
+					throw new Error(`Unexpected read path: ${String(candidate)}`);
+				});
+
+				const resolved = resolveProjectStorageIdentityRoot(projectRoot);
+
+				expect(resolved).toBe(projectRoot);
 			});
 
 			it("keeps project root when .git file does not point to worktrees", () => {
