@@ -1,40 +1,52 @@
 ---
 name: Bug Report
-about: Report a bug or issue with the plugin
-title: '[BUG] '
-labels: bug
-assignees: ''
+about: Report a reproducible bug in codex-multi-auth
+title: "[bug] "
+labels: [bug]
+assignees: ""
 ---
 
-**Bug Description**
-A clear and concise description of the bug.
+## Summary
 
-**Steps to Reproduce**
-1.
-2.
-3.
+Describe the bug in one paragraph.
 
-**Expected Behavior**
-What should happen.
+## Reproduction
 
-**Actual Behavior**
-What actually happens.
+1. 
+2. 
+3. 
 
-**Environment**
-- codex version:
-- Plugin version:
-- Operating System:
-- Node.js version:
+## Expected Behavior
 
-**Logs**
-If applicable, attach logs from `~/.codex/multi-auth/logs/codex-plugin/` (enable with `ENABLE_PLUGIN_REQUEST_LOGGING=1`)
+Describe the expected result.
 
-**Compliance Checklist**
-Please confirm:
-- [ ] I'm using this plugin for personal development only
-- [ ] I have an active ChatGPT Plus/Pro subscription
-- [ ] This issue is not related to attempting commercial use or TOS violations
-- [ ] I've reviewed the FAQ and Troubleshooting sections
+## Actual Behavior
 
-**Additional Context**
-Add any other relevant information.
+Describe the observed result.
+
+## Environment
+
+- `codex --version`:
+- `codex auth status` output summary:
+- `npm ls -g codex-multi-auth`:
+- OS:
+- Node.js:
+
+## Diagnostic Outputs
+
+Include relevant outputs from:
+
+- `codex auth check`
+- `codex auth report --json`
+- `codex auth doctor --json`
+
+## Logs (Optional)
+
+If needed, include sanitized logs from `~/.codex/multi-auth/logs/codex-plugin/`.
+Only enable logging temporarily: `ENABLE_PLUGIN_REQUEST_LOGGING=1`.
+
+## Compliance Confirmation
+
+- [ ] I am using this project for personal development workflows.
+- [ ] This report does not request policy bypasses or prohibited usage.
+- [ ] I removed any secrets/tokens from this report.

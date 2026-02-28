@@ -36,6 +36,7 @@ Canonical documentation map for `codex-multi-auth`.
 | [reference/storage-paths.md](reference/storage-paths.md) | Canonical and compatibility storage paths |
 | [releases/v0.1.0.md](releases/v0.1.0.md) | Current stable release notes |
 | [releases/v0.1.0-beta.0.md](releases/v0.1.0-beta.0.md) | Archived prerelease reference |
+| [releases/legacy-pre-0.1-history.md](releases/legacy-pre-0.1-history.md) | Archived pre-0.1 changelog history |
 
 ---
 
