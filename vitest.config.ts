@@ -22,6 +22,7 @@ export default defineConfig({
         'node_modules/',
         'dist/',
         'test/',
+        'eslint.config.js',
         'index.ts',
         'lib/codex-manager.ts',
         'lib/ui/**',

@@ -329,9 +329,17 @@ export function deduplicateAccounts<T extends { accountId?: string; refreshToken
  * @param accounts - Array of accounts to deduplicate
  * @returns New array with email duplicates removed
  */
+export function normalizeEmailKey(email: string | undefined): string | undefined {
+  if (!email) return undefined;
+  const trimmed = email.trim();
+  if (!trimmed) return undefined;
+  return trimmed.toLowerCase();
+}
+
 export function deduplicateAccountsByEmail<T extends { email?: string; lastUsed?: number; addedAt?: number }>(
   accounts: T[],
 ): T[] {
+
   const emailToNewestIndex = new Map<string, number>();
   const indicesToKeep = new Set<number>();
 
@@ -339,7 +347,7 @@ export function deduplicateAccountsByEmail<T extends { email?: string; lastUsed?
     const account = accounts[i];
     if (!account) continue;
 
-    const email = account.email?.trim();
+    const email = normalizeEmailKey(account.email);
     if (!email) {
       indicesToKeep.add(i);
       continue;
