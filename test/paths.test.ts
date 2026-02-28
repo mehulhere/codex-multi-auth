@@ -365,6 +365,44 @@ describe("Storage Paths Module", () => {
 				expect(resolved).toBe(projectRoot);
 			});
 
+			it("falls back to project root when commondir points to a foreign repository", () => {
+				const projectRoot = "/repo/attacker-worktree";
+				const gitEntry = path.join(projectRoot, ".git");
+				const worktreeGitDir = "/repo/attacker/.git/worktrees/pr-hostile";
+				const forgedCommondir = path.join(worktreeGitDir, "commondir");
+				const gitdirBackRefFile = path.join(worktreeGitDir, "gitdir");
+				const foreignGitDir = "/repo/victim/.git";
+
+				mockedExistsSync.mockImplementation((candidate) => {
+					return (
+						candidate === gitEntry ||
+						candidate === forgedCommondir ||
+						candidate === gitdirBackRefFile ||
+						candidate === foreignGitDir
+					);
+				});
+				mockedStatSync.mockImplementation((candidate) => {
+					expect(candidate).toBe(gitEntry);
+					return buildMockStat({ isDirectory: false, isFile: true });
+				});
+				mockedReadFileSync.mockImplementation((candidate) => {
+					if (candidate === gitEntry) {
+						return `gitdir: ${worktreeGitDir}\n`;
+					}
+					if (candidate === forgedCommondir) {
+						return `${foreignGitDir}\n`;
+					}
+					if (candidate === gitdirBackRefFile) {
+						return `${path.join(projectRoot, ".git")}\n`;
+					}
+					throw new Error(`Unexpected read path: ${String(candidate)}`);
+				});
+
+				const resolved = resolveProjectStorageIdentityRoot(projectRoot);
+
+				expect(resolved).toBe(projectRoot);
+			});
+
 			it("keeps project root when .git file does not point to worktrees", () => {
 				const projectRoot = "/repo/submodule";
 				const gitEntry = path.join(projectRoot, ".git");

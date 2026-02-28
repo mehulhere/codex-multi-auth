@@ -111,6 +111,22 @@ function worktreeGitDirBelongsToProject(projectRoot: string, gitDirPath: string)
 	}
 }
 
+function isGitDirUnderCommonWorktrees(gitDirPath: string, commonGitDir: string): boolean {
+	const normalizedGitDir = normalizePathDelimiters(
+		normalizePathForIdentityCheck(gitDirPath),
+	).replace(/\/+$/, "");
+	const normalizedCommonGitDir = normalizePathDelimiters(
+		normalizePathForIdentityCheck(commonGitDir),
+	).replace(/\/+$/, "");
+
+	if (!normalizedGitDir || !normalizedCommonGitDir) {
+		return false;
+	}
+
+	const worktreesRoot = `${normalizedCommonGitDir}/worktrees/`;
+	return normalizedGitDir.startsWith(worktreesRoot);
+}
+
 /**
  * Gets the path to the global Codex multi-auth configuration directory.
  *
@@ -250,6 +266,9 @@ export function resolveProjectStorageIdentityRoot(projectRoot: string): string {
 		}
 
 		const commonGitDir = readGitCommonDir(gitDirPath);
+		if (!isGitDirUnderCommonWorktrees(gitDirPath, commonGitDir)) {
+			return projectRoot;
+		}
 		const candidateRepoRoot = dirname(commonGitDir);
 		if (!existsSync(join(candidateRepoRoot, ".git"))) {
 			return projectRoot;

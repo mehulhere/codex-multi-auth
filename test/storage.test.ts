@@ -1334,6 +1334,63 @@ describe("storage", () => {
       expect(existsSync(canonicalPath)).toBe(true);
       expect(existsSync(legacyWorktreePath)).toBe(false);
     });
+
+    it("rejects forged commondir aliasing and keeps storage scoped to the current worktree", async () => {
+      const worktreeName = "repo-pr-hostile";
+      const { mainRepo, worktreeRepo } = await prepareWorktreeFixture({ worktreeName });
+      const worktreeGitDir = join(mainRepo, ".git", "worktrees", worktreeName);
+      const foreignRepo = join(testWorkDir, "repo-foreign");
+      const foreignGitDir = join(foreignRepo, ".git");
+      const foreignAccount: StoredAccountFixture = {
+        refreshToken: "foreign-refresh",
+        accountId: "foreign-account",
+        addedAt: now + 2,
+        lastUsed: now + 2,
+      };
+
+      await fs.mkdir(foreignGitDir, { recursive: true });
+      await fs.writeFile(join(worktreeGitDir, "commondir"), `${foreignGitDir}\n`, "utf-8");
+
+      setStoragePath(worktreeRepo);
+      const canonicalPath = getStoragePath();
+      const safeCanonicalPath = join(
+        getConfigDir(),
+        "projects",
+        getProjectStorageKey(worktreeRepo),
+        "openai-codex-accounts.json",
+      );
+      const foreignCanonicalPath = join(
+        getConfigDir(),
+        "projects",
+        getProjectStorageKey(foreignRepo),
+        "openai-codex-accounts.json",
+      );
+      await fs.mkdir(dirname(safeCanonicalPath), { recursive: true });
+      await fs.mkdir(dirname(foreignCanonicalPath), { recursive: true });
+      await fs.writeFile(
+        safeCanonicalPath,
+        JSON.stringify(buildStorage([accountFromLegacy]), null, 2),
+        "utf-8",
+      );
+      await fs.writeFile(
+        foreignCanonicalPath,
+        JSON.stringify(buildStorage([foreignAccount]), null, 2),
+        "utf-8",
+      );
+
+      const loaded = await loadAccounts();
+
+      expect(canonicalPath).toBe(safeCanonicalPath);
+      expect(canonicalPath).not.toBe(foreignCanonicalPath);
+      expect(loaded).not.toBeNull();
+      expect(loaded?.accounts).toHaveLength(1);
+      expect(loaded?.accounts[0]?.accountId).toBe("legacy-account");
+      expect(existsSync(canonicalPath)).toBe(true);
+
+      const foreignRaw = await fs.readFile(foreignCanonicalPath, "utf-8");
+      const foreignStorage = normalizeAccountStorage(JSON.parse(foreignRaw) as unknown);
+      expect(foreignStorage?.accounts[0]?.accountId).toBe("foreign-account");
+    });
   });
 
   describe("saveAccounts EPERM/EBUSY retry logic", () => {
