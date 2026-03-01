@@ -1,10 +1,10 @@
 #!/usr/bin/env node
 
 import { existsSync } from "node:fs";
-import { readFile, writeFile, mkdir, copyFile, rm, rename } from "node:fs/promises";
+import { readFile, writeFile, mkdir, copyFile, rm } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { dirname, join, resolve } from "node:path";
-import { normalizePluginList, resolveInstallPaths } from "./install-codex-auth-utils.js";
+import { normalizePluginList, renameWithRetry, resolveInstallPaths } from "./install-codex-auth-utils.js";
 
 const PLUGIN_NAME = "codex-multi-auth";
 
@@ -62,7 +62,7 @@ async function writeJsonAtomic(filePath, value) {
 	const content = formatJson(value);
 	try {
 		await writeFile(tempPath, content, "utf-8");
-		await rename(tempPath, filePath);
+		await renameWithRetry(tempPath, filePath, { log });
 	} finally {
 		if (existsSync(tempPath)) {
 			await rm(tempPath, { force: true });

@@ -1061,6 +1061,46 @@ function formatMenuQuotaTtl(ttlMs: number): string {
 	return `${ttlMs}ms`;
 }
 
+function clampBackendNumberForTests(settingKey: string, value: number): number {
+	const option = BACKEND_NUMBER_OPTION_BY_KEY.get(settingKey as BackendNumberSettingKey);
+	if (!option) {
+		throw new Error(`Unknown backend numeric setting key: ${settingKey}`);
+	}
+	return clampBackendNumber(option, value);
+}
+
+async function withQueuedRetryForTests<T>(
+	pathKey: string,
+	task: () => Promise<T>,
+): Promise<T> {
+	return withQueuedRetry(pathKey, task);
+}
+
+async function persistDashboardSettingsSelectionForTests(
+	selected: DashboardDisplaySettings,
+	keys: ReadonlyArray<keyof DashboardDisplaySettings>,
+	scope: string,
+): Promise<DashboardDisplaySettings> {
+	return persistDashboardSettingsSelection(selected, keys as readonly DashboardSettingKey[], scope);
+}
+
+async function persistBackendConfigSelectionForTests(
+	selected: PluginConfig,
+	scope: string,
+): Promise<PluginConfig> {
+	return persistBackendConfigSelection(selected, scope);
+}
+
+const __testOnly = {
+	clampBackendNumber: clampBackendNumberForTests,
+	formatMenuLayoutMode,
+	cloneDashboardSettings,
+	withQueuedRetry: withQueuedRetryForTests,
+	persistDashboardSettingsSelection: persistDashboardSettingsSelectionForTests,
+	persistBackendConfigSelection: persistBackendConfigSelectionForTests,
+};
+
+/* c8 ignore start - interactive prompt flows are covered by integration tests */
 async function promptDashboardDisplaySettings(
 	initial: DashboardDisplaySettings,
 ): Promise<DashboardDisplaySettings | null> {
@@ -2096,5 +2136,7 @@ async function configureUnifiedSettings(
 	}
 }
 
-export { configureUnifiedSettings, applyUiThemeFromDashboardSettings, resolveMenuLayoutMode };
+/* c8 ignore stop */
+
+export { configureUnifiedSettings, applyUiThemeFromDashboardSettings, resolveMenuLayoutMode, __testOnly };
 
