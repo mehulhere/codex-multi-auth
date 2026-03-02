@@ -205,6 +205,27 @@ async function copyFileWithRetry(
 	}
 }
 
+async function renameFileWithRetry(sourcePath: string, destinationPath: string): Promise<void> {
+	for (let attempt = 0; attempt < BACKUP_COPY_MAX_ATTEMPTS; attempt += 1) {
+		try {
+			await fs.rename(sourcePath, destinationPath);
+			return;
+		} catch (error) {
+			const code = (error as NodeJS.ErrnoException).code;
+			const canRetry =
+				(code === "EPERM" || code === "EBUSY" || code === "EAGAIN") &&
+				attempt + 1 < BACKUP_COPY_MAX_ATTEMPTS;
+			if (!canRetry) {
+				throw error;
+			}
+			const jitterMs = Math.floor(Math.random() * BACKUP_COPY_BASE_DELAY_MS);
+			await new Promise((resolve) =>
+				setTimeout(resolve, BACKUP_COPY_BASE_DELAY_MS * 2 ** attempt + jitterMs),
+			);
+		}
+	}
+}
+
 async function createRotatingAccountsBackup(path: string): Promise<void> {
 	const candidates = getAccountsBackupRecoveryCandidates(path);
 	const rotationNonce = `${Date.now()}.${Math.random().toString(36).slice(2, 8)}`;
@@ -237,7 +258,7 @@ async function createRotatingAccountsBackup(path: string): Promise<void> {
 		}
 
 		for (const stagedWrite of stagedWrites) {
-			await fs.rename(stagedWrite.stagedPath, stagedWrite.targetPath);
+			await renameFileWithRetry(stagedWrite.stagedPath, stagedWrite.targetPath);
 		}
 	} finally {
 		for (const stagedWrite of stagedWrites) {

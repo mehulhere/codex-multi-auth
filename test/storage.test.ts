@@ -1607,6 +1607,48 @@ describe("storage", () => {
       }
     });
 
+    it("retries staged backup rename on transient EBUSY and succeeds", async () => {
+      const now = Date.now();
+      const storagePath = getStoragePath();
+      const storage = {
+        version: 3 as const,
+        activeIndex: 0,
+        accounts: [{ refreshToken: "token", addedAt: now, lastUsed: now }],
+      };
+
+      // Seed a primary file so backup creation path runs on next save.
+      await saveAccounts(storage);
+
+      const originalRename = fs.rename.bind(fs);
+      let stagedRenameAttempts = 0;
+      const renameSpy = vi.spyOn(fs, "rename").mockImplementation(async (oldPath, newPath) => {
+        const sourcePath = String(oldPath);
+        if (sourcePath.includes(".rotate.")) {
+          stagedRenameAttempts += 1;
+          if (stagedRenameAttempts === 1) {
+            const err = new Error("EBUSY staged rename") as NodeJS.ErrnoException;
+            err.code = "EBUSY";
+            throw err;
+          }
+        }
+        return originalRename(oldPath as string, newPath as string);
+      });
+      try {
+        await saveAccounts({
+          ...storage,
+          accounts: [{ refreshToken: "token-next", addedAt: now + 1, lastUsed: now + 1 }],
+        });
+
+        expect(stagedRenameAttempts).toBe(2);
+        const latestBackup = JSON.parse(await fs.readFile(`${storagePath}.bak`, "utf-8")) as {
+          accounts?: Array<{ refreshToken?: string }>;
+        };
+        expect(latestBackup.accounts?.[0]?.refreshToken).toBe("token");
+      } finally {
+        renameSpy.mockRestore();
+      }
+    });
+
     it("rotates backups and retains historical snapshots", async () => {
       const now = Date.now();
       const storagePath = getStoragePath();
