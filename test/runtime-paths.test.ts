@@ -13,6 +13,10 @@ describe("runtime-paths", () => {
 		vi.clearAllMocks();
 		delete process.env.CODEX_HOME;
 		delete process.env.CODEX_MULTI_AUTH_DIR;
+		delete process.env.USERPROFILE;
+		delete process.env.HOME;
+		delete process.env.HOMEDRIVE;
+		delete process.env.HOMEPATH;
 		homedir.mockReturnValue("/home/neil");
 	});
 
@@ -64,6 +68,44 @@ describe("runtime-paths", () => {
 
 			const mod = await import("../lib/runtime-paths.js");
 			expect(mod.getCodexMultiAuthDir()).toBe("C:\\USERS\\NEIL\\.codex\\multi-auth");
+		} finally {
+			platformSpy.mockRestore();
+		}
+	});
+
+	it("prefers USERPROFILE over os.homedir on Windows when CODEX_HOME is unset", async () => {
+		const platformSpy = vi.spyOn(process, "platform", "get").mockReturnValue("win32");
+		try {
+			homedir.mockReturnValue("C:\\Windows\\System32\\config\\systemprofile");
+			process.env.USERPROFILE = "C:\\Users\\Alice";
+			const mod = await import("../lib/runtime-paths.js");
+			expect(mod.getCodexHomeDir()).toBe("C:\\Users\\Alice\\.codex");
+			expect(mod.getLegacyCodexDir()).toBe("C:\\Users\\Alice\\.codex");
+		} finally {
+			platformSpy.mockRestore();
+		}
+	});
+
+	it("falls back to HOME when USERPROFILE is missing on Windows", async () => {
+		const platformSpy = vi.spyOn(process, "platform", "get").mockReturnValue("win32");
+		try {
+			homedir.mockReturnValue("C:\\Windows\\System32\\config\\systemprofile");
+			process.env.HOME = "D:\\Users\\Bob";
+			const mod = await import("../lib/runtime-paths.js");
+			expect(mod.getCodexHomeDir()).toBe("D:\\Users\\Bob\\.codex");
+		} finally {
+			platformSpy.mockRestore();
+		}
+	});
+
+	it("falls back to HOMEDRIVE and HOMEPATH when USERPROFILE and HOME are missing on Windows", async () => {
+		const platformSpy = vi.spyOn(process, "platform", "get").mockReturnValue("win32");
+		try {
+			homedir.mockReturnValue("C:\\Windows\\System32\\config\\systemprofile");
+			process.env.HOMEDRIVE = "E:";
+			process.env.HOMEPATH = "\\Users\\Carol";
+			const mod = await import("../lib/runtime-paths.js");
+			expect(mod.getCodexHomeDir()).toBe("E:\\Users\\Carol\\.codex");
 		} finally {
 			platformSpy.mockRestore();
 		}
