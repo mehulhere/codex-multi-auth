@@ -192,7 +192,7 @@ async function copyFileWithRetry(
 				return;
 			}
 			const canRetry =
-				(code === "EPERM" || code === "EBUSY" || code === "E429" || code === "429") &&
+				(code === "EPERM" || code === "EBUSY") &&
 				attempt + 1 < BACKUP_COPY_MAX_ATTEMPTS;
 			if (canRetry) {
 				await new Promise((resolve) =>
