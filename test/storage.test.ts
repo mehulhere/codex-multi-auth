@@ -1650,6 +1650,69 @@ describe("storage", () => {
       expect(oldestBackup.accounts?.[0]?.refreshToken).toBe("token-1");
     });
 
+    it("preserves historical backups when creating the latest backup fails", async () => {
+      const now = Date.now();
+      const storagePath = getStoragePath();
+
+      await saveAccounts({
+        version: 3 as const,
+        activeIndex: 0,
+        accounts: [{ refreshToken: "token-1", addedAt: now, lastUsed: now }],
+      });
+      await saveAccounts({
+        version: 3 as const,
+        activeIndex: 0,
+        accounts: [{ refreshToken: "token-2", addedAt: now + 1, lastUsed: now + 1 }],
+      });
+      await saveAccounts({
+        version: 3 as const,
+        activeIndex: 0,
+        accounts: [{ refreshToken: "token-3", addedAt: now + 2, lastUsed: now + 2 }],
+      });
+      await saveAccounts({
+        version: 3 as const,
+        activeIndex: 0,
+        accounts: [{ refreshToken: "token-4", addedAt: now + 3, lastUsed: now + 3 }],
+      });
+
+      const originalCopy = fs.copyFile.bind(fs);
+      const copySpy = vi.spyOn(fs, "copyFile").mockImplementation(async (src, dest) => {
+        if (src === storagePath) {
+          const err = new Error("ENOSPC backup copy") as NodeJS.ErrnoException;
+          err.code = "ENOSPC";
+          throw err;
+        }
+        return originalCopy(src as string, dest as string);
+      });
+      try {
+        await saveAccounts({
+          version: 3 as const,
+          activeIndex: 0,
+          accounts: [{ refreshToken: "token-5", addedAt: now + 4, lastUsed: now + 4 }],
+        });
+      } finally {
+        copySpy.mockRestore();
+      }
+
+      const primary = JSON.parse(await fs.readFile(storagePath, "utf-8")) as {
+        accounts?: Array<{ refreshToken?: string }>;
+      };
+      const latestBackup = JSON.parse(await fs.readFile(`${storagePath}.bak`, "utf-8")) as {
+        accounts?: Array<{ refreshToken?: string }>;
+      };
+      const historicalBackup = JSON.parse(await fs.readFile(`${storagePath}.bak.1`, "utf-8")) as {
+        accounts?: Array<{ refreshToken?: string }>;
+      };
+      const oldestBackup = JSON.parse(await fs.readFile(`${storagePath}.bak.2`, "utf-8")) as {
+        accounts?: Array<{ refreshToken?: string }>;
+      };
+
+      expect(primary.accounts?.[0]?.refreshToken).toBe("token-5");
+      expect(latestBackup.accounts?.[0]?.refreshToken).toBe("token-3");
+      expect(historicalBackup.accounts?.[0]?.refreshToken).toBe("token-2");
+      expect(oldestBackup.accounts?.[0]?.refreshToken).toBe("token-1");
+    });
+
     it("keeps rotating backup order deterministic across parallel saves", async () => {
       const now = Date.now();
       const storagePath = getStoragePath();
@@ -1686,6 +1749,9 @@ describe("storage", () => {
       const latestBackup = JSON.parse(await fs.readFile(`${storagePath}.bak`, "utf-8")) as {
         accounts?: Array<{ refreshToken?: string }>;
       };
+      const primary = JSON.parse(await fs.readFile(storagePath, "utf-8")) as {
+        accounts?: Array<{ refreshToken?: string }>;
+      };
       const historicalBackup = JSON.parse(await fs.readFile(`${storagePath}.bak.1`, "utf-8")) as {
         accounts?: Array<{ refreshToken?: string }>;
       };
@@ -1693,6 +1759,7 @@ describe("storage", () => {
         accounts?: Array<{ refreshToken?: string }>;
       };
 
+      expect(primary.accounts?.[0]?.refreshToken).toBe("token-4");
       expect(latestBackup.accounts?.[0]?.refreshToken).toBe("token-3");
       expect(historicalBackup.accounts?.[0]?.refreshToken).toBe("token-2");
       expect(oldestBackup.accounts?.[0]?.refreshToken).toBe("token-1");

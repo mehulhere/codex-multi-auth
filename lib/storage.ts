@@ -207,20 +207,50 @@ async function copyFileWithRetry(
 
 async function createRotatingAccountsBackup(path: string): Promise<void> {
 	const candidates = getAccountsBackupRecoveryCandidates(path);
-	for (let i = candidates.length - 1; i > 0; i -= 1) {
-		const previousPath = candidates[i - 1];
-		const currentPath = candidates[i];
-		if (!previousPath || !currentPath || !existsSync(previousPath)) {
-			continue;
-		}
-		await copyFileWithRetry(previousPath, currentPath, { allowMissingSource: true });
-	}
+	const rotationNonce = `${Date.now()}.${Math.random().toString(36).slice(2, 8)}`;
+	const stagedWrites: Array<{ targetPath: string; stagedPath: string }> = [];
+	const buildStagedPath = (targetPath: string, label: string): string =>
+		`${targetPath}.rotate.${rotationNonce}.${label}.tmp`;
 
-	const latestBackupPath = candidates[0];
-	if (!latestBackupPath) {
-		return;
+	try {
+		for (let i = candidates.length - 1; i > 0; i -= 1) {
+			const previousPath = candidates[i - 1];
+			const currentPath = candidates[i];
+			if (!previousPath || !currentPath || !existsSync(previousPath)) {
+				continue;
+			}
+			const stagedPath = buildStagedPath(currentPath, `slot-${i}`);
+			await copyFileWithRetry(previousPath, stagedPath, { allowMissingSource: true });
+			if (existsSync(stagedPath)) {
+				stagedWrites.push({ targetPath: currentPath, stagedPath });
+			}
+		}
+
+		const latestBackupPath = candidates[0];
+		if (!latestBackupPath) {
+			return;
+		}
+		const latestStagedPath = buildStagedPath(latestBackupPath, "latest");
+		await copyFileWithRetry(path, latestStagedPath);
+		if (existsSync(latestStagedPath)) {
+			stagedWrites.push({ targetPath: latestBackupPath, stagedPath: latestStagedPath });
+		}
+
+		for (const stagedWrite of stagedWrites) {
+			await fs.rename(stagedWrite.stagedPath, stagedWrite.targetPath);
+		}
+	} finally {
+		for (const stagedWrite of stagedWrites) {
+			if (!existsSync(stagedWrite.stagedPath)) {
+				continue;
+			}
+			try {
+				await fs.unlink(stagedWrite.stagedPath);
+			} catch {
+				// Best effort cleanup for staged rotation artifacts.
+			}
+		}
 	}
-	await copyFileWithRetry(path, latestBackupPath);
 }
 
 function computeSha256(value: string): string {
