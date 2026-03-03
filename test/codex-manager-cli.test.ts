@@ -551,7 +551,7 @@ describe("codex manager cli commands", () => {
 		expect(payload.recommendedSwitchCommand).toBe("codex auth switch 2");
 	});
 
-	it("fails switch when Codex auth sync fails", async () => {
+	it("keeps local switch when Codex auth sync fails", async () => {
 		const now = Date.now();
 		loadAccountsMock.mockResolvedValueOnce({
 			version: 3,
@@ -570,14 +570,18 @@ describe("codex manager cli commands", () => {
 			],
 		});
 		setCodexCliActiveSelectionMock.mockResolvedValueOnce(false);
-		const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+		const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
 		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
 
 		const exitCode = await runCodexMultiAuthCli(["auth", "switch", "1"]);
-		expect(exitCode).toBe(1);
+		expect(exitCode).toBe(0);
 		expect(saveAccountsMock).toHaveBeenCalledTimes(1);
-		expect(errorSpy).toHaveBeenCalledWith(
-			expect.stringContaining("Codex auth sync failed"),
+		expect(warnSpy).toHaveBeenCalledWith(
+			expect.stringContaining("Codex auth sync did not complete"),
+		);
+		expect(logSpy).toHaveBeenCalledWith(
+			expect.stringContaining("Switched to account 1"),
 		);
 	});
 

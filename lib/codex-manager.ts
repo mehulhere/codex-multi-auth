@@ -3699,10 +3699,9 @@ async function runSwitch(args: string[]): Promise<number> {
 		expiresAt: account.expiresAt,
 	});
 	if (!synced) {
-		console.error(
-			`Switch failed: account ${parsed} was selected locally but Codex auth sync failed. Run \"Refresh login for this account\" and retry.`,
+		console.warn(
+			`Switched account ${parsed} locally, but Codex auth sync did not complete. Multi-auth routing will still use this account.`,
 		);
-		return 1;
 	}
 
 	console.log(

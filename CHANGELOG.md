@@ -5,6 +5,18 @@ Dates use ISO format (`YYYY-MM-DD`).
 
 This repository's canonical public release line is currently `0.x`.
 
+## [0.1.3] - 2026-03-03
+
+### Fixed
+
+- `codex auth switch <index>` now succeeds locally even when Codex host-state sync is unavailable.
+- Removed false-negative switch failures in environments where Codex no longer exposes JSON sync files (`accounts.json` / `auth.json`).
+- Clarified switch output to explicitly state local multi-auth routing remains active when host sync cannot be completed.
+
+### Added
+
+- CLI regression coverage for local-switch success when Codex auth sync returns unavailable/failure.
+
 ## [0.1.2] - 2026-03-03
 
 ### Fixed
@@ -85,3 +97,4 @@ Historical entries from pre-`0.1.0` internal iteration cycles are preserved in:
 [0.1.0]: https://github.com/ndycode/codex-multi-auth/releases/tag/v0.1.0
 [0.1.1]: https://github.com/ndycode/codex-multi-auth/releases/tag/v0.1.1
 [0.1.2]: https://github.com/ndycode/codex-multi-auth/releases/tag/v0.1.2
+[0.1.3]: https://github.com/ndycode/codex-multi-auth/releases/tag/v0.1.3
