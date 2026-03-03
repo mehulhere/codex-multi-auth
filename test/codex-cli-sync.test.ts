@@ -16,20 +16,29 @@ describe("codex-cli sync", () => {
   let tempDir: string;
   let accountsPath: string;
   let authPath: string;
+  let configPath: string;
   let previousPath: string | undefined;
   let previousAuthPath: string | undefined;
+  let previousConfigPath: string | undefined;
   let previousSync: string | undefined;
+  let previousEnforceFileStore: string | undefined;
 
   beforeEach(async () => {
     previousPath = process.env.CODEX_CLI_ACCOUNTS_PATH;
     previousAuthPath = process.env.CODEX_CLI_AUTH_PATH;
+    previousConfigPath = process.env.CODEX_CLI_CONFIG_PATH;
     previousSync = process.env.CODEX_MULTI_AUTH_SYNC_CODEX_CLI;
+    previousEnforceFileStore =
+      process.env.CODEX_MULTI_AUTH_ENFORCE_CLI_FILE_AUTH_STORE;
     tempDir = await mkdtemp(join(tmpdir(), "codex-multi-auth-sync-"));
     accountsPath = join(tempDir, "accounts.json");
     authPath = join(tempDir, "auth.json");
+    configPath = join(tempDir, "config.toml");
     process.env.CODEX_CLI_ACCOUNTS_PATH = accountsPath;
     process.env.CODEX_CLI_AUTH_PATH = authPath;
+    process.env.CODEX_CLI_CONFIG_PATH = configPath;
     process.env.CODEX_MULTI_AUTH_SYNC_CODEX_CLI = "1";
+    process.env.CODEX_MULTI_AUTH_ENFORCE_CLI_FILE_AUTH_STORE = "1";
     clearCodexCliStateCache();
   });
 
@@ -39,9 +48,17 @@ describe("codex-cli sync", () => {
     else process.env.CODEX_CLI_ACCOUNTS_PATH = previousPath;
     if (previousAuthPath === undefined) delete process.env.CODEX_CLI_AUTH_PATH;
     else process.env.CODEX_CLI_AUTH_PATH = previousAuthPath;
+    if (previousConfigPath === undefined) delete process.env.CODEX_CLI_CONFIG_PATH;
+    else process.env.CODEX_CLI_CONFIG_PATH = previousConfigPath;
     if (previousSync === undefined)
       delete process.env.CODEX_MULTI_AUTH_SYNC_CODEX_CLI;
     else process.env.CODEX_MULTI_AUTH_SYNC_CODEX_CLI = previousSync;
+    if (previousEnforceFileStore === undefined) {
+      delete process.env.CODEX_MULTI_AUTH_ENFORCE_CLI_FILE_AUTH_STORE;
+    } else {
+      process.env.CODEX_MULTI_AUTH_ENFORCE_CLI_FILE_AUTH_STORE =
+        previousEnforceFileStore;
+    }
     await rm(tempDir, { recursive: true, force: true });
   });
 

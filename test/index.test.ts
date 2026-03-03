@@ -40,7 +40,7 @@ vi.mock("../lib/auth/auth.js", () => ({
 		};
 	}),
 	redactOAuthUrlForLog: vi.fn((url: string) => url.replace(/state=[^&]+/, "state=%3Credacted%3E")),
-	REDIRECT_URI: "http://127.0.0.1:1455/auth/callback",
+	REDIRECT_URI: "http://localhost:1455/auth/callback",
 }));
 
 vi.mock("../lib/refresh-queue.js", () => ({

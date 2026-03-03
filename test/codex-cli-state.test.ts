@@ -19,21 +19,30 @@ describe("codex-cli state", () => {
   let tempDir: string;
   let accountsPath: string;
   let authPath: string;
+  let configPath: string;
   let previousPath: string | undefined;
   let previousAuthPath: string | undefined;
+  let previousConfigPath: string | undefined;
   let previousSync: string | undefined;
   let previousLegacySync: string | undefined;
+  let previousEnforceFileStore: string | undefined;
   beforeEach(async () => {
     previousPath = process.env.CODEX_CLI_ACCOUNTS_PATH;
     previousAuthPath = process.env.CODEX_CLI_AUTH_PATH;
+    previousConfigPath = process.env.CODEX_CLI_CONFIG_PATH;
     previousSync = process.env.CODEX_MULTI_AUTH_SYNC_CODEX_CLI;
     previousLegacySync = process.env.CODEX_AUTH_SYNC_CODEX_CLI;
+    previousEnforceFileStore =
+      process.env.CODEX_MULTI_AUTH_ENFORCE_CLI_FILE_AUTH_STORE;
     tempDir = await mkdtemp(join(tmpdir(), "codex-multi-auth-state-"));
     accountsPath = join(tempDir, "accounts.json");
     authPath = join(tempDir, "auth.json");
+    configPath = join(tempDir, "config.toml");
     process.env.CODEX_CLI_ACCOUNTS_PATH = accountsPath;
     process.env.CODEX_CLI_AUTH_PATH = authPath;
+    process.env.CODEX_CLI_CONFIG_PATH = configPath;
     process.env.CODEX_MULTI_AUTH_SYNC_CODEX_CLI = "1";
+    process.env.CODEX_MULTI_AUTH_ENFORCE_CLI_FILE_AUTH_STORE = "1";
     delete process.env.CODEX_AUTH_SYNC_CODEX_CLI;
     clearCodexCliStateCache();
     __resetCodexCliWarningCacheForTests();
@@ -46,12 +55,20 @@ describe("codex-cli state", () => {
     else process.env.CODEX_CLI_ACCOUNTS_PATH = previousPath;
     if (previousAuthPath === undefined) delete process.env.CODEX_CLI_AUTH_PATH;
     else process.env.CODEX_CLI_AUTH_PATH = previousAuthPath;
+    if (previousConfigPath === undefined) delete process.env.CODEX_CLI_CONFIG_PATH;
+    else process.env.CODEX_CLI_CONFIG_PATH = previousConfigPath;
     if (previousSync === undefined)
       delete process.env.CODEX_MULTI_AUTH_SYNC_CODEX_CLI;
     else process.env.CODEX_MULTI_AUTH_SYNC_CODEX_CLI = previousSync;
     if (previousLegacySync === undefined)
       delete process.env.CODEX_AUTH_SYNC_CODEX_CLI;
     else process.env.CODEX_AUTH_SYNC_CODEX_CLI = previousLegacySync;
+    if (previousEnforceFileStore === undefined) {
+      delete process.env.CODEX_MULTI_AUTH_ENFORCE_CLI_FILE_AUTH_STORE;
+    } else {
+      process.env.CODEX_MULTI_AUTH_ENFORCE_CLI_FILE_AUTH_STORE =
+        previousEnforceFileStore;
+    }
     resetCodexCliMetricsForTests();
     await rm(tempDir, { recursive: true, force: true });
   });
@@ -635,7 +652,7 @@ describe("codex-cli state", () => {
     };
     expect(writtenAuth.email).toBe("b@example.com");
     expect(writtenAuth.tokens?.access_token).toBe("fresh-access");
-    expect(writtenAuth.tokens?.id_token).toBe("old-id-token");
+    expect(writtenAuth.tokens?.id_token).toBe("fresh-access");
     expect(writtenAuth.tokens?.refresh_token).toBe("fresh-refresh");
   });
   it("does not update auth.json when no account match and selection lacks tokens", async () => {
@@ -759,7 +776,32 @@ describe("codex-cli state", () => {
       };
     };
     expect(written.tokens?.access_token).toBe("new.access.token");
-    expect(written.tokens?.id_token).toBe("old.id.token");
+    expect(written.tokens?.id_token).toBe("new.access.token");
+    expect(written.tokens?.refresh_token).toBe("new-refresh-token");
+    expect(written.tokens?.account_id).toBe("acc_new");
+  });
+  it("creates auth.json when both accounts.json and auth.json are absent", async () => {
+    const updated = await setCodexCliActiveSelection({
+      accountId: "acc_new",
+      email: "new@example.com",
+      accessToken: "new.access.token",
+      refreshToken: "new-refresh-token",
+      expiresAt: Date.parse("2026-03-01T00:00:00.000Z"),
+    });
+    expect(updated).toBe(true);
+
+    const written = JSON.parse(await readFile(authPath, "utf-8")) as {
+      email?: string;
+      tokens?: {
+        access_token?: string;
+        id_token?: string;
+        refresh_token?: string;
+        account_id?: string;
+      };
+    };
+    expect(written.email).toBe("new@example.com");
+    expect(written.tokens?.access_token).toBe("new.access.token");
+    expect(written.tokens?.id_token).toBe("new.access.token");
     expect(written.tokens?.refresh_token).toBe("new-refresh-token");
     expect(written.tokens?.account_id).toBe("acc_new");
   });

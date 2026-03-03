@@ -14,20 +14,29 @@ describe("codex-cli writer", () => {
   let tempDir: string;
   let accountsPath: string;
   let authPath: string;
+  let configPath: string;
   let previousPath: string | undefined;
   let previousAuthPath: string | undefined;
+  let previousConfigPath: string | undefined;
   let previousSync: string | undefined;
+  let previousEnforceFileStore: string | undefined;
 
   beforeEach(async () => {
     previousPath = process.env.CODEX_CLI_ACCOUNTS_PATH;
     previousAuthPath = process.env.CODEX_CLI_AUTH_PATH;
+    previousConfigPath = process.env.CODEX_CLI_CONFIG_PATH;
     previousSync = process.env.CODEX_MULTI_AUTH_SYNC_CODEX_CLI;
+    previousEnforceFileStore =
+      process.env.CODEX_MULTI_AUTH_ENFORCE_CLI_FILE_AUTH_STORE;
     tempDir = await mkdtemp(join(tmpdir(), "codex-multi-auth-writer-"));
     accountsPath = join(tempDir, "accounts.json");
     authPath = join(tempDir, "auth.json");
+    configPath = join(tempDir, "config.toml");
     process.env.CODEX_CLI_ACCOUNTS_PATH = accountsPath;
     process.env.CODEX_CLI_AUTH_PATH = authPath;
+    process.env.CODEX_CLI_CONFIG_PATH = configPath;
     process.env.CODEX_MULTI_AUTH_SYNC_CODEX_CLI = "1";
+    process.env.CODEX_MULTI_AUTH_ENFORCE_CLI_FILE_AUTH_STORE = "1";
     clearCodexCliStateCache();
     resetCodexCliMetricsForTests();
   });
@@ -38,9 +47,17 @@ describe("codex-cli writer", () => {
     else process.env.CODEX_CLI_ACCOUNTS_PATH = previousPath;
     if (previousAuthPath === undefined) delete process.env.CODEX_CLI_AUTH_PATH;
     else process.env.CODEX_CLI_AUTH_PATH = previousAuthPath;
+    if (previousConfigPath === undefined) delete process.env.CODEX_CLI_CONFIG_PATH;
+    else process.env.CODEX_CLI_CONFIG_PATH = previousConfigPath;
     if (previousSync === undefined)
       delete process.env.CODEX_MULTI_AUTH_SYNC_CODEX_CLI;
     else process.env.CODEX_MULTI_AUTH_SYNC_CODEX_CLI = previousSync;
+    if (previousEnforceFileStore === undefined) {
+      delete process.env.CODEX_MULTI_AUTH_ENFORCE_CLI_FILE_AUTH_STORE;
+    } else {
+      process.env.CODEX_MULTI_AUTH_ENFORCE_CLI_FILE_AUTH_STORE =
+        previousEnforceFileStore;
+    }
     resetCodexCliMetricsForTests();
     await rm(tempDir, { recursive: true, force: true });
   });
@@ -51,6 +68,44 @@ describe("codex-cli writer", () => {
     expect(getCodexCliMetricsSnapshot().writeFailures).toBeGreaterThanOrEqual(
       1,
     );
+  });
+
+  it("creates auth.json when missing and selection includes tokens", async () => {
+    const updated = await setCodexCliActiveSelection({
+      accountId: "acc_new",
+      email: "new@example.com",
+      accessToken: "new-access",
+      refreshToken: "new-refresh",
+    });
+    expect(updated).toBe(true);
+
+    const writtenAuth = JSON.parse(await readFile(authPath, "utf-8")) as {
+      email?: string;
+      tokens?: {
+        access_token?: string;
+        id_token?: string;
+        refresh_token?: string;
+        account_id?: string;
+      };
+    };
+    expect(writtenAuth.email).toBe("new@example.com");
+    expect(writtenAuth.tokens?.access_token).toBe("new-access");
+    expect(writtenAuth.tokens?.id_token).toBe("new-access");
+    expect(writtenAuth.tokens?.refresh_token).toBe("new-refresh");
+    expect(writtenAuth.tokens?.account_id).toBe("acc_new");
+  });
+
+  it("forces file-backed Codex auth store in config.toml", async () => {
+    const updated = await setCodexCliActiveSelection({
+      accountId: "acc_new",
+      email: "new@example.com",
+      accessToken: "new-access",
+      refreshToken: "new-refresh",
+    });
+    expect(updated).toBe(true);
+
+    const writtenConfig = await readFile(configPath, "utf-8");
+    expect(writtenConfig).toContain('cli_auth_credentials_store = "file"');
   });
 
   it("matches by email, preserves non-record entries, and writes string expires_at as ISO time", async () => {
@@ -330,13 +385,58 @@ describe("codex-cli writer", () => {
       tokens?: {
         account_id?: string;
         access_token?: string;
+        id_token?: string;
         refresh_token?: string;
       };
     };
     expect(writtenAuth.email).toBe("direct@example.com");
     expect(writtenAuth.tokens?.account_id).toBe("acc_direct");
     expect(writtenAuth.tokens?.access_token).toBe("direct-access");
+    expect(writtenAuth.tokens?.id_token).toBe("direct-access");
     expect(writtenAuth.tokens?.refresh_token).toBe("direct-refresh");
+  });
+
+  it("falls back id_token to selected access token when idToken is missing", async () => {
+    await writeFile(
+      authPath,
+      JSON.stringify(
+        {
+          auth_mode: "chatgpt",
+          email: "old@example.com",
+          tokens: {
+            access_token: "old-access",
+            refresh_token: "old-refresh",
+            id_token: "old-id-token",
+          },
+        },
+        null,
+        2,
+      ),
+      "utf-8",
+    );
+
+    const updated = await setCodexCliActiveSelection({
+      accountId: "acc_new",
+      email: "new@example.com",
+      accessToken: "new-access",
+      refreshToken: "new-refresh",
+    });
+    expect(updated).toBe(true);
+
+    const writtenAuth = JSON.parse(await readFile(authPath, "utf-8")) as {
+      email?: string;
+      tokens?: {
+        account_id?: string;
+        access_token?: string;
+        refresh_token?: string;
+        id_token?: string;
+      };
+    };
+    expect(writtenAuth.email).toBe("new@example.com");
+    expect(writtenAuth.tokens?.account_id).toBe("acc_new");
+    expect(writtenAuth.tokens?.access_token).toBe("new-access");
+    expect(writtenAuth.tokens?.refresh_token).toBe("new-refresh");
+    expect(writtenAuth.tokens?.id_token).toBe("new-access");
   });
 
   it("surfaces auth-path errors when accounts file is absent", async () => {
@@ -348,5 +448,40 @@ describe("codex-cli writer", () => {
       refreshToken: "r",
     });
     expect(updated).toBe(false);
+  });
+
+  it("rejects partial token payloads to avoid mixing stale auth tokens", async () => {
+    await writeFile(
+      authPath,
+      JSON.stringify(
+        {
+          auth_mode: "chatgpt",
+          tokens: {
+            access_token: "old-access",
+            refresh_token: "old-refresh",
+            account_id: "old-account",
+          },
+        },
+        null,
+        2,
+      ),
+      "utf-8",
+    );
+
+    const updated = await setCodexCliActiveSelection({
+      accountId: "acc_partial",
+      email: "partial@example.com",
+      accessToken: "new-access-only",
+    });
+    expect(updated).toBe(false);
+
+    const writtenAuth = JSON.parse(await readFile(authPath, "utf-8")) as {
+      tokens?: { access_token?: string; refresh_token?: string; account_id?: string };
+      email?: string;
+    };
+    expect(writtenAuth.tokens?.access_token).toBe("old-access");
+    expect(writtenAuth.tokens?.refresh_token).toBe("old-refresh");
+    expect(writtenAuth.tokens?.account_id).toBe("old-account");
+    expect(writtenAuth.email).toBeUndefined();
   });
 });

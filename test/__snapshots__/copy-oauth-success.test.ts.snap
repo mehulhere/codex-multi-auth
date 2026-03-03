@@ -259,7 +259,7 @@ exports[`copy-oauth-success script > copies oauth-success.html to the requested 
       <div class="meta-row">
         <span>Callback</span>
         <!-- Port 1455 is fixed by design via REDIRECT_URI -->
-        <code>127.0.0.1:1455</code>
+        <code>localhost:1455</code>
       </div>
       <div class="meta-row">
         <span>Tip</span>
