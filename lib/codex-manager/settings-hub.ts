@@ -763,13 +763,6 @@ async function persistDashboardSettingsSelection(
 }
 
 async function readFileWithRetry(path: string): Promise<string> {
-	const retryable = new Set([
-		"EBUSY",
-		"EPERM",
-		"EAGAIN",
-		"ENOTEMPTY",
-		"EACCES",
-	]);
 	for (let attempt = 0; ; attempt += 1) {
 		try {
 			return await fs.readFile(path, "utf-8");
@@ -778,7 +771,11 @@ async function readFileWithRetry(path: string): Promise<string> {
 			if (code === "ENOENT") {
 				throw error;
 			}
-			if (!code || !retryable.has(code) || attempt >= 3) {
+			if (
+				!code ||
+				!RETRYABLE_SETTINGS_WRITE_CODES.has(code) ||
+				attempt >= SETTINGS_WRITE_MAX_ATTEMPTS - 1
+			) {
 				throw error;
 			}
 			await sleep(25 * 2 ** attempt);
@@ -2653,7 +2650,7 @@ async function promptExperimentalSettings(
 						{
 							message: UI_COPY.settings.experimentalTitle,
 							subtitle: UI_COPY.settings.experimentalSubtitle,
-							help: UI_COPY.settings.experimentalHelpMenu,
+							help: UI_COPY.settings.experimentalHelpStatus,
 							clearScreen: true,
 							theme: ui.theme,
 							selectedEmphasis: "minimal",
@@ -2714,7 +2711,7 @@ async function promptExperimentalSettings(
 				{
 					message: UI_COPY.settings.experimentalTitle,
 					subtitle: UI_COPY.settings.experimentalSubtitle,
-					help: UI_COPY.settings.experimentalHelpPreview,
+					help: UI_COPY.settings.experimentalHelpStatus,
 					clearScreen: true,
 					theme: ui.theme,
 					selectedEmphasis: "minimal",

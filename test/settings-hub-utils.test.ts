@@ -459,10 +459,6 @@ describe("settings-hub utility coverage", () => {
 				direction: 1,
 			},
 			{ type: "back" },
-			{ type: "open-category", key: "refresh-recovery" },
-			{ type: "toggle", key: "proactiveRefreshGuardian" },
-			{ type: "bump", key: "proactiveRefreshIntervalMs", direction: 1 },
-			{ type: "back" },
 			{ type: "open-category", key: "performance-timeouts" },
 			{ type: "toggle", key: "parallelProbing" },
 			{ type: "bump", key: "fetchTimeoutMs", direction: 1 },
@@ -482,11 +478,6 @@ describe("settings-hub utility coverage", () => {
 				preemptiveQuotaRemainingPercent5h: api.clampBackendNumber(
 					"preemptiveQuotaRemainingPercent5h",
 					(defaults.preemptiveQuotaRemainingPercent5h ?? 0) + 1,
-				),
-				proactiveRefreshGuardian: !(defaults.proactiveRefreshGuardian ?? false),
-				proactiveRefreshIntervalMs: api.clampBackendNumber(
-					"proactiveRefreshIntervalMs",
-					(defaults.proactiveRefreshIntervalMs ?? 5_000) + 5_000,
 				),
 				parallelProbing: !(defaults.parallelProbing ?? false),
 				fetchTimeoutMs: api.clampBackendNumber(
