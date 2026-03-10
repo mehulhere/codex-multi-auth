@@ -222,6 +222,7 @@ describe("Documentation Integrity", () => {
 		expect(commandRef).toContain("Account List View:");
 		expect(commandRef).toContain("Summary Line:");
 		expect(commandRef).toContain("Menu Behavior:");
+		expect(commandRef).toContain("Color Theme:");
 		expect(commandRef).toContain("Backend Controls:");
 
 		expect(storagePaths).toContain('cli_auth_credentials_store="file"');
