@@ -136,9 +136,6 @@ vi.mock("../lib/ui/select.js", () => ({
 	select: selectMock,
 }));
 
-
-
-
 const stdinIsTTYDescriptor = Object.getOwnPropertyDescriptor(
 	process.stdin,
 	"isTTY",
@@ -239,13 +236,7 @@ const SETTINGS_HUB_MENU_ORDER = [
 	"backend",
 ] as const;
 
-const BASELINE_SETTINGS_HUB_PANELS = [
-	"account-list",
-	"summary-fields",
-	"behavior",
-	"theme",
-	"backend",
-] as const;
+const BASELINE_SETTINGS_HUB_PANELS = SETTINGS_HUB_MENU_ORDER;
 
 const SETTINGS_CANCEL_MODES = [
 	"windows-ebusy",
@@ -365,7 +356,11 @@ function createSettingsCancelSequence(
 }
 
 function readSettingsHubPanelContract(): string[] {
-	const items = (selectMock.mock.calls[0]?.[0] ?? []) as SettingsHubMenuItem[];
+	const hubCall = selectMock.mock.calls.find((call) => {
+		const items = (call[0] ?? []) as SettingsHubMenuItem[];
+		return items.some((item) => item.value?.type === "account-list");
+	});
+	const items = (hubCall?.[0] ?? []) as SettingsHubMenuItem[];
 	return items
 		.filter(
 			(item) => !item.separator && !item.disabled && item.kind !== "heading",
@@ -1642,9 +1637,7 @@ describe("codex manager cli commands", () => {
 
 		const exitCode = await runCodexMultiAuthCli(["auth", "login"]);
 		expect(exitCode).toBe(0);
-		expect(readSettingsHubPanelContract()).toEqual(
-			SETTINGS_HUB_MENU_ORDER,
-		);
+		expect(readSettingsHubPanelContract()).toEqual(SETTINGS_HUB_MENU_ORDER);
 		expect(selectSequence.remaining()).toBe(0);
 		expect(saveDashboardDisplaySettingsMock).toHaveBeenCalled();
 		expect(savePluginConfigMock).toHaveBeenCalledTimes(1);
@@ -1655,13 +1648,6 @@ describe("codex manager cli commands", () => {
 			}),
 		);
 	});
-
-
-
-
-
-
-
 
 	it("drives current settings panels through representative hotkeys and persists each section", async () => {
 		const now = Date.now();
@@ -1734,9 +1720,7 @@ describe("codex manager cli commands", () => {
 		const exitCode = await runCodexMultiAuthCli(["auth", "login"]);
 
 		expect(exitCode).toBe(0);
-		expect(readSettingsHubPanelContract()).toEqual(
-			SETTINGS_HUB_MENU_ORDER,
-		);
+		expect(readSettingsHubPanelContract()).toEqual(SETTINGS_HUB_MENU_ORDER);
 		expect(selectSequence.remaining()).toBe(0);
 		expect(saveDashboardDisplaySettingsMock).toHaveBeenCalledTimes(4);
 		expect(saveDashboardDisplaySettingsMock.mock.calls[0]?.[0]).toEqual(
@@ -1772,8 +1756,6 @@ describe("codex manager cli commands", () => {
 			}),
 		);
 	});
-
-
 
 	it("persists representative backend edits across all current backend categories", async () => {
 		const now = Date.now();
@@ -1830,8 +1812,7 @@ describe("codex manager cli commands", () => {
 				preemptiveQuotaRemainingPercent5h:
 					(defaults.preemptiveQuotaRemainingPercent5h ?? 0) + 1,
 				storageBackupEnabled: !(defaults.storageBackupEnabled ?? false),
-				tokenRefreshSkewMs:
-					(defaults.tokenRefreshSkewMs ?? 60_000) + 10_000,
+				tokenRefreshSkewMs: (defaults.tokenRefreshSkewMs ?? 60_000) + 10_000,
 				parallelProbing: !(defaults.parallelProbing ?? false),
 				fetchTimeoutMs: (defaults.fetchTimeoutMs ?? 60_000) + 5_000,
 			}),
@@ -1928,6 +1909,8 @@ describe("codex manager cli commands", () => {
 			);
 
 			if (mode === "windows-ebusy") {
+				// Defensive scaffolding: if the cancel path regresses and attempts a save,
+				// it should not silently swallow a transient Windows EBUSY failure.
 				const busy = makeErrnoError("busy", "EBUSY");
 				saveDashboardDisplaySettingsMock.mockRejectedValue(busy);
 				savePluginConfigMock.mockRejectedValue(busy);
