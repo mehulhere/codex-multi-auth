@@ -128,6 +128,7 @@ describe("unified settings", () => {
 		});
 		try {
 			await saveUnifiedPluginConfig({ codexMode: true, retries: 1 });
+			expect(renameSpy).toHaveBeenCalledTimes(2);
 			expect(loadUnifiedPluginConfigSync()).toEqual({
 				codexMode: true,
 				retries: 1,
@@ -177,6 +178,7 @@ describe("unified settings", () => {
 		});
 		try {
 			await saveUnifiedPluginConfig({ codexMode: true, retries: 2 });
+			expect(renameSpy).toHaveBeenCalledTimes(2);
 			expect(loadUnifiedPluginConfigSync()).toEqual({
 				codexMode: true,
 				retries: 2,
@@ -221,6 +223,7 @@ describe("unified settings", () => {
 			getUnifiedSettingsPath,
 		} = await import("../lib/unified-settings.js");
 
+		// Requires FIFO write queue semantics: the second enqueued write must commit last.
 		await Promise.all([
 			saveUnifiedPluginConfig({ codexMode: false, requestTimeoutMs: 30_000 }),
 			saveUnifiedPluginConfig({
