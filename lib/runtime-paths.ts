@@ -78,7 +78,7 @@ function pathsEqualNormalized(a: string, b: string): boolean {
 		if (process.platform === "win32") {
 			return win32.normalize(trimmed).toLowerCase();
 		}
-		return trimmed;
+		return trimmed === "/" ? "/" : trimmed.replace(/\/+$/, "");
 	};
 	return normalize(a) === normalize(b);
 }

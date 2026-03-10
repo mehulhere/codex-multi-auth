@@ -13,6 +13,29 @@ import {
 	getRestoreAssessment,
 } from "../lib/storage.js";
 
+const RETRYABLE_REMOVE_CODES = new Set(["EBUSY", "EPERM", "ENOTEMPTY", "EACCES"]);
+
+async function removeWithRetry(
+	targetPath: string,
+	options: { recursive?: boolean; force?: boolean },
+): Promise<void> {
+	for (let attempt = 0; attempt < 6; attempt += 1) {
+		try {
+			await fs.rm(targetPath, options);
+			return;
+		} catch (error) {
+			const code = (error as NodeJS.ErrnoException).code;
+			if (code === "ENOENT") {
+				return;
+			}
+			if (!code || !RETRYABLE_REMOVE_CODES.has(code) || attempt === 5) {
+				throw error;
+			}
+			await new Promise((resolve) => setTimeout(resolve, 25 * 2 ** attempt));
+		}
+	}
+}
+
 function getRestoreEligibility(value: unknown): { restoreEligible?: boolean; restoreReason?: string } {
 	if (value && typeof value === "object" && "restoreEligible" in value) {
 		const candidate = value as { restoreEligible?: unknown; restoreReason?: unknown };
@@ -43,7 +66,7 @@ describe("storage recovery paths", () => {
 	afterEach(async () => {
 		setStoragePathDirect(null);
 		setStorageBackupEnabled(true);
-		await fs.rm(workDir, { recursive: true, force: true });
+		await removeWithRetry(workDir, { recursive: true, force: true });
 	});
 
 	it("recovers from WAL journal when primary storage is unreadable", async () => {
@@ -512,6 +535,41 @@ describe("storage recovery paths", () => {
 		const eligibleAfterReset = await getRestoreAssessment();
 		expect(eligibleAfterReset.restoreEligible).toBe(true);
 		expect(eligibleAfterReset.restoreReason).toBe("empty-storage");
+	});
+
+	it("does not revive WAL contents after reset assessment runs before load", async () => {
+		const walPayload = {
+			version: 3,
+			activeIndex: 0,
+			accounts: [
+				{
+					refreshToken: "stale-refresh",
+					accountId: "stale-account",
+					addedAt: 1,
+					lastUsed: 1,
+				},
+			],
+		};
+		const walContent = JSON.stringify(walPayload);
+		const walEntry = {
+			version: 1,
+			createdAt: Date.now(),
+			path: storagePath,
+			checksum: sha256(walContent),
+			content: walContent,
+		};
+
+		await saveAccounts(walPayload);
+		await clearAccounts();
+		await fs.writeFile(`${storagePath}.wal`, JSON.stringify(walEntry), "utf-8");
+
+		const assessment = await getRestoreAssessment();
+		expect(assessment.restoreEligible).toBe(false);
+		expect(assessment.restoreReason).toBe("intentional-reset");
+
+		const reloaded = await loadAccounts();
+		expect(reloaded?.accounts).toHaveLength(0);
+		expect(getRestoreEligibility(reloaded).restoreReason).toBe("intentional-reset");
 	});
 
 	it("cleans up stale staged backup artifacts during load", async () => {

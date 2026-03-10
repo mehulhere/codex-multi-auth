@@ -20,6 +20,29 @@ import {
   withAccountStorageTransaction,
 } from "../lib/storage.js";
 
+const RETRYABLE_REMOVE_CODES = new Set(["EBUSY", "EPERM", "ENOTEMPTY", "EACCES"]);
+
+async function removeWithRetry(
+  targetPath: string,
+  options: { recursive?: boolean; force?: boolean },
+): Promise<void> {
+  for (let attempt = 0; attempt < 6; attempt += 1) {
+    try {
+      await fs.rm(targetPath, options);
+      return;
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code === "ENOENT") {
+        return;
+      }
+      if (!code || !RETRYABLE_REMOVE_CODES.has(code) || attempt === 5) {
+        throw error;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 25 * 2 ** attempt));
+    }
+  }
+}
+
 // Mocking the behavior we're about to implement for TDD
 // Since the functions aren't in lib/storage.ts yet, we'll need to mock them or 
 // accept that this test won't even compile/run until we add them.
@@ -113,7 +136,7 @@ describe("storage", () => {
 
     afterEach(async () => {
       setStoragePathDirect(null);
-      await fs.rm(testWorkDir, { recursive: true, force: true });
+      await removeWithRetry(testWorkDir, { recursive: true, force: true });
     });
 
     it("should export accounts to a file", async () => {
@@ -635,7 +658,7 @@ describe("storage", () => {
 
     afterEach(async () => {
       setStoragePathDirect(null);
-      await fs.rm(testWorkDir, { recursive: true, force: true });
+      await removeWithRetry(testWorkDir, { recursive: true, force: true });
     });
 
 		it("returns null when file does not exist", async () => {
@@ -712,7 +735,7 @@ describe("storage", () => {
 
     afterEach(async () => {
       setStoragePathDirect(null);
-      await fs.rm(testWorkDir, { recursive: true, force: true });
+      await removeWithRetry(testWorkDir, { recursive: true, force: true });
     });
 
     it("creates directory and saves file", async () => {
@@ -742,7 +765,7 @@ describe("storage", () => {
 
     afterEach(async () => {
       setStoragePathDirect(null);
-      await fs.rm(testWorkDir, { recursive: true, force: true });
+      await removeWithRetry(testWorkDir, { recursive: true, force: true });
     });
 
     it("deletes the file when it exists", async () => {
@@ -812,7 +835,7 @@ describe("storage", () => {
         else process.env.HOME = originalHome;
         if (originalUserProfile === undefined) delete process.env.USERPROFILE;
         else process.env.USERPROFILE = originalUserProfile;
-        await fs.rm(testWorkDir, { recursive: true, force: true });
+        await removeWithRetry(testWorkDir, { recursive: true, force: true });
       }
     });
   });
@@ -886,7 +909,7 @@ describe("storage", () => {
 
     afterEach(async () => {
       setStoragePathDirect(null);
-      await fs.rm(testWorkDir, { recursive: true, force: true });
+      await removeWithRetry(testWorkDir, { recursive: true, force: true });
     });
 
     it("logs but does not throw on non-ENOENT errors", async () => {
@@ -940,7 +963,7 @@ describe("storage", () => {
       else process.env.HOME = originalHome;
       if (originalUserProfile === undefined) delete process.env.USERPROFILE;
       else process.env.USERPROFILE = originalUserProfile;
-      await fs.rm(testWorkDir, { recursive: true, force: true });
+      await removeWithRetry(testWorkDir, { recursive: true, force: true });
     });
 
     it("writes .gitignore in project root when storage path is externalized", async () => {
@@ -1031,7 +1054,7 @@ describe("storage", () => {
       else process.env.HOME = originalHome;
       if (originalUserProfile === undefined) delete process.env.USERPROFILE;
       else process.env.USERPROFILE = originalUserProfile;
-      await fs.rm(testWorkDir, { recursive: true, force: true });
+      await removeWithRetry(testWorkDir, { recursive: true, force: true });
     });
 
     it("removes legacy project storage file after successful migration", async () => {
@@ -1183,7 +1206,7 @@ describe("storage", () => {
       else process.env.USERPROFILE = originalUserProfile;
       if (originalMultiAuthDir === undefined) delete process.env.CODEX_MULTI_AUTH_DIR;
       else process.env.CODEX_MULTI_AUTH_DIR = originalMultiAuthDir;
-      await fs.rm(testWorkDir, { recursive: true, force: true });
+      await removeWithRetry(testWorkDir, { recursive: true, force: true });
       vi.restoreAllMocks();
     });
 
@@ -1451,7 +1474,7 @@ describe("storage", () => {
     afterEach(async () => {
       vi.useRealTimers();
       setStoragePathDirect(null);
-      await fs.rm(testWorkDir, { recursive: true, force: true });
+      await removeWithRetry(testWorkDir, { recursive: true, force: true });
     });
 
     it("retries on EPERM and succeeds on second attempt", async () => {
@@ -1869,7 +1892,7 @@ describe("storage", () => {
 		expect(existsSync(`${storagePath}.bak`)).toBe(true);
 		expect(existsSync(`${storagePath}.bak.1`)).toBe(true);
 		expect(existsSync(`${storagePath}.bak.2`)).toBe(true);
-		expect(existsSync(`${storagePath}.wal`)).toBe(true);
+		expect(existsSync(`${storagePath}.wal`)).toBe(false);
 	});
 
     it("logs error for non-ENOENT errors during clear", async () => {

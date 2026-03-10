@@ -745,15 +745,15 @@ async function loadAccountsForRestoreAssessment(path: string): Promise<AccountSt
 			return null;
 		}
 
-		if (hasIntentionalResetMarker) {
-			await removeIntentionalResetMarker(path);
-		}
-
 		const annotated: AccountStorageWithMetadata = { ...normalized };
 		if (annotated.accounts.length === 0) {
-			annotated.restoreEligible = hasIntentionalResetMarker ? false : true;
-			annotated.restoreReason = hasIntentionalResetMarker ? "intentional-reset" : "empty-storage";
+			if (hasIntentionalResetMarker) {
+				await removeIntentionalResetMarker(path);
+			}
+			annotated.restoreEligible = true;
+			annotated.restoreReason = "empty-storage";
 		} else if (hasIntentionalResetMarker) {
+			await removeIntentionalResetMarker(path);
 			annotated.restoreEligible = false;
 			annotated.restoreReason = "intentional-reset";
 		}
@@ -763,7 +763,6 @@ async function loadAccountsForRestoreAssessment(path: string): Promise<AccountSt
 		const code = (error as NodeJS.ErrnoException).code;
 		if (code === "ENOENT") {
 			if (hasIntentionalResetMarker) {
-				await removeIntentionalResetMarker(path);
 				return {
 					...createEmptyAccountStorage(),
 					restoreEligible: false,
@@ -1405,22 +1404,19 @@ async function loadAccountsInternal(
 	const resetMarkerPath = getIntentionalResetMarkerPath(path);
 	const hasIntentionalResetMarker = existsSync(resetMarkerPath);
 	await cleanupStaleRotatingBackupArtifacts(path);
+	if (hasIntentionalResetMarker && !existsSync(path)) {
+		return {
+			...createEmptyAccountStorage(),
+			restoreEligible: false,
+			restoreReason: "intentional-reset",
+		};
+	}
 	const migratedLegacyStorage = persistMigration
 		? await migrateLegacyProjectStorageIfNeeded(persistMigration)
 		: null;
 	const migratedFallbackStorage = persistMigration
 		? await migrateFallbackAccountStorageIfNeeded(path, persistMigration)
 		: null;
-
-	if (hasIntentionalResetMarker && !existsSync(path)) {
-		await removeIntentionalResetMarker(path);
-		const emptyStorageWithMetadata: AccountStorageWithMetadata = {
-			...createEmptyAccountStorage(),
-			restoreEligible: false,
-			restoreReason: "intentional-reset",
-		};
-		return emptyStorageWithMetadata;
-	}
 
 	try {
 		const { normalized, storedVersion, schemaErrors } = await loadAccountsFromPath(path);
@@ -1487,8 +1483,8 @@ async function loadAccountsInternal(
 
 		const annotated: AccountStorageWithMetadata = { ...normalized };
 		if (annotated.accounts.length === 0) {
-			annotated.restoreEligible = hasIntentionalResetMarker ? false : true;
-			annotated.restoreReason = hasIntentionalResetMarker ? "intentional-reset" : "empty-storage";
+			annotated.restoreEligible = true;
+			annotated.restoreReason = "empty-storage";
 		} else if (hasIntentionalResetMarker) {
 			annotated.restoreEligible = false;
 			annotated.restoreReason = "intentional-reset";
@@ -1497,6 +1493,13 @@ async function loadAccountsInternal(
 		return annotated;
 	} catch (error) {
 		const code = (error as NodeJS.ErrnoException).code;
+		if (hasIntentionalResetMarker) {
+			return {
+				...createEmptyAccountStorage(),
+				restoreEligible: false,
+				restoreReason: "intentional-reset",
+			};
+		}
 		if (code === "ENOENT") {
 			if (migratedFallbackStorage) {
 				return migratedFallbackStorage;
@@ -1504,14 +1507,6 @@ async function loadAccountsInternal(
 			if (migratedLegacyStorage) {
 				return migratedLegacyStorage;
 			}
-		}
-		if (code === "ENOENT" && hasIntentionalResetMarker) {
-			await removeIntentionalResetMarker(path);
-			return {
-				...createEmptyAccountStorage(),
-				restoreEligible: false,
-				restoreReason: "intentional-reset",
-			};
 		}
 
 	const recoveredFromWal = await loadAccountsFromJournal(path);
@@ -1769,6 +1764,7 @@ export async function clearAccounts(): Promise<void> {
   return withStorageLock(async () => {
     const path = getStoragePath();
 	const markerPath = getIntentionalResetMarkerPath(path);
+	const walPath = getAccountsWalPath(path);
 
 	try {
 		await fs.mkdir(dirname(path), { recursive: true });
@@ -1779,14 +1775,24 @@ export async function clearAccounts(): Promise<void> {
 		}
 	}
 
+	// withStorageLock serializes in-process resets; if another process observes the reset marker
+	// before the primary disappears, later loads still require a canonical file and never revive
+	// token-bearing WAL or backup artifacts while the marker is present. Logging stays path-only.
+	// See test/storage-recovery-paths.test.ts for the reset -> assessment -> load regression.
 	await writeIntentionalResetMarker(path);
 
-	try {
-		await fs.unlink(path);
-	} catch (error) {
-		const code = (error as NodeJS.ErrnoException).code;
-		if (code !== "ENOENT") {
-			log.error("Failed to clear account storage", { path, markerPath, error: String(error) });
+	for (const targetPath of [path, walPath]) {
+		try {
+			await fs.unlink(targetPath);
+		} catch (error) {
+			const code = (error as NodeJS.ErrnoException).code;
+			if (code !== "ENOENT") {
+				log.error("Failed to clear account storage", {
+					path: targetPath,
+					markerPath,
+					error: String(error),
+				});
+			}
 		}
 	}
   });
