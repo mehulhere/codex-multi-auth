@@ -228,6 +228,12 @@ describe("Documentation Integrity", () => {
 		expect(storagePaths).toContain('cli_auth_credentials_store="file"');
 		expect(storagePaths).toContain("CODEX_MULTI_AUTH_FORCE_FILE_AUTH_STORE=0");
 		expect(storagePaths).toContain("outside interactive terminals");
+		expect(storagePaths).toContain("Windows note:");
+		expect(storagePaths).toContain("EPERM");
+		expect(storagePaths).toContain("EBUSY");
+		expect(storagePaths).toContain(
+			"does not rewrite or expose previously written CLI auth files",
+		);
 		expect(storagePaths).toContain("letters, numbers, `_`, and `-`");
 		expect(storagePaths).toContain(
 			"global root: `~/.codex/multi-auth/backups/<name>.json`",
@@ -336,6 +342,7 @@ describe("Documentation Integrity", () => {
 		expect(UI_COPY.settings.backendHelp).toBe(
 			"Enter Open | 1-4 Category | S Save | R Reset | Q Back (No Save)",
 		);
+		expect(UI_COPY.settings.backendHelp).not.toContain("`+` / `-`");
 	});
 
 	it("keeps settings reference sections aligned with current menu labels and backend categories", () => {

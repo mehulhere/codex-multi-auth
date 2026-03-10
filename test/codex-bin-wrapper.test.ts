@@ -1,5 +1,12 @@
-import { spawn, spawnSync, type SpawnSyncReturns } from "node:child_process";
-import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { type SpawnSyncReturns, spawn, spawnSync } from "node:child_process";
+import {
+	copyFileSync,
+	mkdirSync,
+	mkdtempSync,
+	readFileSync,
+	rmSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, dirname, join } from "node:path";
 import process from "node:process";
@@ -42,8 +49,14 @@ function createWrapperFixture(): string {
 	createdDirs.push(fixtureRoot);
 	const scriptDir = join(fixtureRoot, "scripts");
 	mkdirSync(scriptDir, { recursive: true });
-	copyFileSync(join(repoRootDir, "scripts", "codex.js"), join(scriptDir, "codex.js"));
-	copyFileSync(join(repoRootDir, "scripts", "codex-routing.js"), join(scriptDir, "codex-routing.js"));
+	copyFileSync(
+		join(repoRootDir, "scripts", "codex.js"),
+		join(scriptDir, "codex.js"),
+	);
+	copyFileSync(
+		join(repoRootDir, "scripts", "codex-routing.js"),
+		join(scriptDir, "codex-routing.js"),
+	);
 	return fixtureRoot;
 }
 
@@ -149,7 +162,9 @@ function runWrapperAsync(
 	});
 }
 
-function combinedOutput(result: SpawnSyncReturns<string> | WrapperAsyncResult): string {
+function combinedOutput(
+	result: SpawnSyncReturns<string> | WrapperAsyncResult,
+): string {
 	return `${result.stdout ?? ""}\n${result.stderr ?? ""}`;
 }
 
@@ -185,6 +200,32 @@ describe("codex bin wrapper", () => {
 		expect(result.stdout).toContain("FORWARDED:--version");
 	});
 
+	it("injects file auth store forwarding for wrapped real cli invocations by default", () => {
+		const fixtureRoot = createWrapperFixture();
+		const fakeBin = createFakeCodexBin(fixtureRoot);
+		const result = runWrapper(fixtureRoot, ["exec", "status"], {
+			CODEX_MULTI_AUTH_REAL_CODEX_BIN: fakeBin,
+		});
+
+		expect(result.status).toBe(0);
+		expect(result.stdout).toContain(
+			'FORWARDED:exec status -c cli_auth_credentials_store="file"',
+		);
+	});
+
+	it("skips file auth store forwarding when the opt-out env var is disabled", () => {
+		const fixtureRoot = createWrapperFixture();
+		const fakeBin = createFakeCodexBin(fixtureRoot);
+		const result = runWrapper(fixtureRoot, ["exec", "status"], {
+			CODEX_MULTI_AUTH_REAL_CODEX_BIN: fakeBin,
+			CODEX_MULTI_AUTH_FORCE_FILE_AUTH_STORE: "0",
+		});
+
+		expect(result.status).toBe(0);
+		expect(result.stdout).toContain("FORWARDED:exec status");
+		expect(result.stdout).not.toContain('cli_auth_credentials_store="file"');
+	});
+
 	it("installs Windows codex shell guards to survive shim takeover", () => {
 		if (process.platform !== "win32") {
 			return;
@@ -206,7 +247,8 @@ describe("codex bin wrapper", () => {
 		);
 		writeFileSync(
 			join(shimDir, "codex.ps1"),
-			'Write-Output "$basedir/node_modules/@openai/codex/bin/codex.js"' + "\r\n",
+			'Write-Output "$basedir/node_modules/@openai/codex/bin/codex.js"' +
+				"\r\n",
 			"utf8",
 		);
 
@@ -246,7 +288,9 @@ describe("codex bin wrapper", () => {
 		expect(readFileSync(pwshProfilePath, "utf8")).toContain(
 			"# >>> codex-multi-auth shell guard >>>",
 		);
-		expect(readFileSync(pwshProfilePath, "utf8")).toContain("CodexMultiAuthShim");
+		expect(readFileSync(pwshProfilePath, "utf8")).toContain(
+			"CodexMultiAuthShim",
+		);
 	});
 
 	it("prefers invocation-derived shim directory over PATH-decoy shim entries", () => {
@@ -254,13 +298,26 @@ describe("codex bin wrapper", () => {
 			return;
 		}
 
-		const fixtureRoot = mkdtempSync(join(tmpdir(), "codex-wrapper-invoke-fixture-"));
+		const fixtureRoot = mkdtempSync(
+			join(tmpdir(), "codex-wrapper-invoke-fixture-"),
+		);
 		createdDirs.push(fixtureRoot);
 		const globalShimDir = join(fixtureRoot, "global-bin");
-		const scriptDir = join(globalShimDir, "node_modules", "codex-multi-auth", "scripts");
+		const scriptDir = join(
+			globalShimDir,
+			"node_modules",
+			"codex-multi-auth",
+			"scripts",
+		);
 		mkdirSync(scriptDir, { recursive: true });
-		copyFileSync(join(repoRootDir, "scripts", "codex.js"), join(scriptDir, "codex.js"));
-		copyFileSync(join(repoRootDir, "scripts", "codex-routing.js"), join(scriptDir, "codex-routing.js"));
+		copyFileSync(
+			join(repoRootDir, "scripts", "codex.js"),
+			join(scriptDir, "codex.js"),
+		);
+		copyFileSync(
+			join(repoRootDir, "scripts", "codex-routing.js"),
+			join(scriptDir, "codex-routing.js"),
+		);
 		writeFileSync(
 			join(globalShimDir, "codex-multi-auth.cmd"),
 			"@ECHO OFF\r\nREM real shim\r\n",
@@ -285,7 +342,9 @@ describe("codex bin wrapper", () => {
 		expect(readFileSync(join(globalShimDir, "codex.bat"), "utf8")).toContain(
 			"codex-multi-auth windows shim guardian v1",
 		);
-		expect(() => readFileSync(join(decoyShimDir, "codex.bat"), "utf8")).toThrow();
+		expect(() =>
+			readFileSync(join(decoyShimDir, "codex.bat"), "utf8"),
+		).toThrow();
 	});
 
 	it("honors bypass for auth commands and forwards to the real CLI", () => {
@@ -369,20 +428,20 @@ describe("codex bin wrapper", () => {
 	it("prints actionable guidance when real codex bin cannot be found", () => {
 		const fixtureRoot = createWrapperFixture();
 		const missingOverride = join(fixtureRoot, "missing", "codex.js");
-		const result = runWrapper(
-			fixtureRoot,
-			["--version"],
-			{
-				CODEX_MULTI_AUTH_BYPASS: "",
-				CODEX_MULTI_AUTH_REAL_CODEX_BIN: missingOverride,
-			},
-		);
+		const result = runWrapper(fixtureRoot, ["--version"], {
+			CODEX_MULTI_AUTH_BYPASS: "",
+			CODEX_MULTI_AUTH_REAL_CODEX_BIN: missingOverride,
+		});
 		const output = combinedOutput(result);
 
 		expect(result.status).toBe(1);
-		expect(output).toContain(`CODEX_MULTI_AUTH_REAL_CODEX_BIN is set but missing: ${missingOverride}`);
+		expect(output).toContain(
+			`CODEX_MULTI_AUTH_REAL_CODEX_BIN is set but missing: ${missingOverride}`,
+		);
 		expect(output).toContain("Could not locate the official Codex CLI binary");
-		expect(output).toContain("Install it globally: npm install -g @openai/codex");
+		expect(output).toContain(
+			"Install it globally: npm install -g @openai/codex",
+		);
 	});
 
 	it("handles concurrent wrapper invocations without module-load regressions", async () => {
