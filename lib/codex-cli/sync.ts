@@ -18,7 +18,7 @@ function cloneStorage(storage: AccountStorageV3): AccountStorageV3 {
 
 function normalizeIndexCandidate(value: number, fallback: number): number {
 	if (!Number.isFinite(value)) {
-		return fallback;
+		return Number.isFinite(fallback) ? Math.trunc(fallback) : 0;
 	}
 	return Math.trunc(value);
 }
@@ -98,9 +98,10 @@ export function getActiveSelectionForFamily(
 	const count = storage.accounts.length;
 	if (count === 0) return 0;
 	const raw = storage.activeIndexByFamily?.[family];
+	const normalizedActiveIndex = normalizeIndexCandidate(storage.activeIndex, 0);
 	const candidate =
 		typeof raw === "number"
-			? normalizeIndexCandidate(raw, storage.activeIndex)
-			: normalizeIndexCandidate(storage.activeIndex, 0);
+			? normalizeIndexCandidate(raw, normalizedActiveIndex)
+			: normalizedActiveIndex;
 	return Math.max(0, Math.min(candidate, count - 1));
 }

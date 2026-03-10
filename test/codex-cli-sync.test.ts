@@ -355,5 +355,21 @@ describe("codex-cli sync", () => {
 				family,
 			),
 		).toBe(1);
+
+		expect(
+			getActiveSelectionForFamily(
+				{
+					version: 3,
+					accounts: [
+						{ refreshToken: "a", addedAt: 1, lastUsed: 1 },
+						{ refreshToken: "b", addedAt: 1, lastUsed: 1 },
+						{ refreshToken: "c", addedAt: 1, lastUsed: 1 },
+					],
+					activeIndex: 1.9,
+					activeIndexByFamily: { [family]: Number.NaN },
+				},
+				family,
+			),
+		).toBe(1);
 	});
 });
