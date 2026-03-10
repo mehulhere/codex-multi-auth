@@ -275,10 +275,13 @@ describe("dashboard settings", () => {
 		const locked = Object.assign(new Error("locked"), { code: "EPERM" });
 		readSpy.mockRejectedValue(locked);
 
-		const loaded = await loadDashboardDisplaySettings();
-		expect(loaded).toEqual(DEFAULT_DASHBOARD_DISPLAY_SETTINGS);
-		expect(readSpy).toHaveBeenCalledTimes(4);
-		readSpy.mockRestore();
+		try {
+			const loaded = await loadDashboardDisplaySettings();
+			expect(loaded).toEqual(DEFAULT_DASHBOARD_DISPLAY_SETTINGS);
+			expect(readSpy).toHaveBeenCalledTimes(4);
+		} finally {
+			readSpy.mockRestore();
+		}
 	});
 	it("normalizes invalid primitive values to defaults", async () => {
 		const {

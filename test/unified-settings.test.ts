@@ -323,6 +323,59 @@ describe("unified settings", () => {
 		});
 	});
 
+	it("preserves unrelated top-level sections during concurrent partial section writes", async () => {
+		const {
+			getUnifiedSettingsPath,
+			saveUnifiedPluginConfig,
+			saveUnifiedDashboardSettings,
+		} = await import("../lib/unified-settings.js");
+
+		await fs.writeFile(
+			getUnifiedSettingsPath(),
+			JSON.stringify(
+				{
+					version: 1,
+					experimentalDraft: {
+						enabled: false,
+						panels: ["future"],
+					},
+				},
+				null,
+				2,
+			),
+			"utf8",
+		);
+
+		await Promise.all([
+			saveUnifiedPluginConfig({ codexMode: true, fetchTimeoutMs: 45_000 }),
+			saveUnifiedDashboardSettings({
+				menuShowLastUsed: false,
+				uiThemePreset: "blue",
+			}),
+		]);
+
+		const parsed = JSON.parse(
+			await fs.readFile(getUnifiedSettingsPath(), "utf8"),
+		) as {
+			pluginConfig?: Record<string, unknown>;
+			dashboardDisplaySettings?: Record<string, unknown>;
+			experimentalDraft?: Record<string, unknown>;
+		};
+
+		expect(parsed.pluginConfig).toEqual({
+			codexMode: true,
+			fetchTimeoutMs: 45_000,
+		});
+		expect(parsed.dashboardDisplaySettings).toEqual({
+			menuShowLastUsed: false,
+			uiThemePreset: "blue",
+		});
+		expect(parsed.experimentalDraft).toEqual({
+			enabled: false,
+			panels: ["future"],
+		});
+	});
+
 	it("refuses overwriting settings sections when a read fails", async () => {
 		const {
 			saveUnifiedPluginConfig,
@@ -343,13 +396,16 @@ describe("unified settings", () => {
 			throw error;
 		});
 
-		await expect(
-			saveUnifiedDashboardSettings({
-				menuShowLastUsed: true,
-				uiThemePreset: "yellow",
-			}),
-		).rejects.toThrow();
-		readSpy.mockRestore();
+		try {
+			await expect(
+				saveUnifiedDashboardSettings({
+					menuShowLastUsed: true,
+					uiThemePreset: "yellow",
+				}),
+			).rejects.toThrow();
+		} finally {
+			readSpy.mockRestore();
+		}
 
 		const raw = await fs.readFile(getUnifiedSettingsPath(), "utf8");
 		const parsed = JSON.parse(raw) as {
