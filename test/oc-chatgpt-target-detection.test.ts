@@ -149,6 +149,20 @@ describe("oc-chatgpt target detection", () => {
 		}
 	});
 
+	it("treats explicitRoot null as disabling the environment override", async () => {
+		const overrideRoot = join(workDir, "env-override-root");
+		const canonicalRoot = join(homeDir, ".opencode");
+		await fs.mkdir(join(overrideRoot, "backups"), { recursive: true });
+		await fs.mkdir(join(canonicalRoot, "backups"), { recursive: true });
+		process.env.OC_CHATGPT_MULTI_AUTH_DIR = overrideRoot;
+
+		const result = detectOcChatgptMultiAuthTarget({ explicitRoot: null });
+		assertTarget(result, "global", canonicalRoot);
+		if (result.kind === "target") {
+			expect(result.descriptor.source).toBe("default-global");
+		}
+	});
+
 	it("returns signal ambiguity with exact candidate shape when override and default roots both qualify", async () => {
 		const overrideRoot = join(workDir, "override-root");
 		const canonicalRoot = join(homeDir, ".opencode");

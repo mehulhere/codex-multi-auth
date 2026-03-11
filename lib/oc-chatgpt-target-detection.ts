@@ -98,6 +98,7 @@ function firstNonEmpty(values: Array<string | undefined>): string | null {
  * - On Windows this prefers USERPROFILE, then HOME, then the combination of HOMEDRIVE+HOMEPATH, and finally os.homedir(). On non-Windows it prefers HOME then os.homedir().
  * - The function is pure and safe for concurrent calls within a single process (it only reads environment and os state).
  * - Environment-derived paths may contain sensitive tokens; callers should redact or treat returned paths as potentially sensitive before logging or emitting them.
+ */
 function getResolvedUserHomeDir(): string {
 	if (process.platform === "win32") {
 		const homeDrive = (process.env.HOMEDRIVE ?? "").trim();
@@ -290,7 +291,11 @@ export function detectOcChatgptMultiAuthTarget(options?: {
 	projectRoot?: string | null;
 }): OcChatgptTargetDetectionResult {
 	const explicitFromEnv = (process.env.OC_CHATGPT_MULTI_AUTH_DIR ?? "").trim();
-	const explicitRoot = (options?.explicitRoot ?? explicitFromEnv).trim();
+	const hasExplicitRootOption =
+		options !== undefined && "explicitRoot" in options;
+	const explicitRoot = (
+		hasExplicitRootOption ? (options.explicitRoot ?? "") : explicitFromEnv
+	).trim();
 	const userHome = getResolvedUserHomeDir();
 	const canonicalRoot = join(userHome, CANONICAL_HOME_BASENAME);
 	const projectRoot = options?.projectRoot ?? findProjectRoot(process.cwd());
