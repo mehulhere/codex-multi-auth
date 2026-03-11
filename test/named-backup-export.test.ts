@@ -84,6 +84,10 @@ describe("named backup export", () => {
 		["backup.tmp", /temporary suffixes/],
 		["backup.wal", /temporary suffixes/],
 		["backup.tmp.json", /temporary suffixes/],
+		["CON", /reserved Windows device name/],
+		["con.json", /reserved Windows device name/],
+		["Com1", /reserved Windows device name/],
+		["LPT9", /reserved Windows device name/],
 	])("rejects recovery-conflicting backup name %j", (input, pattern) => {
 		expect(() => normalizeNamedBackupFileName(input)).toThrow(pattern);
 	});

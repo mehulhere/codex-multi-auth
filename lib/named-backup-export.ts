@@ -12,6 +12,8 @@ import { resolvePath } from "./storage/paths.js";
 const BACKUP_EXPORT_DIR_NAME = "backups";
 const BACKUP_FILE_EXTENSION = ".json";
 const BACKUP_SAFE_NAME_REGEX = /^[a-zA-Z0-9_-]+$/;
+const BACKUP_WINDOWS_RESERVED_NAME_REGEX =
+	/^(con|prn|aux|nul|com[1-9]|lpt[1-9])$/i;
 const BACKUP_INVALID_SUFFIXES = [".tmp", ".wal"];
 const BACKUP_PROHIBITED_SUBSTRINGS = [".rotate."];
 
@@ -142,6 +144,11 @@ export function normalizeNamedBackupFileName(name: string): string {
 	const baseLower = baseName.toLowerCase();
 	if (BACKUP_INVALID_SUFFIXES.some((value) => baseLower.endsWith(value))) {
 		throw new Error("Backup filename may not end with temporary suffixes");
+	}
+	if (BACKUP_WINDOWS_RESERVED_NAME_REGEX.test(baseName)) {
+		throw new Error(
+			"Backup filename may not use a reserved Windows device name",
+		);
 	}
 	if (!BACKUP_SAFE_NAME_REGEX.test(baseName)) {
 		throw new Error(

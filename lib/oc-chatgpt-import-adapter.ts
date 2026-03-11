@@ -154,7 +154,7 @@ function summarizeAccount(account: AccountMetadataV3): OcChatgptAccountRef {
 /**
  * Build a preview payload summarizing storage for display in an import preview.
  *
- * Produces a versioned payload containing the active index(s) and a list of account references with refresh tokens redacted to their last four characters. No concurrency guarantees are provided by this pure data transformation. This function has no special filesystem behavior on Windows. 
+ * Produces a versioned payload containing the active index(s) and a list of account references with refresh tokens redacted to their last four characters. No concurrency guarantees are provided by this pure data transformation. This function has no special filesystem behavior on Windows.
  *
  * @param storage - Account storage to summarize into a preview payload
  * @returns A preview payload (version 3) with `activeIndex`, optional `activeIndexByFamily`, and an array of account summaries where refresh tokens are masked to their last four characters
@@ -463,8 +463,7 @@ function cloneStorage(storage: AccountStorageV3): AccountStorageV3 {
 /**
  * Finds a destination account that corresponds to the given source account by matching
  * in the order: trimmed `accountId`, normalized `email` (only against destination entries
- * without an `accountId`), then `refreshToken` (only against destination entries without
- * `accountId` or email).
+ * without an `accountId`), then exact `refreshToken` equality across any remaining destination entry.
  *
  * Concurrency: caller must manage concurrent access to the destination array and `usedIndexes`.
  * Filesystem: no filesystem interactions or Windows-specific behavior.
@@ -504,8 +503,6 @@ function matchDestination(
 
 	const idx = destination.findIndex((account, i) => {
 		if (usedIndexes.has(i)) return false;
-		if (account.accountId) return false;
-		if (normalizeEmailKey(account.email)) return false;
 		return account.refreshToken === source.refreshToken;
 	});
 	if (idx >= 0) return { index: idx, matchedBy: "refreshToken" };
