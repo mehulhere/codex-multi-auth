@@ -779,6 +779,28 @@ describe("storage", () => {
 
       writeSpy.mockRestore();
     });
+
+    it("aborts reset when the primary storage file cannot be deleted", async () => {
+      const walPath = `${testStoragePath}.wal`;
+      await fs.writeFile(testStoragePath, "{}", "utf-8");
+      await fs.writeFile(walPath, "{}", "utf-8");
+
+      const originalUnlink = fs.unlink.bind(fs);
+      const unlinkSpy = vi.spyOn(fs, "unlink").mockImplementation(async (targetPath) => {
+        if (targetPath === testStoragePath) {
+          const error = new Error("EBUSY primary delete") as NodeJS.ErrnoException;
+          error.code = "EBUSY";
+          throw error;
+        }
+        return originalUnlink(targetPath);
+      });
+
+      await expect(clearAccounts()).rejects.toThrow("EBUSY primary delete");
+      expect(existsSync(testStoragePath)).toBe(true);
+      expect(existsSync(walPath)).toBe(true);
+
+      unlinkSpy.mockRestore();
+    });
   });
 
   describe("setStoragePath", () => {
@@ -906,6 +928,55 @@ describe("storage", () => {
 
       expect(result?.accounts).toHaveLength(0);
       expect(existsSync(globalFallbackPath)).toBe(true);
+    });
+
+    it("migrates default-home fallback storage into an explicit non-default canonical root", async () => {
+      const fakeHome = join(testWorkDir, "custom-home");
+      const customCanonicalPath = join(
+        fakeHome,
+        ".codex-guided",
+        "multi-auth",
+        "openai-codex-accounts.json",
+      );
+      const globalFallbackPath = join(fakeHome, ".codex", "openai-codex-accounts.json");
+
+      await fs.mkdir(dirname(globalFallbackPath), { recursive: true });
+      await fs.writeFile(
+        globalFallbackPath,
+        JSON.stringify({
+          version: 3,
+          activeIndex: 0,
+          accounts: [
+            {
+              refreshToken: "fallback-refresh",
+              accountId: "fallback-account",
+              addedAt: 1,
+              lastUsed: 1,
+            },
+          ],
+        }),
+        "utf-8",
+      );
+
+      const originalHome = process.env.HOME;
+      const originalUserProfile = process.env.USERPROFILE;
+      try {
+        process.env.HOME = fakeHome;
+        process.env.USERPROFILE = fakeHome;
+        setStoragePathDirect(customCanonicalPath);
+
+        const result = await loadAccounts();
+
+        expect(result?.accounts).toHaveLength(1);
+        expect(result?.accounts[0]?.accountId).toBe("fallback-account");
+        expect(existsSync(customCanonicalPath)).toBe(true);
+        expect(existsSync(globalFallbackPath)).toBe(false);
+      } finally {
+        if (originalHome === undefined) delete process.env.HOME;
+        else process.env.HOME = originalHome;
+        if (originalUserProfile === undefined) delete process.env.USERPROFILE;
+        else process.env.USERPROFILE = originalUserProfile;
+      }
     });
   });
 
@@ -1952,7 +2023,7 @@ describe("storage", () => {
         Object.assign(new Error("EACCES error"), { code: "EACCES" })
       );
 
-      await clearAccounts();
+      await expect(clearAccounts()).rejects.toThrow("EACCES error");
 
       expect(unlinkSpy).toHaveBeenCalled();
       unlinkSpy.mockRestore();

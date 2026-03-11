@@ -220,6 +220,50 @@ describe("flagged account storage", () => {
 		expect(flagged.accounts).toHaveLength(0);
 	});
 
+	it("does not recover flagged backups when the primary file exists but read fails", async () => {
+		await saveFlaggedAccounts({
+			version: 1,
+			accounts: [
+				{
+					refreshToken: "primary-flagged",
+					flaggedAt: 1,
+					addedAt: 1,
+					lastUsed: 1,
+				},
+			],
+		});
+
+		await saveFlaggedAccounts({
+			version: 1,
+			accounts: [
+				{
+					refreshToken: "backup-flagged",
+					flaggedAt: 2,
+					addedAt: 2,
+					lastUsed: 2,
+				},
+			],
+		});
+
+		const flaggedPath = getFlaggedAccountsPath();
+		const originalReadFile = fs.readFile.bind(fs);
+		const readSpy = vi.spyOn(fs, "readFile").mockImplementation(async (...args) => {
+			const [targetPath] = args;
+			if (targetPath === flaggedPath) {
+				const error = new Error("EPERM flagged read") as NodeJS.ErrnoException;
+				error.code = "EPERM";
+				throw error;
+			}
+			return originalReadFile(...args);
+		});
+
+		const flagged = await loadFlaggedAccounts();
+		expect(flagged.accounts).toHaveLength(0);
+		expect(existsSync(flaggedPath)).toBe(true);
+
+		readSpy.mockRestore();
+	});
+
 	it("clears discovered flagged backup artifacts so manual snapshots cannot revive after clear", async () => {
 		await saveFlaggedAccounts({
 			version: 1,

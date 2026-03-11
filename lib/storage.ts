@@ -310,10 +310,11 @@ function inferHomeFromStoragePath(currentPath: string): string | null {
 
 function getFallbackAccountStoragePaths(currentPath: string): string[] {
 	const legacyRoot = getLegacyCodexDir();
+	const legacyHome = dirname(legacyRoot);
 	const inferredHome = inferHomeFromStoragePath(currentPath);
-	const candidateHomes = inferredHome
-		? deduplicatePathList([inferredHome, dirname(legacyRoot)])
-		: [];
+	const candidateHomes = deduplicatePathList(
+		typeof inferredHome === "string" ? [inferredHome, legacyHome] : [legacyHome],
+	);
 
 	const candidates = deduplicatePathList(
 		candidateHomes.flatMap((home) => [
@@ -691,8 +692,20 @@ async function recoverFlaggedAccountsFromBackups(path: string): Promise<FlaggedA
 }
 
 function selectLatestValidSnapshotPath(snapshots: BackupSnapshotMetadata[]): string | undefined {
-	const firstValid = snapshots.find((snapshot) => snapshot.valid);
-	return firstValid?.path;
+	let latestValidSnapshot: BackupSnapshotMetadata | undefined;
+	for (const snapshot of snapshots) {
+		if (!snapshot.valid) continue;
+		if (!latestValidSnapshot) {
+			latestValidSnapshot = snapshot;
+			continue;
+		}
+		const snapshotTime = snapshot.mtimeMs ?? Number.NEGATIVE_INFINITY;
+		const latestTime = latestValidSnapshot.mtimeMs ?? Number.NEGATIVE_INFINITY;
+		if (snapshotTime >= latestTime) {
+			latestValidSnapshot = snapshot;
+		}
+	}
+	return latestValidSnapshot?.path;
 }
 
 function selectSnapshotByPath(
@@ -765,7 +778,9 @@ export async function getBackupMetadata(): Promise<BackupMetadata> {
 
 async function loadAccountsForRestoreAssessment(path: string): Promise<AccountStorageWithMetadata | null> {
 	const resetMarkerPath = getIntentionalResetMarkerPath(path);
-	const hasIntentionalResetMarker = existsSync(resetMarkerPath);
+	const hasIntentionalResetMarker = (): boolean => existsSync(resetMarkerPath);
+	const shouldSuppressForIntentionalReset = (): boolean =>
+		hasIntentionalResetMarker() && !existsSync(path);
 
 	try {
 		const { normalized, schemaErrors } = await loadAccountsFromPath(path);
@@ -780,9 +795,11 @@ async function loadAccountsForRestoreAssessment(path: string): Promise<AccountSt
 
 		const annotated: AccountStorageWithMetadata = { ...normalized };
 		if (annotated.accounts.length === 0) {
-			annotated.restoreEligible = hasIntentionalResetMarker ? false : true;
-			annotated.restoreReason = hasIntentionalResetMarker ? "intentional-reset" : "empty-storage";
-		} else if (hasIntentionalResetMarker) {
+			annotated.restoreEligible = hasIntentionalResetMarker() ? false : true;
+			annotated.restoreReason = hasIntentionalResetMarker()
+				? "intentional-reset"
+				: "empty-storage";
+		} else if (hasIntentionalResetMarker()) {
 			annotated.restoreEligible = false;
 			annotated.restoreReason = "intentional-reset";
 		}
@@ -791,7 +808,7 @@ async function loadAccountsForRestoreAssessment(path: string): Promise<AccountSt
 	} catch (error) {
 		const code = (error as NodeJS.ErrnoException).code;
 		if (code === "ENOENT") {
-			if (hasIntentionalResetMarker) {
+			if (shouldSuppressForIntentionalReset()) {
 				return {
 					...createEmptyAccountStorage(),
 					restoreEligible: false,
@@ -1006,6 +1023,7 @@ async function migrateLegacyProjectStorageIfNeeded(
 async function migrateFallbackAccountStorageIfNeeded(
 	path: string,
 	persist: (storage: AccountStorageV3) => Promise<void>,
+	options?: { shouldAbortMigration?: () => boolean },
 ): Promise<AccountStorageV3 | null> {
 	if (currentProjectRoot) {
 		return null;
@@ -1027,7 +1045,24 @@ async function migrateFallbackAccountStorageIfNeeded(
 		}
 
 		try {
-			await persist(fallbackStorage);
+			if (persist === saveAccounts && options?.shouldAbortMigration) {
+				let persisted = false;
+				await withStorageLock(async () => {
+					if (options.shouldAbortMigration?.()) {
+						return;
+					}
+					await saveAccountsUnlocked(fallbackStorage);
+					persisted = true;
+				});
+				if (!persisted) {
+					return null;
+				}
+			} else {
+				if (options?.shouldAbortMigration?.()) {
+					return null;
+				}
+				await persist(fallbackStorage);
+			}
 			try {
 				await fs.unlink(candidate);
 			} catch (unlinkError) {
@@ -1447,7 +1482,9 @@ async function loadAccountsInternal(
 		};
 	}
 	const migratedFallbackStorage = !hasIntentionalResetMarker() && persistMigration
-		? await migrateFallbackAccountStorageIfNeeded(path, persistMigration)
+		? await migrateFallbackAccountStorageIfNeeded(path, persistMigration, {
+				shouldAbortMigration: shouldSuppressForIntentionalReset,
+			})
 		: null;
 	if (shouldSuppressForIntentionalReset()) {
 		return {
@@ -1840,6 +1877,9 @@ export async function clearAccounts(): Promise<void> {
 					markerPath,
 					error: String(error),
 				});
+				if (targetPath === path) {
+					throw error;
+				}
 			}
 		}
 	}
@@ -1932,6 +1972,7 @@ export async function loadFlaggedAccounts(): Promise<FlaggedAccountStorageV1> {
 		const code = (error as NodeJS.ErrnoException).code;
 		if (code !== "ENOENT") {
 			log.error("Failed to load flagged account storage", { path, error: String(error) });
+			return empty;
 		}
 	}
 

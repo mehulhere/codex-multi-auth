@@ -681,12 +681,40 @@ describe("storage recovery paths", () => {
 		const accountSnapshots = metadata.accounts.snapshots;
 		const cacheEntries = accountSnapshots.filter((snapshot) => snapshot.path.endsWith(".cache"));
 		expect(cacheEntries).toHaveLength(0);
-		expect(metadata.accounts.latestValidPath).toBe(`${storagePath}.wal`);
+		expect(metadata.accounts.latestValidPath).toBe(`${storagePath}.manual-meta-checkpoint`);
 		const discovered = accountSnapshots.find((snapshot) => snapshot.path.endsWith("manual-meta-checkpoint"));
 		expect(discovered?.kind).toBe("accounts-discovered-backup");
 		expect(discovered?.valid).toBe(true);
 		expect(discovered?.accountCount).toBe(1);
 		expect(metadata.accounts.snapshotCount).toBeGreaterThanOrEqual(4);
+	});
+
+	it("prefers the newest valid discovered snapshot in backup metadata", async () => {
+		const olderManualPath = `${storagePath}.manual-older`;
+		const newerManualPath = `${storagePath}.manual-newer`;
+
+		await fs.writeFile(
+			olderManualPath,
+			JSON.stringify({
+				version: 3,
+				activeIndex: 0,
+				accounts: [{ refreshToken: "older-refresh", accountId: "older", addedAt: 1, lastUsed: 1 }],
+			}),
+			"utf-8",
+		);
+		await new Promise((resolve) => setTimeout(resolve, 20));
+		await fs.writeFile(
+			newerManualPath,
+			JSON.stringify({
+				version: 3,
+				activeIndex: 0,
+				accounts: [{ refreshToken: "newer-refresh", accountId: "newer", addedAt: 2, lastUsed: 2 }],
+			}),
+			"utf-8",
+		);
+
+		const metadata = await getBackupMetadata();
+		expect(metadata.accounts.latestValidPath).toBe(newerManualPath);
 	});
 });
 
