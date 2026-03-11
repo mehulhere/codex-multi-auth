@@ -2,18 +2,18 @@
 
 Thanks for contributing to `codex-multi-auth`.
 
-This project prioritizes: policy-compliant OAuth usage, predictable CLI behavior, strong regression coverage, and documentation parity.
+This project prioritizes policy-compliant OAuth usage, predictable CLI behavior, strong regression coverage, and documentation parity.
 
 ---
 
-## Scope and Compliance
+## Scope And Compliance
 
 All contributions must remain within this scope:
 
-- Official OAuth authentication flows only.
-- No token scraping, cookie extraction, or auth bypasses.
-- No rate-limit circumvention techniques.
-- No commercial multi-user resale features.
+- official OAuth authentication flows only
+- no token scraping, cookie extraction, or auth bypasses
+- no rate-limit circumvention techniques
+- no commercial multi-user resale features
 
 If a proposal conflicts with OpenAI policy boundaries, it will be declined.
 
@@ -35,14 +35,12 @@ Node requirement: `>=18`.
 
 ## Development Standards
 
-Code quality requirements:
+- TypeScript strict mode
+- no `as any`, `@ts-ignore`, or `@ts-expect-error`
+- behavior-focused tests for all user-visible changes
+- docs updated when commands, flags, paths, defaults, or onboarding behavior change
 
-- TypeScript strict mode.
-- No `as any`, `@ts-ignore`, or `@ts-expect-error`.
-- Keep behavior-focused tests for all user-visible changes.
-- Keep docs aligned when commands, flags, paths, or defaults change.
-
-Documentation requirements for behavior changes:
+For user-facing behavior changes, review these files at minimum:
 
 - `README.md`
 - `docs/getting-started.md`
@@ -55,7 +53,7 @@ Documentation requirements for behavior changes:
 
 1. Create a focused branch from `main`.
 2. Keep commits atomic and reviewable.
-3. Run full local gate:
+3. Run the full local gate:
    - `npm run typecheck`
    - `npm run lint`
    - `npm test`
@@ -68,13 +66,13 @@ Use `.github/pull_request_template.md` when opening the PR.
 
 ---
 
-## Issue and Feature Requests
+## Issues And Feature Requests
 
 Before opening issues:
 
-- Search existing issues and PRs.
-- Reproduce on latest `main` when possible.
-- Include exact commands, output, and environment data.
+- search existing issues and PRs
+- reproduce on the latest `main` when possible
+- include exact commands, output, and environment data
 
 For bug reports, include:
 
@@ -85,8 +83,8 @@ For bug reports, include:
 
 For feature requests, include:
 
-- user impact
-- policy/compliance consideration
+- the user impact
+- policy and compliance considerations
 - alternatives considered
 
 ---
@@ -98,19 +96,10 @@ Follow [SECURITY.md](SECURITY.md) for private disclosure.
 
 ---
 
-## Code of Conduct
+## Code Of Conduct
 
-Expected behavior:
-
-- respectful, constructive communication
-- technically grounded discussions
-- clear reproduction and evidence when reporting issues
-
-Unacceptable behavior:
-
-- requests to violate policy boundaries
-- credential sharing or unsafe guidance
-- abusive or hostile communication
+This project expects respectful, evidence-based collaboration.
+See [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md).
 
 ---
 

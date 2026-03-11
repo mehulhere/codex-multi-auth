@@ -23,6 +23,8 @@ Canonical governance for repository documentation quality and consistency.
 | Docs portal | `docs/README.md` |
 | Daily operator landing | `docs/index.md` |
 | Onboarding | `docs/getting-started.md` |
+| FAQ | `docs/faq.md` |
+| Public architecture overview | `docs/architecture.md` |
 | Feature map | `docs/features.md` |
 | Configuration guide | `docs/configuration.md` |
 | Troubleshooting guide | `docs/troubleshooting.md` |
@@ -36,6 +38,7 @@ Canonical governance for repository documentation quality and consistency.
 | Docs style contract | `docs/STYLE_GUIDE.md` |
 | Docs governance (this file) | `docs/DOCUMENTATION.md` |
 | Architecture internals | `docs/development/ARCHITECTURE.md` |
+| GitHub metadata guidance | `docs/development/GITHUB_DISCOVERABILITY.md` |
 | IA/findability audit (2026-03-01) | `docs/development/IA_FINDABILITY_AUDIT_2026-03-01.md` |
 | Config fields internals | `docs/development/CONFIG_FIELDS.md` |
 | Config flow internals | `docs/development/CONFIG_FLOW.md` |
@@ -62,13 +65,14 @@ Canonical governance for repository documentation quality and consistency.
 When runtime behavior changes:
 
 1. Update `README.md` and `docs/getting-started.md` first.
-2. Update `docs/features.md` for capability coverage changes.
-3. Update relevant command/settings/path references.
-4. Update `docs/troubleshooting.md` with new failure signatures or recovery steps.
-5. Update development docs when architecture or config flow changes.
-6. Update `docs/upgrade.md` for migration-impacting behavior.
-7. Update `SECURITY.md` and `CONTRIBUTING.md` when governance or safe usage guidance changes.
-8. Keep issue/PR templates aligned with validation expectations.
+2. Update `docs/faq.md` and `docs/architecture.md` when the first-time-user story or public system framing changes.
+3. Update `docs/features.md` for capability coverage changes.
+4. Update relevant command/settings/path references.
+5. Update `docs/troubleshooting.md` with new failure signatures or recovery steps.
+6. Update development docs when architecture, config flow, or GitHub-facing metadata guidance changes.
+7. Update `docs/upgrade.md` for migration-impacting behavior.
+8. Update `SECURITY.md`, `CONTRIBUTING.md`, and `CODE_OF_CONDUCT.md` when governance or safe usage guidance changes.
+9. Keep issue/PR templates aligned with validation expectations.
 
 ---
 

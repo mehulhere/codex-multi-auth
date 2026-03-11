@@ -10,6 +10,8 @@ const userDocs = [
   'docs/index.md',
   'docs/README.md',
   'docs/getting-started.md',
+  'docs/faq.md',
+  'docs/architecture.md',
   'docs/features.md',
   'docs/configuration.md',
   'docs/troubleshooting.md',
@@ -20,6 +22,8 @@ const userDocs = [
   'docs/reference/error-contracts.md',
   'docs/reference/settings.md',
   'docs/reference/storage-paths.md',
+  'docs/releases/v0.1.7.md',
+  'docs/releases/v0.1.6.md',
   'docs/releases/v0.1.5.md',
   'docs/releases/v0.1.4.md',
   'docs/releases/v0.1.3.md',
@@ -101,9 +105,9 @@ describe('Documentation Integrity', () => {
     const portal = read('docs/README.md');
     expect(portal).toContain('reference/public-api.md');
     expect(portal).toContain('reference/error-contracts.md');
+    expect(portal).toContain('releases/v0.1.7.md');
+    expect(portal).toContain('releases/v0.1.6.md');
     expect(portal).toContain('releases/v0.1.5.md');
-    expect(portal).toContain('releases/v0.1.4.md');
-    expect(portal).toContain('releases/v0.1.3.md');
     expect(portal).toContain('releases/v0.1.0-beta.0.md');
     expect(portal).toContain('releases/legacy-pre-0.1-history.md');
     expect(portal).toContain('| [User Guides release notes](#user-guides) | Stable, previous, and archived release notes |');
@@ -248,6 +252,8 @@ describe('Documentation Integrity', () => {
 
   it('keeps changelog aligned with canonical 0.x release policy', () => {
     const changelog = read('CHANGELOG.md');
+    expect(changelog).toContain('## [0.1.7] - 2026-03-03');
+    expect(changelog).toContain('## [0.1.6] - 2026-03-03');
     expect(changelog).toContain('## [0.1.0] - 2026-02-27');
     expect(changelog).toContain('docs/releases/legacy-pre-0.1-history.md');
     expect(changelog).not.toContain('## [5.');
@@ -317,11 +323,13 @@ describe('Documentation Integrity', () => {
     const issueConfig = '.github/ISSUE_TEMPLATE/config.yml';
     const bugTemplate = '.github/ISSUE_TEMPLATE/bug_report.md';
     const featureTemplate = '.github/ISSUE_TEMPLATE/feature_request.md';
+    const codeOfConduct = 'CODE_OF_CONDUCT.md';
 
     expect(existsSync(join(projectRoot, prTemplate)), `${prTemplate} should exist`).toBe(true);
     expect(existsSync(join(projectRoot, issueConfig)), `${issueConfig} should exist`).toBe(true);
     expect(existsSync(join(projectRoot, bugTemplate)), `${bugTemplate} should exist`).toBe(true);
     expect(existsSync(join(projectRoot, featureTemplate)), `${featureTemplate} should exist`).toBe(true);
+    expect(existsSync(join(projectRoot, codeOfConduct)), `${codeOfConduct} should exist`).toBe(true);
 
     const prBody = read(prTemplate);
     expect(prBody).toContain('npm run lint');
@@ -341,6 +349,10 @@ describe('Documentation Integrity', () => {
     expect(contributing).toContain('npm run lint');
     expect(contributing).toContain('npm test');
     expect(contributing).toContain('npm run build');
+
+    const conduct = read('CODE_OF_CONDUCT.md').toLowerCase();
+    expect(conduct).toContain('respectful');
+    expect(conduct).toContain('security.md');
   });
 
   it('has valid internal links in README.md', () => {

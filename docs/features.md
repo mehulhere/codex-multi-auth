@@ -1,84 +1,79 @@
 # Features
 
-Capability map for `codex-multi-auth` grouped by operational domain.
+User-facing capability map for `codex-multi-auth`.
 
 ---
 
-## Account and OAuth Operations
+## Manage More Than One Account
 
-| Capability | Outcome | Primary entry |
+| Capability | What it gives you | Primary entry |
 | --- | --- | --- |
-| Multi-account dashboard login | Add and manage multiple OAuth identities | `codex auth login` |
-| Account dedupe and identity normalization | Avoid duplicate saved account records | login flow |
-| Active account switching by index | Deterministic operator control | `codex auth switch <index>` |
-| Quick and deep account checks | Fast and comprehensive health views | `codex auth check`, dashboard checks |
-| Flagged account verification and restore | Recover previously failed accounts | `codex auth verify-flagged` |
+| Multi-account dashboard login | Add and manage multiple OAuth identities from one terminal flow | `codex auth login` |
+| Account dedupe and identity normalization | Avoid duplicate saved account rows | login flow |
+| Explicit active-account switching | Pick the current account by index instead of relying on hidden state | `codex auth switch <index>` |
+| Fast and deep health checks | See whether the current pool is usable before a coding session | `codex auth check` |
+| Flagged-account verification and restore | Recover accounts that were sidelined during prior failures | `codex auth verify-flagged` |
 
 ---
 
-## Forecasting, Repair, and Reporting
+## Decide Which Account To Use
 
-| Capability | Outcome | Primary entry |
+| Capability | What it gives you | Primary entry |
 | --- | --- | --- |
-| Readiness/risk forecast engine | Recommends best next account | `codex auth forecast` |
+| Readiness and risk forecast | Suggests the best next account | `codex auth forecast` |
 | Live quota probe mode | Uses live headers for stronger decisions | `codex auth forecast --live` |
-| Safe auto-fix workflow | Repairs known storage/account inconsistencies | `codex auth fix [--dry-run] [--json] [--live] [--model <model>]` |
-| Structured diagnostics with optional fix | Detect and remediate common failures | `codex auth doctor` |
-| JSON report output | Integrates with automation and support workflows | `--json`, `codex auth report` |
+| JSON report output | Lets you inspect account state in automation or support workflows | `codex auth report --live --json` |
 
 ---
 
-## Storage and Data Safety
+## Recover From Local State Problems
 
-| Capability | Outcome |
-| --- | --- |
-| Storage v3 normalization and migration | Backward compatibility with normalized current format |
-| Backup and WAL write strategy | Safer persistence under interruption or partial writes |
-| Global and project-scoped account paths | Supports multi-project isolation with shared defaults |
-| Quota cache persistence | Improves forecast speed and dashboard visibility |
-
----
-
-## Runtime Reliability
-
-| Capability | Outcome |
-| --- | --- |
-| Live account sync | Reloads account state without process restart |
-| Session affinity | Reduces account thrash across related requests |
-| Refresh queue + refresh lease | Dedupe token refresh in-process and cross-process |
-| Proactive refresh guardian | Refreshes near-expiry credentials ahead of hard failure |
-| Preemptive quota scheduler | Defers away from near-exhausted quota windows |
-| Failure policy + cooldown engine | Unified retry/rotate/backoff decisions |
-| Stream failover handling | Recovers from stalled stream paths |
-| Capability and entitlement scoring | Adapts account/model selection over time |
+| Capability | What it gives you | Primary entry |
+| --- | --- | --- |
+| Safe repair workflow | Detects and repairs known local storage inconsistencies | `codex auth fix` |
+| Diagnostics with optional repair | One command to inspect and optionally fix common failures | `codex auth doctor` |
+| Backup and WAL recovery | Safer persistence when local writes are interrupted or partially applied | storage runtime |
 
 ---
 
-## Request and Prompt Integration
+## Keep Account State Local And Predictable
 
-| Capability | Outcome |
+| Capability | What it gives you |
 | --- | --- |
-| Request transformer bridge | Converts host requests to Codex backend compatible shape |
-| Prompt template cache with ETag sync | Keeps prompts current with efficient refresh behavior |
-| Codex CLI active-account sync | Keeps local manager and Codex CLI state aligned |
+| Canonical local data root | Consistent storage under `~/.codex/multi-auth` |
+| Project-scoped account pools | Repo-specific account state when you need separation |
+| Linked-worktree identity sharing | The same repository can share account state across worktrees |
+| Quota cache persistence | Faster forecast and dashboard visibility between runs |
 
 ---
 
-## Terminal UX
+## Improve Day-To-Day Terminal Use
 
-| Capability | Outcome |
+| Capability | What it gives you |
 | --- | --- |
-| Quick switch and search hotkeys | Faster account navigation from dashboard |
-| Account detail action hotkeys | Per-account set/refresh/toggle/delete shortcuts |
-| In-dashboard settings hub | Runtime and display tuning without manual file edits |
-| Configurable theme/focus style | Better readability in diverse terminal environments |
-| Browser-first OAuth plus manual fallback | Supports standard and constrained browser environments |
+| Quick switch and search hotkeys | Faster navigation in the dashboard |
+| Account action hotkeys | Per-account set, refresh, toggle, and delete shortcuts |
+| In-dashboard settings hub | Runtime and display tuning without editing files directly |
+| Browser-first OAuth with manual fallback | Works in normal and constrained terminal environments |
+
+---
+
+## Optional Plugin Runtime
+
+Some users only need the wrapper and `codex auth ...` commands. If you also run the plugin-host path, `codex-multi-auth` can use the same account pool for:
+
+- request transformation for Codex or ChatGPT-backed flows
+- token refresh and refresh deduplication
+- retry, cooldown, and stream failover handling
+- session affinity and live account sync
+- capability and quota-aware account selection
 
 ---
 
 ## Related
 
+- [getting-started.md](getting-started.md)
+- [faq.md](faq.md)
+- [architecture.md](architecture.md)
 - [reference/commands.md](reference/commands.md)
-- [reference/settings.md](reference/settings.md)
 - [troubleshooting.md](troubleshooting.md)
-- [development/ARCHITECTURE.md](development/ARCHITECTURE.md)

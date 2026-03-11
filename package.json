@@ -1,7 +1,7 @@
 {
   "name": "codex-multi-auth",
   "version": "0.1.7",
-  "description": "OpenAI Codex CLI multi-account OAuth manager with resilient routing and quota-aware diagnostics",
+  "description": "Multi-account OAuth manager and codex auth wrapper for the official @openai/codex CLI, with switching, health checks, and recovery tools",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "type": "module",
@@ -19,11 +19,8 @@
     "oauth2",
     "pkce",
     "multi-account",
-    "account-rotation",
-    "token-refresh",
-    "session-recovery",
-    "rate-limit-handling",
-    "resilient-systems",
+    "account-switching",
+    "oauth-manager",
     "fault-tolerance",
     "terminal-ui",
     "cli-tool",
@@ -31,7 +28,9 @@
     "nodejs",
     "developer-tools",
     "authentication",
-    "productivity-tools"
+    "account-health",
+    "recovery-tools",
+    "project-scoped-storage"
   ],
   "homepage": "https://github.com/ndycode/codex-multi-auth#readme",
   "bugs": {
