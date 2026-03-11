@@ -1426,10 +1426,10 @@ async function loadAccountsInternal(
 			restoreReason: "intentional-reset",
 		};
 	}
-	const migratedLegacyStorage = persistMigration
+	const migratedLegacyStorage = !hasIntentionalResetMarker && persistMigration
 		? await migrateLegacyProjectStorageIfNeeded(persistMigration)
 		: null;
-	const migratedFallbackStorage = persistMigration
+	const migratedFallbackStorage = !hasIntentionalResetMarker && persistMigration
 		? await migrateFallbackAccountStorageIfNeeded(path, persistMigration)
 		: null;
 
@@ -1979,25 +1979,16 @@ export async function saveFlaggedAccounts(storage: FlaggedAccountStorageV1): Pro
 export async function clearFlaggedAccounts(): Promise<void> {
 	return withStorageLock(async () => {
 		const path = getFlaggedAccountsPath();
-		const backupPaths = getAccountsBackupRecoveryCandidates(path);
-		const clearPath = async (targetPath: string): Promise<void> => {
-			try {
-				await fs.unlink(targetPath);
-			} catch (error) {
-				const code = (error as NodeJS.ErrnoException).code;
-				if (code !== "ENOENT") {
-					log.error("Failed to clear flagged account storage artifact", {
-						path: targetPath,
-						error: String(error),
-					});
-				}
-			}
-		};
-
 		try {
-			await Promise.all([clearPath(path), ...backupPaths.map(clearPath)]);
-		} catch {
-			// Individual cleanup is already best effort with per-artifact logging.
+			await fs.unlink(path);
+		} catch (error) {
+			const code = (error as NodeJS.ErrnoException).code;
+			if (code !== "ENOENT") {
+				log.error("Failed to clear flagged account storage", {
+					path,
+					error: String(error),
+				});
+			}
 		}
 	});
 }

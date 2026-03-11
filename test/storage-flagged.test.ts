@@ -161,13 +161,26 @@ describe("flagged account storage", () => {
         },
       ],
     });
+    await saveFlaggedAccounts({
+      version: 1,
+      accounts: [
+        {
+          refreshToken: "keep-backup",
+          flaggedAt: 2,
+          addedAt: 2,
+          lastUsed: 2,
+        },
+      ],
+    });
 
     expect(existsSync(getFlaggedAccountsPath())).toBe(true);
+    expect(existsSync(`${getFlaggedAccountsPath()}.bak`)).toBe(true);
 
     await clearFlaggedAccounts();
     await clearFlaggedAccounts();
 
 		expect(existsSync(getFlaggedAccountsPath())).toBe(false);
+		expect(existsSync(`${getFlaggedAccountsPath()}.bak`)).toBe(true);
 	});
 
 	it("emits snapshot metadata for flagged account backups", async () => {
