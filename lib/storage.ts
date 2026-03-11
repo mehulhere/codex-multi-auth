@@ -1694,7 +1694,9 @@ async function saveAccountsUnlocked(storage: AccountStorageV3): Promise<void> {
  *
  * Concurrency assumptions: the handler runs with serialized access to storage; callers may
  * call `persist` multiple times within the handler to commit intermediate snapshots. The
- * transaction context is marked inactive after the handler completes (or throws).
+ * transaction context is marked inactive after the handler completes (or throws). Callers
+ * must not retain or invoke `persist` after the handler settles because the transaction
+ * snapshot and lock lifetime end with that handler.
  *
  * @param handler - Function receiving the current storage snapshot and a `persist` function.
  * @returns The value returned by the provided handler.
