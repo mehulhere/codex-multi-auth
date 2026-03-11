@@ -284,17 +284,26 @@ function setupInteractiveSettingsLogin(storage: SettingsTestStorage): void {
 
 function queueSettingsSelectSequence(
 	steps: readonly SettingsSelectSequenceStep[],
-): { remaining: () => number } {
+): { remaining: () => number; assertNotOverConsumed: () => void } {
 	const queue = [...steps];
+	let overConsumed = false;
 	selectMock.mockImplementation(async (_items, options) => {
 		const next = queue.shift();
-		if (!next) return { type: "back" };
+		if (!next) {
+			overConsumed = true;
+			return { type: "back" };
+		}
 		if (typeof next === "function") {
 			return next(options as SettingsSelectOptions | undefined);
 		}
 		return structuredClone(next);
 	});
-	return { remaining: () => queue.length };
+	return {
+		remaining: () => queue.length,
+		assertNotOverConsumed: () => {
+			expect(overConsumed).toBe(false);
+		},
+	};
 }
 
 function triggerSettingsHotkey(
@@ -1651,6 +1660,7 @@ describe("codex manager cli commands", () => {
 		expect(exitCode).toBe(0);
 		expect(readSettingsHubPanelContract()).toEqual(SETTINGS_HUB_MENU_ORDER);
 		expect(selectSequence.remaining()).toBe(0);
+		selectSequence.assertNotOverConsumed();
 		expect(saveDashboardDisplaySettingsMock).toHaveBeenCalled();
 		expect(savePluginConfigMock).toHaveBeenCalledTimes(1);
 		expect(savePluginConfigMock).toHaveBeenCalledWith(
@@ -1671,28 +1681,15 @@ describe("codex manager cli commands", () => {
 				accessToken: "access-hotkey-settings",
 			}),
 		);
+		const dashboardModule = await import("../lib/dashboard-settings.js");
 		loadDashboardDisplaySettingsMock.mockResolvedValue({
+			...structuredClone(dashboardModule.DEFAULT_DASHBOARD_DISPLAY_SETTINGS),
 			showPerAccountRows: true,
 			showQuotaDetails: true,
 			showForecastReasons: true,
 			showRecommendations: true,
 			showLiveProbeNotes: true,
-			actionAutoReturnMs: 2_000,
-			actionPauseOnKey: true,
-			menuAutoFetchLimits: true,
-			menuQuotaTtlMs: 300_000,
-			menuShowStatusBadge: true,
-			menuShowCurrentBadge: true,
-			menuShowLastUsed: true,
-			menuShowQuotaSummary: true,
-			menuShowQuotaCooldown: true,
-			menuShowFetchStatus: true,
-			menuHighlightCurrentRow: true,
-			menuSortEnabled: true,
-			menuSortMode: "ready-first",
 			menuSortPinCurrent: true,
-			menuSortQuickSwitchVisibleRow: true,
-			menuStatuslineFields: ["last-used", "limits", "status"],
 			uiThemePreset: "green",
 			uiAccentColor: "green",
 		});
@@ -1734,6 +1731,7 @@ describe("codex manager cli commands", () => {
 		expect(exitCode).toBe(0);
 		expect(readSettingsHubPanelContract()).toEqual(SETTINGS_HUB_MENU_ORDER);
 		expect(selectSequence.remaining()).toBe(0);
+		selectSequence.assertNotOverConsumed();
 		expect(saveDashboardDisplaySettingsMock).toHaveBeenCalledTimes(4);
 		expect(saveDashboardDisplaySettingsMock.mock.calls[0]?.[0]).toEqual(
 			expect.objectContaining({
@@ -1814,6 +1812,7 @@ describe("codex manager cli commands", () => {
 
 		expect(exitCode).toBe(0);
 		expect(selectSequence.remaining()).toBe(0);
+		selectSequence.assertNotOverConsumed();
 		expect(savePluginConfigMock).toHaveBeenCalledTimes(1);
 		expect(savePluginConfigMock).toHaveBeenCalledWith(
 			expect.objectContaining({
@@ -1878,6 +1877,7 @@ describe("codex manager cli commands", () => {
 
 		expect(exitCode).toBe(0);
 		expect(selectSequence.remaining()).toBe(0);
+		selectSequence.assertNotOverConsumed();
 		expect(savePluginConfigMock).toHaveBeenCalledTimes(1);
 		expect(savePluginConfigMock).toHaveBeenCalledWith(
 			expect.objectContaining({
@@ -1971,6 +1971,7 @@ describe("codex manager cli commands", () => {
 
 			expect(exitCode).toBe(0);
 			expect(selectSequence.remaining()).toBe(0);
+			selectSequence.assertNotOverConsumed();
 			expect(saveDashboardDisplaySettingsMock).not.toHaveBeenCalled();
 			expect(savePluginConfigMock).not.toHaveBeenCalled();
 			expect(saveAccountsMock).not.toHaveBeenCalled();
