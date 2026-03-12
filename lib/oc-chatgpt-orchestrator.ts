@@ -1,8 +1,8 @@
 import { promises as fs } from "node:fs";
 import { dirname } from "node:path";
 import {
-	type OcChatgptImportPayload,
 	type OcChatgptMergePreview,
+	type OcChatgptPreviewPayload,
 	previewOcChatgptImportMerge,
 } from "./oc-chatgpt-import-adapter.js";
 import {
@@ -34,7 +34,7 @@ type OcChatgptSyncPlanReady = {
 	kind: "ready";
 	target: OcChatgptTargetDescriptor;
 	preview: OcChatgptMergePreview;
-	payload: OcChatgptImportPayload;
+	payload: OcChatgptPreviewPayload;
 	destination: AccountStorageV3 | null;
 };
 
