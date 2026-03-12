@@ -25,6 +25,7 @@ Override root:
 | Accounts backup | `~/.codex/multi-auth/openai-codex-accounts.json.bak` |
 | Accounts WAL | `~/.codex/multi-auth/openai-codex-accounts.json.wal` |
 | Flagged accounts | `~/.codex/multi-auth/openai-codex-flagged-accounts.json` |
+| Flagged accounts backup | `~/.codex/multi-auth/openai-codex-flagged-accounts.json.bak` |
 | Quota cache | `~/.codex/multi-auth/quota-cache.json` |
 | Logs | `~/.codex/multi-auth/logs/codex-plugin/` |
 | Cache | `~/.codex/multi-auth/cache/` |
@@ -43,6 +44,10 @@ Compatibility note:
 - This file-store forwarding keeps auth state readable from disk outside interactive terminals, so wrapper forwarding and non-TTY auth flows stay deterministic after the Ink migration.
 
 > **Windows note:** The wrapper keeps the official Codex CLI file-store layout unchanged, so Windows `EPERM`/`EBUSY` retry handling still lives with the downstream CLI writes rather than this wrapper layer. Opting out with `CODEX_MULTI_AUTH_FORCE_FILE_AUTH_STORE=0` stops injecting the file-store override for future wrapper launches, but it does not rewrite or expose previously written CLI auth files beyond the standard `~/.codex/auth.json` and `~/.codex/accounts.json` locations.
+
+Backup metadata:
+
+- `getBackupMetadata()` reports deterministic snapshot lists for the canonical account pool (primary, WAL, `.bak`, `.bak.1`, `.bak.2`, and discovered manual backups) and flagged-account state (primary, `.bak`, `.bak.1`, `.bak.2`, and discovered manual backups). Cache-like artifacts and `.reset-intent` markers are excluded from recovery candidates.
 
 ---
 

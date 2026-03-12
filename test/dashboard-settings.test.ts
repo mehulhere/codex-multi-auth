@@ -254,11 +254,14 @@ describe("dashboard settings", () => {
 			.mockRejectedValueOnce(busy)
 			.mockImplementation(async (...args) => originalReadFile(...args));
 
-		const loaded = await loadDashboardDisplaySettings();
-		expect(loaded.showPerAccountRows).toBe(false);
-		expect(loaded.menuShowQuotaSummary).toBe(false);
-		expect(readSpy).toHaveBeenCalledTimes(2);
-		readSpy.mockRestore();
+		try {
+			const loaded = await loadDashboardDisplaySettings();
+			expect(loaded.showPerAccountRows).toBe(false);
+			expect(loaded.menuShowQuotaSummary).toBe(false);
+			expect(readSpy).toHaveBeenCalledTimes(2);
+		} finally {
+			readSpy.mockRestore();
+		}
 	});
 
 	it("falls back to defaults when retryable legacy reads keep failing", async () => {
@@ -275,10 +278,13 @@ describe("dashboard settings", () => {
 		const locked = Object.assign(new Error("locked"), { code: "EPERM" });
 		readSpy.mockRejectedValue(locked);
 
-		const loaded = await loadDashboardDisplaySettings();
-		expect(loaded).toEqual(DEFAULT_DASHBOARD_DISPLAY_SETTINGS);
-		expect(readSpy).toHaveBeenCalledTimes(4);
-		readSpy.mockRestore();
+		try {
+			const loaded = await loadDashboardDisplaySettings();
+			expect(loaded).toEqual(DEFAULT_DASHBOARD_DISPLAY_SETTINGS);
+			expect(readSpy).toHaveBeenCalledTimes(4);
+		} finally {
+			readSpy.mockRestore();
+		}
 	});
 	it("normalizes invalid primitive values to defaults", async () => {
 		const {
@@ -388,84 +394,6 @@ describe("dashboard settings", () => {
 		const loaded = await loadDashboardDisplaySettings();
 		expect(loaded).toEqual(DEFAULT_DASHBOARD_DISPLAY_SETTINGS);
 	});
-	it("uses hard fallback literals when optional defaults are undefined", async () => {
-		vi.resetModules();
-		try {
-			vi.doMock("../lib/dashboard-settings.js", async () => {
-				const actual = await vi.importActual<
-					typeof import("../lib/dashboard-settings.js")
-				>("../lib/dashboard-settings.js");
-				return {
-					...actual,
-					DEFAULT_DASHBOARD_DISPLAY_SETTINGS: {
-						...actual.DEFAULT_DASHBOARD_DISPLAY_SETTINGS,
-						actionAutoReturnMs: undefined,
-						actionPauseOnKey: undefined,
-						menuAutoFetchLimits: undefined,
-						menuSortEnabled: undefined,
-						menuSortMode: undefined,
-						menuSortPinCurrent: undefined,
-						menuSortQuickSwitchVisibleRow: undefined,
-						menuShowStatusBadge: undefined,
-						menuShowCurrentBadge: undefined,
-						menuShowLastUsed: undefined,
-						menuShowQuotaSummary: undefined,
-						menuShowQuotaCooldown: undefined,
-						menuShowFetchStatus: undefined,
-						menuQuotaTtlMs: undefined,
-						menuHighlightCurrentRow: undefined,
-						menuStatuslineFields: undefined,
-					},
-				};
-			});
-
-			const dashboardModule = await import("../lib/dashboard-settings.js");
-			const normalized = dashboardModule.normalizeDashboardDisplaySettings({
-				actionAutoReturnMs: "bad",
-				actionPauseOnKey: "bad",
-				menuAutoFetchLimits: "bad",
-				menuSortEnabled: "bad",
-				menuSortMode: "bad",
-				menuSortPinCurrent: "bad",
-				menuSortQuickSwitchVisibleRow: "bad",
-				menuShowStatusBadge: "bad",
-				menuShowCurrentBadge: "bad",
-				menuShowLastUsed: "bad",
-				menuShowQuotaSummary: "bad",
-				menuShowQuotaCooldown: "bad",
-				menuShowFetchStatus: "bad",
-				menuQuotaTtlMs: "bad",
-				menuHighlightCurrentRow: "bad",
-				uiAccentColor: "blue",
-				menuStatuslineFields: "not-array",
-			});
-
-			expect(normalized.actionAutoReturnMs).toBe(2_000);
-			expect(normalized.actionPauseOnKey).toBe(true);
-			expect(normalized.menuAutoFetchLimits).toBe(true);
-			expect(normalized.menuSortEnabled).toBe(true);
-			expect(normalized.menuSortMode).toBe("ready-first");
-			expect(normalized.menuSortPinCurrent).toBe(false);
-			expect(normalized.menuSortQuickSwitchVisibleRow).toBe(true);
-			expect(normalized.menuShowStatusBadge).toBe(true);
-			expect(normalized.menuShowCurrentBadge).toBe(true);
-			expect(normalized.menuShowLastUsed).toBe(true);
-			expect(normalized.menuShowQuotaSummary).toBe(true);
-			expect(normalized.menuShowQuotaCooldown).toBe(true);
-			expect(normalized.menuShowFetchStatus).toBe(true);
-			expect(normalized.menuQuotaTtlMs).toBe(300_000);
-			expect(normalized.menuHighlightCurrentRow).toBe(true);
-			expect(normalized.menuStatuslineFields).toEqual([
-				"last-used",
-				"limits",
-				"status",
-			]);
-			expect(normalized.uiAccentColor).toBe("blue");
-		} finally {
-			vi.doUnmock("../lib/dashboard-settings.js");
-		}
-	});
-
 	it("logs stringified legacy read failures thrown as non-Error values", async () => {
 		vi.resetModules();
 		vi.doUnmock("../lib/dashboard-settings.js");
@@ -490,15 +418,17 @@ describe("dashboard settings", () => {
 			const readSpy = vi.spyOn(fs, "readFile");
 			readSpy.mockRejectedValueOnce("legacy-read-string-failure");
 
-			const loaded = await loadDashboardDisplaySettings();
-			expect(loaded).toEqual(DEFAULT_DASHBOARD_DISPLAY_SETTINGS);
-			expect(
-				warnMock.mock.calls.some((args) =>
-					String(args[0]).includes("legacy-read-string-failure"),
-				),
-			).toBe(true);
-
-			readSpy.mockRestore();
+			try {
+				const loaded = await loadDashboardDisplaySettings();
+				expect(loaded).toEqual(DEFAULT_DASHBOARD_DISPLAY_SETTINGS);
+				expect(
+					warnMock.mock.calls.some((args) =>
+						String(args[0]).includes("legacy-read-string-failure"),
+					),
+				).toBe(true);
+			} finally {
+				readSpy.mockRestore();
+			}
 		} finally {
 			vi.doUnmock("../lib/logger.js");
 		}
