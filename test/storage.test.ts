@@ -14,11 +14,14 @@ import {
 	getStoragePath,
 	importAccounts,
 	loadAccounts,
+	loadFlaggedAccounts,
 	normalizeAccountStorage,
+	saveFlaggedAccounts,
 	StorageError,
 	saveAccounts,
 	setStoragePath,
 	setStoragePathDirect,
+	withAccountAndFlaggedStorageTransaction,
 	withAccountStorageTransaction,
 } from "../lib/storage.js";
 
@@ -429,6 +432,105 @@ describe("storage", () => {
 			expect(
 				new Set(loaded?.accounts.map((account) => account.accountId)),
 			).toEqual(new Set(["acct-a", "acct-b"]));
+		});
+
+		it("rolls back account storage when flagged persistence fails inside the combined transaction", async () => {
+			const now = Date.now();
+			await saveAccounts({
+				version: 3,
+				activeIndex: 0,
+				activeIndexByFamily: { codex: 0 },
+				accounts: [
+					{
+						accountId: "acct-existing",
+						email: "existing@example.com",
+						refreshToken: "refresh-existing",
+						addedAt: now - 10_000,
+						lastUsed: now - 10_000,
+					},
+				],
+			});
+			await saveFlaggedAccounts({
+				version: 1,
+				accounts: [
+					{
+						accountId: "acct-flagged",
+						email: "flagged@example.com",
+						refreshToken: "refresh-flagged",
+						addedAt: now - 5_000,
+						lastUsed: now - 5_000,
+						flaggedAt: now - 5_000,
+					},
+				],
+			});
+
+			const originalRename = fs.rename.bind(fs);
+			let failFlaggedRename = true;
+			const renameSpy = vi.spyOn(fs, "rename").mockImplementation(
+				async (from, to) => {
+					if (
+						failFlaggedRename &&
+						String(to).endsWith("openai-codex-flagged-accounts.json")
+					) {
+						failFlaggedRename = false;
+						const error = Object.assign(
+							new Error("flagged storage busy"),
+							{ code: "EBUSY" },
+						);
+						throw error;
+					}
+					return originalRename(from, to);
+				},
+			);
+
+			try {
+				await expect(
+					withAccountAndFlaggedStorageTransaction(async (current, persist) => {
+						if (!current) {
+							throw new Error("expected existing account storage");
+						}
+						await persist(
+							{
+								...current,
+								accounts: [
+									...current.accounts,
+									{
+										accountId: "acct-restored",
+										email: "restored@example.com",
+										refreshToken: "refresh-restored",
+										addedAt: now,
+										lastUsed: now,
+									},
+								],
+							},
+							{
+								version: 1,
+								accounts: [],
+							},
+						);
+					}),
+				).rejects.toThrow("flagged storage busy");
+			} finally {
+				renameSpy.mockRestore();
+			}
+
+			const loadedAccounts = await loadAccounts();
+			expect(loadedAccounts?.accounts).toHaveLength(1);
+			expect(loadedAccounts?.accounts[0]).toEqual(
+				expect.objectContaining({
+					accountId: "acct-existing",
+					refreshToken: "refresh-existing",
+				}),
+			);
+
+			const loadedFlagged = await loadFlaggedAccounts();
+			expect(loadedFlagged.accounts).toHaveLength(1);
+			expect(loadedFlagged.accounts[0]).toEqual(
+				expect.objectContaining({
+					accountId: "acct-flagged",
+					refreshToken: "refresh-flagged",
+				}),
+			);
 		});
 
 		it("should enforce MAX_ACCOUNTS during import", async () => {

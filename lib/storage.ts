@@ -1845,6 +1845,21 @@ async function saveAccountsUnlocked(storage: AccountStorageV3): Promise<void> {
 	}
 }
 
+function cloneAccountStorageForPersistence(
+	storage: AccountStorageV3 | null | undefined,
+): AccountStorageV3 {
+	return {
+		version: 3,
+		accounts: structuredClone(storage?.accounts ?? []),
+		activeIndex:
+			typeof storage?.activeIndex === "number" &&
+			Number.isFinite(storage.activeIndex)
+				? storage.activeIndex
+				: 0,
+		activeIndexByFamily: structuredClone(storage?.activeIndexByFamily ?? {}),
+	};
+}
+
 export async function withAccountStorageTransaction<T>(
 	handler: (
 		current: AccountStorageV3 | null,
@@ -1860,6 +1875,53 @@ export async function withAccountStorageTransaction<T>(
 		const persist = async (storage: AccountStorageV3): Promise<void> => {
 			await saveAccountsUnlocked(storage);
 			state.snapshot = storage;
+		};
+		return transactionSnapshotContext.run(state, () =>
+			handler(current, persist),
+		);
+	});
+}
+
+export async function withAccountAndFlaggedStorageTransaction<T>(
+	handler: (
+		current: AccountStorageV3 | null,
+		persist: (
+			accountStorage: AccountStorageV3,
+			flaggedStorage: FlaggedAccountStorageV1,
+		) => Promise<void>,
+	) => Promise<T>,
+): Promise<T> {
+	return withStorageLock(async () => {
+		const state = {
+			snapshot: await loadAccountsInternal(saveAccountsUnlocked),
+			active: true,
+		};
+		const current = state.snapshot;
+		const persist = async (
+			accountStorage: AccountStorageV3,
+			flaggedStorage: FlaggedAccountStorageV1,
+		): Promise<void> => {
+			const previousAccounts = cloneAccountStorageForPersistence(state.snapshot);
+			const nextAccounts = cloneAccountStorageForPersistence(accountStorage);
+			await saveAccountsUnlocked(nextAccounts);
+			try {
+				await saveFlaggedAccountsUnlocked(flaggedStorage);
+				state.snapshot = nextAccounts;
+			} catch (error) {
+				try {
+					await saveAccountsUnlocked(previousAccounts);
+					state.snapshot = previousAccounts;
+				} catch (rollbackError) {
+					log.error(
+						"Failed to rollback account storage after flagged save failure",
+						{
+							error: String(error),
+							rollbackError: String(rollbackError),
+						},
+					);
+				}
+				throw error;
+			}
 		};
 		return transactionSnapshotContext.run(state, () =>
 			handler(current, persist),
@@ -2091,47 +2153,53 @@ export async function loadFlaggedAccounts(): Promise<FlaggedAccountStorageV1> {
 	}
 }
 
+async function saveFlaggedAccountsUnlocked(
+	storage: FlaggedAccountStorageV1,
+): Promise<void> {
+	const path = getFlaggedAccountsPath();
+	const markerPath = getIntentionalResetMarkerPath(path);
+	const uniqueSuffix = `${Date.now()}.${Math.random().toString(36).slice(2, 8)}`;
+	const tempPath = `${path}.${uniqueSuffix}.tmp`;
+
+	try {
+		await fs.mkdir(dirname(path), { recursive: true });
+		if (existsSync(path)) {
+			try {
+				await fs.copyFile(path, `${path}.bak`);
+			} catch (backupError) {
+				log.warn("Failed to create flagged backup snapshot", {
+					path,
+					error: String(backupError),
+				});
+			}
+		}
+		const content = JSON.stringify(normalizeFlaggedStorage(storage), null, 2);
+		await fs.writeFile(tempPath, content, { encoding: "utf-8", mode: 0o600 });
+		await fs.rename(tempPath, path);
+		try {
+			await fs.unlink(markerPath);
+		} catch {
+			// Best effort cleanup.
+		}
+	} catch (error) {
+		try {
+			await fs.unlink(tempPath);
+		} catch {
+			// Ignore cleanup failures.
+		}
+		log.error("Failed to save flagged account storage", {
+			path,
+			error: String(error),
+		});
+		throw error;
+	}
+}
+
 export async function saveFlaggedAccounts(
 	storage: FlaggedAccountStorageV1,
 ): Promise<void> {
 	return withStorageLock(async () => {
-		const path = getFlaggedAccountsPath();
-		const markerPath = getIntentionalResetMarkerPath(path);
-		const uniqueSuffix = `${Date.now()}.${Math.random().toString(36).slice(2, 8)}`;
-		const tempPath = `${path}.${uniqueSuffix}.tmp`;
-
-		try {
-			await fs.mkdir(dirname(path), { recursive: true });
-			if (existsSync(path)) {
-				try {
-					await fs.copyFile(path, `${path}.bak`);
-				} catch (backupError) {
-					log.warn("Failed to create flagged backup snapshot", {
-						path,
-						error: String(backupError),
-					});
-				}
-			}
-			const content = JSON.stringify(normalizeFlaggedStorage(storage), null, 2);
-			await fs.writeFile(tempPath, content, { encoding: "utf-8", mode: 0o600 });
-			await fs.rename(tempPath, path);
-			try {
-				await fs.unlink(markerPath);
-			} catch {
-				// Best effort cleanup.
-			}
-		} catch (error) {
-			try {
-				await fs.unlink(tempPath);
-			} catch {
-				// Ignore cleanup failures.
-			}
-			log.error("Failed to save flagged account storage", {
-				path,
-				error: String(error),
-			});
-			throw error;
-		}
+		await saveFlaggedAccountsUnlocked(storage);
 	});
 }
 

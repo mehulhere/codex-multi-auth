@@ -26,6 +26,7 @@ const promptQuestionMock = vi.fn();
 const detectOcChatgptMultiAuthTargetMock = vi.fn();
 const normalizeAccountStorageMock = vi.fn((value) => value);
 const withAccountStorageTransactionMock = vi.fn();
+const withAccountAndFlaggedStorageTransactionMock = vi.fn();
 
 vi.mock("../lib/logger.js", () => ({
 	createLogger: vi.fn(() => ({
@@ -94,6 +95,8 @@ vi.mock("../lib/storage.js", async () => {
 		loadFlaggedAccounts: loadFlaggedAccountsMock,
 		saveAccounts: saveAccountsMock,
 		saveFlaggedAccounts: saveFlaggedAccountsMock,
+		withAccountAndFlaggedStorageTransaction:
+			withAccountAndFlaggedStorageTransactionMock,
 		withAccountStorageTransaction: withAccountStorageTransactionMock,
 		setStoragePath: setStoragePathMock,
 		getStoragePath: getStoragePathMock,
@@ -412,6 +415,7 @@ describe("codex manager cli commands", () => {
 		loadFlaggedAccountsMock.mockReset();
 		saveAccountsMock.mockReset();
 		saveFlaggedAccountsMock.mockReset();
+		withAccountAndFlaggedStorageTransactionMock.mockReset();
 		withAccountStorageTransactionMock.mockReset();
 		queuedRefreshMock.mockReset();
 		setCodexCliActiveSelectionMock.mockReset();
@@ -452,6 +456,34 @@ describe("codex manager cli commands", () => {
 						}
 						: structuredClone(current),
 					async (storage: unknown) => saveAccountsMock(storage),
+				);
+			},
+		);
+		withAccountAndFlaggedStorageTransactionMock.mockImplementation(
+			async (handler) => {
+				const current = await loadAccountsMock();
+				let snapshot =
+					current == null
+						? {
+							version: 3,
+							accounts: [],
+							activeIndex: 0,
+							activeIndexByFamily: {},
+						}
+						: structuredClone(current);
+				return handler(
+					structuredClone(snapshot),
+					async (storage: unknown, flaggedStorage: unknown) => {
+						const previousSnapshot = structuredClone(snapshot);
+						await saveAccountsMock(storage);
+						try {
+							await saveFlaggedAccountsMock(flaggedStorage);
+							snapshot = structuredClone(storage);
+						} catch (error) {
+							await saveAccountsMock(previousSnapshot);
+							throw error;
+						}
+					},
 				);
 			},
 		);
@@ -642,7 +674,7 @@ describe("codex manager cli commands", () => {
 		]);
 
 		expect(exitCode).toBe(0);
-		expect(withAccountStorageTransactionMock).toHaveBeenCalledTimes(1);
+		expect(withAccountAndFlaggedStorageTransactionMock).toHaveBeenCalledTimes(1);
 		expect(saveAccountsMock).toHaveBeenCalledWith(
 			expect.objectContaining({
 				accounts: expect.arrayContaining([
@@ -699,7 +731,7 @@ describe("codex manager cli commands", () => {
 		]);
 
 		expect(exitCode).toBe(0);
-		expect(withAccountStorageTransactionMock).toHaveBeenCalledTimes(1);
+		expect(withAccountAndFlaggedStorageTransactionMock).toHaveBeenCalledTimes(1);
 		const savedStorage = saveAccountsMock.mock.calls.at(-1)?.[0];
 		expect(savedStorage).toEqual(
 			expect.objectContaining({
@@ -713,6 +745,70 @@ describe("codex manager cli commands", () => {
 		);
 		expect(savedStorage?.accounts).toHaveLength(1);
 		extractAccountIdMock.mockImplementation(() => "acc_test");
+	});
+
+	it("rolls back active storage when flagged persistence fails during recovery", async () => {
+		const now = Date.now();
+		loadFlaggedAccountsMock.mockResolvedValueOnce({
+			version: 1,
+			accounts: [
+				{
+					refreshToken: "flagged-refresh",
+					accountId: "acc_flagged",
+					email: "flagged@example.com",
+					addedAt: now - 1_000,
+					lastUsed: now - 1_000,
+					flaggedAt: now - 5_000,
+				},
+			],
+		});
+		loadAccountsMock.mockResolvedValueOnce({
+			version: 3,
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0 },
+			accounts: [
+				{
+					refreshToken: "refresh-existing",
+					accountId: "acc_existing",
+					email: "existing@example.com",
+					addedAt: now - 10_000,
+					lastUsed: now - 10_000,
+				},
+			],
+		});
+		queuedRefreshMock.mockResolvedValueOnce({
+			type: "success",
+			access: "access-restored",
+			refresh: "refresh-restored",
+			expires: now + 3_600_000,
+		});
+		saveFlaggedAccountsMock.mockRejectedValueOnce(
+			new Error("flagged write failed"),
+		);
+		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+
+		await expect(
+			runCodexMultiAuthCli(["auth", "verify-flagged", "--json"]),
+		).rejects.toThrow("flagged write failed");
+		expect(withAccountAndFlaggedStorageTransactionMock).toHaveBeenCalledTimes(
+			1,
+		);
+		expect(saveAccountsMock).toHaveBeenCalledTimes(2);
+		expect(saveAccountsMock.mock.calls[0]?.[0]).toEqual(
+			expect.objectContaining({
+				accounts: expect.arrayContaining([
+					expect.objectContaining({ refreshToken: "refresh-existing" }),
+					expect.objectContaining({ refreshToken: "refresh-restored" }),
+				]),
+			}),
+		);
+		expect(saveAccountsMock.mock.calls[1]?.[0]).toEqual(
+			expect.objectContaining({
+				accounts: [
+					expect.objectContaining({ refreshToken: "refresh-existing" }),
+				],
+			}),
+		);
 	});
 
 	it("keeps flagged account when verification still fails", async () => {

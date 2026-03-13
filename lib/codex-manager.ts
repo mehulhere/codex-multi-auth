@@ -58,6 +58,7 @@ import {
 	saveFlaggedAccounts,
 	saveAccounts,
 	setStoragePath,
+	withAccountAndFlaggedStorageTransaction,
 	withAccountStorageTransaction,
 	type AccountMetadataV3,
 	type AccountStorageV3,
@@ -2553,10 +2554,9 @@ async function runVerifyFlagged(args: string[]): Promise<number> {
 		});
 	}
 
-	const applyRefreshChecks = async (
+	const applyRefreshChecks = (
 		storage: AccountStorageV3,
-		persist?: (nextStorage: AccountStorageV3) => Promise<void>,
-	): Promise<void> => {
+	): void => {
 		for (const check of refreshChecks) {
 			const { index: i, flagged, label, result } = check;
 			if (result.type === "success") {
@@ -2638,28 +2638,33 @@ async function runVerifyFlagged(args: string[]): Promise<number> {
 				message: detail,
 			});
 		}
-
-		if (persist && storageChanged) {
-			normalizeDoctorIndexes(storage);
-			await persist(storage);
-		}
 	};
 
 	if (options.restore) {
 		if (options.dryRun) {
-			await applyRefreshChecks(
+			applyRefreshChecks(
 				(await loadAccounts()) ?? createEmptyAccountStorage(),
 			);
 		} else {
-			await withAccountStorageTransaction(async (loadedStorage, persist) => {
-				await applyRefreshChecks(
-					loadedStorage ? structuredClone(loadedStorage) : createEmptyAccountStorage(),
-					persist,
-				);
-			});
+			await withAccountAndFlaggedStorageTransaction(
+				async (loadedStorage, persist) => {
+					const nextStorage = loadedStorage
+						? structuredClone(loadedStorage)
+						: createEmptyAccountStorage();
+					applyRefreshChecks(nextStorage);
+					if (!storageChanged) {
+						return;
+					}
+					normalizeDoctorIndexes(nextStorage);
+					await persist(nextStorage, {
+						version: 1,
+						accounts: nextFlaggedAccounts,
+					});
+				},
+			);
 		}
 	} else {
-		await applyRefreshChecks(createEmptyAccountStorage());
+		applyRefreshChecks(createEmptyAccountStorage());
 	}
 
 	const remainingFlagged = nextFlaggedAccounts.length;
@@ -2668,7 +2673,7 @@ async function runVerifyFlagged(args: string[]): Promise<number> {
 	const stillFlagged = reports.filter((report) => report.outcome === "still-flagged").length;
 	const changed = storageChanged || flaggedChanged;
 
-	if (!options.dryRun && flaggedChanged) {
+	if (!options.dryRun && flaggedChanged && (!options.restore || !storageChanged)) {
 		await saveFlaggedAccounts({
 			version: 1,
 			accounts: nextFlaggedAccounts,
