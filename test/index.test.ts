@@ -253,6 +253,7 @@ const clearAccountsMock = vi.fn(async () => {
 	mockStorage.activeIndex = 0;
 	mockStorage.activeIndexByFamily = {};
 });
+let storageTransactionQueue: Promise<unknown> = Promise.resolve();
 const withAccountStorageTransactionMock = vi.fn(
 	async (
 		handler: (
@@ -269,18 +270,26 @@ const withAccountStorageTransactionMock = vi.fn(
 				activeIndexByFamily?: Record<string, number>;
 			}) => Promise<void>,
 		) => Promise<unknown>,
-	) =>
-		handler(
-			{
-				version: 3,
-				accounts: mockStorage.accounts.map((account) => ({ ...account })),
-				activeIndex: mockStorage.activeIndex,
-				activeIndexByFamily: { ...mockStorage.activeIndexByFamily },
-			},
-			async (storage) => {
-				await saveAccountsMock(storage);
-			},
-		),
+	) => {
+		const run = async () =>
+			handler(
+				{
+					version: 3,
+					accounts: mockStorage.accounts.map((account) => ({ ...account })),
+					activeIndex: mockStorage.activeIndex,
+					activeIndexByFamily: { ...mockStorage.activeIndexByFamily },
+				},
+				async (storage) => {
+					await saveAccountsMock(storage);
+				},
+			);
+		const nextRun = storageTransactionQueue.then(run, run);
+		storageTransactionQueue = nextRun.then(
+			() => undefined,
+			() => undefined,
+		);
+		return nextRun;
+	},
 );
 
 const syncCodexCliSelectionMock = vi.fn(async (_index: number) => {});
@@ -475,6 +484,11 @@ describe("OpenAIOAuthPlugin", () => {
 	beforeEach(async () => {
 		vi.clearAllMocks();
 		mockClient = createMockClient();
+		storageTransactionQueue = Promise.resolve();
+		extractAccountEmailMock.mockReset();
+		extractAccountEmailMock.mockImplementation(() => "user@example.com");
+		extractAccountIdMock.mockReset();
+		extractAccountIdMock.mockImplementation(() => "account-1");
 
 		mockStorage.accounts = [];
 		mockStorage.activeIndex = 0;
@@ -1944,6 +1958,10 @@ describe("OpenAIOAuthPlugin persistAccountPool", () => {
 
 		expect(result.type).toBe("success");
 		expect(mockStorage.accounts).toHaveLength(2);
+		expect(mockStorage.accounts.map((account) => account.accountId)).toEqual([
+			"shared-workspace",
+			"shared-workspace",
+		]);
 		expect(
 			mockStorage.accounts.map((account) => ({
 				email: account.email,

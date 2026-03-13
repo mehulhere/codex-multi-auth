@@ -1339,6 +1339,51 @@ describe("AccountManager", () => {
       expect(account?.refreshToken).toBe("different-refresh-token");
     });
 
+    it("adds fallback as a distinct account when the same email spans multiple accountIds", () => {
+      const now = Date.now();
+      const payload = {
+        email: "shared@example.com",
+      };
+      const accessToken = `header.${Buffer.from(JSON.stringify(payload)).toString("base64")}.signature`;
+
+      const stored = {
+        version: 3 as const,
+        activeIndex: 0,
+        accounts: [
+          {
+            accountId: "workspace-alpha",
+            email: "shared@example.com",
+            refreshToken: "refresh-alpha",
+            addedAt: now,
+            lastUsed: now,
+          },
+          {
+            accountId: "workspace-beta",
+            email: "shared@example.com",
+            refreshToken: "refresh-beta",
+            addedAt: now,
+            lastUsed: now,
+          },
+        ],
+      };
+
+      const auth: OAuthAuthDetails = {
+        type: "oauth",
+        access: accessToken,
+        refresh: "refresh-gamma",
+        expires: now + 60_000,
+      };
+
+      const manager = new AccountManager(auth, stored);
+
+      expect(manager.getAccountCount()).toBe(3);
+      expect(manager.getAccountsSnapshot().map((account) => account.refreshToken)).toEqual([
+        "refresh-alpha",
+        "refresh-beta",
+        "refresh-gamma",
+      ]);
+    });
+
     it("adds fallback as new account when no match found", () => {
       const now = Date.now();
       const stored = {

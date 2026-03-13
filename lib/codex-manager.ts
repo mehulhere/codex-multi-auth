@@ -2529,25 +2529,76 @@ async function runVerifyFlagged(args: string[]): Promise<number> {
 		return 0;
 	}
 
-	let storage = await loadAccounts();
-	if (!storage) {
-		storage = createEmptyAccountStorage();
-	}
 	let storageChanged = false;
 	let flaggedChanged = false;
 	const reports: VerifyFlaggedReport[] = [];
 	const nextFlaggedAccounts: FlaggedAccountMetadataV1[] = [];
 	const now = Date.now();
+	const refreshChecks: Array<{
+		index: number;
+		flagged: FlaggedAccountMetadataV1;
+		label: string;
+		result: Awaited<ReturnType<typeof queuedRefresh>>;
+	}> = [];
 
 	for (let i = 0; i < flaggedStorage.accounts.length; i += 1) {
 		const flagged = flaggedStorage.accounts[i];
 		if (!flagged) continue;
 		const label = formatAccountLabel(flagged, i);
-		const result = await queuedRefresh(flagged.refreshToken);
+		refreshChecks.push({
+			index: i,
+			flagged,
+			label,
+			result: await queuedRefresh(flagged.refreshToken),
+		});
+	}
 
-		if (result.type === "success") {
-			if (!options.restore) {
-				const nextFlagged: FlaggedAccountMetadataV1 = {
+	const applyRefreshChecks = async (
+		storage: AccountStorageV3,
+		persist?: (nextStorage: AccountStorageV3) => Promise<void>,
+	): Promise<void> => {
+		for (const check of refreshChecks) {
+			const { index: i, flagged, label, result } = check;
+			if (result.type === "success") {
+				if (!options.restore) {
+					const nextFlagged: FlaggedAccountMetadataV1 = {
+						...flagged,
+						refreshToken: result.refresh,
+						accessToken: result.access,
+						expiresAt: result.expires,
+						accountId: extractAccountId(result.access) ?? flagged.accountId,
+						accountIdSource: extractAccountId(result.access) ? "token" : flagged.accountIdSource,
+						email: sanitizeEmail(extractAccountEmail(result.access, result.idToken)) ?? flagged.email,
+						lastUsed: now,
+						lastError: undefined,
+					};
+					nextFlaggedAccounts.push(nextFlagged);
+					if (JSON.stringify(nextFlagged) !== JSON.stringify(flagged)) {
+						flaggedChanged = true;
+					}
+					reports.push({
+						index: i,
+						label,
+						outcome: "healthy-flagged",
+						message: "session is healthy (left in flagged list due to --no-restore)",
+					});
+					continue;
+				}
+
+				const upsertResult = upsertRecoveredFlaggedAccount(storage, flagged, result, now);
+				if (upsertResult.restored) {
+					storageChanged = storageChanged || upsertResult.changed;
+					flaggedChanged = true;
+					reports.push({
+						index: i,
+						label,
+						outcome: "restored",
+						message: upsertResult.message,
+					});
+					continue;
+				}
+
+				const updatedFlagged: FlaggedAccountMetadataV1 = {
 					...flagged,
 					refreshToken: result.refresh,
 					accessToken: result.access,
@@ -2556,73 +2607,59 @@ async function runVerifyFlagged(args: string[]): Promise<number> {
 					accountIdSource: extractAccountId(result.access) ? "token" : flagged.accountIdSource,
 					email: sanitizeEmail(extractAccountEmail(result.access, result.idToken)) ?? flagged.email,
 					lastUsed: now,
-					lastError: undefined,
+					lastError: upsertResult.message,
 				};
-				nextFlaggedAccounts.push(nextFlagged);
-				if (JSON.stringify(nextFlagged) !== JSON.stringify(flagged)) {
+				nextFlaggedAccounts.push(updatedFlagged);
+				if (JSON.stringify(updatedFlagged) !== JSON.stringify(flagged)) {
 					flaggedChanged = true;
 				}
 				reports.push({
 					index: i,
 					label,
-					outcome: "healthy-flagged",
-					message: "session is healthy (left in flagged list due to --no-restore)",
-				});
-				continue;
-			}
-
-			const upsertResult = upsertRecoveredFlaggedAccount(storage, flagged, result, now);
-			if (upsertResult.restored) {
-				storageChanged = storageChanged || upsertResult.changed;
-				flaggedChanged = true;
-				reports.push({
-					index: i,
-					label,
-					outcome: "restored",
+					outcome: "restore-skipped",
 					message: upsertResult.message,
 				});
 				continue;
 			}
 
-			const updatedFlagged: FlaggedAccountMetadataV1 = {
+			const detail = normalizeFailureDetail(result.message, result.reason);
+			const failedFlagged: FlaggedAccountMetadataV1 = {
 				...flagged,
-				refreshToken: result.refresh,
-				accessToken: result.access,
-				expiresAt: result.expires,
-				accountId: extractAccountId(result.access) ?? flagged.accountId,
-				accountIdSource: extractAccountId(result.access) ? "token" : flagged.accountIdSource,
-				email: sanitizeEmail(extractAccountEmail(result.access, result.idToken)) ?? flagged.email,
-				lastUsed: now,
-				lastError: upsertResult.message,
+				lastError: detail,
 			};
-			nextFlaggedAccounts.push(updatedFlagged);
-			if (JSON.stringify(updatedFlagged) !== JSON.stringify(flagged)) {
+			nextFlaggedAccounts.push(failedFlagged);
+			if ((flagged.lastError ?? "") !== detail) {
 				flaggedChanged = true;
 			}
 			reports.push({
 				index: i,
 				label,
-				outcome: "restore-skipped",
-				message: upsertResult.message,
+				outcome: "still-flagged",
+				message: detail,
 			});
-			continue;
 		}
 
-		const detail = normalizeFailureDetail(result.message, result.reason);
-		const failedFlagged: FlaggedAccountMetadataV1 = {
-			...flagged,
-			lastError: detail,
-		};
-		nextFlaggedAccounts.push(failedFlagged);
-		if ((flagged.lastError ?? "") !== detail) {
-			flaggedChanged = true;
+		if (persist && storageChanged) {
+			normalizeDoctorIndexes(storage);
+			await persist(storage);
 		}
-		reports.push({
-			index: i,
-			label,
-			outcome: "still-flagged",
-			message: detail,
-		});
+	};
+
+	if (options.restore) {
+		if (options.dryRun) {
+			await applyRefreshChecks(
+				(await loadAccounts()) ?? createEmptyAccountStorage(),
+			);
+		} else {
+			await withAccountStorageTransaction(async (loadedStorage, persist) => {
+				await applyRefreshChecks(
+					loadedStorage ? structuredClone(loadedStorage) : createEmptyAccountStorage(),
+					persist,
+				);
+			});
+		}
+	} else {
+		await applyRefreshChecks(createEmptyAccountStorage());
 	}
 
 	const remainingFlagged = nextFlaggedAccounts.length;
@@ -2631,17 +2668,11 @@ async function runVerifyFlagged(args: string[]): Promise<number> {
 	const stillFlagged = reports.filter((report) => report.outcome === "still-flagged").length;
 	const changed = storageChanged || flaggedChanged;
 
-	if (!options.dryRun) {
-		if (storageChanged) {
-			normalizeDoctorIndexes(storage);
-			await saveAccounts(storage);
-		}
-		if (flaggedChanged) {
-			await saveFlaggedAccounts({
-				version: 1,
-				accounts: nextFlaggedAccounts,
-			});
-		}
+	if (!options.dryRun && flaggedChanged) {
+		await saveFlaggedAccounts({
+			version: 1,
+			accounts: nextFlaggedAccounts,
+		});
 	}
 
 	if (options.json) {
@@ -3086,6 +3117,14 @@ function normalizeDoctorIndexes(storage: AccountStorageV3): boolean {
 	return changed;
 }
 
+function getDoctorRefreshTokenKey(
+	refreshToken: unknown,
+): string | undefined {
+	if (typeof refreshToken !== "string") return undefined;
+	const trimmed = refreshToken.trim();
+	return trimmed || undefined;
+}
+
 function applyDoctorFixes(storage: AccountStorageV3): { changed: boolean; actions: DoctorFixAction[] } {
 	let changed = false;
 	const actions: DoctorFixAction[] = [];
@@ -3103,7 +3142,8 @@ function applyDoctorFixes(storage: AccountStorageV3): { changed: boolean; action
 		const account = storage.accounts[i];
 		if (!account) continue;
 
-		const refreshToken = account.refreshToken.trim();
+		const refreshToken = getDoctorRefreshTokenKey(account.refreshToken);
+		if (!refreshToken) continue;
 		const existingTokenIndex = seenRefreshTokens.get(refreshToken);
 		if (typeof existingTokenIndex === "number") {
 			if (account.enabled !== false) {
@@ -3372,7 +3412,8 @@ async function runDoctor(args: string[]): Promise<number> {
 		const seenRefreshTokens = new Set<string>();
 		let duplicateTokenCount = 0;
 		for (const account of storage.accounts) {
-			const token = account.refreshToken.trim();
+			const token = getDoctorRefreshTokenKey(account.refreshToken);
+			if (!token) continue;
 			if (seenRefreshTokens.has(token)) {
 				duplicateTokenCount += 1;
 			} else {

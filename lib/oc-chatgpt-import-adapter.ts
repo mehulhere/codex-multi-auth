@@ -257,8 +257,9 @@ function normalizeActiveIndexByFamily(
  * Normalize and de-duplicate a list of account metadata for import into a target store.
  *
  * Processes input accounts by sanitizing entries, removing invalid refresh tokens, and
- * de-duplicating with the following precedence: `accountId + email`, unique bare
- * `accountId`, normalized email, then refreshToken.
+ * de-duplicating with the following precedence: `accountId + email`, normalized email,
+ * then refreshToken. Bare `accountId` rows without an email stay on the refresh-token
+ * path so distinct business accounts are not collapsed by a shared workspace id.
  * When duplicates are found the most recently used/added account is kept and the other is recorded
  * in `skipped` with a reason code.
  *
@@ -300,7 +301,7 @@ function normalizeAccountsForTarget(accounts: AccountMetadataV3[]): {
 	const withoutAccountId: AccountMetadataV3[] = [];
 
 	for (const account of valid) {
-		if (account.accountId) {
+		if (account.accountId && normalizeEmailKey(account.email)) {
 			const identityKey = getAccountIdentityKey(account);
 			if (!identityKey) {
 				withoutAccountId.push(account);

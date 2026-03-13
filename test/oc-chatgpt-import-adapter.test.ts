@@ -308,6 +308,54 @@ describe("oc-chatgpt import adapter", () => {
 		);
 	});
 
+	it("preserves duplicate no-email shared accountId rows and remaps active selection", () => {
+		const source: AccountStorageV3 = {
+			version: 3,
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0 },
+			accounts: [
+				{
+					accountId: "shared-account",
+					refreshToken: "source-old",
+					addedAt: 1,
+					lastUsed: 1,
+				},
+				{
+					accountId: "identity-account",
+					email: "gamma@example.com",
+					refreshToken: "gamma-refresh",
+					addedAt: 2,
+					lastUsed: 2,
+				},
+				{
+					accountId: "shared-account",
+					refreshToken: "source-new",
+					addedAt: 3,
+					lastUsed: 3,
+				},
+			],
+		};
+
+		const payload = buildOcChatgptImportPayload(source);
+		const preview = previewOcChatgptImportMerge({
+			source,
+			destination: { version: 3, activeIndex: 0, accounts: [] },
+		});
+
+		expect(payload.accounts.map((account) => account.refreshToken)).toEqual([
+			"gamma-refresh",
+			"source-old",
+			"source-new",
+		]);
+		expect(
+			payload.accounts.filter((account) => account.accountId === "shared-account"),
+		).toHaveLength(2);
+		expect(payload.activeIndex).toBe(1);
+		expect(payload.activeIndexByFamily).toEqual({ codex: 1 });
+		expect(preview.payload.activeIndex).toBe(1);
+		expect(preview.payload.activeIndexByFamily).toEqual({ codex: 1 });
+	});
+
 	it("does not match a unique bare accountId when the source and destination emails conflict", () => {
 		const destination: AccountStorageV3 = {
 			version: 3,

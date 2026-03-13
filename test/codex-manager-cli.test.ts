@@ -440,11 +440,13 @@ describe("codex manager cli commands", () => {
 			accounts: [],
 		});
 		withAccountStorageTransactionMock.mockImplementation(
-			async (handler) =>
-				handler(
-					await loadAccountsMock(),
+			async (handler) => {
+				const current = await loadAccountsMock();
+				return handler(
+					current == null ? null : structuredClone(current),
 					async (storage: unknown) => saveAccountsMock(storage),
-				),
+				);
+			},
 		);
 		loadDashboardDisplaySettingsMock.mockResolvedValue({
 			showPerAccountRows: true,
@@ -633,6 +635,7 @@ describe("codex manager cli commands", () => {
 		]);
 
 		expect(exitCode).toBe(0);
+		expect(withAccountStorageTransactionMock).toHaveBeenCalledTimes(1);
 		expect(saveAccountsMock).toHaveBeenCalledWith(
 			expect.objectContaining({
 				accounts: expect.arrayContaining([
@@ -689,6 +692,7 @@ describe("codex manager cli commands", () => {
 		]);
 
 		expect(exitCode).toBe(0);
+		expect(withAccountStorageTransactionMock).toHaveBeenCalledTimes(1);
 		const savedStorage = saveAccountsMock.mock.calls.at(-1)?.[0];
 		expect(savedStorage).toEqual(
 			expect.objectContaining({
@@ -1753,6 +1757,42 @@ describe("codex manager cli commands", () => {
 		expect(payload.checks.some((check) => check.key === "active-index")).toBe(
 			true,
 		);
+	});
+
+	it("runs doctor command in json mode with malformed token rows", async () => {
+		const now = Date.now();
+		loadAccountsMock.mockResolvedValueOnce({
+			version: 3,
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0 },
+			accounts: [
+				{
+					email: "real@example.net",
+					refreshToken: "refresh-a",
+					addedAt: now - 1_000,
+					lastUsed: now - 1_000,
+				},
+				{
+					email: "broken@example.net",
+					refreshToken: null as unknown as string,
+					addedAt: now - 500,
+					lastUsed: now - 500,
+				},
+			],
+		});
+
+		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+
+		const exitCode = await runCodexMultiAuthCli(["auth", "doctor", "--json"]);
+		expect(exitCode).toBe(0);
+
+		const payload = JSON.parse(String(logSpy.mock.calls[0]?.[0])) as {
+			command: string;
+			summary: { ok: number; warn: number; error: number };
+		};
+		expect(payload.command).toBe("doctor");
+		expect(payload.summary.error).toBe(0);
 	});
 
 	it("runs doctor --fix in dry-run mode", async () => {

@@ -3232,6 +3232,9 @@ while (attempted.size < Math.max(1, accountCount)) {
 												email: sanitizeEmail(email),
 												refreshToken: resolved.refresh,
 											},
+											{
+												allowUniqueAccountIdFallbackWithoutEmail: true,
+											},
 										) !== undefined;
 
 									if (isDuplicate) {
