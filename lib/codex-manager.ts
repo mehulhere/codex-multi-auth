@@ -929,7 +929,7 @@ function resolveStoredAccountIdentity(
 
 	return {
 		accountId,
-		accountIdSource: tokenAccountId ? "token" : storedAccountIdSource,
+		accountIdSource: accountId === tokenAccountId ? "token" : storedAccountIdSource,
 	};
 }
 
@@ -942,6 +942,9 @@ function applyTokenAccountIdentity(
 		account.accountIdSource,
 		tokenAccountId,
 	);
+	if (!nextIdentity.accountId) {
+		return false;
+	}
 	if (nextIdentity.accountId === account.accountId
 		&& nextIdentity.accountIdSource === account.accountIdSource) {
 		return false;
@@ -2545,8 +2548,11 @@ function upsertRecoveredFlaggedAccount(
 			changed = true;
 		}
 		if (
-			(nextAccountId !== existing.accountId)
-			|| (nextAccountIdSource !== existing.accountIdSource)
+			nextAccountId !== undefined &&
+			(
+				(nextAccountId !== existing.accountId)
+				|| (nextAccountIdSource !== existing.accountIdSource)
+			)
 		) {
 			existing.accountId = nextAccountId;
 			existing.accountIdSource = nextAccountIdSource;
@@ -2988,7 +2994,7 @@ async function runFix(args: string[]): Promise<number> {
 			}
 			if (!account.accountId && nextAccountId) {
 				account.accountId = nextAccountId;
-				account.accountIdSource = account.accountIdSource ?? "token";
+				account.accountIdSource = "token";
 				accountChanged = true;
 			}
 
@@ -3307,7 +3313,7 @@ function applyDoctorFixes(storage: AccountStorageV3): { changed: boolean; action
 		const tokenAccountId = extractAccountId(account.accessToken);
 		if (!account.accountId && tokenAccountId) {
 			account.accountId = tokenAccountId;
-			account.accountIdSource = account.accountIdSource ?? "token";
+			account.accountIdSource = "token";
 			changed = true;
 			actions.push({
 				key: "account-id-from-token",
@@ -3675,9 +3681,7 @@ async function runDoctor(args: string[]): Promise<number> {
 							activeAccount.refreshToken = refreshResult.refresh;
 							activeAccount.expiresAt = refreshResult.expires;
 							if (refreshedEmail) activeAccount.email = refreshedEmail;
-							if (applyTokenAccountIdentity(activeAccount, refreshedAccountId)) {
-								storageChangedFromDoctorSync = true;
-							}
+							applyTokenAccountIdentity(activeAccount, refreshedAccountId);
 							syncAccessToken = refreshResult.access;
 							syncRefreshToken = refreshResult.refresh;
 							syncExpiresAt = refreshResult.expires;

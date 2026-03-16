@@ -77,11 +77,11 @@ vi.mock("../lib/accounts.js", () => ({
 	resolveRequestAccountId: vi.fn(
 		(
 			storedAccountId: string | undefined,
-			source: string | undefined,
+			currentAccountIdSource: string | undefined,
 			tokenId: string | undefined,
 		) => {
 			if (!storedAccountId) return tokenId;
-			if (source === "org" || source === "manual") {
+			if (currentAccountIdSource === "org" || currentAccountIdSource === "manual") {
 				return storedAccountId;
 			}
 			return tokenId ?? storedAccountId;
@@ -92,10 +92,10 @@ vi.mock("../lib/accounts.js", () => ({
 	),
 	selectBestAccountCandidate: vi.fn(() => null),
 	shouldUpdateAccountIdFromToken: vi.fn(
-		(source: string | undefined, currentAccountId: string | undefined) => {
+		(currentAccountIdSource: string | undefined, currentAccountId: string | undefined) => {
 			if (!currentAccountId) return true;
-			if (!source) return true;
-			return source === "token" || source === "id_token";
+			if (!currentAccountIdSource) return true;
+			return currentAccountIdSource === "token" || currentAccountIdSource === "id_token";
 		},
 	),
 }));
@@ -819,6 +819,75 @@ describe("codex manager cli commands", () => {
 				accountId: "workspace-alpha",
 				accountIdSource: "org",
 				refreshToken: "refresh-restored",
+			}),
+		);
+		extractAccountIdMock.mockImplementation(() => "acc_test");
+	});
+
+	it("does not clear an existing workspace binding when flagged recovery refresh has no account id", async () => {
+		const now = Date.now();
+		loadFlaggedAccountsMock.mockResolvedValueOnce({
+			version: 1,
+			accounts: [
+				{
+					refreshToken: "flagged-refresh",
+					email: "a@example.com",
+					addedAt: now - 1_000,
+					lastUsed: now - 1_000,
+					flaggedAt: now - 5_000,
+				},
+			],
+		});
+		loadAccountsMock.mockResolvedValueOnce({
+			version: 3,
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0 },
+			accounts: [
+				{
+					refreshToken: "refresh-existing",
+					accountId: "workspace-alpha",
+					accountIdSource: "org",
+					accountLabel: "Workspace Alpha [id:alpha]",
+					email: "a@example.com",
+					addedAt: now - 3_000,
+					lastUsed: now - 3_000,
+				},
+			],
+		});
+		queuedRefreshMock.mockResolvedValueOnce({
+			type: "success",
+			access: "access-restored",
+			refresh: "refresh-restored",
+			expires: now + 3_600_000,
+		});
+		const accountsModule = await import("../lib/accounts.js");
+		const extractAccountIdMock = vi.mocked(accountsModule.extractAccountId);
+		extractAccountIdMock.mockImplementation((accessToken?: string) =>
+			accessToken === "access-restored" ? undefined : "workspace-alpha",
+		);
+		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+
+		const exitCode = await runCodexMultiAuthCli([
+			"auth",
+			"verify-flagged",
+			"--json",
+		]);
+
+		expect(exitCode).toBe(0);
+		const savedStorage = saveAccountsMock.mock.calls.at(-1)?.[0] as {
+			accounts: Array<{
+				accountId?: string;
+				accountIdSource?: string;
+				refreshToken?: string;
+				email?: string;
+			}>;
+		};
+		expect(savedStorage.accounts[0]).toEqual(
+			expect.objectContaining({
+				accountId: "workspace-alpha",
+				accountIdSource: "org",
+				refreshToken: "refresh-restored",
+				email: "a@example.com",
 			}),
 		);
 		extractAccountIdMock.mockImplementation(() => "acc_test");
