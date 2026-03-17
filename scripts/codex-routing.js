@@ -3,6 +3,7 @@ const AUTH_SUBCOMMANDS = new Set([
 	"list",
 	"status",
 	"switch",
+	"best",
 	"check",
 	"features",
 	"verify-flagged",
