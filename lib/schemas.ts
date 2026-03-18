@@ -82,7 +82,7 @@ export type CooldownReasonFromSchema = z.infer<typeof CooldownReasonSchema>;
 /**
  * Last switch reason for account rotation tracking.
  */
-export const SwitchReasonSchema = z.enum(["rate-limit", "initial", "rotation"]);
+export const SwitchReasonSchema = z.enum(["rate-limit", "initial", "rotation", "best"]);
 
 export type SwitchReasonFromSchema = z.infer<typeof SwitchReasonSchema>;
 

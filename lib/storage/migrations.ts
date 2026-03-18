@@ -25,7 +25,7 @@ export interface AccountMetadataV1 {
 	enabled?: boolean;
 	addedAt: number;
 	lastUsed: number;
-	lastSwitchReason?: "rate-limit" | "initial" | "rotation";
+	lastSwitchReason?: "rate-limit" | "initial" | "rotation" | "best";
 	rateLimitResetTime?: number;
 	coolingDownUntil?: number;
 	cooldownReason?: CooldownReason;
@@ -50,7 +50,7 @@ export interface AccountMetadataV3 {
 	enabled?: boolean;
 	addedAt: number;
 	lastUsed: number;
-	lastSwitchReason?: "rate-limit" | "initial" | "rotation";
+	lastSwitchReason?: "rate-limit" | "initial" | "rotation" | "best";
 	rateLimitResetTimes?: RateLimitStateV3;
 	coolingDownUntil?: number;
 	cooldownReason?: CooldownReason;
