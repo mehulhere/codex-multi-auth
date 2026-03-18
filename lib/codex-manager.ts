@@ -440,6 +440,54 @@ function hasUniqueQuotaAccountId(
 	return matchCount === 1;
 }
 
+type QuotaEmailFallbackState = {
+	matchingCount: number;
+	distinctAccountIds: Set<string>;
+};
+
+function buildQuotaEmailFallbackState(
+	accounts: readonly Pick<AccountMetadataV3, "accountId" | "email">[],
+): ReadonlyMap<string, QuotaEmailFallbackState> {
+	const stateByEmail = new Map<string, QuotaEmailFallbackState>();
+	for (const account of accounts) {
+		const email = normalizeQuotaEmail(account.email);
+		if (!email) continue;
+		const existing = stateByEmail.get(email);
+		if (existing) {
+			existing.matchingCount += 1;
+			const accountId = normalizeQuotaAccountId(account.accountId);
+			if (accountId) {
+				existing.distinctAccountIds.add(accountId);
+			}
+			continue;
+		}
+		const distinctAccountIds = new Set<string>();
+		const accountId = normalizeQuotaAccountId(account.accountId);
+		if (accountId) {
+			distinctAccountIds.add(accountId);
+		}
+		stateByEmail.set(email, {
+			matchingCount: 1,
+			distinctAccountIds,
+		});
+	}
+	return stateByEmail;
+}
+
+function hasSafeQuotaEmailFallback(
+	emailFallbackState: ReadonlyMap<string, QuotaEmailFallbackState>,
+	account: Pick<AccountMetadataV3, "email">,
+): boolean {
+	const email = normalizeQuotaEmail(account.email);
+	if (!email) return false;
+	const state = emailFallbackState.get(email);
+	if (!state) return false;
+	// size > 1 only matters when multiple accounts share the same email but
+	// disagree on accountId; a single matching account already implies size <= 1.
+	if (state.distinctAccountIds.size > 1) return false;
+	return state.matchingCount === 1;
+}
+
 function quotaCacheEntryToSnapshot(entry: QuotaCacheEntry): CodexQuotaSnapshot {
 	return {
 		status: entry.status,
@@ -514,12 +562,9 @@ function formatAccountQuotaSummary(entry: QuotaCacheEntry): string {
 function getQuotaCacheEntryForAccount(
 	cache: QuotaCacheData,
 	account: Pick<AccountMetadataV3, "accountId" | "email">,
-	accounts: readonly Pick<AccountMetadataV3, "accountId">[],
+	accounts: readonly Pick<AccountMetadataV3, "accountId" | "email">[],
+	emailFallbackState = buildQuotaEmailFallbackState(accounts),
 ): QuotaCacheEntry | null {
-	const email = normalizeQuotaEmail(account.email);
-	if (email && cache.byEmail[email]) {
-		return cache.byEmail[email] ?? null;
-	}
 	const accountId = normalizeQuotaAccountId(account.accountId);
 	if (
 		accountId &&
@@ -528,6 +573,14 @@ function getQuotaCacheEntryForAccount(
 	) {
 		return cache.byAccountId[accountId] ?? null;
 	}
+	const email = normalizeQuotaEmail(account.email);
+	if (
+		email &&
+		hasSafeQuotaEmailFallback(emailFallbackState, account) &&
+		cache.byEmail[email]
+	) {
+		return cache.byEmail[email] ?? null;
+	}
 	return null;
 }
 
@@ -535,7 +588,8 @@ function updateQuotaCacheForAccount(
 	cache: QuotaCacheData,
 	account: Pick<AccountMetadataV3, "accountId" | "email">,
 	snapshot: CodexQuotaSnapshot,
-	accounts: readonly Pick<AccountMetadataV3, "accountId">[],
+	accounts: readonly Pick<AccountMetadataV3, "accountId" | "email">[],
+	emailFallbackState = buildQuotaEmailFallbackState(accounts),
 ): boolean {
 	const nextEntry: QuotaCacheEntry = {
 		updatedAt: Date.now(),
@@ -555,18 +609,57 @@ function updateQuotaCacheForAccount(
 	};
 
 	let changed = false;
-	const email = normalizeQuotaEmail(account.email);
-	if (email) {
-		cache.byEmail[email] = nextEntry;
-		changed = true;
-		return changed;
-	}
 	const accountId = normalizeQuotaAccountId(account.accountId);
-	if (accountId && hasUniqueQuotaAccountId(accounts, account)) {
+	const hasUniqueAccountId =
+		accountId !== null && hasUniqueQuotaAccountId(accounts, account);
+	if (hasUniqueAccountId) {
 		cache.byAccountId[accountId] = nextEntry;
 		changed = true;
 	}
+	const email = normalizeQuotaEmail(account.email);
+	if (
+		email &&
+		hasSafeQuotaEmailFallback(emailFallbackState, account) &&
+		!hasUniqueAccountId
+	) {
+		cache.byEmail[email] = nextEntry;
+		changed = true;
+	} else if (email && cache.byEmail[email]) {
+		delete cache.byEmail[email];
+		changed = true;
+	}
 	return changed;
+}
+
+function cloneQuotaCacheData(cache: QuotaCacheData): QuotaCacheData {
+	// Shallow spreading is safe because quota cache entries are always replaced,
+	// never mutated in-place.
+	return {
+		byAccountId: { ...cache.byAccountId },
+		byEmail: { ...cache.byEmail },
+	};
+}
+
+function pruneUnsafeQuotaEmailCacheEntry(
+	cache: QuotaCacheData,
+	email: string | undefined,
+	accounts: readonly Pick<AccountMetadataV3, "accountId" | "email">[],
+	emailFallbackState = buildQuotaEmailFallbackState(accounts),
+): boolean {
+	const normalizedEmail = normalizeQuotaEmail(email);
+	if (!normalizedEmail || !cache.byEmail[normalizedEmail]) {
+		return false;
+	}
+	const hasSafeFallbackAccount = accounts.some(
+		(account) =>
+			normalizeQuotaEmail(account.email) === normalizedEmail &&
+			hasSafeQuotaEmailFallback(emailFallbackState, account),
+	);
+	if (hasSafeFallbackAccount) {
+		return false;
+	}
+	delete cache.byEmail[normalizedEmail];
+	return true;
 }
 
 const DEFAULT_MENU_QUOTA_REFRESH_TTL_MS = 5 * 60_000;
@@ -583,12 +676,18 @@ function resolveMenuQuotaProbeInput(
 	cache: QuotaCacheData,
 	maxAgeMs: number,
 	now: number,
-	accounts: readonly Pick<AccountMetadataV3, "accountId">[],
+	accounts: readonly Pick<AccountMetadataV3, "accountId" | "email">[],
+	emailFallbackState = buildQuotaEmailFallbackState(accounts),
 ): { accountId: string; accessToken: string } | null {
 	if (account.enabled === false) return null;
 	if (!hasUsableAccessToken(account, now)) return null;
 
-	const existing = getQuotaCacheEntryForAccount(cache, account, accounts);
+	const existing = getQuotaCacheEntryForAccount(
+		cache,
+		account,
+		accounts,
+		emailFallbackState,
+	);
 	if (
 		existing &&
 		typeof existing.updatedAt === "number" &&
@@ -597,6 +696,14 @@ function resolveMenuQuotaProbeInput(
 	) {
 		return null;
 	}
+
+	// Menu auto-refresh is cache-backed, so only probe when the result can be
+	// written behind a safe lookup key for later reuse.
+	const canStore =
+		(normalizeQuotaAccountId(account.accountId) !== null &&
+			hasUniqueQuotaAccountId(accounts, account)) ||
+		hasSafeQuotaEmailFallback(emailFallbackState, account);
+	if (!canStore) return null;
 
 	const accessToken = account.accessToken;
 	const accountId = accessToken
@@ -611,6 +718,7 @@ function collectMenuQuotaRefreshTargets(
 	cache: QuotaCacheData,
 	maxAgeMs: number,
 	now = Date.now(),
+	emailFallbackState = buildQuotaEmailFallbackState(storage.accounts),
 ): MenuQuotaProbeTarget[] {
 	const targets: MenuQuotaProbeTarget[] = [];
 	for (const account of storage.accounts) {
@@ -620,6 +728,7 @@ function collectMenuQuotaRefreshTargets(
 			maxAgeMs,
 			now,
 			storage.accounts,
+			emailFallbackState,
 		);
 		if (!probeInput) continue;
 		targets.push({
@@ -637,9 +746,19 @@ function countMenuQuotaRefreshTargets(
 	maxAgeMs: number,
 	now = Date.now(),
 ): number {
+	const emailFallbackState = buildQuotaEmailFallbackState(storage.accounts);
 	let count = 0;
 	for (const account of storage.accounts) {
-		if (resolveMenuQuotaProbeInput(account, cache, maxAgeMs, now, storage.accounts)) {
+		if (
+			resolveMenuQuotaProbeInput(
+				account,
+				cache,
+				maxAgeMs,
+				now,
+				storage.accounts,
+				emailFallbackState,
+			)
+		) {
 			count += 1;
 		}
 	}
@@ -656,8 +775,16 @@ async function refreshQuotaCacheForMenu(
 		return cache;
 	}
 
+	const emailFallbackState = buildQuotaEmailFallbackState(storage.accounts);
+	const nextCache = cloneQuotaCacheData(cache);
 	const now = Date.now();
-	const targets = collectMenuQuotaRefreshTargets(storage, cache, maxAgeMs, now);
+	const targets = collectMenuQuotaRefreshTargets(
+		storage,
+		nextCache,
+		maxAgeMs,
+		now,
+		emailFallbackState,
+	);
 	const total = targets.length;
 	let processed = 0;
 	onProgress?.(processed, total);
@@ -673,18 +800,23 @@ async function refreshQuotaCacheForMenu(
 				model: MENU_QUOTA_REFRESH_MODEL,
 			});
 			changed =
-				updateQuotaCacheForAccount(cache, target.account, snapshot, storage.accounts) ||
-				changed;
+				updateQuotaCacheForAccount(
+					nextCache,
+					target.account,
+					snapshot,
+					storage.accounts,
+					emailFallbackState,
+				) || changed;
 		} catch {
 			// Keep existing cached values if probing fails.
 		}
 	}
 
 	if (changed) {
-		await saveQuotaCache(cache);
+		await saveQuotaCache(nextCache);
 	}
 
-	return cache;
+	return nextCache;
 }
 
 const ACCESS_TOKEN_FRESH_WINDOW_MS = 5 * 60 * 1000;
@@ -824,9 +956,15 @@ function toExistingAccountInfo(
 	const now = Date.now();
 	const activeIndex = resolveActiveIndex(storage, "codex");
 	const layoutMode = resolveMenuLayoutMode(displaySettings);
+	const emailFallbackState = buildQuotaEmailFallbackState(storage.accounts);
 	const baseAccounts = storage.accounts.map((account, index) => {
 		const entry = quotaCache
-			? getQuotaCacheEntryForAccount(quotaCache, account, storage.accounts)
+			? getQuotaCacheEntryForAccount(
+					quotaCache,
+					account,
+					storage.accounts,
+					emailFallbackState,
+				)
 			: null;
 		return {
 			index,
@@ -1517,6 +1655,7 @@ async function runHealthCheck(options: HealthCheckOptions = {}): Promise<void> {
 	const probeModel = options.model?.trim() || "gpt-5-codex";
 	const display = options.display ?? DEFAULT_DASHBOARD_DISPLAY_SETTINGS;
 	const quotaCache = liveProbe ? await loadQuotaCache() : null;
+	const workingQuotaCache = quotaCache ? cloneQuotaCacheData(quotaCache) : null;
 	let quotaCacheChanged = false;
 	setStoragePath(null);
 	const storage = await loadAccounts();
@@ -1524,6 +1663,10 @@ async function runHealthCheck(options: HealthCheckOptions = {}): Promise<void> {
 		console.log("No accounts configured.");
 		return;
 	}
+	let quotaEmailFallbackState =
+		liveProbe && quotaCache
+			? buildQuotaEmailFallbackState(storage.accounts)
+			: null;
 
 	let changed = false;
 	let ok = 0;
@@ -1568,13 +1711,14 @@ async function runHealthCheck(options: HealthCheckOptions = {}): Promise<void> {
 							accessToken: currentAccessToken,
 							model: probeModel,
 						});
-						if (quotaCache) {
+						if (workingQuotaCache) {
 							quotaCacheChanged =
 								updateQuotaCacheForAccount(
-									quotaCache,
+									workingQuotaCache,
 									account,
 									snapshot,
 									storage.accounts,
+									quotaEmailFallbackState ?? undefined,
 								) || quotaCacheChanged;
 						}
 						healthDetail = formatQuotaSnapshotForDashboard(snapshot, display);
@@ -1603,6 +1747,8 @@ async function runHealthCheck(options: HealthCheckOptions = {}): Promise<void> {
 		if (result.type === "success") {
 			const tokenAccountId = extractAccountId(result.access);
 			const nextEmail = sanitizeEmail(extractAccountEmail(result.access, result.idToken));
+			const previousEmail = account.email;
+			let accountIdentityChanged = false;
 			if (account.refreshToken !== result.refresh) {
 				account.refreshToken = result.refresh;
 				changed = true;
@@ -1618,13 +1764,25 @@ async function runHealthCheck(options: HealthCheckOptions = {}): Promise<void> {
 			if (nextEmail && nextEmail !== account.email) {
 				account.email = nextEmail;
 				changed = true;
+				accountIdentityChanged = true;
 			}
 			if (applyTokenAccountIdentity(account, tokenAccountId)) {
 				changed = true;
+				accountIdentityChanged = true;
 			}
 			if (account.enabled === false) {
 				account.enabled = true;
 				changed = true;
+			}
+			if (accountIdentityChanged && liveProbe && workingQuotaCache) {
+				quotaEmailFallbackState = buildQuotaEmailFallbackState(storage.accounts);
+				quotaCacheChanged =
+					pruneUnsafeQuotaEmailCacheEntry(
+						workingQuotaCache,
+						previousEmail,
+						storage.accounts,
+						quotaEmailFallbackState,
+					) || quotaCacheChanged;
 			}
 			account.lastUsed = Date.now();
 			if (i === activeIndex) {
@@ -1644,13 +1802,14 @@ async function runHealthCheck(options: HealthCheckOptions = {}): Promise<void> {
 							accessToken: result.access,
 							model: probeModel,
 						});
-						if (quotaCache) {
+						if (workingQuotaCache) {
 							quotaCacheChanged =
 								updateQuotaCacheForAccount(
-									quotaCache,
+									workingQuotaCache,
 									account,
 									snapshot,
 									storage.accounts,
+									quotaEmailFallbackState ?? undefined,
 								) || quotaCacheChanged;
 						}
 						healthyMessage = formatQuotaSnapshotForDashboard(snapshot, display);
@@ -1692,8 +1851,8 @@ async function runHealthCheck(options: HealthCheckOptions = {}): Promise<void> {
 	if (!display.showPerAccountRows) {
 		console.log(stylePromptText("Per-account lines are hidden in dashboard settings.", "muted"));
 	}
-	if (quotaCache && quotaCacheChanged) {
-		await saveQuotaCache(quotaCache);
+	if (workingQuotaCache && quotaCacheChanged) {
+		await saveQuotaCache(workingQuotaCache);
 	}
 
 	if (changed) {
@@ -2167,6 +2326,7 @@ async function runForecast(args: string[]): Promise<number> {
 	const options = parsedArgs.options;
 	const display = DEFAULT_DASHBOARD_DISPLAY_SETTINGS;
 	const quotaCache = options.live ? await loadQuotaCache() : null;
+	const workingQuotaCache = quotaCache ? cloneQuotaCacheData(quotaCache) : null;
 	let quotaCacheChanged = false;
 
 	setStoragePath(null);
@@ -2175,6 +2335,10 @@ async function runForecast(args: string[]): Promise<number> {
 		console.log("No accounts configured.");
 		return 0;
 	}
+	const quotaEmailFallbackState =
+		options.live && quotaCache
+			? buildQuotaEmailFallbackState(storage.accounts)
+			: null;
 
 	const now = Date.now();
 	const activeIndex = resolveActiveIndex(storage, "codex");
@@ -2214,15 +2378,16 @@ async function runForecast(args: string[]): Promise<number> {
 				model: options.model,
 			});
 			liveQuotaByIndex.set(i, liveQuota);
-			if (quotaCache) {
+			if (workingQuotaCache) {
 				const account = storage.accounts[i];
 				if (account) {
 					quotaCacheChanged =
 						updateQuotaCacheForAccount(
-							quotaCache,
+							workingQuotaCache,
 							account,
 							liveQuota,
 							storage.accounts,
+							quotaEmailFallbackState ?? undefined,
 						) || quotaCacheChanged;
 				}
 			}
@@ -2248,8 +2413,8 @@ async function runForecast(args: string[]): Promise<number> {
 	const recommendation = recommendForecastAccount(forecastResults);
 
 	if (options.json) {
-		if (quotaCache && quotaCacheChanged) {
-			await saveQuotaCache(quotaCache);
+		if (workingQuotaCache && quotaCacheChanged) {
+			await saveQuotaCache(workingQuotaCache);
 		}
 		console.log(
 			JSON.stringify(
@@ -2337,8 +2502,8 @@ async function runForecast(args: string[]): Promise<number> {
 			console.log(`  ${stylePromptText("-", "warning")} ${stylePromptText(error, "muted")}`);
 		}
 	}
-	if (quotaCache && quotaCacheChanged) {
-		await saveQuotaCache(quotaCache);
+	if (workingQuotaCache && quotaCacheChanged) {
+		await saveQuotaCache(workingQuotaCache);
 	}
 
 	return 0;
@@ -2952,6 +3117,7 @@ async function runFix(args: string[]): Promise<number> {
 	const options = parsedArgs.options;
 	const display = DEFAULT_DASHBOARD_DISPLAY_SETTINGS;
 	const quotaCache = options.live ? await loadQuotaCache() : null;
+	const workingQuotaCache = quotaCache ? cloneQuotaCacheData(quotaCache) : null;
 	let quotaCacheChanged = false;
 
 	setStoragePath(null);
@@ -2960,6 +3126,10 @@ async function runFix(args: string[]): Promise<number> {
 		console.log("No accounts configured.");
 		return 0;
 	}
+	let quotaEmailFallbackState =
+		options.live && quotaCache
+			? buildQuotaEmailFallbackState(storage.accounts)
+			: null;
 
 	const now = Date.now();
 	const activeIndex = resolveActiveIndex(storage, "codex");
@@ -2996,13 +3166,14 @@ async function runFix(args: string[]): Promise<number> {
 							accessToken: currentAccessToken,
 							model: options.model,
 						});
-						if (quotaCache) {
+						if (workingQuotaCache) {
 							quotaCacheChanged =
 								updateQuotaCacheForAccount(
-									quotaCache,
+									workingQuotaCache,
 									account,
 									snapshot,
 									storage.accounts,
+									quotaEmailFallbackState ?? undefined,
 								) || quotaCacheChanged;
 						}
 						reports.push({
@@ -3045,7 +3216,9 @@ async function runFix(args: string[]): Promise<number> {
 		if (refreshResult.type === "success") {
 			const nextEmail = sanitizeEmail(extractAccountEmail(refreshResult.access, refreshResult.idToken));
 			const nextAccountId = extractAccountId(refreshResult.access);
+			const previousEmail = account.email;
 			let accountChanged = false;
+			let accountIdentityChanged = false;
 
 			if (account.refreshToken !== refreshResult.refresh) {
 				account.refreshToken = refreshResult.refresh;
@@ -3062,14 +3235,24 @@ async function runFix(args: string[]): Promise<number> {
 			if (nextEmail && nextEmail !== account.email) {
 				account.email = nextEmail;
 				accountChanged = true;
+				accountIdentityChanged = true;
 			}
-			if (!account.accountId && nextAccountId) {
-				account.accountId = nextAccountId;
-				account.accountIdSource = "token";
+			if (applyTokenAccountIdentity(account, nextAccountId)) {
 				accountChanged = true;
+				accountIdentityChanged = true;
 			}
 
 			if (accountChanged) changed = true;
+			if (accountIdentityChanged && options.live && workingQuotaCache) {
+				quotaEmailFallbackState = buildQuotaEmailFallbackState(storage.accounts);
+				quotaCacheChanged =
+					pruneUnsafeQuotaEmailCacheEntry(
+						workingQuotaCache,
+						previousEmail,
+						storage.accounts,
+						quotaEmailFallbackState,
+					) || quotaCacheChanged;
+			}
 			if (options.live) {
 				const probeAccountId = account.accountId ?? nextAccountId;
 				if (probeAccountId) {
@@ -3079,13 +3262,14 @@ async function runFix(args: string[]): Promise<number> {
 							accessToken: refreshResult.access,
 							model: options.model,
 						});
-						if (quotaCache) {
+						if (workingQuotaCache) {
 							quotaCacheChanged =
 								updateQuotaCacheForAccount(
-									quotaCache,
+									workingQuotaCache,
 									account,
 									snapshot,
 									storage.accounts,
+									quotaEmailFallbackState ?? undefined,
 								) || quotaCacheChanged;
 						}
 						reports.push({
@@ -3187,8 +3371,8 @@ async function runFix(args: string[]): Promise<number> {
 	}
 
 	if (options.json) {
-		if (quotaCache && quotaCacheChanged) {
-			await saveQuotaCache(quotaCache);
+		if (workingQuotaCache && quotaCacheChanged) {
+			await saveQuotaCache(workingQuotaCache);
 		}
 		console.log(
 			JSON.stringify(
@@ -3264,8 +3448,8 @@ async function runFix(args: string[]): Promise<number> {
 			console.log(`${stylePromptText("Note:", "accent")} ${stylePromptText(recommendation.reason, "muted")}`);
 		}
 	}
-	if (quotaCache && quotaCacheChanged) {
-		await saveQuotaCache(quotaCache);
+	if (workingQuotaCache && quotaCacheChanged) {
+		await saveQuotaCache(workingQuotaCache);
 	}
 
 	if (changed && options.dryRun) {

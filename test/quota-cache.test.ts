@@ -3,6 +3,15 @@ import { promises as fs } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
+function makeErrnoError(
+  message: string,
+  code: "EBUSY" | "EPERM",
+): NodeJS.ErrnoException {
+  const error = new Error(message) as NodeJS.ErrnoException;
+  error.code = code;
+  return error;
+}
+
 describe("quota cache", () => {
   let tempDir: string;
   let originalDir: string | undefined;
@@ -165,6 +174,80 @@ describe("quota cache", () => {
       }
     },
   );
+
+  it("keeps the cache file valid across concurrent save retries", async () => {
+    vi.resetModules();
+    const warnMock = vi.fn();
+    vi.doMock("../lib/logger.js", () => ({
+      logWarn: warnMock,
+    }));
+    const payload = {
+      byAccountId: {
+        acc_1: {
+          updatedAt: Date.now(),
+          status: 200,
+          model: "gpt-5-codex",
+          planType: "plus",
+          primary: { usedPercent: 40, windowMinutes: 300 },
+          secondary: { usedPercent: 20, windowMinutes: 10080 },
+        },
+      },
+      byEmail: {
+        "owner@example.com": {
+          updatedAt: Date.now(),
+          status: 200,
+          model: "gpt-5-codex",
+          planType: "plus",
+          primary: { usedPercent: 40, windowMinutes: 300 },
+          secondary: { usedPercent: 20, windowMinutes: 10080 },
+        },
+      },
+    };
+    let renameSpy: ReturnType<typeof vi.spyOn> | undefined;
+
+    try {
+      const { getQuotaCachePath, loadQuotaCache, saveQuotaCache } =
+        await import("../lib/quota-cache.js");
+      const realRename = fs.rename.bind(fs);
+      renameSpy = vi.spyOn(fs, "rename");
+      let attempts = 0;
+      const retryableAttempts = new Map<number, "EBUSY" | "EPERM">([
+        [1, "EBUSY"],
+        [2, "EPERM"],
+        [4, "EBUSY"],
+        [5, "EPERM"],
+      ]);
+      renameSpy.mockImplementation(async (...args) => {
+        attempts += 1;
+        const code = retryableAttempts.get(attempts);
+        if (code) {
+          throw makeErrnoError(`rename failed: ${code}`, code);
+        }
+        return realRename(...args);
+      });
+
+      await Promise.all(
+        Array.from({ length: 4 }, () => saveQuotaCache(payload)),
+      );
+
+      const raw = await fs.readFile(getQuotaCachePath(), "utf8");
+      expect(() => JSON.parse(raw)).not.toThrow();
+      expect(JSON.parse(raw)).toEqual({
+        version: 1,
+        byAccountId: payload.byAccountId,
+        byEmail: payload.byEmail,
+      });
+      await expect(loadQuotaCache()).resolves.toEqual(payload);
+      expect(attempts).toBeGreaterThan(4);
+      expect(warnMock).not.toHaveBeenCalled();
+
+      const entries = await fs.readdir(tempDir);
+      expect(entries.some((entry) => entry.endsWith(".tmp"))).toBe(false);
+    } finally {
+      renameSpy?.mockRestore();
+      vi.doUnmock("../lib/logger.js");
+    }
+  });
 
   it("cleans up temp files when rename keeps failing", async () => {
     const { saveQuotaCache } = await import("../lib/quota-cache.js");
