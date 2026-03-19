@@ -7,6 +7,7 @@ import {
     rewriteUrlForCodex,
     resolveProxyUrlForRequest,
     applyProxyCompatibleInit,
+    closeSharedProxyDispatchers,
     createCodexHeaders,
     handleErrorResponse,
     handleSuccessResponse,
@@ -23,9 +24,10 @@ import type { CreateCodexHeadersParams } from '../lib/request/fetch-helpers.js';
 import { URL_PATHS, OPENAI_HEADERS, OPENAI_HEADER_VALUES, CODEX_BASE_URL } from '../lib/constants.js';
 
 describe('Fetch Helpers Module', () => {
-	afterEach(() => {
-		vi.restoreAllMocks();
-	});
+        afterEach(async () => {
+                await closeSharedProxyDispatchers();
+                vi.restoreAllMocks();
+        });
 
 	describe('shouldRefreshToken', () => {
 		it('should return true for non-oauth auth', () => {
@@ -194,19 +196,28 @@ describe('Fetch Helpers Module', () => {
 			);
 		});
 
-		it('bypasses the proxy when NO_PROXY matches the request host', () => {
-			const env = {
-				HTTPS_PROXY: 'http://proxy.example:8080',
-				NO_PROXY: 'api.openai.com,.internal.example',
+                it('bypasses the proxy when NO_PROXY matches the request host', () => {
+                        const env = {
+                                HTTPS_PROXY: 'http://proxy.example:8080',
+                                NO_PROXY: 'api.openai.com,.internal.example',
 			} as NodeJS.ProcessEnv;
 
-			expect(resolveProxyUrlForRequest('https://api.openai.com/v1/chat', env)).toBeUndefined();
-			expect(resolveProxyUrlForRequest('https://service.internal.example/v1/chat', env)).toBeUndefined();
-		});
+                        expect(resolveProxyUrlForRequest('https://api.openai.com/v1/chat', env)).toBeUndefined();
+                        expect(resolveProxyUrlForRequest('https://service.internal.example/v1/chat', env)).toBeUndefined();
+                });
 
-		it('attaches a shared dispatcher when proxy env is configured', () => {
-			const env = {
-				HTTPS_PROXY: 'http://proxy.example:8080',
+                it('treats wildcard entries inside NO_PROXY lists as an explicit global bypass', () => {
+                        const env = {
+                                HTTPS_PROXY: 'http://proxy.example:8080',
+                                NO_PROXY: 'api.openai.com,*,.internal.example',
+                        } as NodeJS.ProcessEnv;
+
+                        expect(resolveProxyUrlForRequest('https://unlisted.example/v1/chat', env)).toBeUndefined();
+                });
+
+                it('attaches a shared dispatcher when proxy env is configured', () => {
+                        const env = {
+                                HTTPS_PROXY: 'http://proxy.example:8080',
 			} as NodeJS.ProcessEnv;
 
 			const first = applyProxyCompatibleInit('https://api.openai.com/v1/chat', {
@@ -216,9 +227,29 @@ describe('Fetch Helpers Module', () => {
 				method: 'POST',
 			}, env);
 
-			expect(first.dispatcher).toBeDefined();
-			expect(second.dispatcher).toBe(first.dispatcher);
-		});
+                        expect(first.dispatcher).toBeDefined();
+                        expect(second.dispatcher).toBe(first.dispatcher);
+                });
+
+                it('closes cached proxy dispatchers and recreates them after cleanup', async () => {
+                        const env = {
+                                HTTPS_PROXY: 'http://proxy.example:8080',
+                        } as NodeJS.ProcessEnv;
+
+                        const first = applyProxyCompatibleInit('https://api.openai.com/v1/chat', {
+                                method: 'POST',
+                        }, env);
+
+                        await closeSharedProxyDispatchers();
+
+                        const second = applyProxyCompatibleInit('https://api.openai.com/v1/chat', {
+                                method: 'POST',
+                        }, env);
+
+                        expect(first.dispatcher).toBeDefined();
+                        expect(second.dispatcher).toBeDefined();
+                        expect(second.dispatcher).not.toBe(first.dispatcher);
+                });
 
 		it('preserves an explicit dispatcher without replacing it', () => {
 			const env = {

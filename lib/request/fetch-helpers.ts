@@ -11,6 +11,7 @@ import { getCodexInstructions, getModelFamily } from "../prompts/codex.js";
 import { transformRequestBody, normalizeModel } from "./request-transformer.js";
 import { convertSseToJson, ensureContentType } from "./response-handler.js";
 import type { UserConfig, RequestBody } from "../types.js";
+import { registerCleanup } from "../shutdown.js";
 import { CodexAuthError } from "../errors.js";
 import { isRecord } from "../utils.js";
 import {
@@ -66,6 +67,10 @@ const DEFAULT_PROXY_PORTS: Record<string, number> = {
 };
 type ProxyDispatcher = NonNullable<RequestInit["dispatcher"]>;
 const sharedProxyDispatchers = new Map<string, ProxyDispatcher>();
+
+type ClosableDispatcher = ProxyDispatcher & {
+	close?: () => Promise<void> | void;
+};
 
 export const DEFAULT_UNSUPPORTED_CODEX_FALLBACK_CHAIN: Record<string, string[]> = {
 	"gpt-5.3-codex-spark": ["gpt-5-codex", "gpt-5.3-codex", "gpt-5.2-codex"],
@@ -471,6 +476,7 @@ function shouldBypassProxyForUrl(url: URL, noProxyValue: string | undefined): bo
 	const port = Number.parseInt(url.port, 10) || DEFAULT_PROXY_PORTS[url.protocol] || 0;
 
 	for (const entry of parseNoProxyEntries(noProxyValue)) {
+		if (entry.hostname === "*") return true;
 		if (entry.port && entry.port !== port) continue;
 
 		if (!/^[.*]/.test(entry.hostname)) {
@@ -523,6 +529,21 @@ function getSharedProxyDispatcher(proxyUrl: string): ProxyDispatcher {
 	sharedProxyDispatchers.set(proxyUrl, dispatcher);
 	return dispatcher;
 }
+
+export async function closeSharedProxyDispatchers(): Promise<void> {
+	const dispatchers = [...sharedProxyDispatchers.values()] as ClosableDispatcher[];
+	sharedProxyDispatchers.clear();
+
+	await Promise.allSettled(
+		dispatchers.map(async (dispatcher) => {
+			if (typeof dispatcher.close === "function") {
+				await dispatcher.close();
+			}
+		}),
+	);
+}
+
+registerCleanup(closeSharedProxyDispatchers);
 
 export function applyProxyCompatibleInit(
 	url: string,
