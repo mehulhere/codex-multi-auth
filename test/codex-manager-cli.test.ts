@@ -2990,17 +2990,22 @@ describe("codex manager cli commands", () => {
 		const browserModule = await import("../lib/auth/browser.js");
 		const openBrowserUrlMock = vi.mocked(browserModule.openBrowserUrl);
 		const serverModule = await import("../lib/auth/server.js");
+		const waitForCodeMock = vi.fn(async () => ({ code: "oauth-code" }));
 		vi.mocked(serverModule.startLocalOAuthServer).mockResolvedValueOnce({
 			ready: true,
-			waitForCode: vi.fn(async () => ({ code: "oauth-code" })),
+			waitForCode: waitForCodeMock,
 			close: vi.fn(),
 		});
+		promptQuestionMock.mockResolvedValueOnce(
+			"http://127.0.0.1:1455/auth/callback?code=oauth-code&state=oauth-state",
+		);
 
 		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
 		const exitCode = await runCodexMultiAuthCli(["auth", "login", "--manual"]);
 
 		expect(exitCode).toBe(0);
 		expect(openBrowserUrlMock).not.toHaveBeenCalled();
+		expect(waitForCodeMock).not.toHaveBeenCalled();
 		expect(storageState.accounts).toHaveLength(1);
 	});
 
