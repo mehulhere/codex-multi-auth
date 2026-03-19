@@ -1511,7 +1511,7 @@ async function runOAuthFlow(
 			);
 		}
 
-		if (oauthServer?.ready) {
+		if (!preferManualMode && oauthServer?.ready) {
 			console.log(stylePromptText(UI_COPY.oauth.waitingCallback, "muted"));
 			const callbackResult = await oauthServer.waitForCode(state);
 			code = callbackResult?.code ?? null;
