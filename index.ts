@@ -1497,11 +1497,14 @@ while (attempted.size < Math.max(1, accountCount)) {
 				continue;
 					}
 
-				const hadAccountId = !!account.accountId;
+				const storedAccountId = account.accountId;
+				const storedAccountIdSource = account.accountIdSource;
+				const storedEmail = account.email;
+				const hadAccountId = !!storedAccountId;
 					const runtimeIdentity = resolveRuntimeRequestIdentity({
-						storedAccountId: account.accountId,
-						source: account.accountIdSource,
-						storedEmail: account.email,
+						storedAccountId,
+						source: storedAccountIdSource,
+						storedEmail,
 						accessToken: accountAuth.access,
 						idToken: accountAuth.idToken,
 					});
@@ -1518,16 +1521,11 @@ while (attempted.size < Math.max(1, accountCount)) {
 						}
 											const resolvedEmail = runtimeIdentity.email;
 											const entitlementAccountKey = resolveEntitlementAccountKey({
-												accountId: account.accountId ?? accountId,
+												accountId: storedAccountId ?? accountId,
 												email: resolvedEmail,
 												refreshToken: account.refreshToken,
 												index: account.index,
 											});
-											account.accountId = accountId;
-											if (!hadAccountId && tokenAccountId && accountId === tokenAccountId) {
-												account.accountIdSource = account.accountIdSource ?? "token";
-											}
-											account.email = resolvedEmail;
 											const entitlementBlock = entitlementCache.isBlocked(
 												entitlementAccountKey,
 												model ?? modelFamily,
@@ -1540,6 +1538,11 @@ while (attempted.size < Math.max(1, accountCount)) {
 												);
 												continue;
 											}
+											account.accountId = accountId;
+											if (!hadAccountId && tokenAccountId && accountId === tokenAccountId) {
+												account.accountIdSource = storedAccountIdSource ?? "token";
+											}
+											account.email = resolvedEmail;
 
 											if (
 												accountCount > 1 &&
@@ -2105,10 +2108,14 @@ while (attempted.size < Math.max(1, accountCount)) {
 											continue;
 										}
 
+										const fallbackStoredAccountId = fallbackAccount.accountId;
+										const fallbackStoredAccountIdSource = fallbackAccount.accountIdSource;
+										const fallbackStoredEmail = fallbackAccount.email;
+										const hadFallbackAccountId = !!fallbackStoredAccountId;
 										const fallbackRuntimeIdentity = resolveRuntimeRequestIdentity({
-											storedAccountId: fallbackAccount.accountId,
-											source: fallbackAccount.accountIdSource,
-											storedEmail: fallbackAccount.email,
+											storedAccountId: fallbackStoredAccountId,
+											source: fallbackStoredAccountIdSource,
+											storedEmail: fallbackStoredEmail,
 											accessToken: fallbackAuth.access,
 											idToken: fallbackAuth.idToken,
 										});
@@ -2119,25 +2126,26 @@ while (attempted.size < Math.max(1, accountCount)) {
 										}
 										const fallbackResolvedEmail = fallbackRuntimeIdentity.email;
 										const fallbackEntitlementAccountKey = resolveEntitlementAccountKey({
-											accountId: fallbackAccount.accountId ?? fallbackAccountId,
+											accountId: fallbackStoredAccountId ?? fallbackAccountId,
 											email: fallbackResolvedEmail,
 											refreshToken: fallbackAccount.refreshToken,
 											index: fallbackAccount.index,
 										});
-										fallbackAccount.accountId = fallbackAccountId;
-										if (
-											!fallbackAccount.accountIdSource &&
-											fallbackTokenAccountId &&
-											fallbackAccountId === fallbackTokenAccountId
-										) {
-											fallbackAccount.accountIdSource = "token";
-										}
-										if (fallbackResolvedEmail) {
-											fallbackAccount.email = fallbackResolvedEmail;
-										}
 
 										if (!accountManager.consumeToken(fallbackAccount, modelFamily, model)) {
 											continue;
+										}
+										fallbackAccount.accountId = fallbackAccountId;
+										if (
+											!hadFallbackAccountId &&
+											fallbackTokenAccountId &&
+											fallbackAccountId === fallbackTokenAccountId
+										) {
+											fallbackAccount.accountIdSource =
+												fallbackStoredAccountIdSource ?? "token";
+										}
+										if (fallbackResolvedEmail) {
+											fallbackAccount.email = fallbackResolvedEmail;
 										}
 
 										const fallbackHeaders = createCodexHeaders(
