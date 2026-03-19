@@ -9,7 +9,7 @@ import {
 	REDIRECT_URI,
 } from "./auth/auth.js";
 import { startLocalOAuthServer } from "./auth/server.js";
-import { copyTextToClipboard, openBrowserUrl } from "./auth/browser.js";
+import { copyTextToClipboard, isBrowserLaunchSuppressed, openBrowserUrl } from "./auth/browser.js";
 import { promptAddAnotherAccount, promptLoginMode, type ExistingAccountInfo } from "./cli.js";
 import {
 	extractAccountEmail,
@@ -291,7 +291,7 @@ function printUsage(): void {
 			"Codex Multi-Auth CLI",
 			"",
 			"Usage:",
-			"  codex auth login",
+			"  codex auth login [--manual|--no-browser]",
 			"  codex auth list",
 			"  codex auth status",
 			"  codex auth switch <index>",
@@ -309,6 +309,37 @@ function printUsage(): void {
 			"  - Syncs active account into Codex CLI auth state",
 		].join("\n"),
 	);
+}
+
+type AuthLoginOptions = {
+	manual: boolean;
+};
+
+type ParsedAuthLoginArgs =
+	| { ok: true; options: AuthLoginOptions }
+	| { ok: false; message: string };
+
+function parseAuthLoginArgs(args: string[]): ParsedAuthLoginArgs {
+	const options: AuthLoginOptions = {
+		manual: false,
+	};
+
+	for (const arg of args) {
+		if (arg === "--manual" || arg === "--no-browser") {
+			options.manual = true;
+			continue;
+		}
+		if (arg === "--help" || arg === "-h") {
+			printUsage();
+			return { ok: false, message: "" };
+		}
+		return {
+			ok: false,
+			message: `Unknown login option: ${arg}`,
+		};
+	}
+
+	return { ok: true, options };
 }
 
 interface ImplementedFeature {
@@ -1095,16 +1126,22 @@ function applyTokenAccountIdentity(
 	return true;
 }
 
-async function promptManualCallback(state: string): Promise<string | null> {
-	if (!input.isTTY || !output.isTTY) {
+async function promptManualCallback(
+	state: string,
+	options: { allowNonTty?: boolean } = {},
+): Promise<string | null> {
+	const useInteractivePrompt = input.isTTY && output.isTTY;
+	if (!useInteractivePrompt && !options.allowNonTty) {
 		return null;
 	}
 
 	const rl = createInterface({ input, output });
 	try {
-		console.log("");
-		console.log(stylePromptText(UI_COPY.oauth.pastePrompt, "accent"));
-		const answer = await rl.question("◆  ");
+		if (useInteractivePrompt) {
+			console.log("");
+			console.log(stylePromptText(UI_COPY.oauth.pastePrompt, "accent"));
+		}
+		const answer = await rl.question(useInteractivePrompt ? "◆  " : "");
 		if (answer.includes("\u001b")) {
 			return null;
 		}
@@ -1425,12 +1462,21 @@ async function runActionPanel(
 	}
 }
 
-async function runOAuthFlow(forceNewLogin: boolean): Promise<TokenResult> {
+async function runOAuthFlow(
+	forceNewLogin: boolean,
+	options: AuthLoginOptions = { manual: false },
+): Promise<TokenResult> {
 	const { pkce, state, url } = await createAuthorizationFlow({ forceNewLogin });
-	const oauthServer = await startLocalOAuthServer({ state });
+	const preferManualMode = options.manual || isBrowserLaunchSuppressed();
+	let oauthServer: Awaited<ReturnType<typeof startLocalOAuthServer>> | null = null;
+	try {
+		oauthServer = await startLocalOAuthServer({ state });
+	} catch {
+		oauthServer = null;
+	}
 	let code: string | null = null;
 	try {
-		const signInMode = await promptOAuthSignInMode();
+		const signInMode = preferManualMode ? "manual" : await promptOAuthSignInMode();
 		if (signInMode === "cancel") {
 			return {
 				type: "failed",
@@ -1465,18 +1511,23 @@ async function runOAuthFlow(forceNewLogin: boolean): Promise<TokenResult> {
 			);
 		}
 
-		if (oauthServer.ready) {
+		if (oauthServer?.ready) {
 			console.log(stylePromptText(UI_COPY.oauth.waitingCallback, "muted"));
 			const callbackResult = await oauthServer.waitForCode(state);
 			code = callbackResult?.code ?? null;
 		}
 
 		if (!code) {
-			console.log(stylePromptText(UI_COPY.oauth.callbackMissed, "warning"));
-			code = await promptManualCallback(state);
+			console.log(
+				stylePromptText(
+					oauthServer?.ready ? UI_COPY.oauth.callbackMissed : UI_COPY.oauth.callbackUnavailable,
+					"warning",
+				),
+			);
+			code = await promptManualCallback(state, { allowNonTty: preferManualMode });
 		}
 	} finally {
-		oauthServer.close();
+		oauthServer?.close();
 	}
 
 	if (!code) {
@@ -4099,7 +4150,7 @@ async function handleManageAction(
 		const existing = storage.accounts[idx];
 		if (!existing) return;
 
-		const tokenResult = await runOAuthFlow(true);
+		const tokenResult = await runOAuthFlow(true, { manual: false });
 		if (tokenResult.type !== "success") {
 			console.error(`Refresh failed: ${tokenResult.message ?? tokenResult.reason ?? "unknown error"}`);
 			return;
@@ -4112,7 +4163,18 @@ async function handleManageAction(
 	}
 }
 
-async function runAuthLogin(): Promise<number> {
+async function runAuthLogin(args: string[]): Promise<number> {
+	const parsedArgs = parseAuthLoginArgs(args);
+	if (!parsedArgs.ok) {
+		if (parsedArgs.message) {
+			console.error(parsedArgs.message);
+			printUsage();
+			return 1;
+		}
+		return 0;
+	}
+
+	const loginOptions = parsedArgs.options;
 	setStoragePath(null);
 	let pendingMenuQuotaRefresh: Promise<void> | null = null;
 	let menuQuotaRefreshStatus: string | undefined;
@@ -4231,7 +4293,7 @@ async function runAuthLogin(): Promise<number> {
 		const existingCount = refreshedStorage?.accounts.length ?? 0;
 		let forceNewLogin = existingCount > 0;
 		while (true) {
-			const tokenResult = await runOAuthFlow(forceNewLogin);
+			const tokenResult = await runOAuthFlow(forceNewLogin, loginOptions);
 			if (tokenResult.type !== "success") {
 				if (isUserCancelledOAuth(tokenResult)) {
 					if (existingCount > 0) {
@@ -4719,7 +4781,7 @@ export async function runCodexMultiAuthCli(rawArgs: string[]): Promise<number> {
 		return 0;
 	}
 	if (command === "login") {
-		return runAuthLogin();
+		return runAuthLogin(rest);
 	}
 	if (command === "list" || command === "status") {
 		await showAccountStatus();

@@ -45,6 +45,7 @@ Compatibility aliases are supported:
 
 | Flag | Applies to | Meaning |
 | --- | --- | --- |
+| `--manual`, `--no-browser` | login | Skip browser launch and use manual callback flow |
 | `--json` | verify-flagged, forecast, report, fix, doctor | Print machine-readable output |
 | `--live` | forecast, report, fix | Use live probe before decisions/output |
 | `--dry-run` | verify-flagged, fix, doctor | Preview without writing storage |
@@ -60,6 +61,7 @@ Compatibility aliases are supported:
 - `codex` remains the primary wrapper entrypoint. It routes `codex auth ...` and the compatibility aliases to the multi-auth runtime, and forwards every other command to the official `@openai/codex` CLI.
 - In non-TTY or host-managed sessions, including `CODEX_TUI=1`, `CODEX_DESKTOP=1`, `TERM_PROGRAM=codex`, or `ELECTRON_RUN_AS_NODE=1`, auth flows degrade to deterministic text behavior.
 - The non-TTY fallback keeps `codex auth login` predictable: it defaults to add-account mode, skips the extra "add another account" prompt, and auto-picks the default workspace selection when a follow-up choice is needed.
+- `codex auth login --manual` keeps the login flow usable in browser-restricted shells by printing the OAuth URL and accepting manual callback input instead of trying to open a browser.
 
 ---
 

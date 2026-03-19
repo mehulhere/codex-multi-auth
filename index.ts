@@ -34,7 +34,7 @@ import {
         REDIRECT_URI,
 } from "./lib/auth/auth.js";
 import { queuedRefresh } from "./lib/refresh-queue.js";
-import { openBrowserUrl } from "./lib/auth/browser.js";
+import { isBrowserLaunchSuppressed, openBrowserUrl } from "./lib/auth/browser.js";
 import { startLocalOAuthServer } from "./lib/auth/server.js";
 import { promptAddAnotherAccount, promptLoginMode } from "./lib/cli.js";
 import {
@@ -2386,9 +2386,10 @@ while (attempted.size < Math.max(1, accountCount)) {
 
 							const accounts: TokenSuccessWithAccount[] = [];
 							const noBrowser =
+								inputs?.manual === "true" ||
 								inputs?.noBrowser === "true" ||
 								inputs?.["no-browser"] === "true";
-							const useManualMode = noBrowser;
+							const useManualMode = noBrowser || isBrowserLaunchSuppressed();
 							const explicitLoginMode =
 								inputs?.loginMode === "fresh" || inputs?.loginMode === "add"
 									? inputs.loginMode

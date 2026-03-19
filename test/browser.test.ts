@@ -1,7 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { spawn } from "node:child_process";
 import fs from "node:fs";
-import { getBrowserOpener, openBrowserUrl, copyTextToClipboard } from "../lib/auth/browser.js";
+import {
+	getBrowserOpener,
+	isBrowserLaunchSuppressed,
+	openBrowserUrl,
+	copyTextToClipboard,
+} from "../lib/auth/browser.js";
 import { PLATFORM_OPENERS } from "../lib/constants.js";
 
 vi.mock("node:child_process", () => ({
@@ -37,6 +42,7 @@ describe("auth browser utilities", () => {
 	const originalPlatform = process.platform;
 	const originalPath = process.env.PATH;
 	const originalPathExt = process.env.PATHEXT;
+	const originalNoBrowser = process.env.CODEX_AUTH_NO_BROWSER;
 
 	beforeEach(() => {
 		vi.clearAllMocks();
@@ -53,6 +59,8 @@ describe("auth browser utilities", () => {
 		else process.env.PATH = originalPath;
 		if (originalPathExt === undefined) delete process.env.PATHEXT;
 		else process.env.PATHEXT = originalPathExt;
+		if (originalNoBrowser === undefined) delete process.env.CODEX_AUTH_NO_BROWSER;
+		else process.env.CODEX_AUTH_NO_BROWSER = originalNoBrowser;
 	});
 
 	it("returns platform opener command", () => {
@@ -65,6 +73,14 @@ describe("auth browser utilities", () => {
 	});
 
 	describe("openBrowserUrl", () => {
+		it("returns false when browser launch is suppressed by environment", () => {
+			process.env.CODEX_AUTH_NO_BROWSER = "1";
+
+			expect(isBrowserLaunchSuppressed()).toBe(true);
+			expect(openBrowserUrl("https://example.com")).toBe(false);
+			expect(mockedSpawn).not.toHaveBeenCalled();
+		});
+
 		it("returns false on win32 when powershell.exe is unavailable", () => {
 			Object.defineProperty(process, "platform", { value: "win32" });
 			process.env.PATH = "C:\\missing";

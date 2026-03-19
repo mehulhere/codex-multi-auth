@@ -41,11 +41,19 @@ vi.mock("../lib/logger.js", () => ({
 vi.mock("../lib/auth/auth.js", () => ({
 	createAuthorizationFlow: vi.fn(),
 	exchangeAuthorizationCode: vi.fn(),
-	parseAuthorizationInput: vi.fn(),
+	parseAuthorizationInput: vi.fn((input: string) => {
+		const codeMatch = input.match(/code=([^&]+)/);
+		const stateMatch = input.match(/state=([^&#]+)/);
+		return {
+			code: codeMatch?.[1],
+			state: stateMatch?.[1],
+		};
+	}),
 	REDIRECT_URI: "http://localhost:1455/auth/callback",
 }));
 
 vi.mock("../lib/auth/browser.js", () => ({
+	isBrowserLaunchSuppressed: vi.fn(() => false),
 	openBrowserUrl: vi.fn(),
 	copyTextToClipboard: vi.fn(() => true),
 }));
@@ -2945,8 +2953,104 @@ describe("codex manager cli commands", () => {
 		expect(withAccountStorageTransactionMock).toHaveBeenCalledTimes(1);
 		expect(storageState.accounts).toHaveLength(2);
 		expect(storageState.activeIndex).toBe(1);
-		expect(storageState.activeIndexByFamily.codex).toBe(1);
-		expect(setCodexCliActiveSelectionMock).toHaveBeenCalledTimes(1);
+	expect(storageState.activeIndexByFamily.codex).toBe(1);
+	expect(setCodexCliActiveSelectionMock).toHaveBeenCalledTimes(1);
+});
+
+	it("supports --manual login without launching a browser", async () => {
+		const now = Date.now();
+		let storageState = {
+			version: 3 as const,
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0 },
+			accounts: [] as Array<Record<string, unknown>>,
+		};
+		loadAccountsMock.mockImplementation(async () => structuredClone(storageState));
+		saveAccountsMock.mockImplementation(async (nextStorage) => {
+			storageState = structuredClone(nextStorage);
+		});
+		promptLoginModeMock.mockResolvedValueOnce({ mode: "cancel" });
+		promptAddAnotherAccountMock.mockResolvedValue(false);
+
+		const authModule = await import("../lib/auth/auth.js");
+		vi.mocked(authModule.createAuthorizationFlow).mockResolvedValueOnce({
+			pkce: { challenge: "pkce-challenge", verifier: "pkce-verifier" },
+			state: "oauth-state",
+			url: "https://auth.openai.com/mock",
+		});
+		vi.mocked(authModule.exchangeAuthorizationCode).mockResolvedValueOnce({
+			type: "success",
+			access: "access-manual",
+			refresh: "refresh-manual",
+			expires: now + 7_200_000,
+			idToken: "id-token-manual",
+			multiAccount: true,
+		});
+
+		const browserModule = await import("../lib/auth/browser.js");
+		const openBrowserUrlMock = vi.mocked(browserModule.openBrowserUrl);
+		const serverModule = await import("../lib/auth/server.js");
+		vi.mocked(serverModule.startLocalOAuthServer).mockResolvedValueOnce({
+			ready: true,
+			waitForCode: vi.fn(async () => ({ code: "oauth-code" })),
+			close: vi.fn(),
+		});
+
+		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+		const exitCode = await runCodexMultiAuthCli(["auth", "login", "--manual"]);
+
+		expect(exitCode).toBe(0);
+		expect(openBrowserUrlMock).not.toHaveBeenCalled();
+		expect(storageState.accounts).toHaveLength(1);
+	});
+
+	it("accepts manual callback input in non-tty mode when --manual is set", async () => {
+		setInteractiveTTY(false);
+		const now = Date.now();
+		let storageState = {
+			version: 3 as const,
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0 },
+			accounts: [] as Array<Record<string, unknown>>,
+		};
+		loadAccountsMock.mockImplementation(async () => structuredClone(storageState));
+		saveAccountsMock.mockImplementation(async (nextStorage) => {
+			storageState = structuredClone(nextStorage);
+		});
+		promptLoginModeMock.mockResolvedValueOnce({ mode: "cancel" });
+		promptQuestionMock.mockResolvedValueOnce(
+			"http://127.0.0.1:1455/auth/callback?code=oauth-code&state=oauth-state",
+		);
+
+		const authModule = await import("../lib/auth/auth.js");
+		vi.mocked(authModule.createAuthorizationFlow).mockResolvedValueOnce({
+			pkce: { challenge: "pkce-challenge", verifier: "pkce-verifier" },
+			state: "oauth-state",
+			url: "https://auth.openai.com/mock",
+		});
+		vi.mocked(authModule.exchangeAuthorizationCode).mockResolvedValueOnce({
+			type: "success",
+			access: "access-stdin",
+			refresh: "refresh-stdin",
+			expires: now + 7_200_000,
+			idToken: "id-token-stdin",
+			multiAccount: true,
+		});
+
+		const browserModule = await import("../lib/auth/browser.js");
+		const openBrowserUrlMock = vi.mocked(browserModule.openBrowserUrl);
+		const serverModule = await import("../lib/auth/server.js");
+		vi.mocked(serverModule.startLocalOAuthServer).mockRejectedValueOnce(
+			new Error("port in use"),
+		);
+
+		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+		const exitCode = await runCodexMultiAuthCli(["auth", "login", "--manual"]);
+
+		expect(exitCode).toBe(0);
+		expect(promptQuestionMock).toHaveBeenCalledWith("");
+		expect(openBrowserUrlMock).not.toHaveBeenCalled();
+		expect(storageState.accounts).toHaveLength(1);
 	});
 
 	it("preserves distinct same-email workspaces when oauth login reuses a refresh token", async () => {
