@@ -1302,7 +1302,24 @@ describe('Request Transformer Module', () => {
 				input: [],
 			};
 			const result = await transformRequestBody(body, codexInstructions);
+			expect(result.stream).toBe(true);
+			expect(result.store).toBe(false);
 			expect(result.include).toEqual(['reasoning.encrypted_content']);
+		});
+
+		it('should force stateless request invariants even when caller sets conflicting values', async () => {
+			const body: RequestBody = {
+				model: 'gpt-5',
+				input: [],
+				stream: false,
+				store: true,
+				include: ['custom_field'],
+			};
+			const result = await transformRequestBody(body, codexInstructions);
+
+			expect(result.stream).toBe(true);
+			expect(result.store).toBe(false);
+			expect(result.include).toEqual(['custom_field', 'reasoning.encrypted_content']);
 		});
 
 		it('should use user-configured include', async () => {

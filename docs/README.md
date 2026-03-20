@@ -26,9 +26,9 @@ Public documentation for `codex-multi-auth`.
 | [troubleshooting.md](troubleshooting.md) | Recovery playbooks for install, login, switching, and stale state |
 | [privacy.md](privacy.md) | Data handling and local storage behavior |
 | [upgrade.md](upgrade.md) | Migration from legacy package and path history |
-| [releases/v1.2.0.md](releases/v1.2.0.md) | Stable release notes |
-| [releases/v1.1.10.md](releases/v1.1.10.md) | Previous stable release notes |
-| [releases/v0.1.9.md](releases/v0.1.9.md) | Earlier stable release notes |
+| [releases/v1.1.10.md](releases/v1.1.10.md) | Stable release notes |
+| [releases/v0.1.9.md](releases/v0.1.9.md) | Previous stable release notes |
+| [releases/v0.1.7.md](releases/v0.1.7.md) | Earlier stable release notes |
 | [releases/v0.1.7.md](releases/v0.1.7.md) | Archived stable release notes |
 | [releases/v0.1.6.md](releases/v0.1.6.md) | Archived stable release notes |
 | [releases/v0.1.5.md](releases/v0.1.5.md) | Archived stable release notes |
@@ -45,7 +45,7 @@ Public documentation for `codex-multi-auth`.
 | [reference/storage-paths.md](reference/storage-paths.md) | Canonical and compatibility storage paths |
 | [reference/public-api.md](reference/public-api.md) | Public API stability and semver contract |
 | [reference/error-contracts.md](reference/error-contracts.md) | CLI, JSON, and helper error semantics |
-| [releases/v1.2.0.md](releases/v1.2.0.md) | Current stable release notes |
+| [releases/v1.1.10.md](releases/v1.1.10.md) | Current stable release notes |
 | [releases/v0.1.0-beta.0.md](releases/v0.1.0-beta.0.md) | Archived prerelease reference |
 | [User Guides release notes](#user-guides) | Stable, previous, and archived release notes |
 | [releases/legacy-pre-0.1-history.md](releases/legacy-pre-0.1-history.md) | Archived pre-0.1 changelog history |
@@ -62,6 +62,9 @@ Public documentation for `codex-multi-auth`.
 | [development/IA_FINDABILITY_AUDIT_2026-03-01.md](development/IA_FINDABILITY_AUDIT_2026-03-01.md) | IA and findability baseline audit |
 | [development/CONFIG_FIELDS.md](development/CONFIG_FIELDS.md) | Complete field and environment inventory |
 | [development/CONFIG_FLOW.md](development/CONFIG_FLOW.md) | Configuration resolution flow |
+| [development/RUNBOOK_ADD_AUTH_COMMAND.md](development/RUNBOOK_ADD_AUTH_COMMAND.md) | Safe workflow for adding a new `codex auth ...` command |
+| [development/RUNBOOK_ADD_CONFIG_FIELD.md](development/RUNBOOK_ADD_CONFIG_FIELD.md) | Safe workflow for introducing a new config field |
+| [development/RUNBOOK_CHANGE_ROUTING_POLICY.md](development/RUNBOOK_CHANGE_ROUTING_POLICY.md) | Safe workflow for changing routing, retry, or fallback policy |
 | [development/REPOSITORY_SCOPE.md](development/REPOSITORY_SCOPE.md) | Ownership map by repository path |
 | [development/TESTING.md](development/TESTING.md) | Validation gates and test matrix |
 | [development/TUI_PARITY_CHECKLIST.md](development/TUI_PARITY_CHECKLIST.md) | Dashboard UX parity checklist |

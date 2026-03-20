@@ -49,6 +49,36 @@ describe("storage", () => {
 			process.env.CODEX_MULTI_AUTH_DIR = _origCODEX_MULTI_AUTH_DIR;
 		else delete process.env.CODEX_MULTI_AUTH_DIR;
 	});
+
+	describe("storage error hints", () => {
+		it("formats actionable Windows file-lock guidance for EBUSY errors", () => {
+			const hint = formatStorageErrorHint(
+				{ code: "EBUSY" },
+				"C:/Users/example/.codex/multi-auth/openai-codex-accounts.json",
+			);
+
+			expect(hint).toContain("File is locked");
+			expect(hint).toContain("open in another program");
+		});
+
+		it("preserves the original cause and hint on StorageError", () => {
+			const cause = Object.assign(new Error("permission denied"), {
+				code: "EPERM",
+			});
+			const hint = formatStorageErrorHint(cause, "/tmp/openai-codex-accounts.json");
+			const error = new StorageError(
+				"failed to persist accounts",
+				"EPERM",
+				"/tmp/openai-codex-accounts.json",
+				hint,
+				cause,
+			);
+
+			expect(error.cause).toBe(cause);
+			expect(error.hint).toContain("Permission denied writing");
+			expect(error.path).toBe("/tmp/openai-codex-accounts.json");
+		});
+	});
 	describe("deduplication", () => {
 		it("preserves activeIndexByFamily when shared accountId entries remain distinct without email", () => {
 			const now = Date.now();
