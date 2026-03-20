@@ -726,5 +726,28 @@ describe("settings-hub utility coverage", () => {
 			expect(selected?.proactiveRefreshGuardian).toBe(true);
 			expect(selected?.proactiveRefreshIntervalMs).toBe(120_000);
 		});
+
+		it("supports alternate experimental interval hotkeys with minus and plus", async () => {
+			const api = await loadSettingsHubTestApi();
+			queueSelectResults(
+				triggerSettingsHubHotkey("-"),
+				triggerSettingsHubHotkey("+"),
+				triggerSettingsHubHotkey("s", { type: "save" }),
+			);
+			const selected = await api.promptExperimentalSettings({
+				proactiveRefreshIntervalMs: 120_000,
+			});
+			expect(selected?.proactiveRefreshIntervalMs).toBe(120_000);
+		});
+
+		it("supports q hotkey to back out of experimental menu without saving", async () => {
+			const api = await loadSettingsHubTestApi();
+			queueSelectResults(triggerSettingsHubHotkey("q", { type: "back" }));
+			const selected = await api.promptExperimentalSettings({
+				proactiveRefreshGuardian: true,
+				proactiveRefreshIntervalMs: 120_000,
+			});
+			expect(selected).toBeNull();
+		});
 	});
 });
