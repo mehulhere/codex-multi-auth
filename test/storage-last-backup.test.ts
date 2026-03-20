@@ -158,14 +158,16 @@ describe("storage last backup restore", () => {
 			);
 		});
 
-		const backups = await getNamedBackups();
-
-		statSpy.mockRestore();
-		expect(backups[0]).toMatchObject({
-			path: stableBackupPath,
-			fileName: "backup-stable.json",
-			accountCount: 1,
-		});
+		try {
+			const backups = await getNamedBackups();
+			expect(backups[0]).toMatchObject({
+				path: stableBackupPath,
+				fileName: "backup-stable.json",
+				accountCount: 1,
+			});
+		} finally {
+			statSpy.mockRestore();
+		}
 	});
 
 	it("restores a named backup into active storage", async () => {
@@ -250,6 +252,26 @@ describe("storage last backup restore", () => {
 
 		await expect(restoreAccountsFromBackup(backupPath)).rejects.toThrow(
 			"Backup does not contain any accounts",
+		);
+	});
+
+	it("rejects restore paths outside the managed named-backup root", async () => {
+		const backupPath = buildNamedBackupPath("backup-inside-root");
+		const escapedBackupPath = join(testRoot, "backup-outside-root.json");
+		await fs.mkdir(dirname(backupPath), { recursive: true });
+		await fs.writeFile(
+			escapedBackupPath,
+			JSON.stringify({
+				version: 3,
+				activeIndex: 0,
+				activeIndexByFamily: { codex: 0 },
+				accounts: [{ refreshToken: "outside-refresh", addedAt: 1, lastUsed: 1 }],
+			}),
+			"utf-8",
+		);
+
+		await expect(restoreAccountsFromBackup(escapedBackupPath)).rejects.toThrow(
+			"Backup path must stay inside",
 		);
 	});
 });

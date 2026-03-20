@@ -58,6 +58,7 @@ import {
 	getStoragePath,
 	loadFlaggedAccounts,
 	loadAccounts,
+	StorageError,
 	type NamedBackupSummary,
 	restoreAccountsFromBackup,
 	saveFlaggedAccounts,
@@ -4380,7 +4381,9 @@ async function runAuthLogin(): Promise<number> {
 				}
 
 				const selectedBackup = restoreMode === "manual"
-					? await promptManualBackupSelection(namedBackups)
+					? await promptManualBackupSelection(
+						await getNamedBackups().catch(() => []),
+					)
 					: latestNamedBackup;
 				if (!selectedBackup) {
 					continue;
@@ -4413,6 +4416,7 @@ async function runAuthLogin(): Promise<number> {
 								targetIndex,
 								parsed: targetIndex + 1,
 								switchReason: "rotation",
+								preserveActiveIndexByFamily: true,
 							});
 							console.log(
 								UI_COPY.oauth.restoreBackupLoaded(
@@ -4428,7 +4432,9 @@ async function runAuthLogin(): Promise<number> {
 					);
 				} catch (error) {
 					const message = error instanceof Error ? error.message : String(error);
-					console.error(formatStorageErrorHint(error, selectedBackup.path));
+					if (error instanceof StorageError) {
+						console.error(formatStorageErrorHint(error, selectedBackup.path));
+					}
 					console.error(`Backup restore failed: ${message}`);
 					const storageAfterRestoreAttempt = await loadAccounts().catch(() => null);
 					if ((storageAfterRestoreAttempt?.accounts.length ?? 0) > 0) {
@@ -4531,12 +4537,14 @@ async function persistAndSyncSelectedAccount({
 	parsed,
 	switchReason,
 	initialSyncIdToken,
+	preserveActiveIndexByFamily = false,
 }: {
 	storage: NonNullable<Awaited<ReturnType<typeof loadAccounts>>>;
 	targetIndex: number;
 	parsed: number;
 	switchReason: "rotation" | "best";
 	initialSyncIdToken?: string;
+	preserveActiveIndexByFamily?: boolean;
 }): Promise<{ synced: boolean; wasDisabled: boolean }> {
 	const account = storage.accounts[targetIndex];
 	if (!account) {
@@ -4544,9 +4552,11 @@ async function persistAndSyncSelectedAccount({
 	}
 
 	storage.activeIndex = targetIndex;
-	storage.activeIndexByFamily = storage.activeIndexByFamily ?? {};
-	for (const family of MODEL_FAMILIES) {
-		storage.activeIndexByFamily[family] = targetIndex;
+	if (!preserveActiveIndexByFamily || !storage.activeIndexByFamily) {
+		storage.activeIndexByFamily = storage.activeIndexByFamily ?? {};
+		for (const family of MODEL_FAMILIES) {
+			storage.activeIndexByFamily[family] = targetIndex;
+		}
 	}
 	const wasDisabled = account.enabled === false;
 	if (wasDisabled) {

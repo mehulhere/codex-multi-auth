@@ -1,7 +1,7 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { createHash } from "node:crypto";
 import { existsSync, promises as fs } from "node:fs";
-import { basename, dirname, join } from "node:path";
+import { basename, dirname, isAbsolute, join, relative } from "node:path";
 import { ACCOUNT_LIMITS } from "./constants.js";
 import { createLogger } from "./logger.js";
 import {
@@ -875,9 +875,22 @@ export async function restoreAccountsFromBackup(
 	path: string,
 	options?: { persist?: boolean },
 ): Promise<AccountStorageV3> {
-	const { normalized } = await loadAccountsFromPath(path);
+	const backupRoot = getNamedBackupRoot(getStoragePath());
+	const [resolvedBackupRoot, resolvedBackupPath] = await Promise.all([
+		fs.realpath(backupRoot),
+		fs.realpath(path),
+	]);
+	const relativePath = relative(resolvedBackupRoot, resolvedBackupPath);
+	const isInsideBackupRoot =
+		relativePath === "" ||
+		(!relativePath.startsWith("..") && !isAbsolute(relativePath));
+	if (!isInsideBackupRoot) {
+		throw new Error(`Backup path must stay inside ${resolvedBackupRoot}: ${path}`);
+	}
+
+	const { normalized } = await loadAccountsFromPath(resolvedBackupPath);
 	if (!normalized || normalized.accounts.length === 0) {
-		throw new Error(`Backup does not contain any accounts: ${path}`);
+		throw new Error(`Backup does not contain any accounts: ${resolvedBackupPath}`);
 	}
 	if (options?.persist !== false) {
 		await saveAccounts(normalized);

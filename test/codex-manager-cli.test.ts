@@ -2983,7 +2983,7 @@ describe("codex manager cli commands", () => {
 		} | null = null;
 		const restoredStorage = {
 			version: 3 as const,
-			activeIndex: 1,
+			activeIndex: 0,
 			activeIndexByFamily: { codex: 1 },
 			accounts: [
 				{
@@ -3029,6 +3029,7 @@ describe("codex manager cli commands", () => {
 			},
 		]);
 		restoreAccountsFromBackupMock.mockResolvedValue(structuredClone(restoredStorage));
+		setCodexCliActiveSelectionMock.mockResolvedValueOnce(true);
 		selectMock
 			.mockResolvedValueOnce("restore-backup")
 			.mockResolvedValueOnce("latest");
@@ -3056,6 +3057,12 @@ describe("codex manager cli commands", () => {
 		);
 		expect(confirmMock).toHaveBeenCalledWith("Load last-good.json (2 accounts)?");
 		expect(saveAccountsMock).toHaveBeenCalledTimes(1);
+		expect(saveAccountsMock.mock.calls[0]?.[0]).toEqual(
+			expect.objectContaining({
+				activeIndex: 1,
+				activeIndexByFamily: { codex: 1 },
+			}),
+		);
 		expect(setCodexCliActiveSelectionMock).toHaveBeenCalledWith(
 			expect.objectContaining({
 				accountId: "acc_restored",
@@ -3066,6 +3073,40 @@ describe("codex manager cli commands", () => {
 			"Loaded last-good.json (2 accounts).",
 		);
 		expect(promptLoginModeMock).toHaveBeenCalledTimes(1);
+	});
+
+	it("returns to the onboarding menu when the manual backup picker is backed out", async () => {
+		const now = Date.now();
+		setInteractiveTTY(true);
+		loadAccountsMock.mockResolvedValue(null);
+		getNamedBackupsMock.mockResolvedValue([
+			{
+				path: "/mock/backups/latest.json",
+				fileName: "latest.json",
+				accountCount: 4,
+				mtimeMs: now,
+			},
+			{
+				path: "/mock/backups/manual-choice.json",
+				fileName: "manual-choice.json",
+				accountCount: 1,
+				mtimeMs: now - 60_000,
+			},
+		]);
+		selectMock
+			.mockResolvedValueOnce("restore-backup")
+			.mockResolvedValueOnce("manual")
+			.mockResolvedValueOnce(null)
+			.mockResolvedValueOnce("cancel");
+		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+
+		const exitCode = await runCodexMultiAuthCli(["auth", "login"]);
+
+		expect(exitCode).toBe(0);
+		expect(restoreAccountsFromBackupMock).not.toHaveBeenCalled();
+		expect(confirmMock).not.toHaveBeenCalledWith("Load manual-choice.json (1 account)?");
+		expect(saveAccountsMock).not.toHaveBeenCalled();
+		expect(promptLoginModeMock).not.toHaveBeenCalled();
 	});
 
 	it("does not offer backup restore on onboarding when accounts already exist", async () => {
@@ -3241,9 +3282,6 @@ describe("codex manager cli commands", () => {
 		expect(restoreAccountsFromBackupMock).toHaveBeenCalledWith(
 			"C:/mock/backups/locked.json",
 			{ persist: false },
-		);
-		expect(errorSpy).toHaveBeenCalledWith(
-			expect.stringContaining("The file may be open in another program"),
 		);
 		expect(errorSpy).toHaveBeenCalledWith("Backup restore failed: File is busy");
 	});
