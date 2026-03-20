@@ -925,7 +925,7 @@ export async function restoreAccountsFromBackup(
 			const code = (error as NodeJS.ErrnoException).code;
 			if (code === "ENOENT") {
 				throw new Error(
-					`Backup file no longer exists: ${resolvedBackupPath}`,
+					`Backup file no longer exists: ${path}`,
 				);
 			}
 			throw error;
