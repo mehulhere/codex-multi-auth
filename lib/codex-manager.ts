@@ -1,5 +1,4 @@
 import { existsSync, promises as fs } from "node:fs";
-import { dirname, resolve } from "node:path";
 import { stdin as input, stdout as output } from "node:process";
 import { createInterface } from "node:readline/promises";
 import {
@@ -37,6 +36,7 @@ import {
 } from "./codex-cli/state.js";
 import { setCodexCliActiveSelection } from "./codex-cli/writer.js";
 import { runCheckCommand } from "./codex-manager/commands/check.js";
+import { runReportCommand } from "./codex-manager/commands/report.js";
 import {
 	runFeaturesCommand,
 	runStatusCommand,
@@ -2275,13 +2275,6 @@ interface FixCliOptions {
 	model: string;
 }
 
-interface ReportCliOptions {
-	live: boolean;
-	json: boolean;
-	model: string;
-	outPath?: string;
-}
-
 interface VerifyFlaggedCliOptions {
 	dryRun: boolean;
 	json: boolean;
@@ -2569,79 +2562,6 @@ function parseDoctorArgs(args: string[]): ParsedArgsResult<DoctorCliOptions> {
 	if (options.dryRun && !options.fix) {
 		return { ok: false, message: "--dry-run requires --fix" };
 	}
-	return { ok: true, options };
-}
-
-function printReportUsage(): void {
-	console.log(
-		[
-			"Usage:",
-			"  codex auth report [--live] [--json] [--model <model>] [--out <path>]",
-			"",
-			"Options:",
-			"  --live, -l         Probe live quota headers via Codex backend",
-			"  --json, -j         Print machine-readable JSON output",
-			"  --model, -m        Probe model for live mode (default: gpt-5-codex)",
-			"  --out              Write JSON report to a file path",
-		].join("\n"),
-	);
-}
-
-function parseReportArgs(args: string[]): ParsedArgsResult<ReportCliOptions> {
-	const options: ReportCliOptions = {
-		live: false,
-		json: false,
-		model: "gpt-5-codex",
-	};
-
-	for (let i = 0; i < args.length; i += 1) {
-		const arg = args[i];
-		if (!arg) continue;
-		if (arg === "--live" || arg === "-l") {
-			options.live = true;
-			continue;
-		}
-		if (arg === "--json" || arg === "-j") {
-			options.json = true;
-			continue;
-		}
-		if (arg === "--model" || arg === "-m") {
-			const value = args[i + 1];
-			if (!value) {
-				return { ok: false, message: "Missing value for --model" };
-			}
-			options.model = value;
-			i += 1;
-			continue;
-		}
-		if (arg.startsWith("--model=")) {
-			const value = arg.slice("--model=".length).trim();
-			if (!value) {
-				return { ok: false, message: "Missing value for --model" };
-			}
-			options.model = value;
-			continue;
-		}
-		if (arg === "--out") {
-			const value = args[i + 1];
-			if (!value) {
-				return { ok: false, message: "Missing value for --out" };
-			}
-			options.outPath = value;
-			i += 1;
-			continue;
-		}
-		if (arg.startsWith("--out=")) {
-			const value = arg.slice("--out=".length).trim();
-			if (!value) {
-				return { ok: false, message: "Missing value for --out" };
-			}
-			options.outPath = value;
-			continue;
-		}
-		return { ok: false, message: `Unknown option: ${arg}` };
-	}
-
 	return { ok: true, options };
 }
 
@@ -2943,175 +2863,6 @@ async function runForecast(args: string[]): Promise<number> {
 		await saveQuotaCache(workingQuotaCache);
 	}
 
-	return 0;
-}
-
-async function runReport(args: string[]): Promise<number> {
-	if (args.includes("--help") || args.includes("-h")) {
-		printReportUsage();
-		return 0;
-	}
-
-	const parsedArgs = parseReportArgs(args);
-	if (!parsedArgs.ok) {
-		console.error(parsedArgs.message);
-		printReportUsage();
-		return 1;
-	}
-	const options = parsedArgs.options;
-
-	setStoragePath(null);
-	const storagePath = getStoragePath();
-	const storage = await loadAccounts();
-	const now = Date.now();
-	const accountCount = storage?.accounts.length ?? 0;
-	const activeIndex = storage ? resolveActiveIndex(storage, "codex") : 0;
-	const refreshFailures = new Map<number, TokenFailure>();
-	const liveQuotaByIndex = new Map<
-		number,
-		Awaited<ReturnType<typeof fetchCodexQuotaSnapshot>>
-	>();
-	const probeErrors: string[] = [];
-
-	if (storage && options.live) {
-		for (let i = 0; i < storage.accounts.length; i += 1) {
-			const account = storage.accounts[i];
-			if (!account || account.enabled === false) continue;
-
-			const refreshResult = await queuedRefresh(account.refreshToken);
-			if (refreshResult.type !== "success") {
-				refreshFailures.set(i, {
-					...refreshResult,
-					message: normalizeFailureDetail(
-						refreshResult.message,
-						refreshResult.reason,
-					),
-				});
-				continue;
-			}
-
-			const accountId =
-				account.accountId ?? extractAccountId(refreshResult.access);
-			if (!accountId) {
-				probeErrors.push(
-					`${formatAccountLabel(account, i)}: missing accountId for live probe`,
-				);
-				continue;
-			}
-
-			try {
-				const liveQuota = await fetchCodexQuotaSnapshot({
-					accountId,
-					accessToken: refreshResult.access,
-					model: options.model,
-				});
-				liveQuotaByIndex.set(i, liveQuota);
-			} catch (error) {
-				const message = normalizeFailureDetail(
-					error instanceof Error ? error.message : String(error),
-					undefined,
-				);
-				probeErrors.push(`${formatAccountLabel(account, i)}: ${message}`);
-			}
-		}
-	}
-
-	const forecastResults = storage
-		? evaluateForecastAccounts(
-				storage.accounts.map((account, index) => ({
-					index,
-					account,
-					isCurrent: index === activeIndex,
-					now,
-					refreshFailure: refreshFailures.get(index),
-					liveQuota: liveQuotaByIndex.get(index),
-				})),
-			)
-		: [];
-	const forecastSummary = summarizeForecast(forecastResults);
-	const recommendation = recommendForecastAccount(forecastResults);
-	const enabledCount = storage
-		? storage.accounts.filter((account) => account.enabled !== false).length
-		: 0;
-	const disabledCount = Math.max(0, accountCount - enabledCount);
-	const coolingCount = storage
-		? storage.accounts.filter(
-				(account) =>
-					typeof account.coolingDownUntil === "number" &&
-					account.coolingDownUntil > now,
-			).length
-		: 0;
-	const rateLimitedCount = storage
-		? storage.accounts.filter(
-				(account) => !!formatRateLimitEntry(account, now, "codex"),
-			).length
-		: 0;
-
-	const report = {
-		command: "report",
-		generatedAt: new Date(now).toISOString(),
-		storagePath,
-		model: options.model,
-		liveProbe: options.live,
-		accounts: {
-			total: accountCount,
-			enabled: enabledCount,
-			disabled: disabledCount,
-			coolingDown: coolingCount,
-			rateLimited: rateLimitedCount,
-		},
-		activeIndex: accountCount > 0 ? activeIndex + 1 : null,
-		forecast: {
-			summary: forecastSummary,
-			recommendation,
-			probeErrors,
-			accounts: serializeForecastResults(
-				forecastResults,
-				liveQuotaByIndex,
-				refreshFailures,
-			),
-		},
-	};
-
-	if (options.outPath) {
-		const outputPath = resolve(process.cwd(), options.outPath);
-		await fs.mkdir(dirname(outputPath), { recursive: true });
-		await fs.writeFile(
-			outputPath,
-			`${JSON.stringify(report, null, 2)}\n`,
-			"utf-8",
-		);
-	}
-
-	if (options.json) {
-		console.log(JSON.stringify(report, null, 2));
-		return 0;
-	}
-
-	console.log(`Report generated at ${report.generatedAt}`);
-	console.log(`Storage: ${report.storagePath}`);
-	console.log(
-		`Accounts: ${report.accounts.total} total (${report.accounts.enabled} enabled, ${report.accounts.disabled} disabled, ${report.accounts.coolingDown} cooling, ${report.accounts.rateLimited} rate-limited)`,
-	);
-	if (report.activeIndex !== null) {
-		console.log(`Active account: ${report.activeIndex}`);
-	}
-	console.log(
-		`Forecast: ${report.forecast.summary.ready} ready, ${report.forecast.summary.delayed} delayed, ${report.forecast.summary.unavailable} unavailable`,
-	);
-	if (report.forecast.recommendation.recommendedIndex !== null) {
-		console.log(
-			`Recommendation: account ${report.forecast.recommendation.recommendedIndex + 1} (${report.forecast.recommendation.reason})`,
-		);
-	} else {
-		console.log(`Recommendation: ${report.forecast.recommendation.reason}`);
-	}
-	if (options.outPath) {
-		console.log(`Report written: ${resolve(process.cwd(), options.outPath)}`);
-	}
-	if (report.forecast.probeErrors.length > 0) {
-		console.log(`Probe notes: ${report.forecast.probeErrors.length}`);
-	}
 	return 0;
 }
 
@@ -5563,7 +5314,16 @@ export async function runCodexMultiAuthCli(rawArgs: string[]): Promise<number> {
 		return runBest(rest);
 	}
 	if (command === "report") {
-		return runReport(rest);
+		return runReportCommand(rest, {
+			setStoragePath,
+			getStoragePath,
+			loadAccounts,
+			resolveActiveIndex,
+			queuedRefresh,
+			fetchCodexQuotaSnapshot,
+			formatRateLimitEntry,
+			normalizeFailureDetail,
+		});
 	}
 	if (command === "fix") {
 		return runFix(rest);
