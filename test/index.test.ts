@@ -325,7 +325,8 @@ vi.mock("../lib/storage.js", async () => {
 const extractAccountEmailMock = vi.fn(() => "user@example.com");
 const extractAccountIdMock = vi.fn(() => "account-1");
 
-vi.mock("../lib/accounts.js", () => {
+vi.mock("../lib/accounts.js", async () => {
+	const tokenUtils = await vi.importActual("../lib/auth/token-utils.js");
 	class MockAccountManager {
 		private accounts = [
 			{
@@ -410,11 +411,44 @@ vi.mock("../lib/accounts.js", () => {
 		selectBestAccountCandidate: (candidates: Array<{ accountId: string }>) => candidates[0] ?? null,
 		extractAccountEmail: extractAccountEmailMock,
 		extractAccountId: extractAccountIdMock,
-		resolveRequestAccountId: (_storedId: string | undefined, _source: string | undefined, tokenId: string | undefined) => tokenId,
+		resolveRuntimeRequestIdentity: ({
+			storedAccountId,
+			source,
+			storedEmail,
+			accessToken,
+			idToken,
+		}: {
+			storedAccountId?: string;
+			source?: string;
+			storedEmail?: string;
+			accessToken?: string;
+			idToken?: string;
+		}) => {
+			const tokenUtilsModule =
+				tokenUtils as typeof import("../lib/auth/token-utils.js");
+			const tokenAccountId = extractAccountIdMock(accessToken);
+			const tokenEmail = tokenUtilsModule.sanitizeEmail(
+				extractAccountEmailMock(accessToken, idToken),
+			);
+			const sanitizedStoredEmail = tokenUtilsModule.sanitizeEmail(storedEmail);
+			return {
+				accountId: tokenUtilsModule.resolveRequestAccountId(
+					storedAccountId,
+					source as never,
+					tokenAccountId,
+				),
+				email: tokenEmail ?? sanitizedStoredEmail,
+				tokenAccountId,
+			};
+		},
+		resolveRequestAccountId: (
+			tokenUtils as typeof import("../lib/auth/token-utils.js")
+		).resolveRequestAccountId,
 		formatAccountLabel: (_account: unknown, index: number) => `Account ${index + 1}`,
 		formatCooldown: () => null,
 		formatWaitTime: (ms: number) => `${Math.round(ms / 1000)}s`,
-		sanitizeEmail: (email: string) => email,
+		sanitizeEmail: (email: string | undefined) =>
+			typeof email === "string" ? email.trim().toLowerCase() : undefined,
 		shouldUpdateAccountIdFromToken: () => true,
 		parseRateLimitReason: () => "unknown",
 		lookupCodexCliTokensByEmail: vi.fn(async () => null),
@@ -1147,6 +1181,57 @@ describe("OpenAIOAuthPlugin fetch handler", () => {
 		return { plugin, sdk, mockClient };
 	};
 
+	const buildRoutingManager = (
+		accounts: Array<{
+			index: number;
+			accountId?: string;
+			accountIdSource?: string;
+			email?: string;
+			refreshToken: string;
+			accessToken?: string;
+			idToken?: string;
+		}>,
+	) => {
+		let selection = 0;
+		return {
+			getAccountCount: () => accounts.length,
+			getCurrentOrNextForFamilyHybrid: () => accounts[selection++] ?? null,
+			getCurrentOrNextForFamily: () => accounts[selection++] ?? null,
+			getAccountByIndex: (index: number) => accounts[index] ?? null,
+			getAccountsSnapshot: () => accounts,
+			isAccountAvailableForFamily: (index: number) => Boolean(accounts[index]),
+			toAuthDetails: (account: (typeof accounts)[number]) => ({
+				type: "oauth" as const,
+				access: account.accessToken ?? `access-${account.accountId ?? account.index}`,
+				refresh: account.refreshToken,
+				expires: Date.now() + 60_000,
+				...(account.idToken ? { idToken: account.idToken } : {}),
+			}),
+			hasRefreshToken: () => true,
+			saveToDiskDebounced: () => {},
+			updateFromAuth: () => {},
+			clearAuthFailures: () => {},
+			incrementAuthFailures: () => 1,
+			saveToDisk: async () => {},
+			markAccountCoolingDown: () => {},
+			markRateLimited: () => {},
+			markRateLimitedWithReason: () => {},
+			consumeToken: () => true,
+			refundToken: () => {},
+			syncCodexCliActiveSelectionForIndex: async (index: number) =>
+				syncCodexCliSelectionMock(index),
+			markSwitched: () => {},
+			removeAccount: () => {},
+			recordFailure: () => {},
+			recordSuccess: () => {},
+			recordRateLimit: () => {},
+			getMinWaitTimeForFamily: () => 0,
+			shouldShowAccountToast: () => false,
+			markToastShown: () => {},
+			setActiveIndex: (index: number) => accounts[index] ?? null,
+		};
+	};
+
 	it("returns success response for successful fetch", async () => {
 		globalThis.fetch = vi.fn().mockResolvedValue(
 			new Response(JSON.stringify({ content: "test" }), { status: 200 }),
@@ -1163,18 +1248,24 @@ describe("OpenAIOAuthPlugin fetch handler", () => {
 	});
 
 	it("uses the refreshed token email when checking entitlement blocks", async () => {
-		mockStorage.accounts = [
+		const { AccountManager } = await import("../lib/accounts.js");
+		const manager = buildRoutingManager([
 			{
+				index: 0,
 				accountId: "acc-1",
 				email: "stale@example.com",
 				refreshToken: "refresh-1",
 			},
-		];
+		]);
+		vi.spyOn(AccountManager, "loadFromDisk").mockResolvedValueOnce(manager as never);
 		extractAccountEmailMock.mockReturnValueOnce("fresh@example.com");
 		const entitlementModule = await import("../lib/entitlement-cache.js");
 		const isBlockedSpy = vi
 			.spyOn(entitlementModule.EntitlementCache.prototype, "isBlocked")
-			.mockReturnValue({ blocked: false, waitMs: 0 });
+			.mockImplementation(() => {
+				expect(manager.getAccountsSnapshot()[0]?.email).toBe("stale@example.com");
+				return { blocked: false, waitMs: 0 };
+			});
 		globalThis.fetch = vi.fn().mockResolvedValue(
 			new Response(JSON.stringify({ content: "test" }), { status: 200 }),
 		);
@@ -1190,6 +1281,403 @@ describe("OpenAIOAuthPlugin fetch handler", () => {
 			"account:acc-1::email:fresh@example.com",
 			"gpt-5.1",
 		);
+		expect(manager.getAccountsSnapshot()[0]?.email).toBe("fresh@example.com");
+	});
+
+	it.each([
+		["org", "workspace-alpha"],
+		["manual", "workspace-beta"],
+	] as const)(
+		"preserves %s-selected workspace in primary request routing",
+		async (accountIdSource, expectedAccountId) => {
+			const { AccountManager } = await import("../lib/accounts.js");
+			const fetchHelpers = await import("../lib/request/fetch-helpers.js");
+			const manager = buildRoutingManager([
+				{
+					index: 0,
+					accountId: expectedAccountId,
+					accountIdSource,
+					email: "owner@example.com",
+					refreshToken: "refresh-1",
+					accessToken: "access-primary",
+				},
+			]);
+			vi.spyOn(AccountManager, "loadFromDisk").mockResolvedValueOnce(manager as never);
+			extractAccountIdMock.mockReturnValueOnce("token-personal");
+			vi.mocked(fetchHelpers.createCodexHeaders).mockImplementation(
+				(_init, accountId, accessToken) =>
+					new Headers({
+						"x-test-account-id": String(accountId),
+						"x-test-access-token": String(accessToken),
+					}),
+			);
+			globalThis.fetch = vi.fn().mockResolvedValue(
+				new Response(JSON.stringify({ content: "ok" }), { status: 200 }),
+			);
+
+			const { sdk } = await setupPlugin();
+			const response = await sdk.fetch!("https://api.openai.com/v1/chat", {
+				method: "POST",
+				body: JSON.stringify({ model: "gpt-5.1" }),
+			});
+
+			expect(response.status).toBe(200);
+			const headers = new Headers(
+				vi.mocked(globalThis.fetch).mock.calls[0]?.[1]?.headers,
+			);
+			expect(headers.get("x-test-account-id")).toBe(expectedAccountId);
+			expect(headers.get("x-test-access-token")).toBe("access-primary");
+		},
+	);
+
+	it("keeps token-derived routing on the refreshed token accountId", async () => {
+		const { AccountManager } = await import("../lib/accounts.js");
+		const fetchHelpers = await import("../lib/request/fetch-helpers.js");
+		const manager = buildRoutingManager([
+			{
+				index: 0,
+				accountId: "workspace-alpha",
+				accountIdSource: "token",
+				email: "owner@example.com",
+				refreshToken: "refresh-1",
+				accessToken: "access-primary",
+			},
+		]);
+		vi.spyOn(AccountManager, "loadFromDisk").mockResolvedValueOnce(manager as never);
+		extractAccountIdMock.mockReturnValueOnce("token-personal");
+		vi.mocked(fetchHelpers.createCodexHeaders).mockImplementation(
+			(_init, accountId, accessToken) =>
+				new Headers({
+					"x-test-account-id": String(accountId),
+					"x-test-access-token": String(accessToken),
+				}),
+		);
+		globalThis.fetch = vi.fn().mockResolvedValue(
+			new Response(JSON.stringify({ content: "ok" }), { status: 200 }),
+		);
+
+		const { sdk } = await setupPlugin();
+		const response = await sdk.fetch!("https://api.openai.com/v1/chat", {
+			method: "POST",
+			body: JSON.stringify({ model: "gpt-5.1" }),
+		});
+
+		expect(response.status).toBe(200);
+		const headers = new Headers(
+			vi.mocked(globalThis.fetch).mock.calls[0]?.[1]?.headers,
+		);
+		expect(headers.get("x-test-account-id")).toBe("token-personal");
+	});
+
+	it("preserves stored workspace routing after a first-account network failure", async () => {
+		const { AccountManager } = await import("../lib/accounts.js");
+		const fetchHelpers = await import("../lib/request/fetch-helpers.js");
+		const manager = buildRoutingManager([
+			{
+				index: 0,
+				accountId: "token-primary",
+				accountIdSource: "token",
+				email: "alpha@example.com",
+				refreshToken: "refresh-1",
+				accessToken: "access-alpha",
+			},
+			{
+				index: 1,
+				accountId: "workspace-fallback",
+				accountIdSource: "org",
+				email: "beta@example.com",
+				refreshToken: "refresh-2",
+				accessToken: "access-beta",
+			},
+		]);
+		vi.spyOn(AccountManager, "loadFromDisk").mockResolvedValueOnce(manager as never);
+		extractAccountIdMock
+			.mockReturnValueOnce("token-primary")
+			.mockReturnValueOnce("token-personal-fallback");
+		vi.mocked(fetchHelpers.createCodexHeaders).mockImplementation(
+			(_init, accountId, accessToken) =>
+				new Headers({
+					"x-test-account-id": String(accountId),
+					"x-test-access-token": String(accessToken),
+				}),
+		);
+		globalThis.fetch = vi
+			.fn()
+			.mockRejectedValueOnce(new Error("Network timeout"))
+			.mockRejectedValueOnce(new Error("Network timeout"))
+			.mockResolvedValueOnce(new Response(JSON.stringify({ content: "ok" }), { status: 200 }));
+
+		const { sdk } = await setupPlugin();
+		const response = await sdk.fetch!("https://api.openai.com/v1/chat", {
+			method: "POST",
+			body: JSON.stringify({ model: "gpt-5.1" }),
+		});
+
+		expect(response.status).toBe(200);
+		expect(globalThis.fetch).toHaveBeenCalledTimes(3);
+		const thirdHeaders = new Headers(
+			vi.mocked(globalThis.fetch).mock.calls[2]?.[1]?.headers,
+		);
+		expect(thirdHeaders.get("x-test-account-id")).toBe("workspace-fallback");
+		expect(thirdHeaders.get("x-test-access-token")).toBe("access-beta");
+		expect(syncCodexCliSelectionMock).toHaveBeenCalledWith(1);
+	});
+
+	it("locks fallback entitlement checks to a stable account snapshot before mutating the shared account", async () => {
+		const { AccountManager } = await import("../lib/accounts.js");
+		const fetchHelpers = await import("../lib/request/fetch-helpers.js");
+		const entitlementModule = await import("../lib/entitlement-cache.js");
+		const manager = buildRoutingManager([
+			{
+				index: 0,
+				accountId: "token-primary",
+				accountIdSource: "token",
+				email: "alpha@example.com",
+				refreshToken: "refresh-1",
+				accessToken: "access-alpha",
+			},
+			{
+				index: 1,
+				accountId: "workspace-fallback",
+				accountIdSource: "org",
+				email: "beta-stale@example.com",
+				refreshToken: "refresh-2",
+				accessToken: "access-beta",
+				idToken: "id-token-beta",
+			},
+		]);
+		vi.spyOn(AccountManager, "loadFromDisk").mockResolvedValueOnce(manager as never);
+		extractAccountIdMock
+			.mockReturnValueOnce("token-primary")
+			.mockReturnValueOnce("token-personal-fallback");
+		extractAccountEmailMock
+			.mockReturnValueOnce("alpha@example.com")
+			.mockReturnValueOnce("beta-fresh@example.com");
+		vi.mocked(fetchHelpers.createCodexHeaders).mockImplementation(
+			(_init, accountId, accessToken) =>
+				new Headers({
+					"x-test-account-id": String(accountId),
+					"x-test-access-token": String(accessToken),
+				}),
+		);
+		const isBlockedSpy = vi
+			.spyOn(entitlementModule.EntitlementCache.prototype, "isBlocked")
+			.mockImplementation((key) => {
+				if (key === "account:workspace-fallback::email:beta-fresh@example.com") {
+					const fallbackSnapshot = manager.getAccountsSnapshot()[1];
+					expect(fallbackSnapshot?.accountId).toBe("workspace-fallback");
+					expect(fallbackSnapshot?.email).toBe("beta-stale@example.com");
+				}
+				return { blocked: false, waitMs: 0 };
+			});
+		globalThis.fetch = vi
+			.fn()
+			.mockRejectedValueOnce(new Error("Network timeout"))
+			.mockRejectedValueOnce(new Error("Network timeout"))
+			.mockResolvedValueOnce(new Response(JSON.stringify({ content: "ok" }), { status: 200 }));
+
+		const { sdk } = await setupPlugin();
+		const response = await sdk.fetch!("https://api.openai.com/v1/chat", {
+			method: "POST",
+			body: JSON.stringify({ model: "gpt-5.1" }),
+		});
+
+		expect(response.status).toBe(200);
+		expect(isBlockedSpy).toHaveBeenCalledWith(
+			"account:workspace-fallback::email:beta-fresh@example.com",
+			"gpt-5.1",
+		);
+		const fallbackAfterRequest = manager.getAccountsSnapshot()[1];
+		expect(fallbackAfterRequest?.accountId).toBe("workspace-fallback");
+		expect(fallbackAfterRequest?.email).toBe("beta-fresh@example.com");
+	});
+
+	it("preserves a non-token fallback accountIdSource when the stored accountId was originally missing", async () => {
+		const { AccountManager } = await import("../lib/accounts.js");
+		const fetchHelpers = await import("../lib/request/fetch-helpers.js");
+		const manager = buildRoutingManager([
+			{
+				index: 0,
+				accountId: "token-primary",
+				accountIdSource: "token",
+				email: "alpha@example.com",
+				refreshToken: "refresh-1",
+				accessToken: "access-alpha",
+			},
+			{
+				index: 1,
+				accountIdSource: "org",
+				email: "beta-stale@example.com",
+				refreshToken: "refresh-2",
+				accessToken: "access-beta",
+				idToken: "id-token-beta",
+			},
+		]);
+		vi.spyOn(AccountManager, "loadFromDisk").mockResolvedValueOnce(manager as never);
+		extractAccountIdMock
+			.mockReturnValueOnce("token-primary")
+			.mockReturnValueOnce("workspace-fallback");
+		extractAccountEmailMock
+			.mockReturnValueOnce("alpha@example.com")
+			.mockReturnValueOnce("beta-fresh@example.com");
+		vi.mocked(fetchHelpers.createCodexHeaders).mockImplementation(
+			(_init, accountId, accessToken) =>
+				new Headers({
+					"x-test-account-id": String(accountId),
+					"x-test-access-token": String(accessToken),
+				}),
+		);
+		globalThis.fetch = vi
+			.fn()
+			.mockRejectedValueOnce(new Error("Network timeout"))
+			.mockRejectedValueOnce(new Error("Network timeout"))
+			.mockResolvedValueOnce(new Response(JSON.stringify({ content: "ok" }), { status: 200 }));
+
+		const { sdk } = await setupPlugin();
+		const response = await sdk.fetch!("https://api.openai.com/v1/chat", {
+			method: "POST",
+			body: JSON.stringify({ model: "gpt-5.1" }),
+		});
+
+		expect(response.status).toBe(200);
+		const fallbackAfterRequest = manager.getAccountsSnapshot()[1];
+		expect(fallbackAfterRequest?.accountId).toBe("workspace-fallback");
+		expect(fallbackAfterRequest?.accountIdSource).toBe("org");
+		expect(fallbackAfterRequest?.email).toBe("beta-fresh@example.com");
+	});
+
+	it("preserves per-request fallback entitlement keys during concurrent fetch failover", async () => {
+		const { AccountManager } = await import("../lib/accounts.js");
+		const fetchHelpers = await import("../lib/request/fetch-helpers.js");
+		const entitlementModule = await import("../lib/entitlement-cache.js");
+		const accounts = [
+			{
+				index: 0,
+				accountId: "token-primary",
+				accountIdSource: "token",
+				email: "alpha@example.com",
+				refreshToken: "refresh-1",
+				accessToken: "access-alpha",
+			},
+			{
+				index: 1,
+				accountId: "workspace-fallback",
+				accountIdSource: "org",
+				email: "beta-stale@example.com",
+				refreshToken: "refresh-2",
+				accessToken: "access-beta",
+				idToken: "id-token-beta",
+			},
+		];
+		let selectionCount = 0;
+		const manager = {
+			...buildRoutingManager(accounts),
+			getCurrentOrNextForFamilyHybrid: () =>
+				selectionCount++ < 2 ? accounts[0] : accounts[1],
+			getCurrentOrNextForFamily: () =>
+				selectionCount++ < 2 ? accounts[0] : accounts[1],
+		};
+		vi.spyOn(AccountManager, "loadFromDisk").mockResolvedValueOnce(manager as never);
+		extractAccountIdMock
+			.mockReturnValueOnce("token-primary")
+			.mockReturnValueOnce("token-primary")
+			.mockReturnValueOnce("token-personal-a")
+			.mockReturnValueOnce("token-personal-b");
+		extractAccountEmailMock
+			.mockReturnValueOnce("alpha@example.com")
+			.mockReturnValueOnce("alpha@example.com")
+			.mockReturnValueOnce("beta-fresh-a@example.com")
+			.mockReturnValueOnce("beta-fresh-b@example.com");
+		vi.mocked(fetchHelpers.createCodexHeaders).mockImplementation(
+			(_init, accountId, accessToken) =>
+				new Headers({
+					"x-test-account-id": String(accountId),
+					"x-test-access-token": String(accessToken),
+				}),
+		);
+		const blockedKeys: Array<[string, string | undefined]> = [];
+		const clearedKeys: Array<[string, string | undefined]> = [];
+		vi.spyOn(entitlementModule.EntitlementCache.prototype, "isBlocked").mockImplementation(
+			(accountKey, modelKey) => {
+				blockedKeys.push([accountKey, modelKey]);
+				return { blocked: false, waitMs: 0 };
+			},
+		);
+		vi.spyOn(entitlementModule.EntitlementCache.prototype, "clear").mockImplementation(
+			(accountKey, modelKey) => {
+				clearedKeys.push([accountKey, modelKey]);
+			},
+		);
+
+		let releasePrimaryFailures: (() => void) | undefined;
+		const primaryBarrier = new Promise<void>((resolve) => {
+			releasePrimaryFailures = resolve;
+		});
+		let primaryAttempts = 0;
+		const fallbackResponses: Array<{ accountId: string | null; accessToken: string | null }> =
+			[];
+		globalThis.fetch = vi.fn().mockImplementation(async (_url, init) => {
+			const headers = new Headers(init?.headers);
+			const accountId = headers.get("x-test-account-id");
+			const accessToken = headers.get("x-test-access-token");
+			if (accountId === "token-primary") {
+				primaryAttempts += 1;
+				if (primaryAttempts === 2) {
+					releasePrimaryFailures?.();
+				}
+				await primaryBarrier;
+				throw new Error("Network timeout");
+			}
+
+			fallbackResponses.push({ accountId, accessToken });
+			return new Response(JSON.stringify({ accountId, accessToken }), { status: 200 });
+		});
+
+		const { sdk } = await setupPlugin();
+		const [firstResponse, secondResponse] = await Promise.all([
+			sdk.fetch!("https://api.openai.com/v1/chat", {
+				method: "POST",
+				body: JSON.stringify({ model: "gpt-5.1" }),
+			}),
+			sdk.fetch!("https://api.openai.com/v1/chat", {
+				method: "POST",
+				body: JSON.stringify({ model: "gpt-5.1" }),
+			}),
+		]);
+
+		expect(firstResponse.status).toBe(200);
+		expect(secondResponse.status).toBe(200);
+		const routedFetchCalls = vi
+			.mocked(globalThis.fetch)
+			.mock.calls.map(([, init]) => {
+				const headers = new Headers(init?.headers);
+				return headers.get("x-test-account-id");
+			})
+			.filter((accountId): accountId is string => accountId !== null);
+		expect(primaryAttempts).toBeGreaterThanOrEqual(2);
+		expect(
+			routedFetchCalls.filter((accountId) => accountId === "workspace-fallback"),
+		).toHaveLength(2);
+		expect(fallbackResponses).toEqual([
+			{ accountId: "workspace-fallback", accessToken: "access-beta" },
+			{ accountId: "workspace-fallback", accessToken: "access-beta" },
+		]);
+		expect(blockedKeys).toEqual(
+			expect.arrayContaining([
+				["account:workspace-fallback::email:beta-fresh-a@example.com", "gpt-5.1"],
+				["account:workspace-fallback::email:beta-fresh-b@example.com", "gpt-5.1"],
+			]),
+		);
+		expect(clearedKeys).toEqual(
+			expect.arrayContaining([
+				["account:workspace-fallback::email:beta-fresh-a@example.com", "gpt-5.1"],
+				["account:workspace-fallback::email:beta-fresh-b@example.com", "gpt-5.1"],
+			]),
+		);
+		const fallbackAfterRequests = manager.getAccountsSnapshot()[1];
+		expect(fallbackAfterRequests?.accountId).toBe("workspace-fallback");
+		expect(fallbackAfterRequests?.accountIdSource).toBe("org");
+		expect(syncCodexCliSelectionMock).toHaveBeenCalledWith(1);
 	});
 
 	it("handles network errors and rotates to next account", async () => {

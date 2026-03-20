@@ -109,6 +109,7 @@ import {
         formatAccountLabel,
         formatCooldown,
         formatWaitTime,
+        resolveRuntimeRequestIdentity,
         sanitizeEmail,
         selectBestAccountCandidate,
         shouldUpdateAccountIdFromToken,
@@ -1495,13 +1496,19 @@ while (attempted.size < Math.max(1, accountCount)) {
 				continue;
 					}
 
-				const hadAccountId = !!account.accountId;
-					const tokenAccountId = extractAccountId(accountAuth.access);
-					const accountId = resolveRequestAccountId(
-						account.accountId,
-						account.accountIdSource,
-						tokenAccountId,
-					);
+				const storedAccountId = account.accountId;
+				const storedAccountIdSource = account.accountIdSource;
+				const storedEmail = account.email;
+				const hadAccountId = !!storedAccountId;
+					const runtimeIdentity = resolveRuntimeRequestIdentity({
+						storedAccountId,
+						source: storedAccountIdSource,
+						storedEmail,
+						accessToken: accountAuth.access,
+						idToken: accountAuth.idToken,
+					});
+					const tokenAccountId = runtimeIdentity.tokenAccountId;
+					const accountId = runtimeIdentity.accountId;
 						if (!accountId) {
 							accountManager.markAccountCoolingDown(
 								account,
@@ -1511,19 +1518,13 @@ while (attempted.size < Math.max(1, accountCount)) {
 							accountManager.saveToDiskDebounced();
 							continue;
 						}
-											const resolvedEmail =
-												extractAccountEmail(accountAuth.access) ?? account.email;
+											const resolvedEmail = runtimeIdentity.email;
 											const entitlementAccountKey = resolveEntitlementAccountKey({
-												accountId: account.accountId ?? accountId,
+												accountId: storedAccountId ?? accountId,
 												email: resolvedEmail,
 												refreshToken: account.refreshToken,
 												index: account.index,
 											});
-											account.accountId = accountId;
-											if (!hadAccountId && tokenAccountId && accountId === tokenAccountId) {
-												account.accountIdSource = account.accountIdSource ?? "token";
-											}
-											account.email = resolvedEmail;
 											const entitlementBlock = entitlementCache.isBlocked(
 												entitlementAccountKey,
 												model ?? modelFamily,
@@ -1535,6 +1536,13 @@ while (attempted.size < Math.max(1, accountCount)) {
 													`Skipping account ${account.index + 1} due to cached entitlement block (${formatWaitTime(entitlementBlock.waitMs)} remaining).`,
 												);
 												continue;
+											}
+											account.accountId = accountId;
+											if (!hadAccountId && tokenAccountId && accountId === tokenAccountId) {
+												account.accountIdSource = storedAccountIdSource ?? "token";
+											}
+											if (resolvedEmail) {
+												account.email = resolvedEmail;
 											}
 
 											if (
@@ -1594,6 +1602,7 @@ while (attempted.size < Math.max(1, accountCount)) {
 
 							let sameAccountRetryCount = 0;
 							let successAccountForResponse = account;
+							let successEntitlementAccountKey = entitlementAccountKey;
 							while (true) {
 								let response: Response;
 								const fetchStart = performance.now();
@@ -2101,18 +2110,57 @@ while (attempted.size < Math.max(1, accountCount)) {
 											continue;
 										}
 
-										const fallbackTokenAccountId = extractAccountId(fallbackAuth.access);
-										const fallbackAccountId = resolveRequestAccountId(
-											fallbackAccount.accountId,
-											fallbackAccount.accountIdSource,
-											fallbackTokenAccountId,
-										);
+										const fallbackStoredAccountId = fallbackAccount.accountId;
+										const fallbackStoredAccountIdSource = fallbackAccount.accountIdSource;
+										const fallbackStoredEmail = fallbackAccount.email;
+										const hadFallbackAccountId = !!fallbackStoredAccountId;
+										const fallbackRuntimeIdentity = resolveRuntimeRequestIdentity({
+											storedAccountId: fallbackStoredAccountId,
+											source: fallbackStoredAccountIdSource,
+											storedEmail: fallbackStoredEmail,
+											accessToken: fallbackAuth.access,
+											idToken: fallbackAuth.idToken,
+										});
+										const fallbackTokenAccountId = fallbackRuntimeIdentity.tokenAccountId;
+										const fallbackAccountId = fallbackRuntimeIdentity.accountId;
 										if (!fallbackAccountId) {
+											continue;
+										}
+										const fallbackResolvedEmail = fallbackRuntimeIdentity.email;
+										const fallbackEntitlementAccountKey = resolveEntitlementAccountKey({
+											accountId: fallbackStoredAccountId ?? fallbackAccountId,
+											email: fallbackResolvedEmail,
+											refreshToken: fallbackAccount.refreshToken,
+											index: fallbackAccount.index,
+										});
+										const fallbackEntitlementBlock = entitlementCache.isBlocked(
+											fallbackEntitlementAccountKey,
+											model ?? modelFamily,
+										);
+										if (fallbackEntitlementBlock.blocked) {
+											runtimeMetrics.accountRotations++;
+											runtimeMetrics.lastError =
+												`Entitlement cached block for account ${fallbackAccount.index + 1}`;
+											logWarn(
+												`Skipping account ${fallbackAccount.index + 1} due to cached entitlement block (${formatWaitTime(fallbackEntitlementBlock.waitMs)} remaining).`,
+											);
 											continue;
 										}
 
 										if (!accountManager.consumeToken(fallbackAccount, modelFamily, model)) {
 											continue;
+										}
+										fallbackAccount.accountId = fallbackAccountId;
+										if (
+											!hadFallbackAccountId &&
+											fallbackTokenAccountId &&
+											fallbackAccountId === fallbackTokenAccountId
+										) {
+											fallbackAccount.accountIdSource =
+												fallbackStoredAccountIdSource ?? "token";
+										}
+										if (fallbackResolvedEmail) {
+											fallbackAccount.email = fallbackResolvedEmail;
 										}
 
 										const fallbackHeaders = createCodexHeaders(
@@ -2155,7 +2203,7 @@ while (attempted.size < Math.max(1, accountCount)) {
 											);
 											if (fallbackSnapshot) {
 												preemptiveQuotaScheduler.update(
-													`${resolveEntitlementAccountKey(fallbackAccount)}:${model ?? modelFamily}`,
+													`${fallbackEntitlementAccountKey}:${model ?? modelFamily}`,
 													fallbackSnapshot,
 												);
 											}
@@ -2180,13 +2228,14 @@ while (attempted.size < Math.max(1, accountCount)) {
 													accountManager.recordFailure(fallbackAccount, modelFamily, model);
 												}
 												capabilityPolicyStore.recordFailure(
-													resolveEntitlementAccountKey(fallbackAccount),
+													fallbackEntitlementAccountKey,
 													capabilityModelKey,
 												);
 												continue;
 											}
 
 											successAccountForResponse = fallbackAccount;
+											successEntitlementAccountKey = fallbackEntitlementAccountKey;
 											runtimeMetrics.streamFailoverRecoveries += 1;
 											if (fallbackAccount.index !== account.index) {
 												runtimeMetrics.streamFailoverCrossAccountRecoveries += 1;
@@ -2206,7 +2255,7 @@ while (attempted.size < Math.max(1, accountCount)) {
 											accountManager.refundToken(fallbackAccount, modelFamily, model);
 											accountManager.recordFailure(fallbackAccount, modelFamily, model);
 											capabilityPolicyStore.recordFailure(
-												resolveEntitlementAccountKey(fallbackAccount),
+												fallbackEntitlementAccountKey,
 												capabilityModelKey,
 											);
 											logWarn(
@@ -2296,10 +2345,7 @@ while (attempted.size < Math.max(1, accountCount)) {
 						if (successAccountForResponse.index !== account.index) {
 							accountManager.markSwitched(successAccountForResponse, "rotation", modelFamily);
 						}
-						const successAccountKey =
-							successAccountForResponse.index === account.index
-								? entitlementAccountKey
-								: resolveEntitlementAccountKey(successAccountForResponse);
+						const successAccountKey = successEntitlementAccountKey;
 						accountManager.recordSuccess(successAccountForResponse, modelFamily, model);
 						capabilityPolicyStore.recordSuccess(
 							successAccountKey,

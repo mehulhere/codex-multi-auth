@@ -3301,7 +3301,6 @@ describe("codex manager cli commands", () => {
 		expect(exchangeAuthorizationCodeMock).not.toHaveBeenCalled();
 		expect(storageState.accounts).toHaveLength(0);
 	});
-
 	it("preserves distinct same-email workspaces when oauth login reuses a refresh token", async () => {
 		const now = Date.now();
 		let storageState = {
