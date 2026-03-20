@@ -7,7 +7,7 @@ Public documentation for `codex-multi-auth`.
 ## Start Here
 
 1. [Getting Started](getting-started.md)
-2. [index.md](index.md)
+2. [Daily-use landing page](index.md)
 3. [FAQ](faq.md)
 4. [Troubleshooting](troubleshooting.md)
 
@@ -17,7 +17,7 @@ Public documentation for `codex-multi-auth`.
 
 | Document | Focus |
 | --- | --- |
-| [index.md](index.md) | Daily-use landing page for common `codex auth ...` workflows |
+| [Daily-use landing page](index.md) | Daily-use landing page for common `codex auth ...` workflows |
 | [faq.md](faq.md) | Short answers to common adoption questions |
 | [features.md](features.md) | User-facing capability map |
 | [configuration.md](configuration.md) | Stable defaults, precedence, and environment overrides |
@@ -53,7 +53,7 @@ Public documentation for `codex-multi-auth`.
 | [reference/error-contracts.md](reference/error-contracts.md) | CLI, JSON, and helper error semantics |
 | [releases/v1.1.10.md](releases/v1.1.10.md) | Current stable release notes |
 | [releases/v0.1.0-beta.0.md](releases/v0.1.0-beta.0.md) | Archived prerelease reference |
-| [User Guides release notes](#user-guides) | Stable, previous, and archived release notes |
+| [Daily Use release notes](#daily-use) | Stable, previous, and archived release notes |
 | [releases/legacy-pre-0.1-history.md](releases/legacy-pre-0.1-history.md) | Archived pre-0.1 changelog history |
 
 ---
