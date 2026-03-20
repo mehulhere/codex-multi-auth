@@ -48,10 +48,11 @@ Expected flow:
 3. Choose one of the sign-in options:
    - `Open Browser (Easy)` for the normal OAuth flow
    - `Manual / Incognito` when you need to paste the callback yourself
-   - `Load Last Saved Backup` when the current pool is empty and a named backup exists under `~/.codex/multi-auth/backups`
-4. If you use browser or manual sign-in, complete the official OAuth flow and return to the terminal.
-5. If you load a backup, the latest valid named backup is restored and its active account is synced back into Codex CLI auth.
-6. Confirm the account appears in the saved account list.
+   - `Restore Saved Backup` when the current pool is empty and a named backup exists under `~/.codex/multi-auth/backups`
+4. If you choose `Restore Saved Backup`, a second menu lets you either load the newest valid backup automatically or pick a backup manually from a newest-first list.
+5. If you use browser or manual sign-in, complete the official OAuth flow and return to the terminal.
+6. If you load a backup, the selected named backup is restored and its active account is synced back into Codex CLI auth.
+7. Confirm the account appears in the saved account list.
 
 Verify the new account:
 

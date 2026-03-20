@@ -122,6 +122,44 @@ export interface NamedBackupSummary {
 	mtimeMs: number;
 }
 
+async function collectNamedBackups(storagePath: string): Promise<NamedBackupSummary[]> {
+	const backupRoot = getNamedBackupRoot(storagePath);
+	let entries: Array<{ isFile(): boolean; name: string }>;
+	try {
+		entries = await fs.readdir(backupRoot, {
+			withFileTypes: true,
+			encoding: "utf8",
+		});
+	} catch (error) {
+		const code = (error as NodeJS.ErrnoException).code;
+		if (code === "ENOENT") return [];
+		throw error;
+	}
+
+	const candidates: NamedBackupSummary[] = [];
+	for (const entry of entries) {
+		if (!entry.isFile()) continue;
+		if (!entry.name.toLowerCase().endsWith(".json")) continue;
+		const candidatePath = join(backupRoot, entry.name);
+		try {
+			const { normalized } = await loadAccountsFromPath(candidatePath);
+			if (!normalized || normalized.accounts.length === 0) continue;
+			const stats = await fs.stat(candidatePath);
+			candidates.push({
+				path: candidatePath,
+				fileName: entry.name,
+				accountCount: normalized.accounts.length,
+				mtimeMs: stats.mtimeMs,
+			});
+		} catch {
+			continue;
+		}
+	}
+
+	candidates.sort((left, right) => right.mtimeMs - left.mtimeMs);
+	return candidates;
+}
+
 /**
  * Custom error class for storage operations with platform-aware hints.
  */
@@ -819,42 +857,12 @@ export function buildNamedBackupPath(name: string): string {
 	return resolveNamedBackupPath(name, getStoragePath());
 }
 
+export async function getNamedBackups(): Promise<NamedBackupSummary[]> {
+	return collectNamedBackups(getStoragePath());
+}
+
 export async function getLatestNamedBackup(): Promise<NamedBackupSummary | null> {
-	const storagePath = getStoragePath();
-	const backupRoot = getNamedBackupRoot(storagePath);
-	let entries: Array<{ isFile(): boolean; name: string }>;
-	try {
-		entries = await fs.readdir(backupRoot, {
-			withFileTypes: true,
-			encoding: "utf8",
-		});
-	} catch (error) {
-		const code = (error as NodeJS.ErrnoException).code;
-		if (code === "ENOENT") return null;
-		throw error;
-	}
-
-	const candidates: NamedBackupSummary[] = [];
-	for (const entry of entries) {
-		if (!entry.isFile()) continue;
-		if (!entry.name.toLowerCase().endsWith(".json")) continue;
-		const candidatePath = join(backupRoot, entry.name);
-		try {
-			const { normalized } = await loadAccountsFromPath(candidatePath);
-			if (!normalized || normalized.accounts.length === 0) continue;
-			const stats = await fs.stat(candidatePath);
-			candidates.push({
-				path: candidatePath,
-				fileName: entry.name,
-				accountCount: normalized.accounts.length,
-				mtimeMs: stats.mtimeMs,
-			});
-		} catch {
-			continue;
-		}
-	}
-
-	candidates.sort((left, right) => right.mtimeMs - left.mtimeMs);
+	const candidates = await collectNamedBackups(getStoragePath());
 	return candidates[0] ?? null;
 }
 

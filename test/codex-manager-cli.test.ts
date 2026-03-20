@@ -6,7 +6,7 @@ const saveAccountsMock = vi.fn();
 const saveFlaggedAccountsMock = vi.fn();
 const setStoragePathMock = vi.fn();
 const getStoragePathMock = vi.fn(() => "/mock/openai-codex-accounts.json");
-const getLatestNamedBackupMock = vi.fn();
+const getNamedBackupsMock = vi.fn();
 const restoreAccountsFromBackupMock = vi.fn();
 const queuedRefreshMock = vi.fn();
 const setCodexCliActiveSelectionMock = vi.fn();
@@ -116,7 +116,7 @@ vi.mock("../lib/storage.js", async () => {
 		withAccountStorageTransaction: withAccountStorageTransactionMock,
 		setStoragePath: setStoragePathMock,
 		getStoragePath: getStoragePathMock,
-		getLatestNamedBackup: getLatestNamedBackupMock,
+		getNamedBackups: getNamedBackupsMock,
 		restoreAccountsFromBackup: restoreAccountsFromBackupMock,
 		exportNamedBackup: exportNamedBackupMock,
 		normalizeAccountStorage: normalizeAccountStorageMock,
@@ -437,7 +437,7 @@ describe("codex manager cli commands", () => {
 		loadFlaggedAccountsMock.mockReset();
 		saveAccountsMock.mockReset();
 		saveFlaggedAccountsMock.mockReset();
-		getLatestNamedBackupMock.mockReset();
+		getNamedBackupsMock.mockReset();
 		restoreAccountsFromBackupMock.mockReset();
 		withAccountAndFlaggedStorageTransactionMock.mockReset();
 		withAccountStorageTransactionMock.mockReset();
@@ -528,7 +528,7 @@ describe("codex manager cli commands", () => {
 		loadPluginConfigMock.mockReturnValue({});
 		savePluginConfigMock.mockResolvedValue(undefined);
 		selectMock.mockResolvedValue(undefined);
-		getLatestNamedBackupMock.mockResolvedValue(null);
+		getNamedBackupsMock.mockResolvedValue([]);
 		restoreTTYDescriptors();
 		setStoragePathMock.mockReset();
 		getStoragePathMock.mockReturnValue("/mock/openai-codex-accounts.json");
@@ -2994,21 +2994,31 @@ describe("codex manager cli commands", () => {
 			],
 		};
 		loadAccountsMock.mockResolvedValue(null);
-		getLatestNamedBackupMock.mockResolvedValue({
-			path: "/mock/backups/last-good.json",
-			fileName: "last-good.json",
-			accountCount: 2,
-			mtimeMs: now,
-		});
+		getNamedBackupsMock.mockResolvedValue([
+			{
+				path: "/mock/backups/last-good.json",
+				fileName: "last-good.json",
+				accountCount: 2,
+				mtimeMs: now,
+			},
+			{
+				path: "/mock/backups/older.json",
+				fileName: "older.json",
+				accountCount: 1,
+				mtimeMs: now - 60_000,
+			},
+		]);
 		restoreAccountsFromBackupMock.mockResolvedValue(structuredClone(restoredStorage));
-		selectMock.mockResolvedValueOnce("restore-backup");
+		selectMock
+			.mockResolvedValueOnce("restore-backup")
+			.mockResolvedValueOnce("latest");
 		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
 		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
 
 		const exitCode = await runCodexMultiAuthCli(["auth", "login"]);
 
 		expect(exitCode).toBe(0);
-		expect(getLatestNamedBackupMock).toHaveBeenCalled();
+		expect(getNamedBackupsMock).toHaveBeenCalled();
 		expect(restoreAccountsFromBackupMock).toHaveBeenCalledWith(
 			"/mock/backups/last-good.json",
 		);
@@ -3066,7 +3076,62 @@ describe("codex manager cli commands", () => {
 		const exitCode = await runCodexMultiAuthCli(["auth", "login"]);
 
 		expect(exitCode).toBe(0);
-		expect(getLatestNamedBackupMock).not.toHaveBeenCalled();
+		expect(getNamedBackupsMock).not.toHaveBeenCalled();
+	});
+
+	it("lets onboarding open a manual backup picker before restore", async () => {
+		const now = Date.now();
+		setInteractiveTTY(true);
+		const restoredStorage = {
+			version: 3 as const,
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0 },
+			accounts: [
+				{
+					email: "manual@example.com",
+					accountId: "acc_manual",
+					refreshToken: "refresh-manual",
+					accessToken: "access-manual",
+					expiresAt: now + 3_600_000,
+					addedAt: now - 1_000,
+					lastUsed: now - 1_000,
+					enabled: true,
+				},
+			],
+		};
+		loadAccountsMock.mockResolvedValue(null);
+		getNamedBackupsMock.mockResolvedValue([
+			{
+				path: "/mock/backups/latest.json",
+				fileName: "latest.json",
+				accountCount: 4,
+				mtimeMs: now,
+			},
+			{
+				path: "/mock/backups/manual-choice.json",
+				fileName: "manual-choice.json",
+				accountCount: 1,
+				mtimeMs: now - 60_000,
+			},
+		]);
+		restoreAccountsFromBackupMock.mockResolvedValue(structuredClone(restoredStorage));
+		selectMock
+			.mockResolvedValueOnce("restore-backup")
+			.mockResolvedValueOnce("manual")
+			.mockResolvedValueOnce({
+				path: "/mock/backups/manual-choice.json",
+				fileName: "manual-choice.json",
+				accountCount: 1,
+				mtimeMs: now - 60_000,
+			});
+		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+
+		const exitCode = await runCodexMultiAuthCli(["auth", "login"]);
+
+		expect(exitCode).toBe(0);
+		expect(restoreAccountsFromBackupMock).toHaveBeenCalledWith(
+			"/mock/backups/manual-choice.json",
+		);
 	});
 
 	it("preserves distinct same-email workspaces when oauth login reuses a refresh token", async () => {

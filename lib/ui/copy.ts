@@ -33,12 +33,22 @@ export const UI_COPY = {
 		chooseModeSubtitle: "How do you want to sign in?",
 		openBrowser: "Open Browser (Easy)",
 		manualMode: "Manual / Incognito",
+		restoreSavedBackup: "Restore Saved Backup",
 		loadLastBackup: "Load Last Saved Backup",
+		chooseBackupManually: "Choose Backup Manually",
 		back: "Back",
 		chooseModeHelp: "↑↓ Move | Enter Select | 1 Easy | 2 Manual | Q Back",
 		chooseModeHelpWithBackup: "↑↓ Move | Enter Select | 1 Easy | 2 Manual | 3 Backup | Q Back",
+		restoreBackupTitle: "Restore Saved Backup",
+		restoreBackupSubtitle: "How do you want to recover saved accounts?",
+		restoreBackupHelp: "↑↓ Move | Enter Select | 1 Latest | 2 Manual | Q Back",
+		manualBackupTitle: "Choose Backup",
+		manualBackupSubtitle: "Pick a saved backup to restore.",
+		manualBackupHelp: "↑↓ Move | Enter Select | Q Back",
 		loadLastBackupHint: (fileName: string, accountCount: number) =>
 			`${fileName} | ${accountCount} account${accountCount === 1 ? "" : "s"}`,
+		manualBackupHint: (accountCount: number, savedAt: string) =>
+			`${accountCount} account${accountCount === 1 ? "" : "s"} | saved ${savedAt}`,
 		restoreBackupConfirm: (fileName: string, accountCount: number) =>
 			`Load ${fileName} (${accountCount} account${accountCount === 1 ? "" : "s"})?`,
 		restoreBackupLoaded: (fileName: string, accountCount: number) =>

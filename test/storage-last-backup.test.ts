@@ -4,6 +4,7 @@ import { dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
 	buildNamedBackupPath,
+	getNamedBackups,
 	getLatestNamedBackup,
 	loadAccounts,
 	restoreAccountsFromBackup,
@@ -84,6 +85,12 @@ describe("storage last backup restore", () => {
 			fileName: "backup-new.json",
 			accountCount: 2,
 		});
+
+		const backups = await getNamedBackups();
+		expect(backups.map((backup) => backup.fileName)).toEqual([
+			"backup-new.json",
+			"backup-old.json",
+		]);
 	});
 
 	it("restores a named backup into active storage", async () => {

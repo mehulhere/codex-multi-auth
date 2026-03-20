@@ -53,10 +53,11 @@ import {
 import {
 	clearAccounts,
 	findMatchingAccountIndex,
-	getLatestNamedBackup,
+	getNamedBackups,
 	getStoragePath,
 	loadFlaggedAccounts,
 	loadAccounts,
+	type NamedBackupSummary,
 	restoreAccountsFromBackup,
 	saveFlaggedAccounts,
 	saveAccounts,
@@ -1136,15 +1137,20 @@ async function promptManualCallback(state: string): Promise<string | null> {
 }
 
 type OAuthSignInMode = "browser" | "manual" | "restore-backup" | "cancel";
+type BackupRestoreMode = "latest" | "manual" | "back";
 
-interface LatestBackupOption {
-	path: string;
-	fileName: string;
-	accountCount: number;
+function formatBackupSavedAt(mtimeMs: number): string {
+	return new Date(mtimeMs).toLocaleString("en-US", {
+		month: "short",
+		day: "numeric",
+		year: "numeric",
+		hour: "numeric",
+		minute: "2-digit",
+	});
 }
 
 async function promptOAuthSignInMode(
-	backupOption: LatestBackupOption | null,
+	backupOption: NamedBackupSummary | null,
 ): Promise<OAuthSignInMode> {
 	if (!input.isTTY || !output.isTTY) {
 		return "browser";
@@ -1156,7 +1162,7 @@ async function promptOAuthSignInMode(
 		{ label: UI_COPY.oauth.manualMode, value: "manual", color: "yellow" },
 		...(backupOption
 			? [{
-				label: UI_COPY.oauth.loadLastBackup,
+				label: UI_COPY.oauth.restoreSavedBackup,
 				value: "restore-backup" as const,
 				hint: UI_COPY.oauth.loadLastBackupHint(
 					backupOption.fileName,
@@ -1189,6 +1195,88 @@ async function promptOAuthSignInMode(
 	});
 
 	return selected ?? "cancel";
+}
+
+async function promptBackupRestoreMode(
+	latestBackup: NamedBackupSummary,
+): Promise<BackupRestoreMode> {
+	if (!input.isTTY || !output.isTTY) {
+		return "latest";
+	}
+
+	const ui = getUiRuntimeOptions();
+	const items: MenuItem<BackupRestoreMode>[] = [
+		{
+			label: UI_COPY.oauth.loadLastBackup,
+			value: "latest",
+			hint: UI_COPY.oauth.manualBackupHint(
+				latestBackup.accountCount,
+				formatBackupSavedAt(latestBackup.mtimeMs),
+			),
+			color: "cyan",
+		},
+		{
+			label: UI_COPY.oauth.chooseBackupManually,
+			value: "manual",
+			color: "yellow",
+		},
+		{ label: UI_COPY.oauth.back, value: "back", color: "red" },
+	];
+
+	const selected = await select<BackupRestoreMode>(items, {
+		message: UI_COPY.oauth.restoreBackupTitle,
+		subtitle: UI_COPY.oauth.restoreBackupSubtitle,
+		help: UI_COPY.oauth.restoreBackupHelp,
+		clearScreen: true,
+		theme: ui.theme,
+		selectedEmphasis: "minimal",
+		allowEscape: false,
+		onInput: (raw) => {
+			const lower = raw.toLowerCase();
+			if (lower === "q") return "back";
+			if (lower === "1") return "latest";
+			if (lower === "2") return "manual";
+			return undefined;
+		},
+	});
+
+	return selected ?? "back";
+}
+
+async function promptManualBackupSelection(
+	backups: NamedBackupSummary[],
+): Promise<NamedBackupSummary | null> {
+	if (!input.isTTY || !output.isTTY) {
+		return backups[0] ?? null;
+	}
+
+	const ui = getUiRuntimeOptions();
+	const items: MenuItem<NamedBackupSummary | null>[] = backups.map((backup) => ({
+		label: backup.fileName,
+		value: backup,
+		hint: UI_COPY.oauth.manualBackupHint(
+			backup.accountCount,
+			formatBackupSavedAt(backup.mtimeMs),
+		),
+		color: "cyan",
+	}));
+	items.push({ label: UI_COPY.oauth.back, value: null, color: "red" });
+
+	const selected = await select<NamedBackupSummary | null>(items, {
+		message: UI_COPY.oauth.manualBackupTitle,
+		subtitle: UI_COPY.oauth.manualBackupSubtitle,
+		help: UI_COPY.oauth.manualBackupHelp,
+		clearScreen: true,
+		theme: ui.theme,
+		selectedEmphasis: "minimal",
+		allowEscape: false,
+		onInput: (raw) => {
+			if (raw.toLowerCase() === "q") return null;
+			return undefined;
+		},
+	});
+
+	return selected;
 }
 
 interface WaitForReturnOptions {
@@ -4250,18 +4338,9 @@ async function runAuthLogin(): Promise<number> {
 		const existingCount = refreshedStorage?.accounts.length ?? 0;
 		let forceNewLogin = existingCount > 0;
 		while (true) {
-			const latestNamedBackup = existingCount === 0
-				? await getLatestNamedBackup()
-				: null;
-			const signInMode = await promptOAuthSignInMode(
-				latestNamedBackup
-					? {
-						path: latestNamedBackup.path,
-						fileName: latestNamedBackup.fileName,
-						accountCount: latestNamedBackup.accountCount,
-					}
-					: null,
-			);
+			const namedBackups = existingCount === 0 ? await getNamedBackups() : [];
+			const latestNamedBackup = namedBackups[0] ?? null;
+			const signInMode = await promptOAuthSignInMode(latestNamedBackup);
 			if (signInMode === "cancel") {
 				if (existingCount > 0) {
 					console.log(stylePromptText(UI_COPY.oauth.cancelledBackToMenu, "muted"));
@@ -4271,10 +4350,22 @@ async function runAuthLogin(): Promise<number> {
 				return 0;
 			}
 			if (signInMode === "restore-backup" && latestNamedBackup) {
+				const restoreMode = await promptBackupRestoreMode(latestNamedBackup);
+				if (restoreMode === "back") {
+					continue;
+				}
+
+				const selectedBackup = restoreMode === "manual"
+					? await promptManualBackupSelection(namedBackups)
+					: latestNamedBackup;
+				if (!selectedBackup) {
+					continue;
+				}
+
 				const confirmed = await confirm(
 					UI_COPY.oauth.restoreBackupConfirm(
-						latestNamedBackup.fileName,
-						latestNamedBackup.accountCount,
+						selectedBackup.fileName,
+						selectedBackup.accountCount,
 					),
 				);
 				if (!confirmed) {
@@ -4285,10 +4376,10 @@ async function runAuthLogin(): Promise<number> {
 				applyUiThemeFromDashboardSettings(displaySettings);
 				await runActionPanel(
 					"Load Backup",
-					`Loading ${latestNamedBackup.fileName}`,
+					`Loading ${selectedBackup.fileName}`,
 					async () => {
 						const restoredStorage = await restoreAccountsFromBackup(
-							latestNamedBackup.path,
+							selectedBackup.path,
 						);
 						const targetIndex = resolveActiveIndex(restoredStorage);
 						const { synced } = await persistAndSyncSelectedAccount({
@@ -4299,7 +4390,7 @@ async function runAuthLogin(): Promise<number> {
 						});
 						console.log(
 							UI_COPY.oauth.restoreBackupLoaded(
-								latestNamedBackup.fileName,
+								selectedBackup.fileName,
 								restoredStorage.accounts.length,
 							),
 						);
