@@ -2055,6 +2055,52 @@ async function clearAccountsAndReset(): Promise<void> {
 	await clearAccounts();
 }
 
+function resetManageActionSelection(storage: AccountStorageV3): void {
+	storage.activeIndex = 0;
+	storage.activeIndexByFamily = {};
+	for (const family of MODEL_FAMILIES) {
+		storage.activeIndexByFamily[family] = 0;
+	}
+}
+
+function replaceManageActionStorage(
+	target: AccountStorageV3,
+	source: AccountStorageV3,
+): void {
+	target.version = source.version;
+	target.accounts = structuredClone(source.accounts);
+	target.activeIndex = source.activeIndex;
+	target.activeIndexByFamily = {
+		...source.activeIndexByFamily,
+	};
+}
+
+function resolveManageActionAccountIndex(
+	storage: AccountStorageV3,
+	fallbackIndex: number,
+	account: AccountMetadataV3 | undefined,
+): number | null {
+	if (account) {
+		const matchedIndex = findMatchingAccountIndex(
+			storage.accounts,
+			{
+				accountId: account.accountId,
+				email: account.email,
+				refreshToken: account.refreshToken,
+			},
+			{
+				allowUniqueAccountIdFallbackWithoutEmail: true,
+			},
+		);
+		if (typeof matchedIndex === "number" && matchedIndex >= 0) {
+			return matchedIndex;
+		}
+	}
+	return fallbackIndex >= 0 && fallbackIndex < storage.accounts.length
+		? fallbackIndex
+		: null;
+}
+
 async function handleManageAction(
 	storage: AccountStorageV3,
 	menuResult: Awaited<ReturnType<typeof promptLoginMode>>,
@@ -2067,14 +2113,29 @@ async function handleManageAction(
 
 	if (typeof menuResult.deleteAccountIndex === "number") {
 		const idx = menuResult.deleteAccountIndex;
-		if (idx >= 0 && idx < storage.accounts.length) {
-			storage.accounts.splice(idx, 1);
-			storage.activeIndex = 0;
-			storage.activeIndexByFamily = {};
-			for (const family of MODEL_FAMILIES) {
-				storage.activeIndexByFamily[family] = 0;
-			}
-			await saveAccounts(storage);
+		const selectedAccount = storage.accounts[idx];
+		let deleted = false;
+		if (selectedAccount) {
+			await withAccountStorageTransaction(async (loadedStorage, persist) => {
+				const nextStorage = loadedStorage
+					? structuredClone(loadedStorage)
+					: structuredClone(storage);
+				const nextIndex = resolveManageActionAccountIndex(
+					nextStorage,
+					idx,
+					selectedAccount,
+				);
+				if (nextIndex === null) {
+					return;
+				}
+				nextStorage.accounts.splice(nextIndex, 1);
+				resetManageActionSelection(nextStorage);
+				await persist(nextStorage);
+				replaceManageActionStorage(storage, nextStorage);
+				deleted = true;
+			});
+		}
+		if (deleted) {
 			console.log(`Deleted account ${idx + 1}.`);
 		}
 		return;
@@ -2082,12 +2143,34 @@ async function handleManageAction(
 
 	if (typeof menuResult.toggleAccountIndex === "number") {
 		const idx = menuResult.toggleAccountIndex;
-		const account = storage.accounts[idx];
-		if (account) {
-			account.enabled = account.enabled === false;
-			await saveAccounts(storage);
+		const selectedAccount = storage.accounts[idx];
+		let nextEnabledState: boolean | null = null;
+		if (selectedAccount) {
+			await withAccountStorageTransaction(async (loadedStorage, persist) => {
+				const nextStorage = loadedStorage
+					? structuredClone(loadedStorage)
+					: structuredClone(storage);
+				const nextIndex = resolveManageActionAccountIndex(
+					nextStorage,
+					idx,
+					selectedAccount,
+				);
+				if (nextIndex === null) {
+					return;
+				}
+				const nextAccount = nextStorage.accounts[nextIndex];
+				if (!nextAccount) {
+					return;
+				}
+				nextAccount.enabled = nextAccount.enabled === false;
+				await persist(nextStorage);
+				replaceManageActionStorage(storage, nextStorage);
+				nextEnabledState = nextAccount.enabled !== false;
+			});
+		}
+		if (nextEnabledState !== null) {
 			console.log(
-				`${account.enabled === false ? "Disabled" : "Enabled"} account ${idx + 1}.`,
+				`${nextEnabledState ? "Enabled" : "Disabled"} account ${idx + 1}.`,
 			);
 		}
 		return;
@@ -2166,33 +2249,36 @@ export async function autoSyncActiveAccountToCodex(): Promise<boolean> {
 
 	if (!hasUsableAccessToken(account, now)) {
 		const refreshResult = await queuedRefresh(account.refreshToken);
-		if (refreshResult.type === "success") {
-			const tokenAccountId = extractAccountId(refreshResult.access);
-			const nextEmail = sanitizeEmail(extractAccountEmail(refreshResult.access, refreshResult.idToken));
-			if (account.refreshToken !== refreshResult.refresh) {
-				account.refreshToken = refreshResult.refresh;
-				changed = true;
-			}
-			if (account.accessToken !== refreshResult.access) {
-				account.accessToken = refreshResult.access;
-				changed = true;
-			}
-			if (account.expiresAt !== refreshResult.expires) {
-				account.expiresAt = refreshResult.expires;
-				changed = true;
-			}
-			if (nextEmail && nextEmail !== account.email) {
-				account.email = nextEmail;
-				changed = true;
-			}
-			if (applyTokenAccountIdentity(account, tokenAccountId)) {
-				changed = true;
-			}
-			syncAccessToken = refreshResult.access;
-			syncRefreshToken = refreshResult.refresh;
-			syncExpiresAt = refreshResult.expires;
-			syncIdToken = refreshResult.idToken;
+		if (refreshResult.type !== "success") {
+			return false;
 		}
+		const tokenAccountId = extractAccountId(refreshResult.access);
+		const nextEmail = sanitizeEmail(
+			extractAccountEmail(refreshResult.access, refreshResult.idToken),
+		);
+		if (account.refreshToken !== refreshResult.refresh) {
+			account.refreshToken = refreshResult.refresh;
+			changed = true;
+		}
+		if (account.accessToken !== refreshResult.access) {
+			account.accessToken = refreshResult.access;
+			changed = true;
+		}
+		if (account.expiresAt !== refreshResult.expires) {
+			account.expiresAt = refreshResult.expires;
+			changed = true;
+		}
+		if (nextEmail && nextEmail !== account.email) {
+			account.email = nextEmail;
+			changed = true;
+		}
+		if (applyTokenAccountIdentity(account, tokenAccountId)) {
+			changed = true;
+		}
+		syncAccessToken = refreshResult.access;
+		syncRefreshToken = refreshResult.refresh;
+		syncExpiresAt = refreshResult.expires;
+		syncIdToken = refreshResult.idToken;
 	}
 
 	if (changed) {

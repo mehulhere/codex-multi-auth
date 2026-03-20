@@ -252,6 +252,26 @@ function createDeferred<T>(): {
 	return { promise, resolve, reject };
 }
 
+async function getLastLoadedAccountSnapshot(
+	previousCallCount: number,
+): Promise<unknown> {
+	for (
+		let index = Math.min(previousCallCount, loadAccountsMock.mock.results.length) - 1;
+		index >= 0;
+		index -= 1
+	) {
+		const result = loadAccountsMock.mock.results[index];
+		if (!result || result.type !== "return") {
+			continue;
+		}
+		const value = await result.value;
+		if (value != null) {
+			return value;
+		}
+	}
+	return null;
+}
+
 function makeErrnoError(message: string, code: string): NodeJS.ErrnoException {
 	const error = new Error(message) as NodeJS.ErrnoException;
 	error.code = code;
@@ -504,7 +524,7 @@ describe("codex manager cli commands", () => {
 				const previousCallCount = loadAccountsMock.mock.calls.length;
 				let current = await loadAccountsMock();
 				if (current == null && previousCallCount > 0) {
-					current = await loadAccountsMock.mock.results[previousCallCount - 1]?.value;
+					current = await getLastLoadedAccountSnapshot(previousCallCount);
 				}
 				return handler(
 					current == null
@@ -524,7 +544,7 @@ describe("codex manager cli commands", () => {
 				const previousCallCount = loadAccountsMock.mock.calls.length;
 				let current = await loadAccountsMock();
 				if (current == null && previousCallCount > 0) {
-					current = await loadAccountsMock.mock.results[previousCallCount - 1]?.value;
+					current = await getLastLoadedAccountSnapshot(previousCallCount);
 				}
 				let snapshot =
 					current == null
@@ -1352,6 +1372,61 @@ describe("codex manager cli commands", () => {
 		);
 	});
 
+	it("restores prior storage snapshot when flagged save fails during verify-flagged --no-restore", async () => {
+		const now = Date.now();
+		let storageState = {
+			version: 3,
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0 },
+			accounts: [
+				{
+					refreshToken: "refresh-existing",
+					accountId: "acc_existing",
+					email: "existing@example.com",
+					addedAt: now - 10_000,
+					lastUsed: now - 10_000,
+				},
+			],
+		};
+		loadAccountsMock.mockImplementation(async () => structuredClone(storageState));
+		saveAccountsMock.mockImplementation(async (nextStorage) => {
+			storageState = structuredClone(nextStorage);
+		});
+		loadFlaggedAccountsMock.mockResolvedValueOnce({
+			version: 1,
+			accounts: [
+				{
+					refreshToken: "flagged-refresh",
+					accountId: "acc_flagged",
+					email: "flagged@example.com",
+					addedAt: now - 5_000,
+					lastUsed: now - 5_000,
+					flaggedAt: now - 5_000,
+				},
+			],
+		});
+		queuedRefreshMock.mockResolvedValueOnce({
+			type: "success",
+			access: "access-restored",
+			refresh: "refresh-restored",
+			expires: now + 3_600_000,
+		});
+		saveFlaggedAccountsMock.mockRejectedValueOnce(
+			new Error("flagged write failed"),
+		);
+
+		const originalStorage = structuredClone(storageState);
+		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+
+		await expect(
+			runCodexMultiAuthCli(["auth", "verify-flagged", "--no-restore", "--json"]),
+		).rejects.toThrow("flagged write failed");
+		expect(withAccountAndFlaggedStorageTransactionMock).toHaveBeenCalledTimes(1);
+		expect(saveAccountsMock).toHaveBeenCalledTimes(2);
+		expect(saveAccountsMock.mock.calls.at(-1)?.[0]).toEqual(originalStorage);
+		expect(storageState).toEqual(originalStorage);
+	});
+
 	it("keeps flagged account when verification still fails", async () => {
 		const now = Date.now();
 		loadFlaggedAccountsMock.mockResolvedValueOnce({
@@ -1450,6 +1525,70 @@ describe("codex manager cli commands", () => {
 		expect(payload.dryRun).toBe(true);
 		expect(payload.changed).toBe(true);
 		expect(payload.reports[0]?.outcome).toBe("warning-soft-failure");
+	});
+
+	it("does not persist quota cache during auth fix --dry-run --live", async () => {
+		const now = Date.now();
+		loadAccountsMock.mockResolvedValueOnce({
+			version: 3,
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0 },
+			accounts: [
+				{
+					email: "live-dry-run@example.com",
+					accountId: "acc_live_dry_run",
+					refreshToken: "refresh-live-dry-run",
+					accessToken: "access-live-dry-run",
+					expiresAt: now + 3_600_000,
+					addedAt: now - 1_000,
+					lastUsed: now - 1_000,
+					enabled: true,
+				},
+			],
+		});
+		fetchCodexQuotaSnapshotMock.mockResolvedValueOnce({
+			status: 200,
+			model: "gpt-5-codex",
+			primary: {
+				usedPercent: 20,
+				windowMinutes: 300,
+				resetAtMs: now + 1_000,
+			},
+			secondary: {
+				usedPercent: 10,
+				windowMinutes: 10080,
+				resetAtMs: now + 2_000,
+			},
+		});
+
+		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+		const exitCode = await runCodexMultiAuthCli([
+			"auth",
+			"fix",
+			"--dry-run",
+			"--live",
+			"--json",
+		]);
+
+		expect(exitCode).toBe(0);
+		expect(saveAccountsMock).not.toHaveBeenCalled();
+		expect(saveQuotaCacheMock).not.toHaveBeenCalled();
+		const payload = JSON.parse(String(logSpy.mock.calls[0]?.[0])) as {
+			dryRun: boolean;
+			liveProbe: boolean;
+			reports: Array<{ outcome: string; message: string }>;
+		};
+		expect(payload.dryRun).toBe(true);
+		expect(payload.liveProbe).toBe(true);
+		expect(payload.reports).toEqual(
+			expect.arrayContaining([
+				expect.objectContaining({
+					outcome: "healthy",
+					message: expect.stringContaining("live session OK"),
+				}),
+			]),
+		);
 	});
 
 	it("persists rotated tokens during auth check and preserves org-selected workspace binding", async () => {
@@ -2882,6 +3021,44 @@ describe("codex manager cli commands", () => {
 			}),
 		);
 		extractAccountIdMock.mockImplementation(() => "acc_test");
+	});
+
+	it("autoSyncActiveAccountToCodex skips stale Codex sync when refresh fails", async () => {
+		const now = Date.now();
+		loadAccountsMock.mockResolvedValueOnce({
+			version: 3,
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0 },
+			accounts: [
+				{
+					email: "stale@example.com",
+					accountId: "workspace-stale",
+					accountIdSource: "org",
+					refreshToken: "refresh-stale",
+					accessToken: "access-stale",
+					expiresAt: now - 60_000,
+					addedAt: now - 1_000,
+					lastUsed: now - 1_000,
+					enabled: true,
+				},
+			],
+		});
+		queuedRefreshMock.mockResolvedValueOnce({
+			type: "failed",
+			reason: "http_error",
+			statusCode: 401,
+			message: "refresh expired",
+		});
+
+		const { autoSyncActiveAccountToCodex } = await import(
+			"../lib/codex-manager.js"
+		);
+		const synced = await autoSyncActiveAccountToCodex();
+
+		expect(synced).toBe(false);
+		expect(queuedRefreshMock).toHaveBeenCalledTimes(1);
+		expect(saveAccountsMock).not.toHaveBeenCalled();
+		expect(setCodexCliActiveSelectionMock).not.toHaveBeenCalled();
 	});
 
 	it("keeps auth login menu open after switch until user cancels", async () => {
@@ -5754,6 +5931,110 @@ describe("codex manager cli commands", () => {
 		);
 	});
 
+	it("skips doctor --fix Codex sync when active refresh fails", async () => {
+		const now = Date.now();
+		loadAccountsMock.mockResolvedValueOnce({
+			version: 3,
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0 },
+			accounts: [
+				{
+					email: "doctor@example.com",
+					accountId: "workspace-doctor",
+					accountIdSource: "org",
+					refreshToken: "refresh-doctor",
+					accessToken: "access-doctor",
+					expiresAt: now - 60_000,
+					addedAt: now - 1_000,
+					lastUsed: now - 1_000,
+					enabled: true,
+				},
+			],
+		});
+		queuedRefreshMock.mockResolvedValueOnce({
+			type: "failed",
+			reason: "http_error",
+			statusCode: 401,
+			message: "refresh expired",
+		});
+
+		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+		const exitCode = await runCodexMultiAuthCli([
+			"auth",
+			"doctor",
+			"--fix",
+			"--json",
+		]);
+
+		expect(exitCode).toBe(0);
+		expect(saveAccountsMock).not.toHaveBeenCalled();
+		expect(withAccountStorageTransactionMock).not.toHaveBeenCalled();
+		expect(setCodexCliActiveSelectionMock).not.toHaveBeenCalled();
+		const payload = JSON.parse(String(logSpy.mock.calls[0]?.[0])) as {
+			checks: Array<{ key: string; severity: string; message: string }>;
+			fix: {
+				changed: boolean;
+				actions: Array<{ key: string }>;
+			};
+		};
+		expect(payload.fix.changed).toBe(false);
+		expect(payload.fix.actions).not.toContainEqual(
+			expect.objectContaining({ key: "codex-active-sync" }),
+		);
+		expect(payload.checks).toContainEqual(
+			expect.objectContaining({
+				key: "doctor-refresh",
+				severity: "warn",
+				message: "Unable to refresh active account before Codex sync",
+			}),
+		);
+	});
+
+	it("preserves pre-fix storage when doctor --fix transaction save fails", async () => {
+		const now = Date.now();
+		let storageState = {
+			version: 3,
+			activeIndex: 4,
+			activeIndexByFamily: { codex: 4 },
+			accounts: [
+				{
+					email: "account1@example.com",
+					refreshToken: "refresh-a",
+					addedAt: now - 1_000,
+					lastUsed: now - 1_000,
+					enabled: false,
+				},
+				{
+					email: "account2@example.com",
+					refreshToken: "refresh-a",
+					addedAt: now - 1_000,
+					lastUsed: now - 1_000,
+					enabled: false,
+				},
+			],
+		};
+		loadAccountsMock.mockImplementation(async () => structuredClone(storageState));
+		saveAccountsMock.mockRejectedValueOnce(new Error("transaction save failed"));
+		queuedRefreshMock.mockResolvedValueOnce({
+			type: "success",
+			access: "access-doctor-next",
+			refresh: "refresh-doctor-next",
+			expires: now + 3_600_000,
+			idToken: "id-doctor-next",
+		});
+		setCodexCliActiveSelectionMock.mockResolvedValueOnce(true);
+
+		const originalStorage = structuredClone(storageState);
+		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+
+		await expect(
+			runCodexMultiAuthCli(["auth", "doctor", "--fix", "--json"]),
+		).rejects.toThrow("transaction save failed");
+		expect(withAccountStorageTransactionMock).toHaveBeenCalledTimes(1);
+		expect(storageState).toEqual(originalStorage);
+	});
+
 	it("runs report command in json mode", async () => {
 		const now = Date.now();
 		loadAccountsMock.mockResolvedValueOnce({
@@ -6918,6 +7199,9 @@ describe("codex manager cli commands", () => {
 		const payload = JSON.parse(String(logSpy.mock.calls[0]?.[0])) as {
 			reports: Array<{ outcome: string; message: string }>;
 		};
+		expect(
+			payload.reports.filter((report) => report.outcome === "healthy"),
+		).toHaveLength(1);
 		expect(
 			payload.reports.some(
 				(report) =>

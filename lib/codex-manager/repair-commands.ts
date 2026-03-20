@@ -543,6 +543,48 @@ interface DoctorFixAction {
 	message: string;
 }
 
+function maskDoctorEmail(value: string | undefined): string | undefined {
+	if (!value) return undefined;
+	const email = value.trim();
+	const atIndex = email.indexOf("@");
+	if (atIndex < 0) return "***@***";
+	const local = email.slice(0, atIndex);
+	const domain = email.slice(atIndex + 1);
+	const parts = domain.split(".");
+	const tld = parts.pop() || "";
+	const prefix = local.slice(0, Math.min(2, local.length));
+	return `${prefix}***@***.${tld}`;
+}
+
+function redactDoctorIdentifier(value: string | undefined): string | undefined {
+	if (!value) return undefined;
+	const identifier = value.trim();
+	if (!identifier) return undefined;
+	if (identifier.includes("@")) {
+		return maskDoctorEmail(identifier);
+	}
+	if (identifier.length <= 8) {
+		return "***";
+	}
+	return `${identifier.slice(0, 4)}***${identifier.slice(-3)}`;
+}
+
+function formatDoctorIdentitySummary(identity: {
+	email?: string;
+	accountId?: string;
+}): string {
+	const parts: string[] = [];
+	const maskedEmail = maskDoctorEmail(identity.email);
+	const maskedAccountId = redactDoctorIdentifier(identity.accountId);
+	if (maskedEmail) {
+		parts.push(`email=${maskedEmail}`);
+	}
+	if (maskedAccountId) {
+		parts.push(`accountId=${maskedAccountId}`);
+	}
+	return parts.join(", ") || "unknown";
+}
+
 function hasPlaceholderEmail(value: string | undefined): boolean {
 	if (!value) return false;
 	const email = value.trim().toLowerCase();
@@ -1006,6 +1048,7 @@ export async function runFix(
 		}
 
 		if (deps.hasUsableAccessToken(account, now)) {
+			let refreshAfterLiveProbeFailure = false;
 			if (options.live) {
 				const currentAccessToken = account.accessToken;
 				const probeAccountId = currentAccessToken
@@ -1048,20 +1091,23 @@ export async function runFix(
 							outcome: "warning-soft-failure",
 							message: `live probe failed (${message}), trying refresh fallback`,
 						});
+						refreshAfterLiveProbeFailure = true;
 					}
 				}
 			}
 
-			const refreshWarning = deps.hasLikelyInvalidRefreshToken(account.refreshToken)
-				? " (refresh token looks stale; re-login recommended)"
-				: "";
-			reports.push({
-				index: i,
-				label,
-				outcome: "healthy",
-				message: `access token still valid${refreshWarning}`,
-			});
-			continue;
+			if (!refreshAfterLiveProbeFailure) {
+				const refreshWarning = deps.hasLikelyInvalidRefreshToken(account.refreshToken)
+					? " (refresh token looks stale; re-login recommended)"
+					: "";
+				reports.push({
+					index: i,
+					label,
+					outcome: "healthy",
+					message: `access token still valid${refreshWarning}`,
+				});
+				continue;
+			}
 		}
 
 		const refreshResult = await queuedRefresh(account.refreshToken);
@@ -1242,7 +1288,7 @@ export async function runFix(
 	}
 
 	if (options.json) {
-		if (workingQuotaCache && quotaCacheChanged) {
+		if (!options.dryRun && workingQuotaCache && quotaCacheChanged) {
 			await saveQuotaCache(workingQuotaCache);
 		}
 		console.log(
@@ -1343,7 +1389,7 @@ export async function runFix(
 			);
 		}
 	}
-	if (workingQuotaCache && quotaCacheChanged) {
+	if (!options.dryRun && workingQuotaCache && quotaCacheChanged) {
 		await saveQuotaCache(workingQuotaCache);
 	}
 
@@ -1456,7 +1502,10 @@ export async function runDoctor(
 				message: "Codex auth file is readable",
 				details:
 					codexAuthEmail || codexAuthAccountId
-						? `email=${codexAuthEmail ?? "unknown"}, accountId=${codexAuthAccountId ?? "unknown"}`
+						? formatDoctorIdentitySummary({
+							email: codexAuthEmail,
+							accountId: codexAuthAccountId,
+						})
 						: undefined,
 			});
 		} catch (error) {
@@ -1681,7 +1730,14 @@ export async function runDoctor(
 					isEmailMismatch || isAccountIdMismatch
 						? "Manager active account and Codex active account are not aligned"
 						: "Manager active account and Codex active account are aligned",
-				details: `manager=${managerActiveEmail ?? managerActiveAccountId ?? "unknown"} | codex=${codexActiveEmail ?? codexActiveAccountId ?? "unknown"}`,
+				details:
+					`manager=${formatDoctorIdentitySummary({
+						email: managerActiveEmail,
+						accountId: managerActiveAccountId,
+					})} | codex=${formatDoctorIdentitySummary({
+						email: codexActiveEmail,
+						accountId: codexActiveAccountId,
+					})}`,
 			});
 
 			if (options.fix && activeAccount) {
@@ -1689,8 +1745,9 @@ export async function runDoctor(
 				let syncRefreshToken = activeAccount.refreshToken;
 				let syncExpiresAt = activeAccount.expiresAt;
 				let syncIdToken: string | undefined;
+				let canSyncActiveAccount = deps.hasUsableAccessToken(activeAccount, now);
 
-				if (!deps.hasUsableAccessToken(activeAccount, now)) {
+				if (!canSyncActiveAccount) {
 					if (options.dryRun) {
 						fixActions.push({
 							key: "doctor-refresh",
@@ -1712,6 +1769,7 @@ export async function runDoctor(
 							syncRefreshToken = refreshResult.refresh;
 							syncExpiresAt = refreshResult.expires;
 							syncIdToken = refreshResult.idToken;
+							canSyncActiveAccount = true;
 							storageFixChanged = true;
 							fixChanged = true;
 							fixActions.push({
@@ -1732,7 +1790,7 @@ export async function runDoctor(
 					}
 				}
 
-				if (!options.dryRun) {
+				if (!options.dryRun && canSyncActiveAccount) {
 					const synced = await setCodexCliActiveSelection({
 						accountId: activeAccount.accountId,
 						email: activeAccount.email,
@@ -1754,7 +1812,7 @@ export async function runDoctor(
 							message: "Failed to sync manager active account into Codex auth state",
 						});
 					}
-				} else {
+				} else if (options.dryRun && canSyncActiveAccount) {
 					fixActions.push({
 						key: "codex-active-sync",
 						message: "Prepared Codex active-account sync (dry-run)",
