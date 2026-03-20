@@ -16,28 +16,43 @@ Compatibility aliases are supported:
 
 ---
 
-## Primary Commands
+## Start Here
 
 | Command | Description |
 | --- | --- |
 | `codex auth login` | Open interactive auth dashboard |
-| `codex auth list` | List saved accounts and active account |
 | `codex auth status` | Print short runtime/account summary |
-| `codex auth switch <index>` | Set active account by index |
 | `codex auth check` | Run quick account health check |
-| `codex auth features` | Print implemented feature summary |
 
 ---
 
-## Advanced Commands
+## Daily Use
+
+| Command | Description |
+| --- | --- |
+| `codex auth list` | List saved accounts and active account |
+| `codex auth switch <index>` | Set active account by index |
+| `codex auth forecast` | Forecast best account by readiness/risk |
+| `codex auth best` | Pick and optionally sync the best account |
+
+---
+
+## Repair
 
 | Command | Description |
 | --- | --- |
 | `codex auth verify-flagged` | Verify flagged accounts and optionally restore healthy accounts |
-| `codex auth forecast` | Forecast best account by readiness/risk |
-| `codex auth report` | Generate full health report |
 | `codex auth fix` | Apply safe account storage fixes |
 | `codex auth doctor` | Run diagnostics and optional repairs |
+
+---
+
+## Advanced
+
+| Command | Description |
+| --- | --- |
+| `codex auth features` | Print implemented feature summary |
+| `codex auth report` | Generate full health report |
 
 ---
 
