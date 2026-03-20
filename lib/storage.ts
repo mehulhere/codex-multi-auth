@@ -871,11 +871,6 @@ export async function getNamedBackups(): Promise<NamedBackupSummary[]> {
 	return collectNamedBackups(getStoragePath());
 }
 
-export async function getLatestNamedBackup(): Promise<NamedBackupSummary | null> {
-	const candidates = await collectNamedBackups(getStoragePath());
-	return candidates[0] ?? null;
-}
-
 export async function restoreAccountsFromBackup(path: string): Promise<AccountStorageV3> {
 	const { normalized } = await loadAccountsFromPath(path);
 	if (!normalized || normalized.accounts.length === 0) {

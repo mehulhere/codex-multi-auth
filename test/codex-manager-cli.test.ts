@@ -3141,6 +3141,40 @@ describe("codex manager cli commands", () => {
 		);
 	});
 
+	it("keeps the session alive when interactive backup restore fails with EBUSY", async () => {
+		const now = Date.now();
+		setInteractiveTTY(true);
+		loadAccountsMock.mockResolvedValue(null);
+		getNamedBackupsMock.mockResolvedValue([
+			{
+				path: "C:/mock/backups/locked.json",
+				fileName: "locked.json",
+				accountCount: 1,
+				mtimeMs: now,
+			},
+		]);
+		const busyError = new Error("File is busy") as NodeJS.ErrnoException;
+		busyError.code = "EBUSY";
+		restoreAccountsFromBackupMock.mockRejectedValueOnce(busyError);
+		selectMock
+			.mockResolvedValueOnce("restore-backup")
+			.mockResolvedValueOnce("latest")
+			.mockResolvedValueOnce("cancel");
+		const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+
+		const exitCode = await runCodexMultiAuthCli(["auth", "login"]);
+
+		expect(exitCode).toBe(0);
+		expect(restoreAccountsFromBackupMock).toHaveBeenCalledWith(
+			"C:/mock/backups/locked.json",
+		);
+		expect(errorSpy).toHaveBeenCalledWith(
+			expect.stringContaining("The file may be open in another program"),
+		);
+		expect(errorSpy).toHaveBeenCalledWith("Backup restore failed: File is busy");
+	});
+
 	it("does not restore a manually chosen backup when confirmation is declined", async () => {
 		const now = Date.now();
 		setInteractiveTTY(true);

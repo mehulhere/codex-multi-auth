@@ -5,7 +5,6 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
 	buildNamedBackupPath,
 	getNamedBackups,
-	getLatestNamedBackup,
 	loadAccounts,
 	restoreAccountsFromBackup,
 	saveAccounts,
@@ -49,7 +48,6 @@ describe("storage last backup restore", () => {
 	});
 
 	it("returns null when the named backups directory is missing", async () => {
-		await expect(getLatestNamedBackup()).resolves.toBeNull();
 		await expect(getNamedBackups()).resolves.toEqual([]);
 	});
 
@@ -70,7 +68,6 @@ describe("storage last backup restore", () => {
 			);
 		}
 
-		await expect(getLatestNamedBackup()).resolves.toBeNull();
 		await expect(getNamedBackups()).resolves.toEqual([]);
 	});
 
@@ -104,15 +101,14 @@ describe("storage last backup restore", () => {
 		await fs.utimes(oldBackupPath, new Date("2026-03-01T00:00:00.000Z"), new Date("2026-03-01T00:00:00.000Z"));
 		await fs.utimes(newBackupPath, new Date("2026-03-02T00:00:00.000Z"), new Date("2026-03-02T00:00:00.000Z"));
 
-		const latest = await getLatestNamedBackup();
+		const backups = await getNamedBackups();
 
-		expect(latest).toMatchObject({
+		expect(backups[0]).toMatchObject({
 			path: newBackupPath,
 			fileName: "backup-new.json",
 			accountCount: 2,
 		});
 
-		const backups = await getNamedBackups();
 		expect(backups.map((backup) => backup.fileName)).toEqual([
 			"backup-new.json",
 			"backup-old.json",
@@ -162,10 +158,10 @@ describe("storage last backup restore", () => {
 			);
 		});
 
-		const latest = await getLatestNamedBackup();
+		const backups = await getNamedBackups();
 
 		statSpy.mockRestore();
-		expect(latest).toMatchObject({
+		expect(backups[0]).toMatchObject({
 			path: stableBackupPath,
 			fileName: "backup-stable.json",
 			accountCount: 1,

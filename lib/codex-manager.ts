@@ -53,6 +53,7 @@ import {
 import {
 	clearAccounts,
 	findMatchingAccountIndex,
+	formatStorageErrorHint,
 	getNamedBackups,
 	getStoragePath,
 	loadFlaggedAccounts,
@@ -1158,13 +1159,13 @@ async function promptOAuthSignInMode(
 
 	const ui = getUiRuntimeOptions();
 	const items: MenuItem<OAuthSignInMode>[] = [
-		{ label: UI_COPY.oauth.signInHeading, value: "browser" as const, kind: "heading" },
+		{ label: UI_COPY.oauth.signInHeading, value: "cancel" as const, kind: "heading" },
 		{ label: UI_COPY.oauth.openBrowser, value: "browser", color: "green" },
 		{ label: UI_COPY.oauth.manualMode, value: "manual", color: "yellow" },
 		...(backupOption
 			? [
 				{ separator: true, label: "", value: "cancel" as const },
-				{ label: UI_COPY.oauth.restoreHeading, value: "browser" as const, kind: "heading" as const },
+				{ label: UI_COPY.oauth.restoreHeading, value: "cancel" as const, kind: "heading" as const },
 				{
 					label: UI_COPY.oauth.restoreSavedBackup,
 					value: "restore-backup" as const,
@@ -4344,9 +4345,9 @@ async function runAuthLogin(): Promise<number> {
 		const refreshedStorage = await loadAccounts();
 		const existingCount = refreshedStorage?.accounts.length ?? 0;
 		let forceNewLogin = existingCount > 0;
+		const namedBackups = existingCount === 0 ? await getNamedBackups() : [];
+		const latestNamedBackup = namedBackups[0] ?? null;
 		while (true) {
-			const namedBackups = existingCount === 0 ? await getNamedBackups() : [];
-			const latestNamedBackup = namedBackups[0] ?? null;
 			const signInMode = await promptOAuthSignInMode(latestNamedBackup);
 			if (signInMode === "cancel") {
 				if (existingCount > 0) {
@@ -4383,32 +4384,39 @@ async function runAuthLogin(): Promise<number> {
 
 				const displaySettings = await loadDashboardDisplaySettings();
 				applyUiThemeFromDashboardSettings(displaySettings);
-				await runActionPanel(
-					"Load Backup",
-					`Loading ${selectedBackup.fileName}`,
-					async () => {
-						const restoredStorage = await restoreAccountsFromBackup(
-							selectedBackup.path,
-						);
-						const targetIndex = resolveActiveIndex(restoredStorage);
-						const { synced } = await persistAndSyncSelectedAccount({
-							storage: restoredStorage,
-							targetIndex,
-							parsed: targetIndex + 1,
-							switchReason: "rotation",
-						});
-						console.log(
-							UI_COPY.oauth.restoreBackupLoaded(
-								selectedBackup.fileName,
-								restoredStorage.accounts.length,
-							),
-						);
-						if (!synced) {
-							console.warn(UI_COPY.oauth.restoreBackupSyncWarning);
-						}
-					},
-					displaySettings,
-				);
+				try {
+					await runActionPanel(
+						"Load Backup",
+						`Loading ${selectedBackup.fileName}`,
+						async () => {
+							const restoredStorage = await restoreAccountsFromBackup(
+								selectedBackup.path,
+							);
+							const targetIndex = resolveActiveIndex(restoredStorage);
+							const { synced } = await persistAndSyncSelectedAccount({
+								storage: restoredStorage,
+								targetIndex,
+								parsed: targetIndex + 1,
+								switchReason: "rotation",
+							});
+							console.log(
+								UI_COPY.oauth.restoreBackupLoaded(
+									selectedBackup.fileName,
+									restoredStorage.accounts.length,
+								),
+							);
+							if (!synced) {
+								console.warn(UI_COPY.oauth.restoreBackupSyncWarning);
+							}
+						},
+						displaySettings,
+					);
+				} catch (error) {
+					const message = error instanceof Error ? error.message : String(error);
+					console.error(formatStorageErrorHint(error, selectedBackup.path));
+					console.error(`Backup restore failed: ${message}`);
+					continue;
+				}
 				continue loginFlow;
 			}
 
