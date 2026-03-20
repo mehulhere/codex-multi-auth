@@ -107,6 +107,14 @@ vi.mock("../lib/accounts.js", () => {
 		}
 
 		markToastShown() {}
+
+		getCurrentWorkspace() { return null; }
+
+		disableCurrentWorkspace() { return false; }
+
+		rotateToNextWorkspace() { return null; }
+
+		hasEnabledWorkspaces() { return true; }
 	}
 
 	return {

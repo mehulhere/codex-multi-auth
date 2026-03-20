@@ -79,6 +79,14 @@ function initFamilyState(defaultValue: number): Record<ModelFamily, number> {
 	) as Record<ModelFamily, number>;
 }
 
+export interface Workspace {
+	id: string;
+	name?: string;
+	enabled: boolean;
+	disabledAt?: number;
+	isDefault?: boolean;
+}
+
 export interface ManagedAccount {
 	index: number;
 	accountId?: string;
@@ -97,6 +105,8 @@ export interface ManagedAccount {
 	coolingDownUntil?: number;
 	cooldownReason?: CooldownReason;
 	consecutiveAuthFailures?: number;
+	workspaces?: Workspace[];
+	currentWorkspaceIndex?: number;
 }
 
 export class AccountManager {
@@ -245,6 +255,8 @@ export class AccountManager {
 						rateLimitResetTimes: account.rateLimitResetTimes ?? {},
 						coolingDownUntil: account.coolingDownUntil,
 						cooldownReason: account.cooldownReason,
+						workspaces: account.workspaces,
+						currentWorkspaceIndex: account.currentWorkspaceIndex,
 					};
 				})
 				.filter((account): account is ManagedAccount => account !== null);
@@ -764,6 +776,8 @@ export class AccountManager {
 					Object.keys(account.rateLimitResetTimes).length > 0 ? account.rateLimitResetTimes : undefined,
 				coolingDownUntil: account.coolingDownUntil,
 				cooldownReason: account.cooldownReason,
+				workspaces: account.workspaces,
+				currentWorkspaceIndex: account.currentWorkspaceIndex,
 			})),
 			activeIndex,
 			activeIndexByFamily,
@@ -804,6 +818,75 @@ export class AccountManager {
 		if (this.pendingSave) {
 			await this.pendingSave;
 		}
+	}
+
+	// Workspace management methods
+	setWorkspaces(account: ManagedAccount, workspaces: Workspace[]): void {
+		account.workspaces = workspaces;
+		if (workspaces.length > 0 && account.currentWorkspaceIndex === undefined) {
+			// Find first enabled workspace or default to 0
+			const firstEnabled = workspaces.findIndex((w) => w.enabled !== false);
+			account.currentWorkspaceIndex = firstEnabled >= 0 ? firstEnabled : 0;
+		}
+	}
+
+	getCurrentWorkspace(account: ManagedAccount): Workspace | null {
+		if (!account.workspaces || account.workspaces.length === 0) {
+			return null;
+		}
+		const idx = account.currentWorkspaceIndex ?? 0;
+		return account.workspaces[idx] ?? null;
+	}
+
+	disableCurrentWorkspace(account: ManagedAccount): boolean {
+		if (!account.workspaces || account.workspaces.length === 0) {
+			return false;
+		}
+		const idx = account.currentWorkspaceIndex ?? 0;
+		if (idx < 0 || idx >= account.workspaces.length) {
+			return false;
+		}
+		const workspace = account.workspaces[idx];
+		if (!workspace) return false;
+		workspace.enabled = false;
+		workspace.disabledAt = Date.now();
+		return true;
+	}
+
+	rotateToNextWorkspace(account: ManagedAccount): Workspace | null {
+		if (!account.workspaces || account.workspaces.length === 0) {
+			return null;
+		}
+		const currentIdx = account.currentWorkspaceIndex ?? 0;
+		const totalWorkspaces = account.workspaces.length;
+		
+		// Find next enabled workspace
+		for (let i = 1; i <= totalWorkspaces; i++) {
+			const nextIdx = (currentIdx + i) % totalWorkspaces;
+			const workspace = account.workspaces[nextIdx];
+			if (workspace && workspace.enabled !== false) {
+				account.currentWorkspaceIndex = nextIdx;
+				return workspace;
+			}
+		}
+		
+		return null; // No enabled workspaces found
+	}
+
+	hasEnabledWorkspaces(account: ManagedAccount): boolean {
+		if (!account.workspaces || account.workspaces.length === 0) {
+			return true; // No workspaces tracked yet, assume single workspace
+		}
+		return account.workspaces.some((w) => w.enabled !== false);
+	}
+
+	getWorkspaceCount(account: ManagedAccount): number {
+		return account.workspaces?.length ?? 0;
+	}
+
+	getEnabledWorkspaceCount(account: ManagedAccount): number {
+		if (!account.workspaces) return 0;
+		return account.workspaces.filter((w) => w.enabled !== false).length;
 	}
 }
 

@@ -8,6 +8,14 @@ import type { AccountIdSource } from "../types.js";
 
 export type CooldownReason = "auth-failure" | "network-error" | "rate-limit";
 
+export interface Workspace {
+	id: string;
+	name?: string;
+	enabled: boolean;
+	disabledAt?: number;
+	isDefault?: boolean;
+}
+
 export interface RateLimitStateV3 {
 	[key: string]: number | undefined;
 }
@@ -54,6 +62,8 @@ export interface AccountMetadataV3 {
 	rateLimitResetTimes?: RateLimitStateV3;
 	coolingDownUntil?: number;
 	cooldownReason?: CooldownReason;
+	workspaces?: Workspace[];
+	currentWorkspaceIndex?: number;
 }
 
 export interface AccountStorageV3 {
