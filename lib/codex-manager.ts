@@ -44,6 +44,10 @@ import {
 } from "./codex-manager/commands/status.js";
 import { runSwitchCommand } from "./codex-manager/commands/switch.js";
 import {
+	runVerifyFlaggedCommand,
+	type VerifyFlaggedCliOptions,
+} from "./codex-manager/commands/verify-flagged.js";
+import {
 	applyUiThemeFromDashboardSettings,
 	configureUnifiedSettings,
 	resolveMenuLayoutMode,
@@ -2257,12 +2261,6 @@ interface FixCliOptions {
 	model: string;
 }
 
-interface VerifyFlaggedCliOptions {
-	dryRun: boolean;
-	json: boolean;
-	restore: boolean;
-}
-
 type ParsedArgsResult<T> =
 	| { ok: true; options: T }
 	| { ok: false; message: string };
@@ -2552,13 +2550,6 @@ function summarizeFixReports(reports: FixAccountReport[]): {
 	return { healthy, disabled, warnings, skipped };
 }
 
-interface VerifyFlaggedReport {
-	index: number;
-	label: string;
-	outcome: "restored" | "healthy-flagged" | "still-flagged" | "restore-skipped";
-	message: string;
-}
-
 function createEmptyAccountStorage(): AccountStorageV3 {
 	const activeIndexByFamily: Partial<Record<ModelFamily, number>> = {};
 	for (const family of MODEL_FAMILIES) {
@@ -2718,300 +2709,28 @@ function upsertRecoveredFlaggedAccount(
 }
 
 async function runVerifyFlagged(args: string[]): Promise<number> {
-	if (args.includes("--help") || args.includes("-h")) {
-		printVerifyFlaggedUsage();
-		return 0;
-	}
-
-	const parsedArgs = parseVerifyFlaggedArgs(args);
-	if (!parsedArgs.ok) {
-		console.error(parsedArgs.message);
-		printVerifyFlaggedUsage();
-		return 1;
-	}
-	const options = parsedArgs.options;
-
-	setStoragePath(null);
-	const flaggedStorage = await loadFlaggedAccounts();
-	if (flaggedStorage.accounts.length === 0) {
-		if (options.json) {
-			console.log(
-				JSON.stringify(
-					{
-						command: "verify-flagged",
-						total: 0,
-						restored: 0,
-						healthyFlagged: 0,
-						stillFlagged: 0,
-						changed: false,
-						dryRun: options.dryRun,
-						restore: options.restore,
-						reports: [] as VerifyFlaggedReport[],
-					},
-					null,
-					2,
-				),
-			);
-			return 0;
-		}
-		console.log("No flagged accounts to check.");
-		return 0;
-	}
-
-	let storageChanged = false;
-	let flaggedChanged = false;
-	const reports: VerifyFlaggedReport[] = [];
-	const nextFlaggedAccounts: FlaggedAccountMetadataV1[] = [];
-	const now = Date.now();
-	const refreshChecks: Array<{
-		index: number;
-		flagged: FlaggedAccountMetadataV1;
-		label: string;
-		result: Awaited<ReturnType<typeof queuedRefresh>>;
-	}> = [];
-
-	for (let i = 0; i < flaggedStorage.accounts.length; i += 1) {
-		const flagged = flaggedStorage.accounts[i];
-		if (!flagged) continue;
-		const label = formatAccountLabel(flagged, i);
-		refreshChecks.push({
-			index: i,
-			flagged,
-			label,
-			result: await queuedRefresh(flagged.refreshToken),
-		});
-	}
-
-	const applyRefreshChecks = (storage: AccountStorageV3): void => {
-		for (const check of refreshChecks) {
-			const { index: i, flagged, label, result } = check;
-			if (result.type === "success") {
-				if (!options.restore) {
-					const tokenAccountId = extractAccountId(result.access);
-					const nextIdentity = resolveStoredAccountIdentity(
-						flagged.accountId,
-						flagged.accountIdSource,
-						tokenAccountId,
-					);
-					const nextFlagged: FlaggedAccountMetadataV1 = {
-						...flagged,
-						refreshToken: result.refresh,
-						accessToken: result.access,
-						expiresAt: result.expires,
-						accountId: nextIdentity.accountId,
-						accountIdSource: nextIdentity.accountIdSource,
-						email:
-							sanitizeEmail(
-								extractAccountEmail(result.access, result.idToken),
-							) ?? flagged.email,
-						lastUsed: now,
-						lastError: undefined,
-					};
-					nextFlaggedAccounts.push(nextFlagged);
-					if (JSON.stringify(nextFlagged) !== JSON.stringify(flagged)) {
-						flaggedChanged = true;
-					}
-					reports.push({
-						index: i,
-						label,
-						outcome: "healthy-flagged",
-						message:
-							"session is healthy (left in flagged list due to --no-restore)",
-					});
-					continue;
-				}
-
-				const upsertResult = upsertRecoveredFlaggedAccount(
-					storage,
-					flagged,
-					result,
-					now,
-				);
-				if (upsertResult.restored) {
-					storageChanged = storageChanged || upsertResult.changed;
-					flaggedChanged = true;
-					reports.push({
-						index: i,
-						label,
-						outcome: "restored",
-						message: upsertResult.message,
-					});
-					continue;
-				}
-
-				const tokenAccountId = extractAccountId(result.access);
-				const nextIdentity = resolveStoredAccountIdentity(
-					flagged.accountId,
-					flagged.accountIdSource,
-					tokenAccountId,
-				);
-				const updatedFlagged: FlaggedAccountMetadataV1 = {
-					...flagged,
-					refreshToken: result.refresh,
-					accessToken: result.access,
-					expiresAt: result.expires,
-					accountId: nextIdentity.accountId,
-					accountIdSource: nextIdentity.accountIdSource,
-					email:
-						sanitizeEmail(extractAccountEmail(result.access, result.idToken)) ??
-						flagged.email,
-					lastUsed: now,
-					lastError: upsertResult.message,
-				};
-				nextFlaggedAccounts.push(updatedFlagged);
-				if (JSON.stringify(updatedFlagged) !== JSON.stringify(flagged)) {
-					flaggedChanged = true;
-				}
-				reports.push({
-					index: i,
-					label,
-					outcome: "restore-skipped",
-					message: upsertResult.message,
-				});
-				continue;
-			}
-
-			const detail = normalizeFailureDetail(result.message, result.reason);
-			const failedFlagged: FlaggedAccountMetadataV1 = {
-				...flagged,
-				lastError: detail,
-			};
-			nextFlaggedAccounts.push(failedFlagged);
-			if ((flagged.lastError ?? "") !== detail) {
-				flaggedChanged = true;
-			}
-			reports.push({
-				index: i,
-				label,
-				outcome: "still-flagged",
-				message: detail,
-			});
-		}
-	};
-
-	if (options.restore) {
-		if (options.dryRun) {
-			applyRefreshChecks((await loadAccounts()) ?? createEmptyAccountStorage());
-		} else {
-			await withAccountAndFlaggedStorageTransaction(
-				async (loadedStorage, persist) => {
-					const nextStorage = loadedStorage
-						? structuredClone(loadedStorage)
-						: createEmptyAccountStorage();
-					applyRefreshChecks(nextStorage);
-					if (!storageChanged) {
-						return;
-					}
-					normalizeDoctorIndexes(nextStorage);
-					await persist(nextStorage, {
-						version: 1,
-						accounts: nextFlaggedAccounts,
-					});
-				},
-			);
-		}
-	} else {
-		applyRefreshChecks(createEmptyAccountStorage());
-	}
-
-	const remainingFlagged = nextFlaggedAccounts.length;
-	const restored = reports.filter(
-		(report) => report.outcome === "restored",
-	).length;
-	const healthyFlagged = reports.filter(
-		(report) => report.outcome === "healthy-flagged",
-	).length;
-	const stillFlagged = reports.filter(
-		(report) => report.outcome === "still-flagged",
-	).length;
-	const changed = storageChanged || flaggedChanged;
-
-	if (
-		!options.dryRun &&
-		flaggedChanged &&
-		(!options.restore || !storageChanged)
-	) {
-		await saveFlaggedAccounts({
-			version: 1,
-			accounts: nextFlaggedAccounts,
-		});
-	}
-
-	if (options.json) {
-		console.log(
-			JSON.stringify(
-				{
-					command: "verify-flagged",
-					total: flaggedStorage.accounts.length,
-					restored,
-					healthyFlagged,
-					stillFlagged,
-					remainingFlagged,
-					changed,
-					dryRun: options.dryRun,
-					restore: options.restore,
-					reports,
-				},
-				null,
-				2,
-			),
-		);
-		return 0;
-	}
-
-	console.log(
-		stylePromptText(
-			`Checking ${flaggedStorage.accounts.length} flagged account(s)...`,
-			"accent",
-		),
-	);
-	for (const report of reports) {
-		const tone =
-			report.outcome === "restored"
-				? "success"
-				: report.outcome === "healthy-flagged"
-					? "warning"
-					: report.outcome === "restore-skipped"
-						? "warning"
-						: "danger";
-		const marker =
-			report.outcome === "restored"
-				? "✓"
-				: report.outcome === "healthy-flagged"
-					? "!"
-					: report.outcome === "restore-skipped"
-						? "!"
-						: "✗";
-		console.log(
-			`${stylePromptText(marker, tone)} ${stylePromptText(`${report.index + 1}. ${report.label}`, "accent")} ${stylePromptText("|", "muted")} ${styleAccountDetailText(report.message, tone)}`,
-		);
-	}
-	console.log("");
-	console.log(
-		formatResultSummary([
-			{
-				text: `${restored} restored`,
-				tone: restored > 0 ? "success" : "muted",
-			},
-			{
-				text: `${healthyFlagged} healthy (kept flagged)`,
-				tone: healthyFlagged > 0 ? "warning" : "muted",
-			},
-			{
-				text: `${stillFlagged} still flagged`,
-				tone: stillFlagged > 0 ? "danger" : "muted",
-			},
-		]),
-	);
-	if (options.dryRun) {
-		console.log(
-			stylePromptText("Preview only: no changes were saved.", "warning"),
-		);
-	} else if (!changed) {
-		console.log(stylePromptText("No storage changes were needed.", "muted"));
-	}
-
-	return 0;
+	return runVerifyFlaggedCommand(args, {
+		setStoragePath,
+		loadFlaggedAccounts,
+		loadAccounts,
+		queuedRefresh,
+		parseVerifyFlaggedArgs,
+		printVerifyFlaggedUsage,
+		createEmptyAccountStorage,
+		upsertRecoveredFlaggedAccount,
+		resolveStoredAccountIdentity,
+		extractAccountId,
+		extractAccountEmail,
+		sanitizeEmail,
+		normalizeFailureDetail,
+		withAccountAndFlaggedStorageTransaction,
+		normalizeDoctorIndexes,
+		saveFlaggedAccounts,
+		formatAccountLabel,
+		stylePromptText,
+		styleAccountDetailText,
+		formatResultSummary,
+	});
 }
 
 async function runFix(args: string[]): Promise<number> {
