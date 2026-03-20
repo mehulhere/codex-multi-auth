@@ -1541,7 +1541,9 @@ while (attempted.size < Math.max(1, accountCount)) {
 											if (!hadAccountId && tokenAccountId && accountId === tokenAccountId) {
 												account.accountIdSource = storedAccountIdSource ?? "token";
 											}
-											account.email = resolvedEmail;
+											if (resolvedEmail) {
+												account.email = resolvedEmail;
+											}
 
 											if (
 												accountCount > 1 &&
@@ -1600,6 +1602,7 @@ while (attempted.size < Math.max(1, accountCount)) {
 
 							let sameAccountRetryCount = 0;
 							let successAccountForResponse = account;
+							let successEntitlementAccountKey = entitlementAccountKey;
 							while (true) {
 								let response: Response;
 								const fetchStart = performance.now();
@@ -2232,6 +2235,7 @@ while (attempted.size < Math.max(1, accountCount)) {
 											}
 
 											successAccountForResponse = fallbackAccount;
+											successEntitlementAccountKey = fallbackEntitlementAccountKey;
 											runtimeMetrics.streamFailoverRecoveries += 1;
 											if (fallbackAccount.index !== account.index) {
 												runtimeMetrics.streamFailoverCrossAccountRecoveries += 1;
@@ -2341,10 +2345,7 @@ while (attempted.size < Math.max(1, accountCount)) {
 						if (successAccountForResponse.index !== account.index) {
 							accountManager.markSwitched(successAccountForResponse, "rotation", modelFamily);
 						}
-						const successAccountKey =
-							successAccountForResponse.index === account.index
-								? entitlementAccountKey
-								: resolveEntitlementAccountKey(successAccountForResponse);
+						const successAccountKey = successEntitlementAccountKey;
 						accountManager.recordSuccess(successAccountForResponse, modelFamily, model);
 						capabilityPolicyStore.recordSuccess(
 							successAccountKey,

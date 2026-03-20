@@ -140,7 +140,7 @@ vi.mock("../lib/accounts.js", async () => {
 					source as never,
 					tokenAccountId,
 				),
-				email: tokenEmail ?? sanitizedStoredEmail ?? "user@example.com",
+				email: tokenEmail ?? sanitizedStoredEmail,
 				tokenAccountId,
 			};
 		},
