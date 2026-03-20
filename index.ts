@@ -117,6 +117,7 @@ import {
         parseRateLimitReason,
 	lookupCodexCliTokensByEmail,
 	isCodexCliSyncEnabled,
+	type Workspace,
 } from "./lib/accounts.js";
 import {
 	getStoragePath,
@@ -149,6 +150,7 @@ import {
         rewriteUrlForCodex,
 	shouldRefreshToken,
 	transformRequestForCodex,
+	isWorkspaceDisabledError,
 } from "./lib/request/fetch-helpers.js";
 import { applyFastSessionDefaults } from "./lib/request/request-transformer.js";
 import {
@@ -377,6 +379,7 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
                 accountIdOverride?: string;
                 accountIdSource?: AccountIdSource;
                 accountLabel?: string;
+		workspaces?: Workspace[];
         };
 
         const resolveAccountSelection = (
@@ -399,6 +402,14 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
                         return tokens;
                 }
 
+                // Convert candidates to workspaces
+                const workspaces: Workspace[] = candidates.map((c) => ({
+                        id: c.accountId,
+                        name: c.label,
+                        enabled: true,
+                        isDefault: c.isDefault,
+                }));
+
                 if (candidates.length === 1) {
 				const [candidate] = candidates;
 				if (candidate) {
@@ -407,6 +418,7 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 						accountIdOverride: candidate.accountId,
 						accountIdSource: candidate.source,
 						accountLabel: candidate.label,
+						workspaces,
 					};
 				}
 			}
@@ -421,6 +433,7 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
                         accountIdOverride: choice.accountId,
                         accountIdSource: choice.source ?? "token",
                         accountLabel: choice.label,
+			workspaces,
                 };
         };
 
@@ -546,6 +559,23 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 						});
 
 						if (existingIndex === undefined) {
+							const initialWorkspaceIndex =
+								result.workspaces && result.workspaces.length > 0
+									? (() => {
+											if (accountId) {
+												const matchingWorkspaceIndex = result.workspaces.findIndex(
+													(workspace) => workspace.id === accountId,
+												);
+												if (matchingWorkspaceIndex >= 0) {
+													return matchingWorkspaceIndex;
+												}
+											}
+											const firstEnabledWorkspaceIndex = result.workspaces.findIndex(
+												(workspace) => workspace.enabled !== false,
+											);
+											return firstEnabledWorkspaceIndex >= 0 ? firstEnabledWorkspaceIndex : 0;
+										})()
+									: undefined;
 							accounts.push({
 								accountId,
 								accountIdSource,
@@ -556,6 +586,8 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 								expiresAt: result.expires,
 								addedAt: now,
 								lastUsed: now,
+								workspaces: result.workspaces,
+								currentWorkspaceIndex: initialWorkspaceIndex,
 							});
 							continue;
 						}
@@ -568,6 +600,48 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 						const nextAccountIdSource =
 							accountId ? accountIdSource ?? existing.accountIdSource : existing.accountIdSource;
 						const nextAccountLabel = accountLabel ?? existing.accountLabel;
+						// Preserve tracked workspace state when auth refreshes do not return workspace metadata.
+						const mergedWorkspaces = result.workspaces
+							? result.workspaces.map((newWs) => {
+									const existingWs = existing.workspaces?.find((w) => w.id === newWs.id);
+									return existingWs
+										? {
+												...newWs,
+												enabled: existingWs.enabled,
+												disabledAt: existingWs.disabledAt,
+											}
+										: newWs;
+								})
+							: existing.workspaces;
+						const currentWorkspaceId =
+							existing.workspaces?.[
+								typeof existing.currentWorkspaceIndex === "number"
+									? existing.currentWorkspaceIndex
+									: 0
+							]?.id;
+						const nextCurrentWorkspaceIndex =
+							mergedWorkspaces && mergedWorkspaces.length > 0
+								? (() => {
+										if (currentWorkspaceId) {
+											const matchingWorkspaceIndex = mergedWorkspaces.findIndex(
+												(workspace) => workspace.id === currentWorkspaceId,
+											);
+											if (matchingWorkspaceIndex >= 0) {
+												return matchingWorkspaceIndex;
+											}
+										}
+										const defaultWorkspaceIndex = mergedWorkspaces.findIndex(
+											(workspace) => workspace.isDefault === true,
+										);
+										if (defaultWorkspaceIndex >= 0) {
+											return defaultWorkspaceIndex;
+										}
+										const firstEnabledWorkspaceIndex = mergedWorkspaces.findIndex(
+											(workspace) => workspace.enabled !== false,
+										);
+										return firstEnabledWorkspaceIndex >= 0 ? firstEnabledWorkspaceIndex : 0;
+									})()
+								: existing.currentWorkspaceIndex;
 						accounts[existingIndex] = {
 							...existing,
 							accountId: nextAccountId,
@@ -578,6 +652,8 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 							accessToken: result.access,
 							expiresAt: result.expires,
 							lastUsed: now,
+							workspaces: mergedWorkspaces,
+							currentWorkspaceIndex: nextCurrentWorkspaceIndex,
 						};
 					}
 
@@ -1404,7 +1480,7 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 											);
 										}
 
-while (attempted.size < Math.max(1, accountCount)) {
+accountAttemptLoop: while (attempted.size < Math.max(1, accountCount)) {
 				let account = null;
 				if (
 					!usedPreferredSessionAccount &&
@@ -1497,8 +1573,11 @@ while (attempted.size < Math.max(1, accountCount)) {
 				continue;
 					}
 
-				const storedAccountId = account.accountId;
-				const storedAccountIdSource = account.accountIdSource;
+				const currentWorkspace = accountManager.getCurrentWorkspace(account);
+				const storedAccountId = currentWorkspace?.id ?? account.accountId;
+				const storedAccountIdSource = currentWorkspace
+					? "manual"
+					: account.accountIdSource;
 				const storedEmail = account.email;
 				const hadAccountId = !!storedAccountId;
 					const runtimeIdentity = resolveRuntimeRequestIdentity({
@@ -1899,19 +1978,99 @@ while (attempted.size < Math.max(1, accountCount)) {
 					blockedModel,
 				);
 			}
-			if (errorResponse.status === 403 && !unsupportedModelInfo.isUnsupported) {
-				entitlementCache.markBlocked(
-					entitlementAccountKey,
-					model ?? modelFamily,
-					"plan-entitlement",
-				);
-				capabilityPolicyStore.recordFailure(
-					entitlementAccountKey,
-					capabilityModelKey,
-				);
-			}
+		const workspaceErrorCode =
+			(errorBody as { error?: { code?: string } } | undefined)?.error?.code ?? "";
+		const workspaceErrorMessage =
+			(errorBody as { error?: { message?: string } } | undefined)?.error?.message ?? "";
+		const isDisabledWorkspaceError =
+			isWorkspaceDisabledError(
+				errorResponse.status,
+				workspaceErrorCode,
+				workspaceErrorMessage,
+			);
 
-			if (recoveryHook && errorBody && isRecoverableError(errorBody)) {
+		// Handle workspace disabled/expired errors by rotating to the next workspace
+		// within the same account before falling back to another account.
+		if (isDisabledWorkspaceError) {
+			runtimeMetrics.failedRequests++;
+			runtimeMetrics.lastError = `Workspace disabled for account ${account.index + 1}`;
+
+			if (!account.workspaces || account.workspaces.length === 0) {
+				logWarn(
+					`Workspace disabled/expired for account ${account.index + 1} without tracked workspaces. Leaving account enabled.`,
+					{ errorCode: workspaceErrorCode },
+				);
+				if (hasRemainingAccounts) {
+					continue accountAttemptLoop;
+				}
+				return errorResponse;
+			} else {
+				const currentWorkspace = accountManager.getCurrentWorkspace(account);
+				const workspaceName = currentWorkspace?.name ?? currentWorkspace?.id ?? "unknown";
+
+				logWarn(
+					`Workspace disabled/expired for account ${account.index + 1} - workspace: ${workspaceName}. Rotating to next workspace.`,
+					{ errorCode: workspaceErrorCode },
+				);
+
+				const disabledWorkspace = currentWorkspace
+					? accountManager.disableCurrentWorkspace(account, currentWorkspace.id)
+					: false;
+				let nextWorkspace = disabledWorkspace
+					? accountManager.rotateToNextWorkspace(account)
+					: accountManager.getCurrentWorkspace(account);
+				if (!disabledWorkspace && (!nextWorkspace || nextWorkspace.enabled === false)) {
+					nextWorkspace = accountManager.rotateToNextWorkspace(account);
+				}
+
+				if (nextWorkspace) {
+					accountManager.saveToDiskDebounced();
+
+					const newWorkspaceName = nextWorkspace.name ?? nextWorkspace.id;
+					await showToast(
+						`Workspace ${workspaceName} disabled. Switched to ${newWorkspaceName}.`,
+						"warning",
+						{ duration: toastDurationMs },
+					);
+
+					logInfo(`Rotated to workspace ${newWorkspaceName} for account ${account.index + 1}`);
+
+					// Allow the same account to be selected again with fresh request state.
+					attempted.delete(account.index);
+					continue accountAttemptLoop;
+				}
+
+				logWarn(`All workspaces disabled for account ${account.index + 1}. Disabling account.`);
+
+				accountManager.setAccountEnabled(account.index, false);
+				accountManager.saveToDiskDebounced();
+
+				await showToast(
+					`All workspaces disabled for account ${account.index + 1}. Switching to another account.`,
+					"warning",
+					{ duration: toastDurationMs },
+				);
+
+				// Forget session affinity and continue the outer loop so another
+				// enabled account can service the request.
+				sessionAffinityStore?.forgetSession(sessionAffinityKey);
+				continue accountAttemptLoop;
+			}
+		}
+
+		if (errorResponse.status === 403 && !unsupportedModelInfo.isUnsupported && !isDisabledWorkspaceError) {
+			entitlementCache.markBlocked(
+				entitlementAccountKey,
+				model ?? modelFamily,
+				"plan-entitlement",
+			);
+			capabilityPolicyStore.recordFailure(
+				entitlementAccountKey,
+				capabilityModelKey,
+			);
+		}
+
+		if (recoveryHook && errorBody && isRecoverableError(errorBody)) {
 					const errorType = detectErrorType(errorBody);
 					const toastContent = getRecoveryToastContent(errorType);
 					await showToast(

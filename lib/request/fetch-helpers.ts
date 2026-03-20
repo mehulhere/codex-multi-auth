@@ -267,6 +267,64 @@ export function isEntitlementError(code: string, bodyText: string): boolean {
 }
 
 /**
+ * Detects whether an error indicates the workspace/account has been disabled or expired.
+ *
+ * Workspace disabled errors signal that the current workspace is no longer accessible
+ * (expired, disabled, or removed) and the plugin should automatically switch to another account.
+ *
+ * @param status - HTTP status code
+ * @param code - The error code string returned by the service
+ * @param bodyText - The response body text to inspect for workspace-related phrases
+ * @returns `true` if the error indicates a disabled/expired workspace
+ */
+export function isWorkspaceDisabledError(
+        status: number,
+        code: unknown,
+        bodyText: string,
+): boolean {
+        if (status !== 403) {
+                return false;
+        }
+
+        const normalizedCode = typeof code === "string" ? code.trim().toLowerCase() : "";
+        const haystack = `${normalizedCode} ${bodyText}`.toLowerCase();
+
+		const disabledPatterns = [
+				/workspace.*(?:disabled|expired|deactivated|terminated)/i,
+				/account\s+(?:has\s+been|is)\s+(?:disabled|expired|deactivated|terminated|closed)/i,
+				/(?:workspace|org(?:anization)?).*no longer.*(?:active|available|valid)/i,
+				/(?:workspace|org(?:anization)?).*has been.*(?:disabled|expired|closed)/i,
+				/workspace.*(?:access|subscription).*expired/i,
+				/org(?:anization)?.*(?:disabled|expired|inactive)/i,
+		];
+
+        for (const pattern of disabledPatterns) {
+                if (pattern.test(haystack)) {
+                        return true;
+                }
+        }
+
+        const workspaceErrorCodes = new Set([
+                "workspace_disabled",
+                "workspace_expired",
+                "workspace_terminated",
+                "account_disabled",
+                "account_expired",
+                "organization_disabled",
+        ]);
+        if (workspaceErrorCodes.has(normalizedCode)) {
+                return true;
+        }
+
+        const normalizedTokens = normalizedCode
+                .split(/[^a-z0-9_]+/i)
+                .map((token) => token.trim())
+                .filter((token) => token.length > 0);
+
+        return normalizedTokens.some((token) => workspaceErrorCodes.has(token));
+}
+
+/**
  * Constructs a standardized 403 entitlement error Response indicating the user lacks access to Codex models.
  *
  * This function returns a JSON Response with an `error` payload containing a user-facing message, a

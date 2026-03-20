@@ -2,6 +2,46 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
 process.env.CODEX_MULTI_AUTH_EXPOSE_ADMIN_TOOLS = "1";
 
+const accountManagerState = vi.hoisted(() => ({
+	accounts: [] as Array<Record<string, unknown>>,
+	accountSelections: [] as Array<Record<string, unknown> | null>,
+	saveToDiskDebouncedCalls: 0,
+	disableCurrentWorkspaceCalls: 0,
+	rotateToNextWorkspaceCalls: 0,
+	setAccountEnabledCalls: [] as Array<{ index: number; enabled: boolean }>,
+}));
+
+const recoveryState = vi.hoisted(() => ({
+	forceRecoverable: false,
+	isRecoverableErrorCalls: 0,
+}));
+
+function createMockAccount(
+	overrides: Partial<Record<string, unknown>> = {},
+): Record<string, unknown> {
+	return {
+		index: 0,
+		accountId: "account-1",
+		email: "user@example.com",
+		refreshToken: "refresh-token",
+		access: "access-token",
+		expires: Date.now() + 60_000,
+		addedAt: Date.now(),
+		lastUsed: Date.now(),
+		rateLimitResetTimes: {},
+		...overrides,
+	};
+}
+
+function resetAccountManagerState(): void {
+	accountManagerState.accounts = [createMockAccount()];
+	accountManagerState.accountSelections = [null, accountManagerState.accounts[0] ?? null];
+	accountManagerState.saveToDiskDebouncedCalls = 0;
+	accountManagerState.disableCurrentWorkspaceCalls = 0;
+	accountManagerState.rotateToNextWorkspaceCalls = 0;
+	accountManagerState.setAccountEnabledCalls = [];
+}
+
 vi.mock("@codex-ai/plugin/tool", () => {
 	const makeSchema = () => ({
 		optional: () => makeSchema(),
@@ -25,11 +65,31 @@ vi.mock("../lib/request/fetch-helpers.js", () => ({
 	transformRequestForCodex: async (init: any) => ({ updatedInit: init, body: { model: "gpt-5.1" } }),
 	shouldRefreshToken: () => false,
 	refreshAndUpdateToken: async (auth: any) => auth,
-	createCodexHeaders: () => new Headers(),
-	handleErrorResponse: async (response: Response) => ({ response }),
+	createCodexHeaders: (_requestInit: any, accountId?: string) =>
+		new Headers(accountId ? { "x-account-id": accountId } : {}),
+	handleErrorResponse: async (response: Response) => {
+		const rawBody = await response.text();
+		let errorBody: unknown;
+		try {
+			errorBody = rawBody ? JSON.parse(rawBody) : undefined;
+		} catch {
+			errorBody = undefined;
+		}
+		return { response, rateLimit: false, errorBody };
+	},
+	getUnsupportedCodexModelInfo: () => ({
+		isUnsupported: false,
+		unsupportedModel: undefined,
+	}),
 	resolveUnsupportedCodexFallbackModel: () => undefined,
 	shouldFallbackToGpt52OnUnsupportedGpt53: () => false,
 	handleSuccessResponse: async (response: Response) => response,
+	isWorkspaceDisabledError: (status: number, code: string, bodyText: string) =>
+		status === 403 &&
+		(code.toLowerCase().includes("workspace_disabled") ||
+			code.toLowerCase().includes("workspace_expired") ||
+			bodyText.toLowerCase().includes("workspace disabled") ||
+			bodyText.toLowerCase().includes("workspace expired")),
 }));
 
 vi.mock("../lib/request/request-transformer.js", () => ({
@@ -38,25 +98,33 @@ vi.mock("../lib/request/request-transformer.js", () => ({
 
 vi.mock("../lib/accounts.js", async () => {
 	const tokenUtils = await vi.importActual("../lib/auth/token-utils.js");
+	const tokenUtilsModule = tokenUtils as typeof import("../lib/auth/token-utils.js");
 	class AccountManager {
-		private calls = 0;
-
 		static async loadFromDisk() {
 			return new AccountManager();
 		}
 
 		getAccountCount() {
-			return 1;
+			return accountManagerState.accounts.length;
 		}
 
 		getCurrentOrNextForFamily() {
-			this.calls += 1;
-			if (this.calls === 1) return null;
-			return { index: 0, accountId: "account-1", email: "user@example.com" };
+			if (accountManagerState.accountSelections.length > 0) {
+				return accountManagerState.accountSelections.shift() ?? null;
+			}
+			return accountManagerState.accounts[0] ?? null;
 		}
 
 		getCurrentOrNextForFamilyHybrid() {
 			return this.getCurrentOrNextForFamily();
+		}
+
+		getAccountByIndex(index: number) {
+			return (
+				accountManagerState.accounts.find(
+					(account) => Number(account.index) === index,
+				) ?? null
+			);
 		}
 
 		recordSuccess() {}
@@ -78,9 +146,11 @@ vi.mock("../lib/accounts.js", async () => {
 		return true;
 	}
 
-	saveToDiskDebounced() {}
+		saveToDiskDebounced() {
+			accountManagerState.saveToDiskDebouncedCalls += 1;
+		}
 
-	updateFromAuth() {}
+		updateFromAuth() {}
 
 		async saveToDisk() {}
 
@@ -109,6 +179,75 @@ vi.mock("../lib/accounts.js", async () => {
 		}
 
 		markToastShown() {}
+
+		clearAuthFailures() {}
+
+		setAccountEnabled(index: number, enabled: boolean) {
+			accountManagerState.setAccountEnabledCalls.push({ index, enabled });
+			const account = this.getAccountByIndex(index);
+			if (account) {
+				account.enabled = enabled;
+			}
+			return account;
+		}
+
+		getCurrentWorkspace(account: Record<string, any>) {
+			const workspaces = account.workspaces as Array<Record<string, any>> | undefined;
+			if (!workspaces || workspaces.length === 0) {
+				return null;
+			}
+			const currentWorkspaceIndex =
+				typeof account.currentWorkspaceIndex === "number"
+					? account.currentWorkspaceIndex
+					: 0;
+			return workspaces[currentWorkspaceIndex] ?? null;
+		}
+
+		disableCurrentWorkspace(account: Record<string, any>, expectedWorkspaceId?: string) {
+			accountManagerState.disableCurrentWorkspaceCalls += 1;
+			const workspace = this.getCurrentWorkspace(account);
+			if (!workspace) {
+				return false;
+			}
+			if (expectedWorkspaceId && workspace.id !== expectedWorkspaceId) {
+				return false;
+			}
+			if (workspace.enabled === false) {
+				return false;
+			}
+			workspace.enabled = false;
+			workspace.disabledAt = 123;
+			return true;
+		}
+
+		rotateToNextWorkspace(account: Record<string, any>) {
+			accountManagerState.rotateToNextWorkspaceCalls += 1;
+			const workspaces = account.workspaces as Array<Record<string, any>> | undefined;
+			if (!workspaces || workspaces.length === 0) {
+				return null;
+			}
+			const currentWorkspaceIndex =
+				typeof account.currentWorkspaceIndex === "number"
+					? account.currentWorkspaceIndex
+					: 0;
+			for (let offset = 1; offset < workspaces.length; offset += 1) {
+				const nextIndex = (currentWorkspaceIndex + offset) % workspaces.length;
+				const workspace = workspaces[nextIndex];
+				if (workspace && workspace.enabled !== false) {
+					account.currentWorkspaceIndex = nextIndex;
+					return workspace;
+				}
+			}
+			return null;
+		}
+
+		hasEnabledWorkspaces(account: Record<string, any>) {
+			const workspaces = account.workspaces as Array<Record<string, any>> | undefined;
+			if (!workspaces || workspaces.length === 0) {
+				return true;
+			}
+			return workspaces.some((workspace) => workspace.enabled !== false);
+		}
 	}
 
 	return {
@@ -129,7 +268,6 @@ vi.mock("../lib/accounts.js", async () => {
 			accessToken?: string;
 			idToken?: string;
 		}) => {
-			const tokenUtilsModule = tokenUtils as typeof import("../lib/auth/token-utils.js");
 			const tokenAccountId = accessToken ? "account-1" : undefined;
 			const tokenEmail = tokenUtilsModule.sanitizeEmail(
 				tokenUtilsModule.extractAccountEmail(accessToken, idToken),
@@ -146,7 +284,7 @@ vi.mock("../lib/accounts.js", async () => {
 			};
 		},
 		resolveRequestAccountId: (
-			tokenUtils as typeof import("../lib/auth/token-utils.js")
+			tokenUtilsModule
 		).resolveRequestAccountId,
 		formatAccountLabel: (_account: any, index: number) => `Account ${index + 1}`,
 		formatCooldown: (ms: number) => `${ms}ms`,
@@ -166,6 +304,19 @@ vi.mock("../lib/storage.js", () => ({
 	setStorageBackupEnabled: () => {},
 	exportAccounts: async () => {},
 	importAccounts: async () => ({ imported: 0, total: 0 }),
+}));
+
+vi.mock("../lib/recovery.js", () => ({
+	createSessionRecoveryHook: () => null,
+	isRecoverableError: () => {
+		recoveryState.isRecoverableErrorCalls += 1;
+		return recoveryState.forceRecoverable;
+	},
+	detectErrorType: () => "tool_use_failed",
+	getRecoveryToastContent: () => ({
+		title: "Recoverable error",
+		message: "retry",
+	}),
 }));
 
 vi.mock("../lib/auto-update-checker.js", () => ({
@@ -188,6 +339,11 @@ describe("OpenAIAuthPlugin rate-limit retry", () => {
 	let originalFetch: any;
 
 	beforeEach(() => {
+		resetAccountManagerState();
+		recoveryState.forceRecoverable = false;
+		recoveryState.isRecoverableErrorCalls = 0;
+		vi.resetModules();
+
 		for (const key of envKeys) originalEnv[key] = process.env[key];
 
 		process.env.CODEX_AUTH_RETRY_ALL_RATE_LIMITED = "1";
@@ -245,6 +401,249 @@ describe("OpenAIAuthPlugin rate-limit retry", () => {
 		const response = await fetchPromise;
 		expect(globalThis.fetch).toHaveBeenCalledTimes(1);
 		expect(response.status).toBe(200);
+	});
+
+	it("rebuilds request headers after rotating to the next workspace", async () => {
+		const account = createMockAccount({
+			workspaces: [
+				{ id: "workspace-1", name: "Workspace 1", enabled: true },
+				{ id: "workspace-2", name: "Workspace 2", enabled: true },
+			],
+			currentWorkspaceIndex: 0,
+		});
+		accountManagerState.accounts = [account];
+		accountManagerState.accountSelections = [account, account];
+
+		const fetchMock = vi
+			.fn()
+			.mockResolvedValueOnce(
+				new Response(
+					JSON.stringify({
+						error: {
+							code: "workspace_disabled",
+							message: "Workspace expired",
+						},
+					}),
+					{
+						status: 403,
+						headers: { "content-type": "application/json" },
+					},
+				),
+			)
+			.mockResolvedValueOnce(new Response("ok", { status: 200 }));
+		globalThis.fetch = fetchMock as any;
+
+		const { OpenAIAuthPlugin } = await import("../index.js");
+		const client = {
+			tui: { showToast: vi.fn() },
+			auth: { set: vi.fn() },
+		} as any;
+		const plugin = await OpenAIAuthPlugin({ client });
+
+		const getAuth = async () => ({
+			type: "oauth" as const,
+			access: "a",
+			refresh: "r",
+			expires: Date.now() + 60_000,
+			multiAccount: true,
+		});
+
+		const sdk = (await plugin.auth.loader(getAuth, { options: {}, models: {} })) as any;
+		const response = await sdk.fetch("https://example.com", {});
+
+		expect(response.status).toBe(200);
+		expect(fetchMock).toHaveBeenCalledTimes(2);
+		expect(accountManagerState.disableCurrentWorkspaceCalls).toBe(1);
+		expect(accountManagerState.rotateToNextWorkspaceCalls).toBe(1);
+		expect(accountManagerState.saveToDiskDebouncedCalls).toBeGreaterThanOrEqual(1);
+		expect((account.workspaces as Array<Record<string, unknown>>)[0]?.enabled).toBe(false);
+
+		const firstHeaders = fetchMock.mock.calls[0]?.[1]?.headers as Headers;
+		const secondHeaders = fetchMock.mock.calls[1]?.[1]?.headers as Headers;
+		expect(firstHeaders.get("x-account-id")).toBe("workspace-1");
+		expect(secondHeaders.get("x-account-id")).toBe("workspace-2");
+	});
+
+	it("disables an exhausted workspace account and retries with another enabled account", async () => {
+		const exhaustedAccount = createMockAccount({
+			index: 0,
+			accountId: "account-1",
+			workspaces: [
+				{ id: "workspace-1", name: "Workspace 1", enabled: true },
+			],
+			currentWorkspaceIndex: 0,
+		});
+		const fallbackAccount = createMockAccount({
+			index: 1,
+			accountId: "account-2",
+			email: "fallback@example.com",
+			refreshToken: "refresh-token-2",
+		});
+		accountManagerState.accounts = [exhaustedAccount, fallbackAccount];
+		accountManagerState.accountSelections = [exhaustedAccount, fallbackAccount];
+
+		const fetchMock = vi
+			.fn()
+			.mockResolvedValueOnce(
+				new Response(
+					JSON.stringify({
+						error: {
+							code: "workspace_disabled",
+							message: "Workspace expired",
+						},
+					}),
+					{
+						status: 403,
+						headers: { "content-type": "application/json" },
+					},
+				),
+			)
+			.mockResolvedValueOnce(new Response("ok", { status: 200 }));
+		globalThis.fetch = fetchMock as any;
+
+		const { OpenAIAuthPlugin } = await import("../index.js");
+		const client = {
+			tui: { showToast: vi.fn() },
+			auth: { set: vi.fn() },
+		} as any;
+		const plugin = await OpenAIAuthPlugin({ client });
+
+		const getAuth = async () => ({
+			type: "oauth" as const,
+			access: "a",
+			refresh: "r",
+			expires: Date.now() + 60_000,
+			multiAccount: true,
+		});
+
+		const sdk = (await plugin.auth.loader(getAuth, { options: {}, models: {} })) as any;
+		const response = await sdk.fetch("https://example.com", {});
+
+		expect(response.status).toBe(200);
+		expect(fetchMock).toHaveBeenCalledTimes(2);
+		expect(accountManagerState.disableCurrentWorkspaceCalls).toBe(1);
+		expect(accountManagerState.rotateToNextWorkspaceCalls).toBe(1);
+		expect(accountManagerState.setAccountEnabledCalls).toContainEqual({
+			index: 0,
+			enabled: false,
+		});
+		expect(accountManagerState.saveToDiskDebouncedCalls).toBeGreaterThanOrEqual(1);
+		expect(exhaustedAccount.enabled).toBe(false);
+
+		const firstHeaders = fetchMock.mock.calls[0]?.[1]?.headers as Headers;
+		const secondHeaders = fetchMock.mock.calls[1]?.[1]?.headers as Headers;
+		expect(firstHeaders.get("x-account-id")).toBe("workspace-1");
+		expect(secondHeaders.get("x-account-id")).toBe("account-2");
+	});
+
+	it("does not disable workspace-less accounts on workspace-disabled responses", async () => {
+		const account = createMockAccount({
+			workspaces: undefined,
+			currentWorkspaceIndex: undefined,
+		});
+		accountManagerState.accounts = [account];
+		accountManagerState.accountSelections = [account];
+
+		globalThis.fetch = vi.fn().mockResolvedValue(
+			new Response(
+				JSON.stringify({
+					error: {
+						code: "workspace_disabled",
+						message: "Workspace expired",
+					},
+				}),
+				{
+					status: 403,
+					headers: { "content-type": "application/json" },
+				},
+			),
+		) as any;
+
+		const { OpenAIAuthPlugin } = await import("../index.js");
+		const client = {
+			tui: { showToast: vi.fn() },
+			auth: { set: vi.fn() },
+		} as any;
+		const plugin = await OpenAIAuthPlugin({ client });
+
+		const getAuth = async () => ({
+			type: "oauth" as const,
+			access: "a",
+			refresh: "r",
+			expires: Date.now() + 60_000,
+			multiAccount: true,
+		});
+
+		const sdk = (await plugin.auth.loader(getAuth, { options: {}, models: {} })) as any;
+		const response = await sdk.fetch("https://example.com", {});
+
+		expect(response.status).toBe(403);
+		expect(accountManagerState.disableCurrentWorkspaceCalls).toBe(0);
+		expect(accountManagerState.rotateToNextWorkspaceCalls).toBe(0);
+		expect(accountManagerState.setAccountEnabledCalls).toEqual([]);
+		expect(recoveryState.isRecoverableErrorCalls).toBe(0);
+	});
+
+	it("retries with a fallback account after a workspace-less account gets a workspace-disabled response", async () => {
+		const firstAccount = createMockAccount({
+			index: 0,
+			accountId: "account-1",
+			workspaces: undefined,
+			currentWorkspaceIndex: undefined,
+		});
+		const secondAccount = createMockAccount({
+			index: 1,
+			accountId: "account-2",
+			email: "fallback@example.com",
+			refreshToken: "refresh-token-2",
+			workspaces: undefined,
+			currentWorkspaceIndex: undefined,
+		});
+		accountManagerState.accounts = [firstAccount, secondAccount];
+		accountManagerState.accountSelections = [firstAccount, secondAccount];
+
+		const fetchMock = vi
+			.fn()
+			.mockResolvedValueOnce(
+				new Response(
+					JSON.stringify({
+						error: {
+							code: "workspace_disabled",
+							message: "Workspace expired",
+						},
+					}),
+					{
+						status: 403,
+						headers: { "content-type": "application/json" },
+					},
+				),
+			)
+			.mockResolvedValueOnce(new Response("ok", { status: 200 }));
+		globalThis.fetch = fetchMock as any;
+
+		const { OpenAIAuthPlugin } = await import("../index.js");
+		const client = {
+			tui: { showToast: vi.fn() },
+			auth: { set: vi.fn() },
+		} as any;
+		const plugin = await OpenAIAuthPlugin({ client });
+
+		const getAuth = async () => ({
+			type: "oauth" as const,
+			access: "a",
+			refresh: "r",
+			expires: Date.now() + 60_000,
+			multiAccount: true,
+		});
+
+		const sdk = (await plugin.auth.loader(getAuth, { options: {}, models: {} })) as any;
+		const response = await sdk.fetch("https://example.com", {});
+
+		expect(response.status).toBe(200);
+		expect(fetchMock).toHaveBeenCalledTimes(2);
+		expect(accountManagerState.disableCurrentWorkspaceCalls).toBe(0);
+		expect(accountManagerState.rotateToNextWorkspaceCalls).toBe(0);
+		expect(accountManagerState.setAccountEnabledCalls).toEqual([]);
 	});
 });
 
