@@ -208,6 +208,12 @@ vi.mock("../lib/request/rate-limit-backoff.js", () => ({
 		refreshAndUpdateToken: vi.fn(async (auth: unknown) => auth),
 		createCodexHeaders: vi.fn(() => new Headers()),
 		handleErrorResponse: vi.fn(async (response: Response) => ({ response })),
+		isWorkspaceDisabledError: (status: number, code: string, bodyText: string) =>
+			status === 403 &&
+			(code.toLowerCase().includes("workspace_disabled") ||
+				code.toLowerCase().includes("workspace_expired") ||
+				bodyText.toLowerCase().includes("workspace disabled") ||
+				bodyText.toLowerCase().includes("workspace expired")),
 	getUnsupportedCodexModelInfo: vi.fn(() => ({ isUnsupported: false })),
 	resolveUnsupportedCodexFallbackModel: vi.fn(() => undefined),
 	shouldFallbackToGpt52OnUnsupportedGpt53: vi.fn(() => false),
@@ -240,6 +246,11 @@ const mockStorage = {
 	activeIndexByFamily: {} as Record<string, number>,
 };
 
+const cloneMockAccount = (account: (typeof mockStorage.accounts)[number]) => ({
+	...account,
+	workspaces: account.workspaces?.map((workspace) => ({ ...workspace })),
+});
+
 const loadAccountsMock = vi.fn(async () => mockStorage);
 const saveAccountsMock = vi.fn(
 	async (storage: {
@@ -249,7 +260,7 @@ const saveAccountsMock = vi.fn(
 		activeIndexByFamily?: Record<string, number>;
 	}) => {
 		mockStorage.version = storage.version;
-		mockStorage.accounts = storage.accounts.map((account) => ({ ...account }));
+		mockStorage.accounts = storage.accounts.map((account) => cloneMockAccount(account));
 		mockStorage.activeIndex = storage.activeIndex;
 		mockStorage.activeIndexByFamily = {
 			...(storage.activeIndexByFamily ?? {}),
@@ -283,7 +294,7 @@ const withAccountStorageTransactionMock = vi.fn(
 			handler(
 				{
 					version: 3,
-					accounts: mockStorage.accounts.map((account) => ({ ...account })),
+					accounts: mockStorage.accounts.map((account) => cloneMockAccount(account)),
 					activeIndex: mockStorage.activeIndex,
 					activeIndexByFamily: { ...mockStorage.activeIndexByFamily },
 				},
@@ -331,6 +342,10 @@ vi.mock("../lib/storage.js", async () => {
 
 const extractAccountEmailMock = vi.fn(() => "user@example.com");
 const extractAccountIdMock = vi.fn(() => "account-1");
+const getAccountIdCandidatesMock = vi.fn(() => [{ accountId: "acc-1", source: "token", label: "Test" }]);
+const selectBestAccountCandidateMock = vi.fn(
+	(candidates: Array<{ accountId: string }>) => candidates[0] ?? null,
+);
 
 vi.mock("../lib/accounts.js", () => {
 	class MockAccountManager {
@@ -429,8 +444,8 @@ vi.mock("../lib/accounts.js", () => {
 
 	return {
 		AccountManager: MockAccountManager,
-		getAccountIdCandidates: () => [{ accountId: "acc-1", source: "token", label: "Test" }],
-		selectBestAccountCandidate: (candidates: Array<{ accountId: string }>) => candidates[0] ?? null,
+		getAccountIdCandidates: getAccountIdCandidatesMock,
+		selectBestAccountCandidate: selectBestAccountCandidateMock,
 		extractAccountEmail: extractAccountEmailMock,
 		extractAccountId: extractAccountIdMock,
 		resolveRequestAccountId: (_storedId: string | undefined, _source: string | undefined, tokenId: string | undefined) => tokenId,
@@ -513,6 +528,14 @@ describe("OpenAIOAuthPlugin", () => {
 		extractAccountEmailMock.mockImplementation(() => "user@example.com");
 		extractAccountIdMock.mockReset();
 		extractAccountIdMock.mockImplementation(() => "account-1");
+		getAccountIdCandidatesMock.mockReset();
+		getAccountIdCandidatesMock.mockImplementation(() => [
+			{ accountId: "acc-1", source: "token", label: "Test" },
+		]);
+		selectBestAccountCandidateMock.mockReset();
+		selectBestAccountCandidateMock.mockImplementation(
+			(candidates: Array<{ accountId: string }>) => candidates[0] ?? null,
+		);
 
 		mockStorage.accounts = [];
 		mockStorage.activeIndex = 0;
@@ -1924,6 +1947,14 @@ describe("OpenAIOAuthPlugin resolveAccountSelection", () => {
 describe("OpenAIOAuthPlugin persistAccountPool", () => {
 	beforeEach(() => {
 		vi.clearAllMocks();
+		getAccountIdCandidatesMock.mockReset();
+		getAccountIdCandidatesMock.mockImplementation(() => [
+			{ accountId: "acc-1", source: "token", label: "Test" },
+		]);
+		selectBestAccountCandidateMock.mockReset();
+		selectBestAccountCandidateMock.mockImplementation(
+			(candidates: Array<{ accountId: string }>) => candidates[0] ?? null,
+		);
 		mockStorage.accounts = [];
 		mockStorage.activeIndex = 0;
 		mockStorage.activeIndexByFamily = {};
@@ -1966,6 +1997,62 @@ describe("OpenAIOAuthPlugin persistAccountPool", () => {
 		await OpenAIOAuthPlugin({ client: mockClient } as never);
 
 		expect(mockStorage.accounts).toHaveLength(1);
+	});
+
+	it("initializes currentWorkspaceIndex for a newly persisted selected workspace", async () => {
+		const authModule = await import("../lib/auth/auth.js");
+		const accountsModule = await import("../lib/accounts.js");
+		vi.mocked(authModule.createAuthorizationFlow).mockResolvedValueOnce({
+			pkce: { verifier: "persist-new-workspace-index", challenge: "persist-new-workspace-index" },
+			state: "persist-new-workspace-index",
+			url: "https://auth.openai.com/test?state=persist-new-workspace-index",
+		});
+		vi.mocked(authModule.exchangeAuthorizationCode).mockResolvedValueOnce({
+			type: "success",
+			access: "access-token",
+			refresh: "refresh-token",
+			expires: Date.now() + 3600_000,
+			idToken: "id-token",
+		});
+		vi.mocked(accountsModule.getAccountIdCandidates).mockReturnValueOnce([
+			{ accountId: "workspace-a", source: "org", label: "Workspace A" },
+			{ accountId: "workspace-b", source: "org", label: "Workspace B", isDefault: true },
+			{ accountId: "workspace-c", source: "org", label: "Workspace C" },
+		]);
+		vi.mocked(accountsModule.selectBestAccountCandidate).mockImplementationOnce(
+			(candidates) => candidates[1] ?? null,
+		);
+
+		const mockClient = createMockClient();
+		const { OpenAIOAuthPlugin } = await import("../index.js");
+		const plugin =
+			(await OpenAIOAuthPlugin({
+				client: mockClient,
+			} as never)) as unknown as PluginType;
+		const manualMethod = plugin.auth.methods[1] as unknown as {
+			authorize: () => Promise<{
+				callback: (input: string) => Promise<{ type: string }>;
+			}>;
+		};
+
+		const flow = await manualMethod.authorize();
+		const result = await flow.callback(
+			"http://127.0.0.1:1455/auth/callback?code=abc123&state=persist-new-workspace-index",
+		);
+
+		expect(result.type).toBe("success");
+		expect(mockStorage.accounts).toHaveLength(1);
+		expect(mockStorage.accounts[0]).toEqual(
+			expect.objectContaining({
+				accountId: "workspace-b",
+				currentWorkspaceIndex: 1,
+				workspaces: [
+					{ id: "workspace-a", name: "Workspace A", enabled: true, isDefault: undefined },
+					{ id: "workspace-b", name: "Workspace B", enabled: true, isDefault: true },
+					{ id: "workspace-c", name: "Workspace C", enabled: true, isDefault: undefined },
+				],
+			}),
+		);
 	});
 
 	it("preserves distinct accountId plus email pairs during manual login", async () => {
@@ -2459,7 +2546,7 @@ describe("OpenAIOAuthPlugin persistAccountPool", () => {
 			.mockImplementationOnce(async (storage) => {
 				await firstPersist.promise;
 				mockStorage.version = storage.version;
-				mockStorage.accounts = storage.accounts.map((account) => ({ ...account }));
+				mockStorage.accounts = storage.accounts.map((account) => cloneMockAccount(account));
 				mockStorage.activeIndex = storage.activeIndex;
 				mockStorage.activeIndexByFamily = {
 					...(storage.activeIndexByFamily ?? {}),
@@ -2467,7 +2554,7 @@ describe("OpenAIOAuthPlugin persistAccountPool", () => {
 			})
 			.mockImplementation(async (storage) => {
 				mockStorage.version = storage.version;
-				mockStorage.accounts = storage.accounts.map((account) => ({ ...account }));
+				mockStorage.accounts = storage.accounts.map((account) => cloneMockAccount(account));
 				mockStorage.activeIndex = storage.activeIndex;
 				mockStorage.activeIndexByFamily = {
 					...(storage.activeIndexByFamily ?? {}),

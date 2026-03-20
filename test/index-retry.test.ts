@@ -533,5 +533,67 @@ describe("OpenAIAuthPlugin rate-limit retry", () => {
 		expect(accountManagerState.rotateToNextWorkspaceCalls).toBe(0);
 		expect(accountManagerState.setAccountEnabledCalls).toEqual([]);
 	});
+
+	it("retries with a fallback account after a workspace-less account gets a workspace-disabled response", async () => {
+		const firstAccount = createMockAccount({
+			index: 0,
+			accountId: "account-1",
+			workspaces: undefined,
+			currentWorkspaceIndex: undefined,
+		});
+		const secondAccount = createMockAccount({
+			index: 1,
+			accountId: "account-2",
+			email: "fallback@example.com",
+			refreshToken: "refresh-token-2",
+			workspaces: undefined,
+			currentWorkspaceIndex: undefined,
+		});
+		accountManagerState.accounts = [firstAccount, secondAccount];
+		accountManagerState.accountSelections = [firstAccount, secondAccount];
+
+		const fetchMock = vi
+			.fn()
+			.mockResolvedValueOnce(
+				new Response(
+					JSON.stringify({
+						error: {
+							code: "workspace_disabled",
+							message: "Workspace expired",
+						},
+					}),
+					{
+						status: 403,
+						headers: { "content-type": "application/json" },
+					},
+				),
+			)
+			.mockResolvedValueOnce(new Response("ok", { status: 200 }));
+		globalThis.fetch = fetchMock as any;
+
+		const { OpenAIAuthPlugin } = await import("../index.js");
+		const client = {
+			tui: { showToast: vi.fn() },
+			auth: { set: vi.fn() },
+		} as any;
+		const plugin = await OpenAIAuthPlugin({ client });
+
+		const getAuth = async () => ({
+			type: "oauth" as const,
+			access: "a",
+			refresh: "r",
+			expires: Date.now() + 60_000,
+			multiAccount: true,
+		});
+
+		const sdk = (await plugin.auth.loader(getAuth, { options: {}, models: {} })) as any;
+		const response = await sdk.fetch("https://example.com", {});
+
+		expect(response.status).toBe(200);
+		expect(fetchMock).toHaveBeenCalledTimes(2);
+		expect(accountManagerState.disableCurrentWorkspaceCalls).toBe(0);
+		expect(accountManagerState.rotateToNextWorkspaceCalls).toBe(0);
+		expect(accountManagerState.setAccountEnabledCalls).toEqual([]);
+	});
 });
 

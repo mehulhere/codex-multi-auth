@@ -252,6 +252,9 @@ describe("AccountManager", () => {
     expect(manager.rotateToNextWorkspace(account)?.id).toBe("workspace-2");
 
     expect(manager.disableCurrentWorkspace(account, "workspace-1")).toBe(false);
+    expect(account.enabled).not.toBe(false);
+    expect(manager.hasEnabledWorkspaces(account)).toBe(true);
+    expect(manager.getEnabledWorkspaceCount(account)).toBe(1);
     expect(manager.getCurrentWorkspace(account)?.id).toBe("workspace-2");
     expect(account.workspaces?.map((workspace) => workspace.enabled)).toEqual([false, true]);
   });

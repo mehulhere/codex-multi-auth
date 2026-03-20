@@ -845,15 +845,6 @@ export class AccountManager {
 	}
 
 	// Workspace management methods
-	setWorkspaces(account: ManagedAccount, workspaces: Workspace[]): void {
-		account.workspaces = workspaces;
-		if (workspaces.length > 0 && account.currentWorkspaceIndex === undefined) {
-			// Find first enabled workspace or default to 0
-			const firstEnabled = workspaces.findIndex((w) => w.enabled !== false);
-			account.currentWorkspaceIndex = firstEnabled >= 0 ? firstEnabled : 0;
-		}
-	}
-
 	private resetWorkspaces(account: ManagedAccount): void {
 		if (!account.workspaces || account.workspaces.length === 0) {
 			return;

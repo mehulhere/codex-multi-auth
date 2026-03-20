@@ -557,6 +557,23 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 						});
 
 						if (existingIndex === undefined) {
+							const initialWorkspaceIndex =
+								result.workspaces && result.workspaces.length > 0
+									? (() => {
+											if (accountId) {
+												const matchingWorkspaceIndex = result.workspaces.findIndex(
+													(workspace) => workspace.id === accountId,
+												);
+												if (matchingWorkspaceIndex >= 0) {
+													return matchingWorkspaceIndex;
+												}
+											}
+											const firstEnabledWorkspaceIndex = result.workspaces.findIndex(
+												(workspace) => workspace.enabled !== false,
+											);
+											return firstEnabledWorkspaceIndex >= 0 ? firstEnabledWorkspaceIndex : 0;
+										})()
+									: undefined;
 							accounts.push({
 								accountId,
 								accountIdSource,
@@ -568,6 +585,7 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 								addedAt: now,
 								lastUsed: now,
 								workspaces: result.workspaces,
+								currentWorkspaceIndex: initialWorkspaceIndex,
 							});
 							continue;
 						}
@@ -1957,7 +1975,6 @@ accountAttemptLoop: while (attempted.size < Math.max(1, accountCount)) {
 		const workspaceErrorMessage =
 			(errorBody as { error?: { message?: string } } | undefined)?.error?.message ?? "";
 		const isDisabledWorkspaceError =
-			errorResponse.status === 403 &&
 			isWorkspaceDisabledError(
 				errorResponse.status,
 				workspaceErrorCode,
@@ -1975,6 +1992,9 @@ accountAttemptLoop: while (attempted.size < Math.max(1, accountCount)) {
 					`Workspace disabled/expired for account ${account.index + 1} without tracked workspaces. Leaving account enabled.`,
 					{ errorCode: workspaceErrorCode },
 				);
+				if (hasRemainingAccounts) {
+					continue accountAttemptLoop;
+				}
 			} else {
 				const currentWorkspace = accountManager.getCurrentWorkspace(account);
 				const workspaceName = currentWorkspace?.name ?? currentWorkspace?.id ?? "unknown";

@@ -342,6 +342,12 @@ describe('isWorkspaceDisabledError', () => {
 		expect(isWorkspaceDisabledError(403, 'organization_disabled', '')).toBe(true);
 	});
 
+	it('matches wrapped workspace error tokens but not partial token text', () => {
+		expect(isWorkspaceDisabledError(403, 'error.workspace_disabled', '')).toBe(true);
+		expect(isWorkspaceDisabledError(403, 'workspace_expired:error', '')).toBe(true);
+		expect(isWorkspaceDisabledError(403, 'error.usage_not_included', '')).toBe(false);
+	});
+
 	it('returns false for non-403 status even with disabled message', () => {
 		expect(isWorkspaceDisabledError(400, '', 'Your workspace has been disabled')).toBe(false);
 		expect(isWorkspaceDisabledError(401, '', 'Your workspace has been disabled')).toBe(false);
