@@ -434,10 +434,6 @@ const IMPLEMENTED_FEATURES: ImplementedFeature[] = [
 	{ id: 41, name: "Auto-switch to best account command" },
 ];
 
-function runFeaturesReport(): number {
-	return runFeaturesCommand({ implementedFeatures: IMPLEMENTED_FEATURES });
-}
-
 function resolveActiveIndex(
 	storage: AccountStorageV3,
 	family: ModelFamily = "codex",
@@ -5297,7 +5293,7 @@ export async function runCodexMultiAuthCli(rawArgs: string[]): Promise<number> {
 		return runCheckCommand({ runHealthCheck });
 	}
 	if (command === "features") {
-		return runFeaturesReport();
+		return runFeaturesCommand({ implementedFeatures: IMPLEMENTED_FEATURES });
 	}
 	if (command === "verify-flagged") {
 		return runVerifyFlagged(rest);
