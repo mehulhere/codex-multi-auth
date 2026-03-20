@@ -61,10 +61,10 @@ Compatibility aliases are supported:
 | Flag | Applies to | Meaning |
 | --- | --- | --- |
 | `--manual`, `--no-browser` | login | Skip browser launch and use manual callback flow |
-| `--json` | verify-flagged, forecast, report, fix, doctor | Print machine-readable output |
-| `--live` | forecast, report, fix | Use live probe before decisions/output |
+| `--json` | verify-flagged, best, forecast, report, fix, doctor | Print machine-readable output |
+| `--live` | best, forecast, report, fix | Use live probe before decisions/output |
 | `--dry-run` | verify-flagged, fix, doctor | Preview without writing storage |
-| `--model <model>` | forecast, report, fix | Specify model for live probe paths |
+| `--model <model>` | best, forecast, report, fix | Specify model for live probe paths |
 | `--out <path>` | report | Write report output to file |
 | `--fix` | doctor | Apply safe repairs |
 | `--no-restore` | verify-flagged | Verify only; do not restore healthy flagged accounts |

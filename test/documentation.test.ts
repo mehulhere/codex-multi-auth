@@ -249,13 +249,26 @@ describe("Documentation Integrity", () => {
 		const manager = read(managerPath);
 
 		expect(readme).toContain("codex auth fix --live --model gpt-5-codex");
-		expect(commandRef).toContain("| `--live` | forecast, report, fix |");
 		expect(commandRef).toContain(
-			"| `--model <model>` | forecast, report, fix |",
+			"| `--json` | verify-flagged, best, forecast, report, fix, doctor |",
+		);
+		expect(commandRef).toContain("| `--live` | best, forecast, report, fix |");
+		expect(commandRef).toContain(
+			"| `--model <model>` | best, forecast, report, fix |",
 		);
 		expect(manager).toContain("codex auth login");
 		expect(manager).toContain(
 			"codex auth fix [--dry-run] [--json] [--live] [--model <model>]",
+		);
+		expect(manager).toContain("Next steps:");
+		expect(manager).toContain(
+			"codex auth status  Check that the wrapper is active.",
+		);
+		expect(manager).toContain(
+			"codex auth check   Confirm your saved accounts look healthy.",
+		);
+		expect(manager).toContain(
+			"codex auth list    Review saved accounts before switching.",
 		);
 		expect(manager).toContain(
 			"Missing index. Usage: codex auth switch <index>",
