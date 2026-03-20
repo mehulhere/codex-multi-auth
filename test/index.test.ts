@@ -354,6 +354,15 @@ vi.mock("../lib/accounts.js", async () => {
 			return this.accounts[0] ?? null;
 		}
 
+		getCurrentWorkspace(account: Record<string, unknown>) {
+			const workspaces = Array.isArray(account.workspaces) ? account.workspaces : [];
+			const currentWorkspaceIndex =
+				typeof account.currentWorkspaceIndex === "number"
+					? account.currentWorkspaceIndex
+					: 0;
+			return workspaces[currentWorkspaceIndex] ?? null;
+		}
+
 		recordSuccess() {}
 		recordRateLimit() {}
 		recordFailure() {}
@@ -1198,6 +1207,17 @@ describe("OpenAIOAuthPlugin fetch handler", () => {
 			getAccountCount: () => accounts.length,
 			getCurrentOrNextForFamilyHybrid: () => accounts[selection++] ?? null,
 			getCurrentOrNextForFamily: () => accounts[selection++] ?? null,
+			getCurrentWorkspace: (account: {
+				workspaces?: Array<{ id: string; name?: string; enabled?: boolean }>;
+				currentWorkspaceIndex?: number;
+			}) => {
+				const workspaces = Array.isArray(account.workspaces) ? account.workspaces : [];
+				const currentWorkspaceIndex =
+					typeof account.currentWorkspaceIndex === "number"
+						? account.currentWorkspaceIndex
+						: 0;
+				return workspaces[currentWorkspaceIndex] ?? null;
+			},
 			getAccountByIndex: (index: number) => accounts[index] ?? null,
 			getAccountsSnapshot: () => accounts,
 			isAccountAvailableForFamily: (index: number) => Boolean(accounts[index]),
@@ -2243,6 +2263,7 @@ describe("OpenAIOAuthPlugin fetch handler", () => {
 				recordRateLimit: () => {},
 				consumeToken: () => true,
 				refundToken: () => {},
+				getCurrentWorkspace: () => null,
 				syncCodexCliActiveSelectionForIndex: async () => {},
 				markSwitched: () => {},
 				removeAccount: () => {},
