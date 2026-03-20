@@ -3220,16 +3220,10 @@ describe("codex manager cli commands", () => {
 			])
 			.mockResolvedValueOnce([
 				{
-					path: "/mock/backups/latest.json",
-					fileName: "latest.json",
-					accountCount: 4,
-					mtimeMs: now,
-				},
-				{
-					path: "/mock/backups/old-manual.json",
-					fileName: "old-manual.json",
-					accountCount: 1,
-					mtimeMs: now - 60_000,
+					path: "/mock/backups/replacement.json",
+					fileName: "replacement.json",
+					accountCount: 2,
+					mtimeMs: now + 60_000,
 				},
 			])
 			.mockResolvedValueOnce([
@@ -3810,7 +3804,7 @@ describe("codex manager cli commands", () => {
 		const exitCode = await runCodexMultiAuthCli(["auth", "login"]);
 
 		expect(exitCode).toBe(0);
-		expect(getNamedBackupsMock).toHaveBeenCalledTimes(2);
+		expect(getNamedBackupsMock).toHaveBeenCalledTimes(1);
 		expect(restoreAccountsFromBackupMock).toHaveBeenCalledWith(
 			"/mock/backups/manual-choice.json",
 			{ persist: false },

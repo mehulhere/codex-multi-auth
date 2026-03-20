@@ -4403,13 +4403,14 @@ async function runAuthLogin(): Promise<number> {
 				return 0;
 			}
 			if (signInMode === "restore-backup") {
-				namedBackups = await loadNamedBackupsForOnboarding();
 				const latestAvailableBackup = namedBackups[0] ?? null;
 				if (!latestAvailableBackup) {
+					namedBackups = await loadNamedBackupsForOnboarding();
 					continue;
 				}
 				const restoreMode = await promptBackupRestoreMode(latestAvailableBackup);
 				if (restoreMode === "back") {
+					namedBackups = await loadNamedBackupsForOnboarding();
 					continue;
 				}
 
@@ -4417,6 +4418,7 @@ async function runAuthLogin(): Promise<number> {
 					? await promptManualBackupSelection(namedBackups)
 					: latestAvailableBackup;
 				if (!selectedBackup) {
+					namedBackups = await loadNamedBackupsForOnboarding();
 					continue;
 				}
 
@@ -4427,6 +4429,7 @@ async function runAuthLogin(): Promise<number> {
 					),
 				);
 				if (!confirmed) {
+					namedBackups = await loadNamedBackupsForOnboarding();
 					continue;
 				}
 
@@ -4472,6 +4475,7 @@ async function runAuthLogin(): Promise<number> {
 					if ((storageAfterRestoreAttempt?.accounts.length ?? 0) > 0) {
 						continue loginFlow;
 					}
+					namedBackups = await loadNamedBackupsForOnboarding();
 					continue;
 				}
 				continue loginFlow;
