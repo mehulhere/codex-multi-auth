@@ -365,6 +365,24 @@ function triggerSettingsHotkey(
 		}) ?? fallback;
 }
 
+function requireSettingsHotkey(
+	raw: string,
+	expected: Record<string, unknown>,
+	inputState: Partial<SettingsSelectInputState> = {},
+): SettingsSelectSequenceStep {
+	return (options) => {
+		expect(options?.onInput).toBeTypeOf("function");
+		const result =
+			options?.onInput?.(raw, {
+				cursor: inputState.cursor ?? 0,
+				items: inputState.items ?? [],
+				requestRerender: inputState.requestRerender ?? (() => undefined),
+			}) ?? null;
+		expect(result).toEqual(expected);
+		return result;
+	};
+}
+
 function createSettingsCancelSequence(
 	panel: SettingsPanel,
 ): readonly SettingsSelectSequenceStep[] {
@@ -4576,6 +4594,69 @@ describe("codex manager cli commands", () => {
 		]);
 		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
 		const exitCode = await runCodexMultiAuthCli(["auth", "login"]);
+		expect(exitCode).toBe(0);
+		expect(selectSequence.remaining()).toBe(0);
+		expect(planOcChatgptSyncMock).toHaveBeenCalledOnce();
+		expect(applyOcChatgptSyncMock).not.toHaveBeenCalled();
+	});
+
+	it("supports experimental submenu hotkeys for guardian controls", async () => {
+		const now = Date.now();
+		setupInteractiveSettingsLogin(createSettingsStorage(now));
+		const configModule = await import("../lib/config.js");
+		const defaults = configModule.getDefaultPluginConfig();
+		loadPluginConfigMock.mockReturnValue(structuredClone(defaults));
+		const selectSequence = queueSettingsSelectSequence([
+			{ type: "experimental" },
+			requireSettingsHotkey("3", { type: "toggle-refresh-guardian" }),
+			requireSettingsHotkey("]", { type: "increase-refresh-interval" }),
+			requireSettingsHotkey("s", { type: "save" }),
+			{ type: "back" },
+		]);
+
+		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+		const exitCode = await runCodexMultiAuthCli(["auth", "login"]);
+
+		expect(exitCode).toBe(0);
+		expect(selectSequence.remaining()).toBe(0);
+		expect(savePluginConfigMock).toHaveBeenCalledWith(
+			expect.objectContaining({
+				proactiveRefreshGuardian: !(defaults.proactiveRefreshGuardian ?? false),
+				proactiveRefreshIntervalMs:
+					(defaults.proactiveRefreshIntervalMs ?? 60000) + 60000,
+			}),
+		);
+	});
+
+	it("supports q hotkey on experimental sync status screens", async () => {
+		const now = Date.now();
+		setupInteractiveSettingsLogin(createSettingsStorage(now));
+		detectOcChatgptMultiAuthTargetMock.mockReturnValue({
+			kind: "target",
+			descriptor: {
+				scope: "global",
+				root: "C:/target",
+				accountPath: "C:/target/openai-codex-accounts.json",
+				backupRoot: "C:/target/backups",
+				source: "default-global",
+				resolution: "accounts",
+			},
+		});
+		planOcChatgptSyncMock.mockResolvedValue({
+			kind: "blocked-ambiguous",
+			detection: { kind: "ambiguous", reason: "multiple targets", candidates: [] },
+		});
+		const selectSequence = queueSettingsSelectSequence([
+			{ type: "experimental" },
+			{ type: "sync" },
+			requireSettingsHotkey("q", { type: "back" }),
+			{ type: "back" },
+			{ type: "back" },
+		]);
+
+		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+		const exitCode = await runCodexMultiAuthCli(["auth", "login"]);
+
 		expect(exitCode).toBe(0);
 		expect(selectSequence.remaining()).toBe(0);
 		expect(planOcChatgptSyncMock).toHaveBeenCalledOnce();

@@ -118,6 +118,27 @@ function queueSelectResults(...results: unknown[]): void {
 	selectQueue.push(...results);
 }
 
+function triggerSettingsHubHotkey(
+	raw: string,
+	fallback: unknown = { type: "back" },
+): (items: MenuItem<unknown>[], options: unknown) => unknown {
+	return (items, options) =>
+		(options as {
+			onInput?: (
+				input: string,
+				context: {
+					cursor: number;
+					items: MenuItem<unknown>[];
+					requestRerender: () => void;
+				},
+			) => unknown;
+		})?.onInput?.(raw, {
+			cursor: 0,
+			items,
+			requestRerender: () => undefined,
+		}) ?? fallback;
+}
+
 vi.mock("../lib/ui/select.js", async () => {
 	const actual = await vi.importActual<typeof import("../lib/ui/select.js")>(
 		"../lib/ui/select.js",
@@ -149,10 +170,13 @@ beforeEach(() => {
 	);
 	vi.resetModules();
 	selectQueue = [];
-	selectHandler = async () => {
+	selectHandler = async (items, options) => {
 		const next = selectQueue.shift();
 		if (next === undefined) {
 			throw new Error("No select result queued");
+		}
+		if (typeof next === "function") {
+			return next(items, options);
 		}
 		return next;
 	};
@@ -686,6 +710,21 @@ describe("settings-hub utility coverage", () => {
 				proactiveRefreshIntervalMs: 30_000,
 			});
 			expect(selected?.proactiveRefreshIntervalMs).toBe(60_000);
+		});
+
+		it("supports experimental submenu hotkeys for guardian toggle and interval increase", async () => {
+			const api = await loadSettingsHubTestApi();
+			queueSelectResults(
+				triggerSettingsHubHotkey("3"),
+				triggerSettingsHubHotkey("]"),
+				triggerSettingsHubHotkey("s"),
+			);
+			const selected = await api.promptExperimentalSettings({
+				proactiveRefreshGuardian: false,
+				proactiveRefreshIntervalMs: 60_000,
+			});
+			expect(selected?.proactiveRefreshGuardian).toBe(true);
+			expect(selected?.proactiveRefreshIntervalMs).toBe(120_000);
 		});
 	});
 });

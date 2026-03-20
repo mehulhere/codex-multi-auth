@@ -54,6 +54,7 @@ User-facing capability map for `codex-multi-auth`.
 | Quick switch and search hotkeys | Faster navigation in the dashboard |
 | Account action hotkeys | Per-account set, refresh, toggle, and delete shortcuts |
 | In-dashboard settings hub | Runtime and display tuning without editing files directly |
+| Experimental settings hotkeys | Keyboard shortcuts for sync preview, backup export, and refresh-guard tuning |
 | Browser-first OAuth with manual fallback | Works in normal and constrained terminal environments |
 
 ---
