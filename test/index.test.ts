@@ -53,6 +53,7 @@ vi.mock("../lib/refresh-queue.js", () => ({
 }));
 
 vi.mock("../lib/auth/browser.js", () => ({
+	isBrowserLaunchSuppressed: vi.fn(() => false),
 	openBrowserUrl: vi.fn(),
 }));
 
@@ -558,6 +559,26 @@ describe("OpenAIOAuthPlugin", () => {
 			expect(plugin.auth.methods).toHaveLength(2);
 			expect(plugin.auth.methods[0].label).toBe("ChatGPT Plus/Pro MULTI (Codex Subscription)");
 			expect(plugin.auth.methods[1].label).toBe("ChatGPT Plus/Pro MULTI (Manual URL Paste)");
+		});
+
+		it("uses manual auth flow when browser launch is globally suppressed", async () => {
+			const browserModule = await import("../lib/auth/browser.js");
+			vi.mocked(browserModule.isBrowserLaunchSuppressed).mockReturnValueOnce(true);
+			const openBrowserUrlMock = vi.mocked(browserModule.openBrowserUrl);
+			const autoMethod = plugin.auth.methods[0] as unknown as {
+				authorize: (inputs?: Record<string, string>) => Promise<{
+					method: string;
+					instructions: string;
+					validate: (input: string) => string | undefined;
+				}>;
+			};
+
+			const flow = await autoMethod.authorize();
+
+			expect(flow.method).toBe("code");
+			expect(flow.instructions).toContain("copy the full redirect URL");
+			expect(flow.validate("invalid-callback-value")).toContain("No authorization code found");
+			expect(openBrowserUrlMock).not.toHaveBeenCalled();
 		});
 
 		it("rejects manual OAuth callbacks with mismatched state", async () => {
