@@ -201,6 +201,7 @@ vi.mock("../lib/request/rate-limit-backoff.js", () => ({
 	vi.mock("../lib/request/fetch-helpers.js", () => ({
 		extractRequestUrl: (input: unknown) => (typeof input === "string" ? input : String(input)),
 		rewriteUrlForCodex: (url: string) => url,
+		applyProxyCompatibleInit: vi.fn((_url: string, init: RequestInit) => init),
 		transformRequestForCodex: vi.fn(async (init: unknown) => ({
 		updatedInit: init,
 		body: { model: "gpt-5.1" },
@@ -351,6 +352,15 @@ vi.mock("../lib/accounts.js", async () => {
 
 		getCurrentOrNextForFamilyHybrid() {
 			return this.accounts[0] ?? null;
+		}
+
+		getCurrentWorkspace(account: Record<string, unknown>) {
+			const workspaces = Array.isArray(account.workspaces) ? account.workspaces : [];
+			const currentWorkspaceIndex =
+				typeof account.currentWorkspaceIndex === "number"
+					? account.currentWorkspaceIndex
+					: 0;
+			return workspaces[currentWorkspaceIndex] ?? null;
 		}
 
 		recordSuccess() {}
@@ -1197,6 +1207,17 @@ describe("OpenAIOAuthPlugin fetch handler", () => {
 			getAccountCount: () => accounts.length,
 			getCurrentOrNextForFamilyHybrid: () => accounts[selection++] ?? null,
 			getCurrentOrNextForFamily: () => accounts[selection++] ?? null,
+			getCurrentWorkspace: (account: {
+				workspaces?: Array<{ id: string; name?: string; enabled?: boolean }>;
+				currentWorkspaceIndex?: number;
+			}) => {
+				const workspaces = Array.isArray(account.workspaces) ? account.workspaces : [];
+				const currentWorkspaceIndex =
+					typeof account.currentWorkspaceIndex === "number"
+						? account.currentWorkspaceIndex
+						: 0;
+				return workspaces[currentWorkspaceIndex] ?? null;
+			},
 			getAccountByIndex: (index: number) => accounts[index] ?? null,
 			getAccountsSnapshot: () => accounts,
 			isAccountAvailableForFamily: (index: number) => Boolean(accounts[index]),
@@ -1423,6 +1444,73 @@ describe("OpenAIOAuthPlugin fetch handler", () => {
 		expect(syncCodexCliSelectionMock).toHaveBeenCalledWith(1);
 	});
 
+	it("attaches proxy dispatcher returned by the helper to the primary upstream request", async () => {
+		const fetchHelpers = await import("../lib/request/fetch-helpers.js");
+		const proxyDispatcher = { kind: "proxy-dispatcher" };
+		vi.mocked(fetchHelpers.applyProxyCompatibleInit).mockImplementation((_url, init) => ({
+			...(init ?? {}),
+			dispatcher: proxyDispatcher,
+		}));
+		globalThis.fetch = vi.fn().mockResolvedValue(
+			new Response(JSON.stringify({ content: "ok" }), { status: 200 }),
+		);
+
+		const { sdk } = await setupPlugin();
+		const response = await sdk.fetch!("https://api.openai.com/v1/chat", {
+			method: "POST",
+			body: JSON.stringify({ model: "gpt-5.1" }),
+		});
+
+		expect(response.status).toBe(200);
+		expect(vi.mocked(fetchHelpers.applyProxyCompatibleInit)).toHaveBeenCalled();
+		const firstInit = vi.mocked(globalThis.fetch).mock.calls[0]?.[1] as RequestInit;
+		expect(firstInit.dispatcher).toBe(proxyDispatcher);
+	});
+
+	it("preserves proxy dispatcher on fallback retry requests", async () => {
+		const { AccountManager } = await import("../lib/accounts.js");
+		const fetchHelpers = await import("../lib/request/fetch-helpers.js");
+		const proxyDispatcher = { kind: "proxy-dispatcher" };
+		const manager = buildRoutingManager([
+			{
+				index: 0,
+				accountId: "token-primary",
+				accountIdSource: "token",
+				email: "alpha@example.com",
+				refreshToken: "refresh-1",
+				accessToken: "access-alpha",
+			},
+			{
+				index: 1,
+				accountId: "workspace-fallback",
+				accountIdSource: "org",
+				email: "beta@example.com",
+				refreshToken: "refresh-2",
+				accessToken: "access-beta",
+			},
+		]);
+		vi.spyOn(AccountManager, "loadFromDisk").mockResolvedValueOnce(manager as never);
+		vi.mocked(fetchHelpers.applyProxyCompatibleInit).mockImplementation((_url, init) => ({
+			...(init ?? {}),
+			dispatcher: proxyDispatcher,
+		}));
+		globalThis.fetch = vi
+			.fn()
+			.mockRejectedValueOnce(new Error("Network timeout"))
+			.mockRejectedValueOnce(new Error("Network timeout"))
+			.mockResolvedValueOnce(new Response(JSON.stringify({ content: "ok" }), { status: 200 }));
+
+		const { sdk } = await setupPlugin();
+		const response = await sdk.fetch!("https://api.openai.com/v1/chat", {
+			method: "POST",
+			body: JSON.stringify({ model: "gpt-5.1" }),
+		});
+
+		expect(response.status).toBe(200);
+		expect(vi.mocked(fetchHelpers.applyProxyCompatibleInit)).toHaveBeenCalledTimes(3);
+		const thirdInit = vi.mocked(globalThis.fetch).mock.calls[2]?.[1] as RequestInit;
+		expect(thirdInit.dispatcher).toBe(proxyDispatcher);
+	});
 	it("locks fallback entitlement checks to a stable account snapshot before mutating the shared account", async () => {
 		const { AccountManager } = await import("../lib/accounts.js");
 		const fetchHelpers = await import("../lib/request/fetch-helpers.js");
@@ -2175,6 +2263,7 @@ describe("OpenAIOAuthPlugin fetch handler", () => {
 				recordRateLimit: () => {},
 				consumeToken: () => true,
 				refundToken: () => {},
+				getCurrentWorkspace: () => null,
 				syncCodexCliActiveSelectionForIndex: async () => {},
 				markSwitched: () => {},
 				removeAccount: () => {},

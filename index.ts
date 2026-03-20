@@ -138,6 +138,7 @@ import {
 	type FlaggedAccountMetadataV1,
 } from "./lib/storage.js";
 import {
+	applyProxyCompatibleInit,
 	createCodexHeaders,
 	extractRequestUrl,
         handleErrorResponse,
@@ -1630,11 +1631,11 @@ while (attempted.size < Math.max(1, accountCount)) {
 
 							try {
 								runtimeMetrics.totalRequests++;
-								response = await fetch(url, {
+								response = await fetch(url, applyProxyCompatibleInit(url, {
 									...requestInit,
 									headers,
 									signal: fetchController.signal,
-								});
+								}));
 					} catch (networkError) {
 									const fetchAbortReason = fetchController.signal.reason;
 									const isTimeoutAbort =
@@ -2192,11 +2193,11 @@ while (attempted.size < Math.max(1, accountCount)) {
 
 										try {
 											runtimeMetrics.totalRequests++;
-											const fallbackResponse = await fetch(url, {
+											const fallbackResponse = await fetch(url, applyProxyCompatibleInit(url, {
 												...requestInit,
 												headers: fallbackHeaders,
 												signal: fallbackController.signal,
-											});
+											}));
 											const fallbackSnapshot = readQuotaSchedulerSnapshot(
 												fallbackResponse.headers,
 												fallbackResponse.status,
