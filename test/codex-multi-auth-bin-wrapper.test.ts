@@ -107,6 +107,28 @@ describe("codex-multi-auth bin wrapper", () => {
 		expect(result.stderr).toContain("codex-multi-auth version is unavailable.");
 	});
 
+	it("passes multi-argument version flags through to the runtime", () => {
+		const fixtureRoot = createWrapperFixture();
+		const distLibDir = join(fixtureRoot, "dist", "lib");
+		mkdirSync(distLibDir, { recursive: true });
+		writeFileSync(
+			join(distLibDir, "codex-manager.js"),
+			[
+				"export async function runCodexMultiAuthCli(args) {",
+				'\tif (!Array.isArray(args) || args[0] !== "--version" || args[1] !== "extra") throw new Error("bad args");',
+				"\treturn 6;",
+				"}",
+			].join("\n"),
+			"utf8",
+		);
+
+		const result = runWrapper(fixtureRoot, ["--version", "extra"]);
+
+		expect(result.status).toBe(6);
+		expect(result.stdout).toBe("");
+		expect(result.stderr).toBe("");
+	});
+
 	it("propagates integer exit codes", () => {
 		const fixtureRoot = createWrapperFixture();
 		const distLibDir = join(fixtureRoot, "dist", "lib");
