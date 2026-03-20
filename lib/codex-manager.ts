@@ -1529,7 +1529,8 @@ async function runOAuthFlow(
 			);
 		}
 
-		if (oauthServer?.ready) {
+		const waitingForCallback = !preferManualMode && oauthServer?.ready === true;
+		if (waitingForCallback && oauthServer) {
 			console.log(stylePromptText(UI_COPY.oauth.waitingCallback, "muted"));
 			const callbackResult = await oauthServer.waitForCode(state);
 			code = callbackResult?.code ?? null;
@@ -1538,7 +1539,9 @@ async function runOAuthFlow(
 		if (!code) {
 			console.log(
 				stylePromptText(
-					oauthServer?.ready ? UI_COPY.oauth.callbackMissed : UI_COPY.oauth.callbackUnavailable,
+					waitingForCallback
+						? UI_COPY.oauth.callbackMissed
+						: UI_COPY.oauth.callbackUnavailable,
 					"warning",
 				),
 			);

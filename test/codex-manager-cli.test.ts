@@ -2953,9 +2953,9 @@ describe("codex manager cli commands", () => {
 		expect(withAccountStorageTransactionMock).toHaveBeenCalledTimes(1);
 		expect(storageState.accounts).toHaveLength(2);
 		expect(storageState.activeIndex).toBe(1);
-	expect(storageState.activeIndexByFamily.codex).toBe(1);
-	expect(setCodexCliActiveSelectionMock).toHaveBeenCalledTimes(1);
-});
+		expect(storageState.activeIndexByFamily.codex).toBe(1);
+		expect(setCodexCliActiveSelectionMock).toHaveBeenCalledTimes(1);
+	});
 
 	it("supports --manual login without launching a browser", async () => {
 		setInteractiveTTY(true);
@@ -2991,17 +2991,28 @@ describe("codex manager cli commands", () => {
 		const browserModule = await import("../lib/auth/browser.js");
 		const openBrowserUrlMock = vi.mocked(browserModule.openBrowserUrl);
 		const serverModule = await import("../lib/auth/server.js");
+		const waitForCodeMock = vi.fn(async () => ({ code: "oauth-code" }));
 		vi.mocked(serverModule.startLocalOAuthServer).mockResolvedValueOnce({
 			ready: true,
-			waitForCode: vi.fn(async () => ({ code: "oauth-code" })),
+			waitForCode: waitForCodeMock,
 			close: vi.fn(),
 		});
+		promptQuestionMock.mockResolvedValueOnce(
+			"http://127.0.0.1:1455/auth/callback?code=oauth-code&state=oauth-state",
+		);
+		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
 
 		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
 		const exitCode = await runCodexMultiAuthCli(["auth", "login", "--manual"]);
+		const renderedLogs = logSpy.mock.calls.flat().map((entry) => String(entry));
 
 		expect(exitCode).toBe(0);
 		expect(openBrowserUrlMock).not.toHaveBeenCalled();
+		expect(waitForCodeMock).not.toHaveBeenCalled();
+		expect(renderedLogs.some((entry) => entry.includes("Callback listener unavailable"))).toBe(
+			true,
+		);
+		expect(renderedLogs.some((entry) => entry.includes("No callback received"))).toBe(false);
 		expect(storageState.accounts).toHaveLength(1);
 	});
 
@@ -3103,6 +3114,48 @@ describe("codex manager cli commands", () => {
 		expect(promptQuestionMock).toHaveBeenCalledWith("");
 		expect(openBrowserUrlMock).not.toHaveBeenCalled();
 		expect(storageState.accounts).toHaveLength(1);
+	});
+
+	it("rejects mismatched manual callback state in non-tty mode without persisting login", async () => {
+		setInteractiveTTY(false);
+		let storageState = {
+			version: 3 as const,
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0 },
+			accounts: [] as Array<Record<string, unknown>>,
+		};
+		loadAccountsMock.mockImplementation(async () => structuredClone(storageState));
+		saveAccountsMock.mockImplementation(async (nextStorage) => {
+			storageState = structuredClone(nextStorage);
+		});
+		promptLoginModeMock.mockResolvedValueOnce({ mode: "cancel" });
+		promptQuestionMock.mockResolvedValueOnce(
+			"http://127.0.0.1:1455/auth/callback?code=oauth-code&state=wrong-state",
+		);
+
+		const authModule = await import("../lib/auth/auth.js");
+		vi.mocked(authModule.createAuthorizationFlow).mockResolvedValueOnce({
+			pkce: { challenge: "pkce-challenge", verifier: "pkce-verifier" },
+			state: "oauth-state",
+			url: "https://auth.openai.com/mock",
+		});
+		const exchangeAuthorizationCodeMock = vi.mocked(authModule.exchangeAuthorizationCode);
+
+		const browserModule = await import("../lib/auth/browser.js");
+		const openBrowserUrlMock = vi.mocked(browserModule.openBrowserUrl);
+		const serverModule = await import("../lib/auth/server.js");
+		vi.mocked(serverModule.startLocalOAuthServer).mockRejectedValueOnce(
+			new Error("port in use"),
+		);
+
+		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+		const exitCode = await runCodexMultiAuthCli(["auth", "login", "--manual"]);
+
+		expect(exitCode).toBe(0);
+		expect(promptQuestionMock).toHaveBeenCalledWith("");
+		expect(openBrowserUrlMock).not.toHaveBeenCalled();
+		expect(exchangeAuthorizationCodeMock).not.toHaveBeenCalled();
+		expect(storageState.accounts).toHaveLength(0);
 	});
 
 	it("falls back to pasted manual input when Windows-style callback bind fails", async () => {
