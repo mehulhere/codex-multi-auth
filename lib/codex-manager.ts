@@ -1983,15 +1983,6 @@ async function syncSelectionToCodex(
 	});
 }
 
-async function showAccountStatus(): Promise<void> {
-	await runStatusCommand({
-		setStoragePath,
-		loadAccounts,
-		resolveActiveIndex,
-		formatRateLimitEntry,
-	});
-}
-
 interface HealthCheckOptions {
 	forceRefresh?: boolean;
 	liveProbe?: boolean;
@@ -5292,8 +5283,12 @@ export async function runCodexMultiAuthCli(rawArgs: string[]): Promise<number> {
 		return runAuthLogin(rest);
 	}
 	if (command === "list" || command === "status") {
-		await showAccountStatus();
-		return 0;
+		return runStatusCommand({
+			setStoragePath,
+			loadAccounts,
+			resolveActiveIndex,
+			formatRateLimitEntry,
+		});
 	}
 	if (command === "switch") {
 		return runSwitch(rest);
