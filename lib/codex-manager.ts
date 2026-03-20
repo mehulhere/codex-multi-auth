@@ -1529,7 +1529,7 @@ async function runOAuthFlow(
 			);
 		}
 
-		const waitingForCallback = !preferManualMode && oauthServer?.ready === true;
+		const waitingForCallback = signInMode === "browser" && oauthServer?.ready === true;
 		if (waitingForCallback && oauthServer) {
 			console.log(stylePromptText(UI_COPY.oauth.waitingCallback, "muted"));
 			const callbackResult = await oauthServer.waitForCode(state);
