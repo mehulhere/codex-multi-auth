@@ -25,12 +25,12 @@ export interface AccountMetadataV1 {
 	enabled?: boolean;
 	addedAt: number;
 	lastUsed: number;
-        lastSwitchReason?:
-                | "rate-limit"
-                | "initial"
-                | "rotation"
-                | "best"
-                | "restore";
+	lastSwitchReason?:
+		| "rate-limit"
+		| "initial"
+		| "rotation"
+		| "best"
+		| "restore";
 	rateLimitResetTime?: number;
 	coolingDownUntil?: number;
 	cooldownReason?: CooldownReason;
@@ -55,12 +55,12 @@ export interface AccountMetadataV3 {
 	enabled?: boolean;
 	addedAt: number;
 	lastUsed: number;
-        lastSwitchReason?:
-                | "rate-limit"
-                | "initial"
-                | "rotation"
-                | "best"
-                | "restore";
+	lastSwitchReason?:
+		| "rate-limit"
+		| "initial"
+		| "rotation"
+		| "best"
+		| "restore";
 	rateLimitResetTimes?: RateLimitStateV3;
 	coolingDownUntil?: number;
 	cooldownReason?: CooldownReason;

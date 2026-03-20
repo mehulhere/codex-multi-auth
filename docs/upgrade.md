@@ -70,7 +70,7 @@ For maintainer/debug flows, see advanced/internal controls in [development/CONFI
 
 - `Recover saved accounts` appears only when at least one valid named backup exists.
 - No new CLI flags or npm scripts were added for this flow.
-- The backup root remains `~/.codex/multi-auth/backups` by default, or `%CODEX_MULTI_AUTH_DIR%\\backups` when `CODEX_MULTI_AUTH_DIR` is set.
+- The backup root remains `~/.codex/multi-auth/backups` by default, or `%CODEX_MULTI_AUTH_DIR%\backups` when `CODEX_MULTI_AUTH_DIR` is set.
 
 ---
 

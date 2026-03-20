@@ -4355,21 +4355,31 @@ async function runAuthLogin(): Promise<number> {
 		}
 
 		const refreshedStorage = await loadAccounts();
-		const existingCount = refreshedStorage?.accounts.length ?? 0;
+		let existingCount = refreshedStorage?.accounts.length ?? 0;
 		let forceNewLogin = existingCount > 0;
-		let namedBackups: NamedBackupSummary[] = [];
-		if (existingCount === 0) {
+		const loadNamedBackupsForOnboarding = async (): Promise<NamedBackupSummary[]> => {
+			if (existingCount > 0) {
+				return [];
+			}
 			try {
-				namedBackups = await getNamedBackups();
+				return await getNamedBackups();
 			} catch (error) {
+				const code = (error as NodeJS.ErrnoException).code;
 				log.debug("getNamedBackups failed, skipping restore option", {
+					code,
 					error: error instanceof Error ? error.message : String(error),
 				});
-				namedBackups = [];
+				if (code && code !== "ENOENT") {
+					console.warn(
+						"Named backup discovery failed. Continuing with browser or manual sign-in only.",
+					);
+				}
+				return [];
 			}
-		}
-		const latestNamedBackup = namedBackups[0] ?? null;
+		};
+		let namedBackups = await loadNamedBackupsForOnboarding();
 		while (true) {
+			const latestNamedBackup = namedBackups[0] ?? null;
 			const signInMode = await promptOAuthSignInMode(latestNamedBackup);
 			if (signInMode === "cancel") {
 				if (existingCount > 0) {
@@ -4379,15 +4389,20 @@ async function runAuthLogin(): Promise<number> {
 				console.log("Cancelled.");
 				return 0;
 			}
-			if (signInMode === "restore-backup" && latestNamedBackup) {
-				const restoreMode = await promptBackupRestoreMode(latestNamedBackup);
+			if (signInMode === "restore-backup") {
+				namedBackups = await loadNamedBackupsForOnboarding();
+				const latestAvailableBackup = namedBackups[0] ?? null;
+				if (!latestAvailableBackup) {
+					continue;
+				}
+				const restoreMode = await promptBackupRestoreMode(latestAvailableBackup);
 				if (restoreMode === "back") {
 					continue;
 				}
 
 				const selectedBackup = restoreMode === "manual"
 					? await promptManualBackupSelection(namedBackups)
-					: latestNamedBackup;
+					: latestAvailableBackup;
 				if (!selectedBackup) {
 					continue;
 				}
@@ -4473,6 +4488,8 @@ async function runAuthLogin(): Promise<number> {
 
 			const latestStorage = await loadAccounts();
 			const count = latestStorage?.accounts.length ?? 1;
+			existingCount = count;
+			namedBackups = [];
 			console.log(`Added account. Total: ${count}`);
 			if (count >= ACCOUNT_LIMITS.MAX_ACCOUNTS) {
 				console.log(`Reached maximum account limit (${ACCOUNT_LIMITS.MAX_ACCOUNTS}).`);

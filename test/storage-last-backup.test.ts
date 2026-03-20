@@ -2,6 +2,22 @@ import { promises as fs } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+const { loggerDebugMock, loggerWarnMock } = vi.hoisted(() => ({
+	loggerDebugMock: vi.fn(),
+	loggerWarnMock: vi.fn(),
+}));
+
+vi.mock("../lib/logger.js", () => ({
+	createLogger: vi.fn(() => ({
+		debug: loggerDebugMock,
+		info: vi.fn(),
+		warn: loggerWarnMock,
+		error: vi.fn(),
+	})),
+	logWarn: vi.fn(),
+}));
+
 import {
 	buildNamedBackupPath,
 	getNamedBackups,
@@ -37,6 +53,8 @@ describe("storage last backup restore", () => {
 	let storagePath: string;
 
 	beforeEach(async () => {
+		loggerDebugMock.mockReset();
+		loggerWarnMock.mockReset();
 		await fs.mkdir(testRoot, { recursive: true });
 		storagePath = join(testRoot, "openai-codex-accounts.json");
 		setStoragePathDirect(storagePath);
@@ -143,6 +161,55 @@ describe("storage last backup restore", () => {
 			"backup-alpha.json",
 			"backup-beta.json",
 		]);
+	});
+
+	it("logs when a named backup changes between stat and load", async () => {
+		const backupPath = buildNamedBackupPath("backup-racy");
+		const initialMtime = new Date("2026-03-05T00:00:00.000Z");
+		const updatedMtime = new Date("2026-03-05T00:00:05.000Z");
+		await fs.mkdir(dirname(backupPath), { recursive: true });
+		await fs.writeFile(
+			backupPath,
+			JSON.stringify({
+				version: 3,
+				activeIndex: 0,
+				activeIndexByFamily: { codex: 0 },
+				accounts: [{ refreshToken: "racy-refresh", addedAt: 1, lastUsed: 1 }],
+			}),
+			"utf-8",
+		);
+		await fs.utimes(backupPath, initialMtime, initialMtime);
+
+		const originalStat = fs.stat.bind(fs);
+		let targetStatCalls = 0;
+		const statSpy = vi.spyOn(fs, "stat").mockImplementation(async (path, options) => {
+			if (String(path) === backupPath) {
+				targetStatCalls += 1;
+				if (targetStatCalls === 2) {
+					await fs.utimes(backupPath, updatedMtime, updatedMtime);
+				}
+			}
+			return originalStat(
+				path as Parameters<typeof originalStat>[0],
+				options as Parameters<typeof originalStat>[1],
+			);
+		});
+
+		try {
+			const backups = await getNamedBackups();
+			expect(backups[0]?.mtimeMs).toBe(initialMtime.getTime());
+			expect(loggerDebugMock).toHaveBeenCalledWith(
+				"backup file changed between stat and load, mtime may be stale",
+				expect.objectContaining({
+					candidatePath: backupPath,
+					fileName: "backup-racy.json",
+					beforeMtimeMs: initialMtime.getTime(),
+					afterMtimeMs: updatedMtime.getTime(),
+				}),
+			);
+		} finally {
+			statSpy.mockRestore();
+		}
 	});
 
 	it("ignores non-json files and subdirectories in the backup root", async () => {
@@ -374,9 +441,10 @@ describe("storage last backup restore", () => {
 			"utf-8",
 		);
 
+		const resolvedBackupPath = await fs.realpath(backupPath);
 		const originalReadFile = fs.readFile.bind(fs);
 		const readFileSpy = vi.spyOn(fs, "readFile").mockImplementation(async (path, options) => {
-			if (String(path) === backupPath) {
+			if (String(path) === backupPath || String(path) === resolvedBackupPath) {
 				await fs.rm(backupPath, { force: true });
 				const error = new Error(
 					`ENOENT: no such file or directory, open '${backupPath}'`,
@@ -395,6 +463,60 @@ describe("storage last backup restore", () => {
 				`Backup file no longer exists: ${backupPath}`,
 			);
 		} finally {
+			readFileSpy.mockRestore();
+		}
+	});
+
+	it("accepts UNC-resolved backups inside the managed root and rejects cross-share escapes", async () => {
+		const insideBackupPath = buildNamedBackupPath("backup-unc-inside");
+		const outsideBackupPath = buildNamedBackupPath("backup-unc-outside");
+		const backupRoot = dirname(insideBackupPath);
+		const resolvedBackupRoot = "\\\\server\\share\\codex\\backups";
+		const resolvedInsideBackupPath = "\\\\server\\share\\codex\\backups\\backup-unc-inside.json";
+		const resolvedOutsideBackupPath = "\\\\server\\other\\backup-unc-outside.json";
+		const backupPayload = JSON.stringify({
+			version: 3,
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0 },
+			accounts: [{ refreshToken: "unc-refresh", addedAt: 1, lastUsed: 1 }],
+		});
+		const originalRealpath = fs.realpath.bind(fs);
+		const originalReadFile = fs.readFile.bind(fs);
+		const realpathSpy = vi.spyOn(fs, "realpath").mockImplementation(async (path, options) => {
+			if (String(path) === backupRoot) {
+				return resolvedBackupRoot;
+			}
+			if (String(path) === insideBackupPath) {
+				return resolvedInsideBackupPath;
+			}
+			if (String(path) === outsideBackupPath) {
+				return resolvedOutsideBackupPath;
+			}
+			return originalRealpath(
+				path as Parameters<typeof originalRealpath>[0],
+				options as Parameters<typeof originalRealpath>[1],
+			);
+		});
+		const readFileSpy = vi.spyOn(fs, "readFile").mockImplementation(async (path, options) => {
+			if (String(path) === resolvedInsideBackupPath) {
+				return backupPayload;
+			}
+			return originalReadFile(
+				path as Parameters<typeof originalReadFile>[0],
+				options as Parameters<typeof originalReadFile>[1],
+			);
+		});
+
+		try {
+			const restored = await restoreAccountsFromBackup(insideBackupPath, {
+				persist: false,
+			});
+			expect(restored.accounts).toHaveLength(1);
+			await expect(
+				restoreAccountsFromBackup(outsideBackupPath, { persist: false }),
+			).rejects.toThrow("Backup path must stay inside");
+		} finally {
+			realpathSpy.mockRestore();
 			readFileSpy.mockRestore();
 		}
 	});

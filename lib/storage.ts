@@ -142,14 +142,23 @@ async function collectNamedBackups(storagePath: string): Promise<NamedBackupSumm
 		if (!entry.name.toLowerCase().endsWith(".json")) continue;
 		const candidatePath = join(backupRoot, entry.name);
 		try {
-			const stats = await fs.stat(candidatePath);
+			const statsBefore = await fs.stat(candidatePath);
 			const { normalized } = await loadAccountsFromPath(candidatePath);
 			if (!normalized || normalized.accounts.length === 0) continue;
+			const statsAfter = await fs.stat(candidatePath).catch(() => null);
+			if (statsAfter && statsAfter.mtimeMs !== statsBefore.mtimeMs) {
+				log.debug("backup file changed between stat and load, mtime may be stale", {
+					candidatePath,
+					fileName: entry.name,
+					beforeMtimeMs: statsBefore.mtimeMs,
+					afterMtimeMs: statsAfter.mtimeMs,
+				});
+			}
 			candidates.push({
 				path: candidatePath,
 				fileName: entry.name,
 				accountCount: normalized.accounts.length,
-				mtimeMs: stats.mtimeMs,
+				mtimeMs: statsBefore.mtimeMs,
 			});
 		} catch (error) {
 			log.debug("Skipping named backup candidate after loadAccountsFromPath/fs.stat failure", {
