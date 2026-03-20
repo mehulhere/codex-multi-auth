@@ -227,6 +227,14 @@ const mockStorage = {
 		coolingDownUntil?: number;
 		rateLimitResetTimes?: Record<string, number>;
 		lastSwitchReason?: string;
+		workspaces?: Array<{
+			id: string;
+			name?: string;
+			enabled: boolean;
+			disabledAt?: number;
+			isDefault?: boolean;
+		}>;
+		currentWorkspaceIndex?: number;
 	}>,
 	activeIndex: 0,
 	activeIndexByFamily: {} as Record<string, number>,
@@ -393,6 +401,22 @@ vi.mock("../lib/accounts.js", () => {
 		}
 
 		markToastShown() {}
+
+		getCurrentWorkspace() {
+			return null;
+		}
+
+		disableCurrentWorkspace() {
+			return false;
+		}
+
+		rotateToNextWorkspace() {
+			return null;
+		}
+
+		hasEnabledWorkspaces() {
+			return true;
+		}
 
 		setActiveIndex(index: number) {
 			return this.accounts[index] ?? null;
@@ -1674,6 +1698,10 @@ describe("OpenAIOAuthPlugin fetch handler", () => {
 				getMinWaitTimeForFamily: () => 0,
 				shouldShowAccountToast: () => false,
 				markToastShown: () => {},
+				getCurrentWorkspace: () => null,
+				disableCurrentWorkspace: () => false,
+				rotateToNextWorkspace: () => null,
+				hasEnabledWorkspaces: () => true,
 				setActiveIndex: () => accountOne,
 				getAccountsSnapshot: () => [accountOne, accountTwo],
 			};
@@ -2075,6 +2103,142 @@ describe("OpenAIOAuthPlugin persistAccountPool", () => {
 				accountLabel: expect.stringContaining("Override [id:"),
 				email: "user@example.com",
 				refreshToken: "shared-refresh",
+			},
+		]);
+	});
+
+	it("preserves tracked workspaces when manual login updates an account without workspace metadata", async () => {
+		process.env.CODEX_AUTH_ACCOUNT_ID = "shared-workspace";
+		mockStorage.accounts = [
+			{
+				accountId: "shared-workspace",
+				accountIdSource: "manual",
+				accountLabel: "Override [id:space]",
+				email: "user@example.com",
+				refreshToken: "refresh-a",
+				addedAt: Date.now() - 200000,
+				lastUsed: Date.now() - 200000,
+				workspaces: [
+					{ id: "workspace-a", name: "Workspace A", enabled: false, disabledAt: 111 },
+					{ id: "workspace-b", name: "Workspace B", enabled: true, isDefault: true },
+				],
+				currentWorkspaceIndex: 1,
+			},
+		];
+
+		const authModule = await import("../lib/auth/auth.js");
+		const accountsModule = await import("../lib/accounts.js");
+		vi.mocked(authModule.createAuthorizationFlow).mockResolvedValueOnce({
+			pkce: { verifier: "persist-preserve-workspaces", challenge: "persist-preserve-workspaces" },
+			state: "persist-preserve-workspaces",
+			url: "https://auth.openai.com/test?state=persist-preserve-workspaces",
+		});
+		vi.mocked(authModule.exchangeAuthorizationCode).mockResolvedValueOnce({
+			type: "success",
+			access: "access-token",
+			refresh: "refresh-updated",
+			expires: Date.now() + 3600_000,
+			idToken: undefined,
+		});
+		vi.mocked(accountsModule.extractAccountEmail).mockReturnValueOnce("user@example.com");
+		vi.mocked(accountsModule.extractAccountId).mockReturnValueOnce("shared-workspace");
+
+		const mockClient = createMockClient();
+		const { OpenAIOAuthPlugin } = await import("../index.js");
+		const plugin =
+			(await OpenAIOAuthPlugin({
+				client: mockClient,
+			} as never)) as unknown as PluginType;
+		const manualMethod = plugin.auth.methods[1] as unknown as {
+			authorize: () => Promise<{
+				callback: (input: string) => Promise<{ type: string }>;
+			}>;
+		};
+
+		const flow = await manualMethod.authorize();
+		const result = await flow.callback(
+			"http://127.0.0.1:1455/auth/callback?code=abc123&state=persist-preserve-workspaces",
+		);
+
+		expect(result.type).toBe("success");
+		expect(mockStorage.accounts).toHaveLength(1);
+		expect(mockStorage.accounts[0]).toEqual(
+			expect.objectContaining({
+				accountId: "shared-workspace",
+				refreshToken: "refresh-updated",
+				currentWorkspaceIndex: 1,
+				workspaces: [
+					{ id: "workspace-a", name: "Workspace A", enabled: false, disabledAt: 111 },
+					{ id: "workspace-b", name: "Workspace B", enabled: true, isDefault: true },
+				],
+			}),
+		);
+	});
+
+	it("preserves disabledAt when refreshed workspace metadata is merged into an existing account", async () => {
+		process.env.CODEX_AUTH_ACCOUNT_ID = "shared-workspace";
+		mockStorage.accounts = [
+			{
+				accountId: "shared-workspace",
+				accountIdSource: "manual",
+				accountLabel: "Override [id:space]",
+				email: "user@example.com",
+				refreshToken: "refresh-a",
+				addedAt: Date.now() - 200000,
+				lastUsed: Date.now() - 200000,
+				workspaces: [
+					{ id: "workspace-a", name: "Workspace A", enabled: false, disabledAt: 222, isDefault: true },
+				],
+				currentWorkspaceIndex: 0,
+			},
+		];
+
+		const authModule = await import("../lib/auth/auth.js");
+		const accountsModule = await import("../lib/accounts.js");
+		vi.mocked(authModule.createAuthorizationFlow).mockResolvedValueOnce({
+			pkce: { verifier: "persist-merge-workspaces", challenge: "persist-merge-workspaces" },
+			state: "persist-merge-workspaces",
+			url: "https://auth.openai.com/test?state=persist-merge-workspaces",
+		});
+		vi.mocked(authModule.exchangeAuthorizationCode).mockResolvedValueOnce({
+			type: "success",
+			access: "access-token",
+			refresh: "refresh-updated",
+			expires: Date.now() + 3600_000,
+			idToken: undefined,
+			workspaces: [
+				{ id: "workspace-a", name: "Workspace A Renamed", enabled: true, isDefault: true },
+			],
+		});
+		vi.mocked(accountsModule.extractAccountEmail).mockReturnValueOnce("user@example.com");
+		vi.mocked(accountsModule.extractAccountId).mockReturnValueOnce("shared-workspace");
+
+		const mockClient = createMockClient();
+		const { OpenAIOAuthPlugin } = await import("../index.js");
+		const plugin =
+			(await OpenAIOAuthPlugin({
+				client: mockClient,
+			} as never)) as unknown as PluginType;
+		const manualMethod = plugin.auth.methods[1] as unknown as {
+			authorize: () => Promise<{
+				callback: (input: string) => Promise<{ type: string }>;
+			}>;
+		};
+
+		const flow = await manualMethod.authorize();
+		const result = await flow.callback(
+			"http://127.0.0.1:1455/auth/callback?code=abc123&state=persist-merge-workspaces",
+		);
+
+		expect(result.type).toBe("success");
+		expect(mockStorage.accounts).toHaveLength(1);
+		expect(mockStorage.accounts[0]?.workspaces).toEqual([
+			{
+				id: "workspace-a",
+				name: "Workspace A Renamed",
+				enabled: false,
+				disabledAt: 222,
+				isDefault: true,
 			},
 		]);
 	});

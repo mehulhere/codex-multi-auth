@@ -580,11 +580,19 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 						const nextAccountIdSource =
 							accountId ? accountIdSource ?? existing.accountIdSource : existing.accountIdSource;
 						const nextAccountLabel = accountLabel ?? existing.accountLabel;
-						// Merge workspaces: preserve enabled status from existing, add new ones
-						const mergedWorkspaces = result.workspaces?.map((newWs) => {
-							const existingWs = existing.workspaces?.find((w) => w.id === newWs.id);
-							return existingWs ? { ...newWs, enabled: existingWs.enabled } : newWs;
-						}) ?? result.workspaces;
+						// Preserve tracked workspace state when auth refreshes do not return workspace metadata.
+						const mergedWorkspaces = result.workspaces
+							? result.workspaces.map((newWs) => {
+									const existingWs = existing.workspaces?.find((w) => w.id === newWs.id);
+									return existingWs
+										? {
+												...newWs,
+												enabled: existingWs.enabled,
+												disabledAt: existingWs.disabledAt,
+											}
+										: newWs;
+								})
+							: existing.workspaces;
 						accounts[existingIndex] = {
 							...existing,
 							accountId: nextAccountId,

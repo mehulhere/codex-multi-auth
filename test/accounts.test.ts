@@ -268,7 +268,7 @@ describe("AccountManager", () => {
           lastUsed: now,
           enabled: false,
           workspaces: [
-            { id: "workspace-1", name: "Workspace 1", enabled: false, disabledAt: now - 2_000 },
+            { id: "workspace-1", name: "Workspace 1", enabled: false, disabledAt: now - 2_000, isDefault: true },
             { id: "workspace-2", name: "Workspace 2", enabled: false, disabledAt: now - 1_000 },
           ],
           currentWorkspaceIndex: 1,
@@ -286,9 +286,10 @@ describe("AccountManager", () => {
     expect(account.enabled).toBe(true);
     expect(manager.hasEnabledWorkspaces(account)).toBe(true);
     expect(manager.getEnabledWorkspaceCount(account)).toBe(2);
-    expect(manager.getCurrentWorkspace(account)?.id).toBe("workspace-2");
+    expect(account.currentWorkspaceIndex).toBe(0);
+    expect(manager.getCurrentWorkspace(account)?.id).toBe("workspace-1");
     expect(account.workspaces).toEqual([
-      { id: "workspace-1", name: "Workspace 1", enabled: true },
+      { id: "workspace-1", name: "Workspace 1", enabled: true, isDefault: true },
       { id: "workspace-2", name: "Workspace 2", enabled: true },
     ]);
   });

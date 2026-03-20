@@ -859,15 +859,17 @@ export class AccountManager {
 			return;
 		}
 
+		let resetIndex = account.workspaces.findIndex((workspace) => workspace.isDefault === true);
+		if (resetIndex < 0) {
+			resetIndex = account.workspaces.findIndex((workspace) => workspace.enabled !== false);
+		}
+
 		for (const workspace of account.workspaces) {
 			workspace.enabled = true;
 			delete workspace.disabledAt;
 		}
 
-		const currentIdx = account.currentWorkspaceIndex ?? 0;
-		if (currentIdx < 0 || currentIdx >= account.workspaces.length) {
-			account.currentWorkspaceIndex = 0;
-		}
+		account.currentWorkspaceIndex = resetIndex >= 0 ? resetIndex : 0;
 	}
 
 	getCurrentWorkspace(account: ManagedAccount): Workspace | null {
