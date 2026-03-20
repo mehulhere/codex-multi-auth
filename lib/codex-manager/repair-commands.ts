@@ -589,6 +589,15 @@ interface DoctorFixAction {
 	message: string;
 }
 
+type DoctorRefreshMutation = {
+	match: AccountMetadataV3;
+	accessToken: string;
+	refreshToken: string;
+	expiresAt: number;
+	email?: string;
+	accountId?: string;
+};
+
 function maskDoctorEmail(value: string | undefined): string | undefined {
 	if (!value) return undefined;
 	const email = value.trim();
@@ -1655,10 +1664,11 @@ export async function runDoctor(
 	});
 
 	const storage = await loadAccounts();
-	const originalDoctorAccounts = storage?.accounts.map((account) => structuredClone(account)) ?? [];
 	let fixChanged = false;
 	let storageFixChanged = false;
-	let fixActions: DoctorFixAction[] = [];
+	let structuralFixActions: DoctorFixAction[] = [];
+	const supplementalFixActions: DoctorFixAction[] = [];
+	let doctorRefreshMutation: DoctorRefreshMutation | null = null;
 	let pendingCodexActiveSync: {
 		accountId: string | undefined;
 		email: string | undefined;
@@ -1670,7 +1680,7 @@ export async function runDoctor(
 	if (options.fix && storage && storage.accounts.length > 0) {
 		const fixed = applyDoctorFixes(storage, deps);
 		storageFixChanged = fixed.changed;
-		fixActions = fixed.actions;
+		structuralFixActions = fixed.actions;
 	}
 	if (!storage || storage.accounts.length === 0) {
 		addCheck({
@@ -1827,6 +1837,7 @@ export async function runDoctor(
 			});
 
 			if (options.fix && activeAccount) {
+				const activeAccountMatch = structuredClone(activeAccount);
 				let syncAccessToken = activeAccount.accessToken;
 				let syncRefreshToken = activeAccount.refreshToken;
 				let syncExpiresAt = activeAccount.expiresAt;
@@ -1835,7 +1846,7 @@ export async function runDoctor(
 
 				if (!canSyncActiveAccount) {
 					if (options.dryRun) {
-						fixActions.push({
+						supplementalFixActions.push({
 							key: "doctor-refresh",
 							message: `Prepared active-account token refresh for account ${activeIndex + 1} (dry-run)`,
 						});
@@ -1851,6 +1862,14 @@ export async function runDoctor(
 							activeAccount.expiresAt = refreshResult.expires;
 							if (refreshedEmail) activeAccount.email = refreshedEmail;
 							deps.applyTokenAccountIdentity(activeAccount, refreshedAccountId);
+							doctorRefreshMutation = {
+								match: activeAccountMatch,
+								accessToken: refreshResult.access,
+								refreshToken: refreshResult.refresh,
+								expiresAt: refreshResult.expires,
+								...(refreshedEmail ? { email: refreshedEmail } : {}),
+								...(refreshedAccountId ? { accountId: refreshedAccountId } : {}),
+							};
 							syncAccessToken = refreshResult.access;
 							syncRefreshToken = refreshResult.refresh;
 							syncExpiresAt = refreshResult.expires;
@@ -1858,7 +1877,7 @@ export async function runDoctor(
 							canSyncActiveAccount = true;
 							storageFixChanged = true;
 							fixChanged = true;
-							fixActions.push({
+							supplementalFixActions.push({
 								key: "doctor-refresh",
 								message: `Refreshed active account tokens for account ${activeIndex + 1}`,
 							});
@@ -1886,7 +1905,7 @@ export async function runDoctor(
 						...(syncIdToken ? { idToken: syncIdToken } : {}),
 					};
 				} else if (options.dryRun && canSyncActiveAccount) {
-					fixActions.push({
+					supplementalFixActions.push({
 						key: "codex-active-sync",
 						message: "Prepared Codex active-account sync (dry-run)",
 					});
@@ -1896,16 +1915,62 @@ export async function runDoctor(
 	}
 
 	if (options.fix && storage && storage.accounts.length > 0 && storageFixChanged && !options.dryRun) {
-		const doctorAccountMutations = collectAccountStorageMutations(
-			originalDoctorAccounts,
-			storage.accounts,
-		);
 		await withAccountStorageTransaction(async (loadedStorage, persist) => {
 			const nextStorage = loadedStorage
 				? structuredClone(loadedStorage)
 				: createEmptyAccountStorage();
-			applyAccountStorageMutations(nextStorage, doctorAccountMutations);
-			normalizeDoctorIndexes(nextStorage);
+			const transactionFixed = applyDoctorFixes(nextStorage, deps);
+			structuralFixActions = transactionFixed.actions;
+			let transactionChanged = transactionFixed.changed;
+			if (doctorRefreshMutation) {
+				const fallbackActiveIndex = deps.resolveActiveIndex(nextStorage, "codex");
+				const fallbackTargetIndex =
+					fallbackActiveIndex >= 0 && fallbackActiveIndex < nextStorage.accounts.length
+						? fallbackActiveIndex
+						: undefined;
+				const targetIndex =
+					findMatchingAccountIndex(nextStorage.accounts, doctorRefreshMutation.match, {
+						allowUniqueAccountIdFallbackWithoutEmail: true,
+					})
+					?? findMatchingAccountIndex(nextStorage.accounts, {
+						accountId: doctorRefreshMutation.accountId,
+						email: doctorRefreshMutation.email,
+						refreshToken: doctorRefreshMutation.refreshToken,
+					}, {
+						allowUniqueAccountIdFallbackWithoutEmail: true,
+					})
+					?? fallbackTargetIndex;
+				const target = targetIndex === undefined ? undefined : nextStorage.accounts[targetIndex];
+				if (target) {
+					if (target.accessToken !== doctorRefreshMutation.accessToken) {
+						target.accessToken = doctorRefreshMutation.accessToken;
+						transactionChanged = true;
+					}
+					if (target.refreshToken !== doctorRefreshMutation.refreshToken) {
+						target.refreshToken = doctorRefreshMutation.refreshToken;
+						transactionChanged = true;
+					}
+					if (target.expiresAt !== doctorRefreshMutation.expiresAt) {
+						target.expiresAt = doctorRefreshMutation.expiresAt;
+						transactionChanged = true;
+					}
+					if (doctorRefreshMutation.email && target.email !== doctorRefreshMutation.email) {
+						target.email = doctorRefreshMutation.email;
+						transactionChanged = true;
+					}
+					if (deps.applyTokenAccountIdentity(target, doctorRefreshMutation.accountId)) {
+						transactionChanged = true;
+					}
+				}
+			}
+			if (normalizeDoctorIndexes(nextStorage)) {
+				transactionChanged = true;
+			}
+			if (!transactionChanged) {
+				storageFixChanged = false;
+				return;
+			}
+			storageFixChanged = true;
 			await persist(nextStorage);
 		});
 	}
@@ -1913,7 +1978,7 @@ export async function runDoctor(
 	if (pendingCodexActiveSync) {
 		const synced = await setCodexCliActiveSelection(pendingCodexActiveSync);
 		if (synced) {
-			fixActions.push({
+			supplementalFixActions.push({
 				key: "codex-active-sync",
 				message: "Synced manager active account into Codex auth state",
 			});
@@ -1926,8 +1991,10 @@ export async function runDoctor(
 		}
 	}
 
+	const fixActions = [...structuralFixActions, ...supplementalFixActions];
+
 	if (options.fix && storage && storage.accounts.length > 0) {
-		fixChanged = fixActions.length > 0;
+		fixChanged = storageFixChanged || fixActions.length > 0;
 		addCheck({
 			key: "auto-fix",
 			severity: fixChanged ? "warn" : "ok",

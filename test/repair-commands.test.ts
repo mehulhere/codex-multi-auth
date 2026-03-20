@@ -571,6 +571,7 @@ describe("repair-commands direct deps coverage", () => {
 
 	it("runDoctor derives auto-fix state from the final action set", async () => {
 		const now = Date.now();
+		let persistedAccountStorage: unknown;
 		loadAccountsMock.mockResolvedValueOnce({
 			version: 3,
 			accounts: [
@@ -587,6 +588,30 @@ describe("repair-commands direct deps coverage", () => {
 			activeIndex: 0,
 			activeIndexByFamily: { codex: 0 },
 		});
+		withAccountStorageTransactionMock.mockImplementation(async (handler) =>
+			handler(
+				{
+					version: 3,
+					accounts: [
+						{
+							email: "doctor@example.com",
+							refreshToken: "doctor-refresh",
+							accessToken: "concurrent-access",
+							expiresAt: now - 30_000,
+							accountId: "doctor-account",
+							accountIdSource: "manual" as const,
+							accountLabel: "Concurrent Label",
+							enabled: true,
+						},
+					],
+					activeIndex: 0,
+					activeIndexByFamily: { codex: 0 },
+				},
+				async (nextStorage: unknown) => {
+					persistedAccountStorage = nextStorage;
+				},
+			),
+		);
 		queuedRefreshMock.mockResolvedValueOnce({
 			type: "success",
 			access: "doctor-access-next",
@@ -594,6 +619,12 @@ describe("repair-commands direct deps coverage", () => {
 			expires: now + 3_600_000,
 			idToken: "doctor-id-next",
 		});
+		extractAccountEmailMock.mockImplementation((accessToken: string | undefined) =>
+			accessToken === "doctor-access-next" ? "doctor-fresh@example.com" : "doctor@example.com"
+		);
+		extractAccountIdMock.mockImplementation((accessToken: string | undefined) =>
+			accessToken === "doctor-access-next" ? "doctor-token-account" : "doctor-account"
+		);
 		setCodexCliActiveSelectionMock.mockResolvedValueOnce(true);
 		const consoleSpy = vi.spyOn(console, "log").mockImplementation(() => {});
 
@@ -605,6 +636,16 @@ describe("repair-commands direct deps coverage", () => {
 		);
 
 		expect(exitCode).toBe(0);
+		expect(withAccountStorageTransactionMock).toHaveBeenCalledTimes(1);
+		expect(persistedAccountStorage).toMatchObject({
+			accounts: [
+				expect.objectContaining({
+					accountLabel: "Concurrent Label",
+					accessToken: "doctor-access-next",
+					refreshToken: "doctor-refresh-next",
+				}),
+			],
+		});
 		const payload = JSON.parse(String(consoleSpy.mock.calls.at(-1)?.[0] ?? "{}")) as {
 			checks: Array<{ key: string; severity: string; message: string }>;
 			fix: {
