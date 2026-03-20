@@ -859,10 +859,7 @@ export class AccountManager {
 			return;
 		}
 
-		let resetIndex = account.workspaces.findIndex((workspace) => workspace.isDefault === true);
-		if (resetIndex < 0) {
-			resetIndex = account.workspaces.findIndex((workspace) => workspace.enabled !== false);
-		}
+		const resetIndex = account.workspaces.findIndex((workspace) => workspace.isDefault === true);
 
 		for (const workspace of account.workspaces) {
 			workspace.enabled = true;

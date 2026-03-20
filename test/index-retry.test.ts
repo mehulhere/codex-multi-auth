@@ -486,5 +486,52 @@ describe("OpenAIAuthPlugin rate-limit retry", () => {
 		expect(firstHeaders.get("x-account-id")).toBe("workspace-1");
 		expect(secondHeaders.get("x-account-id")).toBe("account-2");
 	});
+
+	it("does not disable workspace-less accounts on workspace-disabled responses", async () => {
+		const account = createMockAccount({
+			workspaces: undefined,
+			currentWorkspaceIndex: undefined,
+		});
+		accountManagerState.accounts = [account];
+		accountManagerState.accountSelections = [account];
+
+		globalThis.fetch = vi.fn().mockResolvedValue(
+			new Response(
+				JSON.stringify({
+					error: {
+						code: "workspace_disabled",
+						message: "Workspace expired",
+					},
+				}),
+				{
+					status: 403,
+					headers: { "content-type": "application/json" },
+				},
+			),
+		) as any;
+
+		const { OpenAIAuthPlugin } = await import("../index.js");
+		const client = {
+			tui: { showToast: vi.fn() },
+			auth: { set: vi.fn() },
+		} as any;
+		const plugin = await OpenAIAuthPlugin({ client });
+
+		const getAuth = async () => ({
+			type: "oauth" as const,
+			access: "a",
+			refresh: "r",
+			expires: Date.now() + 60_000,
+			multiAccount: true,
+		});
+
+		const sdk = (await plugin.auth.loader(getAuth, { options: {}, models: {} })) as any;
+		const response = await sdk.fetch("https://example.com", {});
+
+		expect(response.status).toBe(403);
+		expect(accountManagerState.disableCurrentWorkspaceCalls).toBe(0);
+		expect(accountManagerState.rotateToNextWorkspaceCalls).toBe(0);
+		expect(accountManagerState.setAccountEnabledCalls).toEqual([]);
+	});
 });
 

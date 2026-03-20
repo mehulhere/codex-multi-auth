@@ -593,6 +593,28 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 										: newWs;
 								})
 							: existing.workspaces;
+						const nextCurrentWorkspaceIndex =
+							mergedWorkspaces && mergedWorkspaces.length > 0
+								? (() => {
+										const currentIndex =
+											typeof existing.currentWorkspaceIndex === "number"
+												? existing.currentWorkspaceIndex
+												: 0;
+										if (currentIndex >= 0 && currentIndex < mergedWorkspaces.length) {
+											return currentIndex;
+										}
+										const defaultWorkspaceIndex = mergedWorkspaces.findIndex(
+											(workspace) => workspace.isDefault === true,
+										);
+										if (defaultWorkspaceIndex >= 0) {
+											return defaultWorkspaceIndex;
+										}
+										const firstEnabledWorkspaceIndex = mergedWorkspaces.findIndex(
+											(workspace) => workspace.enabled !== false,
+										);
+										return firstEnabledWorkspaceIndex >= 0 ? firstEnabledWorkspaceIndex : 0;
+									})()
+								: existing.currentWorkspaceIndex;
 						accounts[existingIndex] = {
 							...existing,
 							accountId: nextAccountId,
@@ -604,6 +626,7 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 							expiresAt: result.expires,
 							lastUsed: now,
 							workspaces: mergedWorkspaces,
+							currentWorkspaceIndex: nextCurrentWorkspaceIndex,
 						};
 					}
 
@@ -1940,56 +1963,63 @@ accountAttemptLoop: while (attempted.size < Math.max(1, accountCount)) {
 			runtimeMetrics.failedRequests++;
 			runtimeMetrics.lastError = `Workspace disabled for account ${account.index + 1}`;
 
-			const currentWorkspace = accountManager.getCurrentWorkspace(account);
-			const workspaceName = currentWorkspace?.name ?? currentWorkspace?.id ?? "unknown";
+			if (!account.workspaces || account.workspaces.length === 0) {
+				logWarn(
+					`Workspace disabled/expired for account ${account.index + 1} without tracked workspaces. Leaving account enabled.`,
+					{ errorCode: workspaceErrorCode },
+				);
+			} else {
+				const currentWorkspace = accountManager.getCurrentWorkspace(account);
+				const workspaceName = currentWorkspace?.name ?? currentWorkspace?.id ?? "unknown";
 
-			logWarn(
-				`Workspace disabled/expired for account ${account.index + 1} - workspace: ${workspaceName}. Rotating to next workspace.`,
-				{ errorCode: workspaceErrorCode },
-			);
+				logWarn(
+					`Workspace disabled/expired for account ${account.index + 1} - workspace: ${workspaceName}. Rotating to next workspace.`,
+					{ errorCode: workspaceErrorCode },
+				);
 
-			const disabledWorkspace = currentWorkspace
-				? accountManager.disableCurrentWorkspace(account, currentWorkspace.id)
-				: false;
-			let nextWorkspace = disabledWorkspace
-				? accountManager.rotateToNextWorkspace(account)
-				: accountManager.getCurrentWorkspace(account);
-			if (!disabledWorkspace && (!nextWorkspace || nextWorkspace.enabled === false)) {
-				nextWorkspace = accountManager.rotateToNextWorkspace(account);
-			}
+				const disabledWorkspace = currentWorkspace
+					? accountManager.disableCurrentWorkspace(account, currentWorkspace.id)
+					: false;
+				let nextWorkspace = disabledWorkspace
+					? accountManager.rotateToNextWorkspace(account)
+					: accountManager.getCurrentWorkspace(account);
+				if (!disabledWorkspace && (!nextWorkspace || nextWorkspace.enabled === false)) {
+					nextWorkspace = accountManager.rotateToNextWorkspace(account);
+				}
 
-			if (nextWorkspace) {
+				if (nextWorkspace) {
+					accountManager.saveToDiskDebounced();
+
+					const newWorkspaceName = nextWorkspace.name ?? nextWorkspace.id;
+					await showToast(
+						`Workspace ${workspaceName} disabled. Switched to ${newWorkspaceName}.`,
+						"warning",
+						{ duration: toastDurationMs },
+					);
+
+					logInfo(`Rotated to workspace ${newWorkspaceName} for account ${account.index + 1}`);
+
+					// Allow the same account to be selected again with fresh request state.
+					attempted.delete(account.index);
+					continue accountAttemptLoop;
+				}
+
+				logWarn(`All workspaces disabled for account ${account.index + 1}. Disabling account.`);
+
+				accountManager.setAccountEnabled(account.index, false);
 				accountManager.saveToDiskDebounced();
 
-				const newWorkspaceName = nextWorkspace.name ?? nextWorkspace.id;
 				await showToast(
-					`Workspace ${workspaceName} disabled. Switched to ${newWorkspaceName}.`,
+					`All workspaces disabled for account ${account.index + 1}. Switching to another account.`,
 					"warning",
 					{ duration: toastDurationMs },
 				);
 
-				logInfo(`Rotated to workspace ${newWorkspaceName} for account ${account.index + 1}`);
-
-				// Allow the same account to be selected again with fresh request state.
-				attempted.delete(account.index);
+				// Forget session affinity and continue the outer loop so another
+				// enabled account can service the request.
+				sessionAffinityStore?.forgetSession(sessionAffinityKey);
 				continue accountAttemptLoop;
 			}
-
-			logWarn(`All workspaces disabled for account ${account.index + 1}. Disabling account.`);
-
-			accountManager.setAccountEnabled(account.index, false);
-			accountManager.saveToDiskDebounced();
-
-			await showToast(
-				`All workspaces disabled for account ${account.index + 1}. Switching to another account.`,
-				"warning",
-				{ duration: toastDurationMs },
-			);
-
-			// Forget session affinity and continue the outer loop so another
-			// enabled account can service the request.
-			sessionAffinityStore?.forgetSession(sessionAffinityKey);
-			continue accountAttemptLoop;
 		}
 
 		if (errorResponse.status === 403 && !unsupportedModelInfo.isUnsupported && !isDisabledWorkspaceError) {
