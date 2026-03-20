@@ -37,6 +37,7 @@ import {
 	summarizeForecast,
 	type ForecastAccountResult,
 } from "./forecast.js";
+import { createLogger } from "./logger.js";
 import { MODEL_FAMILIES, type ModelFamily } from "./prompts/codex.js";
 import {
 	fetchCodexQuotaSnapshot,
@@ -86,6 +87,8 @@ type TokenSuccessWithAccount = TokenSuccess & {
 	accountLabel?: string;
 };
 type PromptTone = "accent" | "success" | "warning" | "danger" | "muted";
+
+const log = createLogger("codex-manager");
 
 function stylePromptText(text: string, tone: PromptTone): string {
 	if (!output.isTTY) return text;
@@ -1141,7 +1144,50 @@ async function promptManualCallback(
 			console.log("");
 			console.log(stylePromptText(UI_COPY.oauth.pastePrompt, "accent"));
 		}
-		const answer = await rl.question(useInteractivePrompt ? "◆  " : "");
+		const answer = useInteractivePrompt
+			? await rl.question("◆  ")
+			: await new Promise<string | null>((resolve, reject) => {
+					if (input.readableEnded || input.destroyed) {
+						resolve(null);
+						return;
+					}
+					let settled = false;
+					const handleInputClosed = () => {
+						if (settled) return;
+						settled = true;
+						input.off("end", handleInputClosed);
+						input.off("close", handleInputClosed);
+						resolve(null);
+					};
+					const finish = (value: string) => {
+						if (settled) return;
+						settled = true;
+						input.off("end", handleInputClosed);
+						input.off("close", handleInputClosed);
+						resolve(value);
+					};
+					const fail = (error: unknown) => {
+						if (settled) return;
+						settled = true;
+						input.off("end", handleInputClosed);
+						input.off("close", handleInputClosed);
+						reject(error);
+					};
+					rl.question("")
+						.then((value) => finish(value))
+						.catch((error) => {
+							if (isAbortError(error) || isReadlineClosedError(error)) {
+								handleInputClosed();
+								return;
+							}
+							fail(error);
+						});
+					input.once("end", handleInputClosed);
+					input.once("close", handleInputClosed);
+				});
+		if (answer === null) {
+			return null;
+		}
 		if (answer.includes("\u001b")) {
 			return null;
 		}
@@ -1160,13 +1206,24 @@ async function promptManualCallback(
 		if (parsed.state && parsed.state !== state) return null;
 		return parsed.code;
 	} catch (error) {
-		if (isAbortError(error)) {
+		if (isAbortError(error) || isReadlineClosedError(error)) {
 			return null;
 		}
 		throw error;
 	} finally {
 		rl.close();
 	}
+}
+
+function isReadlineClosedError(error: unknown): boolean {
+	if (!(error instanceof Error)) {
+		return false;
+	}
+	const errorCode =
+		typeof error === "object" && error !== null && "code" in error
+			? String((error as { code?: unknown }).code)
+			: "";
+	return errorCode === "ERR_USE_AFTER_CLOSE" || /readline was closed/i.test(error.message);
 }
 
 type OAuthSignInMode = "browser" | "manual" | "cancel";
@@ -1468,13 +1525,8 @@ async function runOAuthFlow(
 ): Promise<TokenResult> {
 	const { pkce, state, url } = await createAuthorizationFlow({ forceNewLogin });
 	const preferManualMode = options.manual || isBrowserLaunchSuppressed();
-	let oauthServer: Awaited<ReturnType<typeof startLocalOAuthServer>> | null = null;
-	try {
-		oauthServer = await startLocalOAuthServer({ state });
-	} catch {
-		oauthServer = null;
-	}
 	let code: string | null = null;
+	let oauthServer: Awaited<ReturnType<typeof startLocalOAuthServer>> | null = null;
 	try {
 		const signInMode = preferManualMode ? "manual" : await promptOAuthSignInMode();
 		if (signInMode === "cancel") {
@@ -1483,6 +1535,29 @@ async function runOAuthFlow(
 				reason: "unknown",
 				message: UI_COPY.oauth.cancelled,
 			};
+		}
+
+		if (signInMode === "browser") {
+			try {
+				oauthServer = await startLocalOAuthServer({ state });
+			} catch (serverError) {
+				log.warn(
+					"Local OAuth callback server unavailable; falling back to manual callback entry.",
+					serverError instanceof Error
+						? {
+							message: serverError.message,
+							stack: serverError.stack,
+							code:
+								typeof serverError === "object" &&
+								serverError !== null &&
+								"code" in serverError
+									? String(serverError.code)
+									: undefined,
+						}
+						: { error: String(serverError) },
+				);
+				oauthServer = null;
+			}
 		}
 
 		if (signInMode === "browser") {
@@ -1523,7 +1598,9 @@ async function runOAuthFlow(
 				stylePromptText(
 					waitingForCallback
 						? UI_COPY.oauth.callbackMissed
-						: UI_COPY.oauth.callbackUnavailable,
+						: signInMode === "manual"
+							? UI_COPY.oauth.callbackBypassed
+							: UI_COPY.oauth.callbackUnavailable,
 					"warning",
 				),
 			);
