@@ -30,13 +30,17 @@ const detectOcChatgptMultiAuthTargetMock = vi.fn();
 const normalizeAccountStorageMock = vi.fn((value) => value);
 const withAccountStorageTransactionMock = vi.fn();
 const withAccountAndFlaggedStorageTransactionMock = vi.fn();
+const loggerDebugMock = vi.fn();
+const loggerInfoMock = vi.fn();
+const loggerWarnMock = vi.fn();
+const loggerErrorMock = vi.fn();
 
 vi.mock("../lib/logger.js", () => ({
 	createLogger: vi.fn(() => ({
-		debug: vi.fn(),
-		info: vi.fn(),
-		warn: vi.fn(),
-		error: vi.fn(),
+		debug: loggerDebugMock,
+		info: loggerInfoMock,
+		warn: loggerWarnMock,
+		error: loggerErrorMock,
 	})),
 	logWarn: vi.fn(),
 }));
@@ -3243,6 +3247,10 @@ describe("codex manager cli commands", () => {
 		expect(signInItems.some((item) => item.value === "manual")).toBe(true);
 		expect(signInItems.some((item) => item.value === "restore-backup")).toBe(
 			false,
+		);
+		expect(loggerDebugMock).toHaveBeenCalledWith(
+			"getNamedBackups failed, skipping restore option",
+			{ error: "backups directory is locked" },
 		);
 	});
 

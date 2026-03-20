@@ -909,7 +909,19 @@ export async function restoreAccountsFromBackup(
 		throw new Error(`Backup path must stay inside ${resolvedBackupRoot}: ${path}`);
 	}
 
-	const { normalized } = await loadAccountsFromPath(resolvedBackupPath);
+	const { normalized } = await (async () => {
+		try {
+			return await loadAccountsFromPath(resolvedBackupPath);
+		} catch (error) {
+			const code = (error as NodeJS.ErrnoException).code;
+			if (code === "ENOENT") {
+				throw new Error(
+					`Backup file no longer exists: ${resolvedBackupPath}`,
+				);
+			}
+			throw error;
+		}
+	})();
 	if (!normalized || normalized.accounts.length === 0) {
 		throw new Error(`Backup does not contain any accounts: ${resolvedBackupPath}`);
 	}
@@ -2173,7 +2185,8 @@ function normalizeFlaggedStorage(data: unknown): FlaggedAccountStorageV1 {
 			value === "rate-limit" ||
 			value === "initial" ||
 			value === "rotation" ||
-			value === "best";
+			value === "best" ||
+			value === "restore";
 		const isCooldownReason = (
 			value: unknown,
 		): value is AccountMetadataV3["cooldownReason"] =>

@@ -37,6 +37,7 @@ import {
 	summarizeForecast,
 	type ForecastAccountResult,
 } from "./forecast.js";
+import { createLogger } from "./logger.js";
 import { MODEL_FAMILIES, type ModelFamily } from "./prompts/codex.js";
 import {
 	fetchCodexQuotaSnapshot,
@@ -92,6 +93,7 @@ type TokenSuccessWithAccount = TokenSuccess & {
 	accountLabel?: string;
 };
 type PromptTone = "accent" | "success" | "warning" | "danger" | "muted";
+const log = createLogger("codex-manager");
 
 function stylePromptText(text: string, tone: PromptTone): string {
 	if (!output.isTTY) return text;
@@ -4359,7 +4361,10 @@ async function runAuthLogin(): Promise<number> {
 		if (existingCount === 0) {
 			try {
 				namedBackups = await getNamedBackups();
-			} catch {
+			} catch (error) {
+				log.debug("getNamedBackups failed, skipping restore option", {
+					error: error instanceof Error ? error.message : String(error),
+				});
 				namedBackups = [];
 			}
 		}
@@ -4413,7 +4418,7 @@ async function runAuthLogin(): Promise<number> {
 								storage: restoredStorage,
 								targetIndex,
 								parsed: targetIndex + 1,
-								switchReason: "rotation",
+								switchReason: "restore",
 								preserveActiveIndexByFamily: true,
 							});
 							console.log(
@@ -4541,7 +4546,7 @@ async function persistAndSyncSelectedAccount({
 	storage: NonNullable<Awaited<ReturnType<typeof loadAccounts>>>;
 	targetIndex: number;
 	parsed: number;
-	switchReason: "rotation" | "best";
+	switchReason: "rotation" | "best" | "restore";
 	initialSyncIdToken?: string;
 	preserveActiveIndexByFamily?: boolean;
 }): Promise<{ synced: boolean; wasDisabled: boolean }> {
