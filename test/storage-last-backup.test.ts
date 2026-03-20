@@ -255,6 +255,45 @@ describe("storage last backup restore", () => {
 		);
 	});
 
+	it("throws a clear error when a backup disappears before restore realpath", async () => {
+		const backupPath = buildNamedBackupPath("backup-disappeared-before-restore");
+		await fs.mkdir(dirname(backupPath), { recursive: true });
+		await fs.writeFile(
+			backupPath,
+			JSON.stringify({
+				version: 3,
+				activeIndex: 0,
+				activeIndexByFamily: { codex: 0 },
+				accounts: [{ refreshToken: "gone-refresh", addedAt: 1, lastUsed: 1 }],
+			}),
+			"utf-8",
+		);
+
+		const originalRealpath = fs.realpath.bind(fs);
+		const realpathSpy = vi.spyOn(fs, "realpath").mockImplementation(async (path, options) => {
+			if (String(path) === backupPath) {
+				await fs.rm(backupPath, { force: true });
+				const error = new Error(
+					`ENOENT: no such file or directory, realpath '${backupPath}'`,
+				) as NodeJS.ErrnoException;
+				error.code = "ENOENT";
+				throw error;
+			}
+			return originalRealpath(
+				path as Parameters<typeof originalRealpath>[0],
+				options as Parameters<typeof originalRealpath>[1],
+			);
+		});
+
+		try {
+			await expect(restoreAccountsFromBackup(backupPath)).rejects.toThrow(
+				`Backup file no longer exists: ${backupPath}`,
+			);
+		} finally {
+			realpathSpy.mockRestore();
+		}
+	});
+
 	it("rejects restore paths outside the managed named-backup root", async () => {
 		const backupPath = buildNamedBackupPath("backup-inside-root");
 		const escapedBackupPath = join(testRoot, "backup-outside-root.json");

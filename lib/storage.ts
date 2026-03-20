@@ -886,7 +886,16 @@ export async function restoreAccountsFromBackup(
 		}
 		throw error;
 	}
-	const resolvedBackupPath = await fs.realpath(path);
+	let resolvedBackupPath: string;
+	try {
+		resolvedBackupPath = await fs.realpath(path);
+	} catch (error) {
+		const code = (error as NodeJS.ErrnoException).code;
+		if (code === "ENOENT") {
+			throw new Error(`Backup file no longer exists: ${path}`);
+		}
+		throw error;
+	}
 	const relativePath = relative(resolvedBackupRoot, resolvedBackupPath);
 	const isInsideBackupRoot =
 		relativePath === "" ||

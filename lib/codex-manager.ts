@@ -4381,9 +4381,7 @@ async function runAuthLogin(): Promise<number> {
 				}
 
 				const selectedBackup = restoreMode === "manual"
-					? await promptManualBackupSelection(
-						await getNamedBackups().catch(() => []),
-					)
+					? await promptManualBackupSelection(namedBackups)
 					: latestNamedBackup;
 				if (!selectedBackup) {
 					continue;
