@@ -849,7 +849,7 @@ export class AccountManager {
 		const workspace = account.workspaces[idx];
 		if (!workspace) return false;
 		workspace.enabled = false;
-		workspace.disabledAt = Date.now();
+		workspace.disabledAt = nowMs();
 		return true;
 	}
 

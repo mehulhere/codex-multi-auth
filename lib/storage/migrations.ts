@@ -5,16 +5,9 @@
 
 import { MODEL_FAMILIES, type ModelFamily } from "../prompts/codex.js";
 import type { AccountIdSource } from "../types.js";
+import type { Workspace } from "../accounts.js";
 
 export type CooldownReason = "auth-failure" | "network-error" | "rate-limit";
-
-export interface Workspace {
-	id: string;
-	name?: string;
-	enabled: boolean;
-	disabledAt?: number;
-	isDefault?: boolean;
-}
 
 export interface RateLimitStateV3 {
 	[key: string]: number | undefined;

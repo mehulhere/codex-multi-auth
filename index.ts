@@ -1478,7 +1478,7 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 											);
 										}
 
-while (attempted.size < Math.max(1, accountCount)) {
+accountAttemptLoop: while (attempted.size < Math.max(1, accountCount)) {
 				let account = null;
 				if (
 					!usedPreferredSessionAccount &&
@@ -1967,7 +1967,75 @@ while (attempted.size < Math.max(1, accountCount)) {
 					blockedModel,
 				);
 			}
-		if (errorResponse.status === 403 && !unsupportedModelInfo.isUnsupported) {
+		const workspaceErrorCode =
+			(errorBody as { error?: { code?: string } } | undefined)?.error?.code ?? "";
+		const workspaceErrorMessage =
+			(errorBody as { error?: { message?: string } } | undefined)?.error?.message ?? "";
+		const isDisabledWorkspaceError =
+			errorResponse.status === 403 &&
+			isWorkspaceDisabledError(
+				errorResponse.status,
+				workspaceErrorCode,
+				workspaceErrorMessage,
+			);
+
+		// Handle workspace disabled/expired errors by rotating to next workspace within account
+		if (isDisabledWorkspaceError) {
+				runtimeMetrics.failedRequests++;
+				runtimeMetrics.lastError = `Workspace disabled for account ${account.index + 1}`;
+
+				// Get current workspace info for logging
+				const currentWorkspace = accountManager.getCurrentWorkspace(account);
+				const workspaceName = currentWorkspace?.name ?? currentWorkspace?.id ?? "unknown";
+
+				logWarn(
+					`Workspace disabled/expired for account ${account.index + 1} - workspace: ${workspaceName}. Rotating to next workspace.`,
+					{ errorCode: workspaceErrorCode },
+				);
+
+				// Disable the current workspace
+				accountManager.disableCurrentWorkspace(account);
+
+				// Try to rotate to next enabled workspace
+				const nextWorkspace = accountManager.rotateToNextWorkspace(account);
+
+				if (nextWorkspace) {
+					// Found another enabled workspace, persist it and restart the
+					// outer account loop so accountId and headers are rebuilt.
+					accountManager.saveToDiskDebounced();
+
+					const newWorkspaceName = nextWorkspace.name ?? nextWorkspace.id;
+					await showToast(
+						`Workspace ${workspaceName} disabled. Switched to ${newWorkspaceName}.`,
+						"warning",
+						{ duration: toastDurationMs },
+					);
+
+					logInfo(`Rotated to workspace ${newWorkspaceName} for account ${account.index + 1}`);
+
+					// Allow the same account to be selected again with fresh request state.
+					attempted.delete(account.index);
+					continue accountAttemptLoop;
+				} else {
+					// No more enabled workspaces, disable the entire account
+					logWarn(`All workspaces disabled for account ${account.index + 1}. Disabling account.`);
+
+					accountManager.setAccountEnabled(account.index, false);
+					accountManager.saveToDiskDebounced();
+
+					await showToast(
+						`All workspaces disabled for account ${account.index + 1}. Switching to another account.`,
+						"warning",
+						{ duration: toastDurationMs },
+					);
+
+					// Forget session affinity and rotate to next account
+					sessionAffinityStore?.forgetSession(sessionAffinityKey);
+					break;
+				}
+		}
+
+		if (errorResponse.status === 403 && !unsupportedModelInfo.isUnsupported && !isDisabledWorkspaceError) {
 			entitlementCache.markBlocked(
 				entitlementAccountKey,
 				model ?? modelFamily,
@@ -1977,65 +2045,6 @@ while (attempted.size < Math.max(1, accountCount)) {
 				entitlementAccountKey,
 				capabilityModelKey,
 			);
-		}
-
-		// Handle workspace disabled/expired errors by rotating to next workspace within account
-		if (errorResponse.status === 403 && errorBody) {
-			const errorCode = (errorBody as { error?: { code?: string } })?.error?.code ?? "";
-			const errorMessage = (errorBody as { error?: { message?: string } })?.error?.message ?? "";
-			
-			if (isWorkspaceDisabledError(errorResponse.status, errorCode, errorMessage)) {
-				runtimeMetrics.failedRequests++;
-				runtimeMetrics.lastError = `Workspace disabled for account ${account.index + 1}`;
-				
-				// Get current workspace info for logging
-				const currentWorkspace = accountManager.getCurrentWorkspace(account);
-				const workspaceName = currentWorkspace?.name ?? currentWorkspace?.id ?? "unknown";
-				
-				logWarn(
-					`Workspace disabled/expired for account ${account.index + 1} (${account.email ?? "unknown"}) - workspace: ${workspaceName}. Rotating to next workspace.`,
-					{ errorCode, errorMessage },
-				);
-				
-				// Disable the current workspace
-				accountManager.disableCurrentWorkspace(account);
-				
-				// Try to rotate to next enabled workspace
-				const nextWorkspace = accountManager.rotateToNextWorkspace(account);
-				
-				if (nextWorkspace) {
-					// Found another enabled workspace, retry with it
-					accountManager.saveToDiskDebounced();
-					
-					const newWorkspaceName = nextWorkspace.name ?? nextWorkspace.id;
-					await showToast(
-						`Workspace ${workspaceName} disabled. Switched to ${newWorkspaceName}.`,
-						"warning",
-						{ duration: toastDurationMs },
-					);
-					
-					logInfo(`Rotated to workspace ${newWorkspaceName} for account ${account.index + 1}`);
-					
-					// Retry the request with the new workspace (continue the loop)
-					continue;
-				} else {
-					// No more enabled workspaces, disable the entire account
-					logWarn(`All workspaces disabled for account ${account.index + 1}. Disabling account.`);
-					
-					accountManager.setAccountEnabled(account.index, false);
-					accountManager.saveToDiskDebounced();
-					
-					await showToast(
-						`All workspaces disabled for account ${account.index + 1}. Switching to another account.`,
-						"warning",
-						{ duration: toastDurationMs },
-					);
-					
-					// Forget session affinity and rotate to next account
-					sessionAffinityStore?.forgetSession(sessionAffinityKey);
-					break;
-				}
-			}
 		}
 
 		if (recoveryHook && errorBody && isRecoverableError(errorBody)) {

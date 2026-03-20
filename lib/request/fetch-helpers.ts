@@ -290,22 +290,24 @@ export function isWorkspaceDisabledError(status: number, code: string, bodyText:
                 }
         }
         
-        // Check for specific error codes that indicate workspace issues
-        const workspaceErrorCodes = [
-                "workspace_disabled",
-                "workspace_expired",
-                "workspace_terminated",
-                "account_disabled",
-                "account_expired",
-                "organization_disabled",
-                "billing_failed",
-                "payment_required",
-        ];
-        
-        if (workspaceErrorCodes.some((c) => code.toLowerCase().includes(c))) {
-                return true;
+        // Check for specific error codes that indicate workspace issues.
+        if (status === 403) {
+                const workspaceErrorCodes = [
+                        "workspace_disabled",
+                        "workspace_expired",
+                        "workspace_terminated",
+                        "account_disabled",
+                        "account_expired",
+                        "organization_disabled",
+                        "billing_failed",
+                        "payment_required",
+                ];
+
+                if (workspaceErrorCodes.some((c) => code.toLowerCase().includes(c))) {
+                        return true;
+                }
         }
-        
+
         return false;
 }
 

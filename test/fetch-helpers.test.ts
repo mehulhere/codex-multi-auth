@@ -346,6 +346,8 @@ describe('isWorkspaceDisabledError', () => {
 		expect(isWorkspaceDisabledError(400, '', 'Your workspace has been disabled')).toBe(false);
 		expect(isWorkspaceDisabledError(401, '', 'Your workspace has been disabled')).toBe(false);
 		expect(isWorkspaceDisabledError(500, '', 'Your workspace has been disabled')).toBe(false);
+		expect(isWorkspaceDisabledError(400, 'workspace_disabled', '')).toBe(false);
+		expect(isWorkspaceDisabledError(402, 'payment_required', '')).toBe(false);
 	});
 
 	it('returns false for 403 with unrelated messages', () => {
