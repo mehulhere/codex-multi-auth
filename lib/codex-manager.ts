@@ -4382,7 +4382,11 @@ async function handleManageAction(
 ): Promise<void> {
 	if (typeof menuResult.switchAccountIndex === "number") {
 		const index = menuResult.switchAccountIndex;
-		await runSwitch([String(index + 1)]);
+		await runSwitchCommand([String(index + 1)], {
+			setStoragePath,
+			loadAccounts,
+			persistAndSyncSelectedAccount,
+		});
 		return;
 	}
 
@@ -4794,14 +4798,6 @@ async function runAuthLogin(args: string[]): Promise<number> {
 			forceNewLogin = true;
 		}
 	}
-}
-
-async function runSwitch(args: string[]): Promise<number> {
-	return runSwitchCommand(args, {
-		setStoragePath,
-		loadAccounts,
-		persistAndSyncSelectedAccount,
-	});
 }
 
 async function persistAndSyncSelectedAccount({
@@ -5287,7 +5283,11 @@ export async function runCodexMultiAuthCli(rawArgs: string[]): Promise<number> {
 		});
 	}
 	if (command === "switch") {
-		return runSwitch(rest);
+		return runSwitchCommand(rest, {
+			setStoragePath,
+			loadAccounts,
+			persistAndSyncSelectedAccount,
+		});
 	}
 	if (command === "check") {
 		return runCheckCommand({ runHealthCheck });
