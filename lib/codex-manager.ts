@@ -1142,7 +1142,7 @@ type OAuthSignInMode = "browser" | "manual" | "restore-backup" | "cancel";
 type BackupRestoreMode = "latest" | "manual" | "back";
 
 function formatBackupSavedAt(mtimeMs: number): string {
-	return new Date(mtimeMs).toLocaleString("en-US", {
+	return new Date(mtimeMs).toLocaleString(undefined, {
 		month: "short",
 		day: "numeric",
 		year: "numeric",
@@ -4434,8 +4434,9 @@ async function runAuthLogin(): Promise<number> {
 					const message = error instanceof Error ? error.message : String(error);
 					if (error instanceof StorageError) {
 						console.error(formatStorageErrorHint(error, selectedBackup.path));
+					} else {
+						console.error(`Backup restore failed: ${message}`);
 					}
-					console.error(`Backup restore failed: ${message}`);
 					const storageAfterRestoreAttempt = await loadAccounts().catch(() => null);
 					if ((storageAfterRestoreAttempt?.accounts.length ?? 0) > 0) {
 						continue loginFlow;

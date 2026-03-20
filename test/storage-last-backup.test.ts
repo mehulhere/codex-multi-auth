@@ -274,4 +274,22 @@ describe("storage last backup restore", () => {
 			"Backup path must stay inside",
 		);
 	});
+
+	it("throws a clear error when the backup root has never been created", async () => {
+		const escapedBackupPath = join(testRoot, "backup-outside-root.json");
+		await fs.writeFile(
+			escapedBackupPath,
+			JSON.stringify({
+				version: 3,
+				activeIndex: 0,
+				activeIndexByFamily: { codex: 0 },
+				accounts: [{ refreshToken: "outside-refresh", addedAt: 1, lastUsed: 1 }],
+			}),
+			"utf-8",
+		);
+
+		await expect(restoreAccountsFromBackup(escapedBackupPath)).rejects.toThrow(
+			"Backup root does not exist",
+		);
+	});
 });

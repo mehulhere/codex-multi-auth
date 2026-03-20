@@ -3286,6 +3286,45 @@ describe("codex manager cli commands", () => {
 		expect(errorSpy).toHaveBeenCalledWith("Backup restore failed: File is busy");
 	});
 
+	it("prints the storage hint only once when restore fails with StorageError", async () => {
+		const now = Date.now();
+		setInteractiveTTY(true);
+		loadAccountsMock.mockResolvedValue(null);
+		getNamedBackupsMock.mockResolvedValue([
+			{
+				path: "/mock/backups/locked.json",
+				fileName: "locked.json",
+				accountCount: 1,
+				mtimeMs: now,
+			},
+		]);
+		const storageModule = await import("../lib/storage.js");
+		const busyError = new storageModule.StorageError(
+			"File is busy",
+			"EBUSY",
+			"/mock/backups/locked.json",
+			"File is locked",
+		);
+		restoreAccountsFromBackupMock.mockRejectedValueOnce(busyError);
+		selectMock
+			.mockResolvedValueOnce("restore-backup")
+			.mockResolvedValueOnce("latest")
+			.mockResolvedValueOnce("cancel");
+		const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+
+		const exitCode = await runCodexMultiAuthCli(["auth", "login"]);
+
+		expect(exitCode).toBe(0);
+		expect(errorSpy).toHaveBeenCalledTimes(1);
+		expect(errorSpy).toHaveBeenCalledWith(
+			storageModule.formatStorageErrorHint(
+				busyError,
+				"/mock/backups/locked.json",
+			),
+		);
+	});
+
 	it("keeps onboarding in the empty-pool flow when restore persistence fails before any storage is written", async () => {
 		const now = Date.now();
 		setInteractiveTTY(true);

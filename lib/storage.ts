@@ -876,10 +876,17 @@ export async function restoreAccountsFromBackup(
 	options?: { persist?: boolean },
 ): Promise<AccountStorageV3> {
 	const backupRoot = getNamedBackupRoot(getStoragePath());
-	const [resolvedBackupRoot, resolvedBackupPath] = await Promise.all([
-		fs.realpath(backupRoot),
-		fs.realpath(path),
-	]);
+	let resolvedBackupRoot: string;
+	try {
+		resolvedBackupRoot = await fs.realpath(backupRoot);
+	} catch (error) {
+		const code = (error as NodeJS.ErrnoException).code;
+		if (code === "ENOENT") {
+			throw new Error(`Backup root does not exist: ${backupRoot}`);
+		}
+		throw error;
+	}
+	const resolvedBackupPath = await fs.realpath(path);
 	const relativePath = relative(resolvedBackupRoot, resolvedBackupPath);
 	const isInsideBackupRoot =
 		relativePath === "" ||
