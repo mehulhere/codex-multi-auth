@@ -3016,6 +3016,67 @@ describe("codex manager cli commands", () => {
 		expect(storageState.accounts).toHaveLength(1);
 	});
 
+	it("supports interactive manual login selection without waiting for a callback", async () => {
+		setInteractiveTTY(true);
+		const now = Date.now();
+		let storageState = {
+			version: 3 as const,
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0 },
+			accounts: [] as Array<Record<string, unknown>>,
+		};
+		loadAccountsMock.mockImplementation(async () => structuredClone(storageState));
+		saveAccountsMock.mockImplementation(async (nextStorage) => {
+			storageState = structuredClone(nextStorage);
+		});
+		promptLoginModeMock.mockResolvedValueOnce({ mode: "cancel" });
+		promptAddAnotherAccountMock.mockResolvedValue(false);
+		selectMock.mockResolvedValueOnce("manual");
+
+		const authModule = await import("../lib/auth/auth.js");
+		vi.mocked(authModule.createAuthorizationFlow).mockResolvedValueOnce({
+			pkce: { challenge: "pkce-challenge", verifier: "pkce-verifier" },
+			state: "oauth-state",
+			url: "https://auth.openai.com/mock",
+		});
+		vi.mocked(authModule.exchangeAuthorizationCode).mockResolvedValueOnce({
+			type: "success",
+			access: "access-manual-choice",
+			refresh: "refresh-manual-choice",
+			expires: now + 7_200_000,
+			idToken: "id-token-manual-choice",
+			multiAccount: true,
+		});
+
+		const browserModule = await import("../lib/auth/browser.js");
+		const openBrowserUrlMock = vi.mocked(browserModule.openBrowserUrl);
+		const serverModule = await import("../lib/auth/server.js");
+		const waitForCodeMock = vi.fn(async () => ({ code: "oauth-code" }));
+		vi.mocked(serverModule.startLocalOAuthServer).mockResolvedValueOnce({
+			ready: true,
+			waitForCode: waitForCodeMock,
+			close: vi.fn(),
+		});
+		promptQuestionMock.mockResolvedValueOnce(
+			"http://127.0.0.1:1455/auth/callback?code=oauth-code&state=oauth-state",
+		);
+		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+
+		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+		const exitCode = await runCodexMultiAuthCli(["auth", "login"]);
+		const renderedLogs = logSpy.mock.calls.flat().map((entry) => String(entry));
+
+		expect(exitCode).toBe(0);
+		expect(selectMock).toHaveBeenCalled();
+		expect(openBrowserUrlMock).not.toHaveBeenCalled();
+		expect(waitForCodeMock).not.toHaveBeenCalled();
+		expect(renderedLogs.some((entry) => entry.includes("Callback listener unavailable"))).toBe(
+			true,
+		);
+		expect(renderedLogs.some((entry) => entry.includes("No callback received"))).toBe(false);
+		expect(storageState.accounts).toHaveLength(1);
+	});
+
 	it("falls back to pasted callback input when browser launch is suppressed", async () => {
 		setInteractiveTTY(true);
 		const now = Date.now();
