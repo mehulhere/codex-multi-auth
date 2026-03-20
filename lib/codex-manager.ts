@@ -4572,8 +4572,12 @@ async function persistAndSyncSelectedAccount({
 		throw new Error(`Account ${parsed} not found.`);
 	}
 
+	const shouldPreserveActiveIndexByFamily =
+		preserveActiveIndexByFamily &&
+		!!storage.activeIndexByFamily &&
+		targetIndex === storage.activeIndex;
 	storage.activeIndex = targetIndex;
-	if (!preserveActiveIndexByFamily || !storage.activeIndexByFamily) {
+	if (!shouldPreserveActiveIndexByFamily) {
 		storage.activeIndexByFamily = storage.activeIndexByFamily ?? {};
 		for (const family of MODEL_FAMILIES) {
 			storage.activeIndexByFamily[family] = targetIndex;

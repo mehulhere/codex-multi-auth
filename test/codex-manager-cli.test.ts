@@ -3759,6 +3759,75 @@ describe("codex manager cli commands", () => {
 		expect(promptLoginModeMock).toHaveBeenCalledTimes(1);
 	});
 
+	it("realigns restored family routing when a backup carries a stale active index", async () => {
+		const now = Date.now();
+		setInteractiveTTY(true);
+		const restoredStorage = {
+			version: 3 as const,
+			activeIndex: 99,
+			activeIndexByFamily: { codex: 99 },
+			accounts: [
+				{
+					email: "stale@example.com",
+					accountId: "acc_stale",
+					refreshToken: "refresh-stale",
+					accessToken: "access-stale",
+					expiresAt: now + 3_600_000,
+					addedAt: now - 2_000,
+					lastUsed: now - 2_000,
+					enabled: true,
+				},
+				{
+					email: "selected@example.com",
+					accountId: "acc_selected",
+					refreshToken: "refresh-selected",
+					accessToken: "access-selected",
+					expiresAt: now + 7_200_000,
+					addedAt: now - 1_000,
+					lastUsed: now - 1_000,
+					enabled: true,
+				},
+			],
+		};
+		let storageState: typeof restoredStorage | null = null;
+		loadAccountsMock.mockImplementation(async () =>
+			storageState == null ? null : structuredClone(storageState),
+		);
+		saveAccountsMock.mockImplementation(async (nextStorage) => {
+			storageState = structuredClone(nextStorage);
+		});
+		getNamedBackupsMock.mockResolvedValue([
+			{
+				path: "/mock/backups/stale-index.json",
+				fileName: "stale-index.json",
+				accountCount: 2,
+				mtimeMs: now,
+			},
+		]);
+		restoreAccountsFromBackupMock.mockResolvedValue(structuredClone(restoredStorage));
+		setCodexCliActiveSelectionMock.mockResolvedValueOnce(true);
+		selectMock
+			.mockResolvedValueOnce("restore-backup")
+			.mockResolvedValueOnce("latest");
+		promptLoginModeMock.mockResolvedValueOnce({ mode: "cancel" });
+		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+
+		const exitCode = await runCodexMultiAuthCli(["auth", "login"]);
+
+		expect(exitCode).toBe(0);
+		expect(saveAccountsMock).toHaveBeenCalledTimes(1);
+		expect(storageState).toMatchObject({
+			activeIndex: 1,
+			activeIndexByFamily: { codex: 1 },
+		});
+		expect(setCodexCliActiveSelectionMock).toHaveBeenCalledWith(
+			expect.objectContaining({
+				accountId: "acc_selected",
+				email: "selected@example.com",
+			}),
+		);
+	});
+
 	it("clears the empty onboarding snapshot after adding the first account", async () => {
 		const now = Date.now();
 		let storageState: {
