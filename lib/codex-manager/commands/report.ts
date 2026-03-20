@@ -13,6 +13,7 @@ import {
 } from "../../quota-probe.js";
 import type { AccountStorageV3 } from "../../storage.js";
 import type { TokenFailure, TokenResult } from "../../types.js";
+import { sleep } from "../../utils.js";
 
 interface ReportCliOptions {
 	live: boolean;
@@ -24,6 +25,8 @@ interface ReportCliOptions {
 type ParsedArgsResult<T> =
 	| { ok: true; options: T }
 	| { ok: false; message: string };
+
+const RETRYABLE_WRITE_CODES = new Set(["EBUSY", "EPERM"]);
 
 export interface ReportCommandDeps {
 	setStoragePath: (path: string | null) => void;
@@ -50,6 +53,11 @@ export interface ReportCommandDeps {
 	getNow?: () => number;
 	getCwd?: () => string;
 	writeFile?: (path: string, contents: string) => Promise<void>;
+}
+
+function isRetryableWriteError(error: unknown): boolean {
+	const code = (error as NodeJS.ErrnoException | undefined)?.code;
+	return typeof code === "string" && RETRYABLE_WRITE_CODES.has(code);
 }
 
 function printReportUsage(logInfo: (message: string) => void): void {
@@ -165,7 +173,31 @@ function serializeForecastResults(
 
 async function defaultWriteFile(path: string, contents: string): Promise<void> {
 	await fs.mkdir(dirname(path), { recursive: true });
-	await fs.writeFile(path, contents, "utf-8");
+	const tempPath = `${path}.${process.pid}.${Date.now()}.${Math.random().toString(36).slice(2, 8)}.tmp`;
+	await fs.writeFile(tempPath, contents, "utf-8");
+	let moved = false;
+	try {
+		for (let attempt = 0; attempt < 5; attempt += 1) {
+			try {
+				await fs.rename(tempPath, path);
+				moved = true;
+				return;
+			} catch (error) {
+				if (!isRetryableWriteError(error) || attempt >= 4) {
+					throw error;
+				}
+				await sleep(10 * 2 ** attempt);
+			}
+		}
+	} finally {
+		if (!moved) {
+			try {
+				await fs.unlink(tempPath);
+			} catch {
+				// Best-effort temp cleanup.
+			}
+		}
+	}
 }
 
 export async function runReportCommand(
