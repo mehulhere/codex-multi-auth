@@ -255,6 +255,61 @@ export function isEntitlementError(code: string, bodyText: string): boolean {
 }
 
 /**
+ * Detects whether an error indicates the workspace/account has been disabled or expired.
+ *
+ * Workspace disabled errors signal that the current workspace is no longer accessible
+ * (expired, disabled, or removed) and the plugin should automatically switch to another account.
+ *
+ * @param status - HTTP status code
+ * @param code - The error code string returned by the service
+ * @param bodyText - The response body text to inspect for workspace-related phrases
+ * @returns `true` if the error indicates a disabled/expired workspace
+ */
+export function isWorkspaceDisabledError(status: number, code: string, bodyText: string): boolean {
+        const haystack = `${code} ${bodyText}`.toLowerCase();
+        
+        // Check for HTTP 403 with workspace disabled messages
+        if (status === 403) {
+                // Common patterns for disabled/expired workspaces
+                const disabledPatterns = [
+                        /workspace.*(?:disabled|expired|deactivated|terminated)/i,
+                        /account.*(?:disabled|expired|deactivated|terminated)/i,
+                        /(?:workspace|account).*no longer.*(?:active|available|valid)/i,
+                        /(?:workspace|account).*has been.*(?:disabled|expired|closed)/i,
+                        /workspace.*(?:access|subscription).*expired/i,
+                        /billing.*(?:failed|expired|disabled)/i,
+                        /payment.*(?:failed|expired|required)/i,
+                        /organization.*(?:disabled|expired|inactive)/i,
+                        /team.*(?:disabled|expired|inactive)/i,
+                ];
+                
+                for (const pattern of disabledPatterns) {
+                        if (pattern.test(haystack)) {
+                                return true;
+                        }
+                }
+        }
+        
+        // Check for specific error codes that indicate workspace issues
+        const workspaceErrorCodes = [
+                "workspace_disabled",
+                "workspace_expired",
+                "workspace_terminated",
+                "account_disabled",
+                "account_expired",
+                "organization_disabled",
+                "billing_failed",
+                "payment_required",
+        ];
+        
+        if (workspaceErrorCodes.some((c) => code.toLowerCase().includes(c))) {
+                return true;
+        }
+        
+        return false;
+}
+
+/**
  * Constructs a standardized 403 entitlement error Response indicating the user lacks access to Codex models.
  *
  * This function returns a JSON Response with an `error` payload containing a user-facing message, a

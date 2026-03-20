@@ -9,6 +9,7 @@ import {
     handleErrorResponse,
     handleSuccessResponse,
     isEntitlementError,
+    isWorkspaceDisabledError,
     createEntitlementErrorResponse,
 	getUnsupportedCodexModelInfo,
 	resolveUnsupportedCodexFallbackModel,
@@ -307,12 +308,57 @@ describe('Fetch Helpers Module', () => {
 			expect(isEntitlementError('rate_limit_exceeded', '')).toBe(false);
 		});
 
-		it('returns false for generic errors', () => {
-			expect(isEntitlementError('not_found', 'Resource not found')).toBe(false);
-		});
+	it('returns false for generic errors', () => {
+		expect(isEntitlementError('not_found', 'Resource not found')).toBe(false);
+	});
+});
+
+describe('isWorkspaceDisabledError', () => {
+	it('returns true for 403 with workspace disabled message', () => {
+		expect(isWorkspaceDisabledError(403, '', 'Your workspace has been disabled')).toBe(true);
 	});
 
-	describe('createEntitlementErrorResponse', () => {
+	it('returns true for 403 with workspace expired message', () => {
+		expect(isWorkspaceDisabledError(403, '', 'Workspace expired')).toBe(true);
+	});
+
+	it('returns true for 403 with account disabled message', () => {
+		expect(isWorkspaceDisabledError(403, '', 'Account has been deactivated')).toBe(true);
+	});
+
+	it('returns true for workspace_disabled error code', () => {
+		expect(isWorkspaceDisabledError(403, 'workspace_disabled', '')).toBe(true);
+	});
+
+	it('returns true for workspace_expired error code', () => {
+		expect(isWorkspaceDisabledError(403, 'workspace_expired', 'Some message')).toBe(true);
+	});
+
+	it('returns true for account_disabled error code', () => {
+		expect(isWorkspaceDisabledError(403, 'account_disabled', '')).toBe(true);
+	});
+
+	it('returns true for billing_failed error code', () => {
+		expect(isWorkspaceDisabledError(403, 'billing_failed', '')).toBe(true);
+	});
+
+	it('returns false for non-403 status even with disabled message', () => {
+		expect(isWorkspaceDisabledError(400, '', 'Your workspace has been disabled')).toBe(false);
+		expect(isWorkspaceDisabledError(401, '', 'Your workspace has been disabled')).toBe(false);
+		expect(isWorkspaceDisabledError(500, '', 'Your workspace has been disabled')).toBe(false);
+	});
+
+	it('returns false for 403 with unrelated messages', () => {
+		expect(isWorkspaceDisabledError(403, '', 'Permission denied')).toBe(false);
+		expect(isWorkspaceDisabledError(403, '', 'Not authorized')).toBe(false);
+	});
+
+	it('returns false for entitlement errors', () => {
+		expect(isWorkspaceDisabledError(403, 'usage_not_included', 'Not in your plan')).toBe(false);
+	});
+});
+
+describe('createEntitlementErrorResponse', () => {
 		it('returns 403 status with user-friendly message', async () => {
 			const resp = createEntitlementErrorResponse('original body');
 			expect(resp.status).toBe(403);

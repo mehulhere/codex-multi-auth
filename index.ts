@@ -147,6 +147,7 @@ import {
         rewriteUrlForCodex,
 	shouldRefreshToken,
 	transformRequestForCodex,
+	isWorkspaceDisabledError,
 } from "./lib/request/fetch-helpers.js";
 import { applyFastSessionDefaults } from "./lib/request/request-transformer.js";
 import {
@@ -1942,19 +1943,51 @@ while (attempted.size < Math.max(1, accountCount)) {
 					blockedModel,
 				);
 			}
-			if (errorResponse.status === 403 && !unsupportedModelInfo.isUnsupported) {
-				entitlementCache.markBlocked(
-					entitlementAccountKey,
-					model ?? modelFamily,
-					"plan-entitlement",
-				);
-				capabilityPolicyStore.recordFailure(
-					entitlementAccountKey,
-					capabilityModelKey,
-				);
-			}
+		if (errorResponse.status === 403 && !unsupportedModelInfo.isUnsupported) {
+			entitlementCache.markBlocked(
+				entitlementAccountKey,
+				model ?? modelFamily,
+				"plan-entitlement",
+			);
+			capabilityPolicyStore.recordFailure(
+				entitlementAccountKey,
+				capabilityModelKey,
+			);
+		}
 
-			if (recoveryHook && errorBody && isRecoverableError(errorBody)) {
+		// Handle workspace disabled/expired errors by marking account as disabled and rotating
+		if (errorResponse.status === 403 && errorBody) {
+			const errorCode = (errorBody as { error?: { code?: string } })?.error?.code ?? "";
+			const errorMessage = (errorBody as { error?: { message?: string } })?.error?.message ?? "";
+			
+			if (isWorkspaceDisabledError(errorResponse.status, errorCode, errorMessage)) {
+				runtimeMetrics.failedRequests++;
+				runtimeMetrics.accountRotations++;
+				runtimeMetrics.lastError = `Workspace disabled for account ${account.index + 1}`;
+				
+				logWarn(
+					`Workspace disabled/expired for account ${account.index + 1} (${account.email ?? "unknown"}). Disabling account and rotating.`,
+					{ errorCode, errorMessage },
+				);
+				
+				// Mark the account as disabled
+				accountManager.setAccountEnabled(account.index, false);
+				accountManager.saveToDiskDebounced();
+				
+				// Show a toast notification
+				await showToast(
+					`Workspace disabled for account ${account.index + 1}. Switching to another account.`,
+					"warning",
+					{ duration: toastDurationMs },
+				);
+				
+				// Forget session affinity and rotate to next account
+				sessionAffinityStore?.forgetSession(sessionAffinityKey);
+				break;
+			}
+		}
+
+		if (recoveryHook && errorBody && isRecoverableError(errorBody)) {
 					const errorType = detectErrorType(errorBody);
 					const toastContent = getRecoveryToastContent(errorType);
 					await showToast(
