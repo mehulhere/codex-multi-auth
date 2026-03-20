@@ -2708,31 +2708,6 @@ function upsertRecoveredFlaggedAccount(
 	};
 }
 
-async function runVerifyFlagged(args: string[]): Promise<number> {
-	return runVerifyFlaggedCommand(args, {
-		setStoragePath,
-		loadFlaggedAccounts,
-		loadAccounts,
-		queuedRefresh,
-		parseVerifyFlaggedArgs,
-		printVerifyFlaggedUsage,
-		createEmptyAccountStorage,
-		upsertRecoveredFlaggedAccount,
-		resolveStoredAccountIdentity,
-		extractAccountId,
-		extractAccountEmail,
-		sanitizeEmail,
-		normalizeFailureDetail,
-		withAccountAndFlaggedStorageTransaction,
-		normalizeDoctorIndexes,
-		saveFlaggedAccounts,
-		formatAccountLabel,
-		stylePromptText,
-		styleAccountDetailText,
-		formatResultSummary,
-	});
-}
-
 async function runFix(args: string[]): Promise<number> {
 	if (args.includes("--help") || args.includes("-h")) {
 		printFixUsage();
@@ -3961,7 +3936,28 @@ async function runAuthLogin(args: string[]): Promise<number> {
 						"Problem Account Check",
 						"Checking problem accounts",
 						async () => {
-							await runVerifyFlagged([]);
+							await runVerifyFlaggedCommand([], {
+								setStoragePath,
+								loadFlaggedAccounts,
+								loadAccounts,
+								queuedRefresh,
+								parseVerifyFlaggedArgs,
+								printVerifyFlaggedUsage,
+								createEmptyAccountStorage,
+								upsertRecoveredFlaggedAccount,
+								resolveStoredAccountIdentity,
+								extractAccountId,
+								extractAccountEmail,
+								sanitizeEmail,
+								normalizeFailureDetail,
+								withAccountAndFlaggedStorageTransaction,
+								normalizeDoctorIndexes,
+								saveFlaggedAccounts,
+								formatAccountLabel,
+								stylePromptText,
+								styleAccountDetailText,
+								formatResultSummary,
+							});
 						},
 						displaySettings,
 					);
@@ -4682,7 +4678,28 @@ export async function runCodexMultiAuthCli(rawArgs: string[]): Promise<number> {
 		return runFeaturesCommand({ implementedFeatures: IMPLEMENTED_FEATURES });
 	}
 	if (command === "verify-flagged") {
-		return runVerifyFlagged(rest);
+		return runVerifyFlaggedCommand(rest, {
+			setStoragePath,
+			loadFlaggedAccounts,
+			loadAccounts,
+			queuedRefresh,
+			parseVerifyFlaggedArgs,
+			printVerifyFlaggedUsage,
+			createEmptyAccountStorage,
+			upsertRecoveredFlaggedAccount,
+			resolveStoredAccountIdentity,
+			extractAccountId,
+			extractAccountEmail,
+			sanitizeEmail,
+			normalizeFailureDetail,
+			withAccountAndFlaggedStorageTransaction,
+			normalizeDoctorIndexes,
+			saveFlaggedAccounts,
+			formatAccountLabel,
+			stylePromptText,
+			styleAccountDetailText,
+			formatResultSummary,
+		});
 	}
 	if (command === "forecast") {
 		return runForecast(rest);
