@@ -110,4 +110,83 @@ describe("runVerifyFlaggedCommand", () => {
 			expect.stringContaining('"command": "verify-flagged"'),
 		);
 	});
+
+	it("keeps retry-local flagged state isolated across transaction retries", async () => {
+		const persistCalls: Array<{ version: 1; accounts: FlaggedAccountMetadataV1[] }> =
+			[];
+		const deps = createDeps({
+			loadFlaggedAccounts: vi.fn(async () => ({
+				version: 1 as const,
+				accounts: [
+					createFlaggedAccount({
+						email: "restored@example.com",
+						refreshToken: "refresh-restored",
+					}),
+					createFlaggedAccount({
+						email: "still@example.com",
+						refreshToken: "refresh-still",
+					}),
+				],
+			})),
+			queuedRefresh: vi
+				.fn()
+				.mockResolvedValueOnce({
+					type: "success",
+					access: "restored-access",
+					refresh: "restored-refresh",
+					expires: 5_000,
+				})
+				.mockResolvedValueOnce({
+					type: "failed",
+					reason: "invalid_grant",
+					message: "token expired",
+				}),
+			upsertRecoveredFlaggedAccount: vi.fn(() => ({
+				restored: true,
+				changed: true,
+				message: "restored",
+			})),
+			withAccountAndFlaggedStorageTransaction: vi.fn(async (callback) => {
+				let attempt = 0;
+				const persist = async (
+					_nextStorage: AccountStorageV3,
+					nextFlagged: { version: 1; accounts: FlaggedAccountMetadataV1[] },
+				): Promise<void> => {
+					persistCalls.push({
+						version: nextFlagged.version,
+						accounts: nextFlagged.accounts.map((account) => ({ ...account })),
+					});
+					attempt += 1;
+					if (attempt === 1) {
+						const error = new Error("busy") as NodeJS.ErrnoException;
+						error.code = "EBUSY";
+						throw error;
+					}
+				};
+
+				try {
+					await callback(createStorage(), persist);
+				} catch (error) {
+					if ((error as NodeJS.ErrnoException).code !== "EBUSY") throw error;
+					await callback(createStorage(), persist);
+				}
+			}),
+		});
+
+		const result = await runVerifyFlaggedCommand([], deps);
+
+		expect(result).toBe(0);
+		expect(persistCalls).toHaveLength(2);
+		expect(persistCalls[0]!.accounts).toHaveLength(1);
+		expect(persistCalls[1]!.accounts).toHaveLength(1);
+		expect(persistCalls[1]!.accounts[0]).toEqual(
+			expect.objectContaining({ email: "still@example.com" }),
+		);
+
+		const payload = JSON.parse(
+			(deps.logInfo as ReturnType<typeof vi.fn>).mock.calls.at(-1)![0],
+		);
+		expect(payload.remainingFlagged).toBe(1);
+		expect(payload.reports).toHaveLength(2);
+	});
 });
