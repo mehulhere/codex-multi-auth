@@ -105,7 +105,7 @@ Near-miss to remediation traceability:
   - "How to run commands": `docs/reference/commands.md`
   - "Fallback routing or alias recovery": `docs/troubleshooting.md`
   - "Migration from legacy package/path": `docs/upgrade.md`
-  - "Current stable release": `docs/releases/v0.1.1.md`
+  - "Current stable release": `docs/releases/v1.1.10.md`
 
 ### Labeling model
 

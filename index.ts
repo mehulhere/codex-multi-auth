@@ -130,7 +130,7 @@ import {
 	loadFlaggedAccounts,
 	saveFlaggedAccounts,
 	clearFlaggedAccounts,
-	normalizeEmailKey,
+	findMatchingAccountIndex,
 	StorageError,
 	formatStorageErrorHint,
 	setStorageBackupEnabled,
@@ -539,24 +539,6 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 					const stored = replaceAll ? null : loadedStorage;
 					const accounts = stored?.accounts ? [...stored.accounts] : [];
 
-					const indexByRefreshToken = new Map<string, number>();
-					const indexByAccountId = new Map<string, number>();
-					const indexByEmail = new Map<string, number>();
-					for (let i = 0; i < accounts.length; i += 1) {
-						const account = accounts[i];
-						if (!account) continue;
-						if (account.refreshToken) {
-							indexByRefreshToken.set(account.refreshToken, i);
-						}
-						if (account.accountId) {
-							indexByAccountId.set(account.accountId, i);
-						}
-						const emailKey = normalizeEmailKey(account.email);
-						if (emailKey) {
-							indexByEmail.set(emailKey, i);
-						}
-					}
-
 					for (const result of results) {
 						const accountId = result.accountIdOverride ?? extractAccountId(result.access);
 						const accountIdSource =
@@ -566,30 +548,15 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 								: undefined;
 						const accountLabel = result.accountLabel;
 						const accountEmail = sanitizeEmail(extractAccountEmail(result.access, result.idToken));
-						const existingByEmail =
-							accountEmail && indexByEmail.has(accountEmail)
-								? indexByEmail.get(accountEmail)
-								: undefined;
-						const existingById =
-							accountId && indexByAccountId.has(accountId)
-								? indexByAccountId.get(accountId)
-								: undefined;
-						const existingByToken = indexByRefreshToken.get(result.refresh);
-						const existingByIdAccount =
-							existingById !== undefined ? accounts[existingById] : undefined;
-						const existingByIdMatchesEmail =
-							!!accountEmail &&
-							normalizeEmailKey(existingByIdAccount?.email) === accountEmail;
-						const existingIndex =
-							existingByEmail ??
-							existingByToken ??
-							((existingById !== undefined &&
-								(!accountEmail || existingByIdMatchesEmail))
-								? existingById
-								: undefined);
+						const existingIndex = findMatchingAccountIndex(accounts, {
+							accountId,
+							email: accountEmail,
+							refreshToken: result.refresh,
+						}, {
+							allowUniqueAccountIdFallbackWithoutEmail: true,
+						});
 
 						if (existingIndex === undefined) {
-							const newIndex = accounts.length;
 							accounts.push({
 								accountId,
 								accountIdSource,
@@ -602,21 +569,12 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 								lastUsed: now,
 								workspaces: result.workspaces,
 							});
-							indexByRefreshToken.set(result.refresh, newIndex);
-							if (accountId) {
-								indexByAccountId.set(accountId, newIndex);
-							}
-							if (accountEmail) {
-								indexByEmail.set(accountEmail, newIndex);
-							}
 							continue;
 						}
 
 						const existing = accounts[existingIndex];
 						if (!existing) continue;
 
-						const oldToken = existing.refreshToken;
-						const oldEmail = existing.email;
 						const nextEmail = accountEmail ?? sanitizeEmail(existing.email);
 						const nextAccountId = accountId ?? existing.accountId;
 						const nextAccountIdSource =
@@ -639,21 +597,6 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 							lastUsed: now,
 							workspaces: mergedWorkspaces,
 						};
-						if (oldToken !== result.refresh) {
-							indexByRefreshToken.delete(oldToken);
-							indexByRefreshToken.set(result.refresh, existingIndex);
-						}
-						if (accountId) {
-							indexByAccountId.set(accountId, existingIndex);
-						}
-						const oldEmailKey = normalizeEmailKey(oldEmail);
-						const nextEmailKey = normalizeEmailKey(nextEmail);
-						if (oldEmailKey && oldEmailKey !== nextEmailKey) {
-							indexByEmail.delete(oldEmailKey);
-						}
-						if (nextEmailKey) {
-							indexByEmail.set(nextEmailKey, existingIndex);
-						}
 					}
 
 					if (accounts.length === 0) return;
@@ -1438,6 +1381,7 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 										const accountCount = accountManager.getAccountCount();
 										const attempted = new Set<number>();
 										let restartAccountTraversalWithFallback = false;
+										let retryNextAccountBeforeFallback = false;
 										let usedPreferredSessionAccount = false;
 										const capabilityBoostByAccount: Record<number, number> = {};
 										type AccountSnapshotCandidate = {
@@ -1583,11 +1527,6 @@ accountAttemptLoop: while (attempted.size < Math.max(1, accountCount)) {
 						account.accountIdSource,
 						tokenAccountId,
 					);
-					const entitlementAccountKey = resolveEntitlementAccountKey({
-						accountId: hadAccountId ? account.accountId : undefined,
-						email: account.email,
-						index: account.index,
-					});
 						if (!accountId) {
 							accountManager.markAccountCoolingDown(
 								account,
@@ -1597,12 +1536,19 @@ accountAttemptLoop: while (attempted.size < Math.max(1, accountCount)) {
 							accountManager.saveToDiskDebounced();
 							continue;
 						}
+											const resolvedEmail =
+												extractAccountEmail(accountAuth.access) ?? account.email;
+											const entitlementAccountKey = resolveEntitlementAccountKey({
+												accountId: account.accountId ?? accountId,
+												email: resolvedEmail,
+												refreshToken: account.refreshToken,
+												index: account.index,
+											});
 											account.accountId = accountId;
 											if (!hadAccountId && tokenAccountId && accountId === tokenAccountId) {
 												account.accountIdSource = account.accountIdSource ?? "token";
 											}
-											account.email =
-												extractAccountEmail(accountAuth.access) ?? account.email;
+											account.email = resolvedEmail;
 											const entitlementBlock = entitlementCache.isBlocked(
 												entitlementAccountKey,
 												model ?? modelFamily,
@@ -1853,6 +1799,7 @@ accountAttemptLoop: while (attempted.size < Math.max(1, accountCount)) {
 						fallbackReason: "unsupported-model-entitlement",
 					},
 				);
+				retryNextAccountBeforeFallback = true;
 				break;
 			}
 
@@ -1979,60 +1926,62 @@ accountAttemptLoop: while (attempted.size < Math.max(1, accountCount)) {
 				workspaceErrorMessage,
 			);
 
-		// Handle workspace disabled/expired errors by rotating to next workspace within account
+		// Handle workspace disabled/expired errors by rotating to the next workspace
+		// within the same account before falling back to another account.
 		if (isDisabledWorkspaceError) {
-				runtimeMetrics.failedRequests++;
-				runtimeMetrics.lastError = `Workspace disabled for account ${account.index + 1}`;
+			runtimeMetrics.failedRequests++;
+			runtimeMetrics.lastError = `Workspace disabled for account ${account.index + 1}`;
 
-				// Get current workspace info for logging
-				const currentWorkspace = accountManager.getCurrentWorkspace(account);
-				const workspaceName = currentWorkspace?.name ?? currentWorkspace?.id ?? "unknown";
+			const currentWorkspace = accountManager.getCurrentWorkspace(account);
+			const workspaceName = currentWorkspace?.name ?? currentWorkspace?.id ?? "unknown";
 
-				logWarn(
-					`Workspace disabled/expired for account ${account.index + 1} - workspace: ${workspaceName}. Rotating to next workspace.`,
-					{ errorCode: workspaceErrorCode },
+			logWarn(
+				`Workspace disabled/expired for account ${account.index + 1} - workspace: ${workspaceName}. Rotating to next workspace.`,
+				{ errorCode: workspaceErrorCode },
+			);
+
+			const disabledWorkspace = currentWorkspace
+				? accountManager.disableCurrentWorkspace(account, currentWorkspace.id)
+				: false;
+			let nextWorkspace = disabledWorkspace
+				? accountManager.rotateToNextWorkspace(account)
+				: accountManager.getCurrentWorkspace(account);
+			if (!disabledWorkspace && (!nextWorkspace || nextWorkspace.enabled === false)) {
+				nextWorkspace = accountManager.rotateToNextWorkspace(account);
+			}
+
+			if (nextWorkspace) {
+				accountManager.saveToDiskDebounced();
+
+				const newWorkspaceName = nextWorkspace.name ?? nextWorkspace.id;
+				await showToast(
+					`Workspace ${workspaceName} disabled. Switched to ${newWorkspaceName}.`,
+					"warning",
+					{ duration: toastDurationMs },
 				);
 
-				// Disable the current workspace
-				accountManager.disableCurrentWorkspace(account);
+				logInfo(`Rotated to workspace ${newWorkspaceName} for account ${account.index + 1}`);
 
-				// Try to rotate to next enabled workspace
-				const nextWorkspace = accountManager.rotateToNextWorkspace(account);
+				// Allow the same account to be selected again with fresh request state.
+				attempted.delete(account.index);
+				continue accountAttemptLoop;
+			}
 
-				if (nextWorkspace) {
-					// Found another enabled workspace, persist it and restart the
-					// outer account loop so accountId and headers are rebuilt.
-					accountManager.saveToDiskDebounced();
+			logWarn(`All workspaces disabled for account ${account.index + 1}. Disabling account.`);
 
-					const newWorkspaceName = nextWorkspace.name ?? nextWorkspace.id;
-					await showToast(
-						`Workspace ${workspaceName} disabled. Switched to ${newWorkspaceName}.`,
-						"warning",
-						{ duration: toastDurationMs },
-					);
+			accountManager.setAccountEnabled(account.index, false);
+			accountManager.saveToDiskDebounced();
 
-					logInfo(`Rotated to workspace ${newWorkspaceName} for account ${account.index + 1}`);
+			await showToast(
+				`All workspaces disabled for account ${account.index + 1}. Switching to another account.`,
+				"warning",
+				{ duration: toastDurationMs },
+			);
 
-					// Allow the same account to be selected again with fresh request state.
-					attempted.delete(account.index);
-					continue accountAttemptLoop;
-				} else {
-					// No more enabled workspaces, disable the entire account
-					logWarn(`All workspaces disabled for account ${account.index + 1}. Disabling account.`);
-
-					accountManager.setAccountEnabled(account.index, false);
-					accountManager.saveToDiskDebounced();
-
-					await showToast(
-						`All workspaces disabled for account ${account.index + 1}. Switching to another account.`,
-						"warning",
-						{ duration: toastDurationMs },
-					);
-
-					// Forget session affinity and rotate to next account
-					sessionAffinityStore?.forgetSession(sessionAffinityKey);
-					break;
-				}
+			// Forget session affinity and continue the outer loop so another
+			// enabled account can service the request.
+			sessionAffinityStore?.forgetSession(sessionAffinityKey);
+			continue accountAttemptLoop;
 		}
 
 		if (errorResponse.status === 403 && !unsupportedModelInfo.isUnsupported && !isDisabledWorkspaceError) {
@@ -2442,7 +2391,10 @@ accountAttemptLoop: while (attempted.size < Math.max(1, accountCount)) {
 						if (successAccountForResponse.index !== account.index) {
 							accountManager.markSwitched(successAccountForResponse, "rotation", modelFamily);
 						}
-						const successAccountKey = resolveEntitlementAccountKey(successAccountForResponse);
+						const successAccountKey =
+							successAccountForResponse.index === account.index
+								? entitlementAccountKey
+								: resolveEntitlementAccountKey(successAccountForResponse);
 						accountManager.recordSuccess(successAccountForResponse, modelFamily, model);
 						capabilityPolicyStore.recordSuccess(
 							successAccountKey,
@@ -2461,6 +2413,11 @@ accountAttemptLoop: while (attempted.size < Math.max(1, accountCount)) {
 					}
 						return successResponse;
 																								}
+										if (retryNextAccountBeforeFallback) {
+											retryNextAccountBeforeFallback = false;
+											continue;
+										}
+
 										if (restartAccountTraversalWithFallback) {
 											break;
 										}
@@ -3367,12 +3324,25 @@ accountAttemptLoop: while (attempted.size < Math.max(1, accountCount)) {
 									const label = resolved.accountLabel ?? email ?? accountId ?? "Unknown account";
 									logInfo(`Authenticated as: ${label}`);
 
-									const isDuplicate = accounts.some(
-										(account) =>
-											(accountId &&
-												(account.accountIdOverride ?? extractAccountId(account.access)) === accountId) ||
-											(email && extractAccountEmail(account.access, account.idToken) === email),
-									);
+									const isDuplicate =
+										findMatchingAccountIndex(
+											accounts.map((account) => ({
+												accountId:
+													account.accountIdOverride ?? extractAccountId(account.access),
+												email: sanitizeEmail(
+													extractAccountEmail(account.access, account.idToken),
+												),
+												refreshToken: account.refresh,
+											})),
+											{
+												accountId,
+												email: sanitizeEmail(email),
+												refreshToken: resolved.refresh,
+											},
+											{
+												allowUniqueAccountIdFallbackWithoutEmail: true,
+											},
+										) !== undefined;
 
 									if (isDuplicate) {
 										logWarn(`WARNING: duplicate account login detected (${label}). Existing entry will be updated.`);

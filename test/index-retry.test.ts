@@ -195,10 +195,16 @@ vi.mock("../lib/accounts.js", () => {
 			return workspaces[currentWorkspaceIndex] ?? null;
 		}
 
-		disableCurrentWorkspace(account: Record<string, any>) {
+		disableCurrentWorkspace(account: Record<string, any>, expectedWorkspaceId?: string) {
 			accountManagerState.disableCurrentWorkspaceCalls += 1;
 			const workspace = this.getCurrentWorkspace(account);
 			if (!workspace) {
+				return false;
+			}
+			if (expectedWorkspaceId && workspace.id !== expectedWorkspaceId) {
+				return false;
+			}
+			if (workspace.enabled === false) {
 				return false;
 			}
 			workspace.enabled = false;
@@ -407,6 +413,77 @@ describe("OpenAIAuthPlugin rate-limit retry", () => {
 		const secondHeaders = fetchMock.mock.calls[1]?.[1]?.headers as Headers;
 		expect(firstHeaders.get("x-account-id")).toBe("workspace-1");
 		expect(secondHeaders.get("x-account-id")).toBe("workspace-2");
+	});
+
+	it("disables an exhausted workspace account and retries with another enabled account", async () => {
+		const exhaustedAccount = createMockAccount({
+			index: 0,
+			accountId: "account-1",
+			workspaces: [
+				{ id: "workspace-1", name: "Workspace 1", enabled: true },
+			],
+			currentWorkspaceIndex: 0,
+		});
+		const fallbackAccount = createMockAccount({
+			index: 1,
+			accountId: "account-2",
+			email: "fallback@example.com",
+			refreshToken: "refresh-token-2",
+		});
+		accountManagerState.accounts = [exhaustedAccount, fallbackAccount];
+		accountManagerState.accountSelections = [exhaustedAccount, fallbackAccount];
+
+		const fetchMock = vi
+			.fn()
+			.mockResolvedValueOnce(
+				new Response(
+					JSON.stringify({
+						error: {
+							code: "workspace_disabled",
+							message: "Workspace expired",
+						},
+					}),
+					{
+						status: 403,
+						headers: { "content-type": "application/json" },
+					},
+				),
+			)
+			.mockResolvedValueOnce(new Response("ok", { status: 200 }));
+		globalThis.fetch = fetchMock as any;
+
+		const { OpenAIAuthPlugin } = await import("../index.js");
+		const client = {
+			tui: { showToast: vi.fn() },
+			auth: { set: vi.fn() },
+		} as any;
+		const plugin = await OpenAIAuthPlugin({ client });
+
+		const getAuth = async () => ({
+			type: "oauth" as const,
+			access: "a",
+			refresh: "r",
+			expires: Date.now() + 60_000,
+			multiAccount: true,
+		});
+
+		const sdk = (await plugin.auth.loader(getAuth, { options: {}, models: {} })) as any;
+		const response = await sdk.fetch("https://example.com", {});
+
+		expect(response.status).toBe(200);
+		expect(fetchMock).toHaveBeenCalledTimes(2);
+		expect(accountManagerState.disableCurrentWorkspaceCalls).toBe(1);
+		expect(accountManagerState.rotateToNextWorkspaceCalls).toBe(1);
+		expect(accountManagerState.setAccountEnabledCalls).toContainEqual({
+			index: 0,
+			enabled: false,
+		});
+		expect(accountManagerState.saveToDiskDebouncedCalls).toBeGreaterThanOrEqual(1);
+
+		const firstHeaders = fetchMock.mock.calls[0]?.[1]?.headers as Headers;
+		const secondHeaders = fetchMock.mock.calls[1]?.[1]?.headers as Headers;
+		expect(firstHeaders.get("x-account-id")).toBe("workspace-1");
+		expect(secondHeaders.get("x-account-id")).toBe("account-2");
 	});
 });
 

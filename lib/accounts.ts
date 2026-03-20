@@ -6,6 +6,7 @@ import {
 	type AccountStorageV3,
 	type CooldownReason,
 	type RateLimitStateV3,
+	findMatchingAccountIndex,
 } from "./storage.js";
 import type { AccountIdSource, OAuthAuthDetails } from "./types.js";
 import { MODEL_FAMILIES, type ModelFamily } from "./prompts/codex.js";
@@ -203,37 +204,60 @@ export class AccountManager {
 	}
 
 	constructor(authFallback?: OAuthAuthDetails, stored?: AccountStorageV3 | null) {
-		const fallbackAccountId = extractAccountId(authFallback?.access);
+		const fallbackAccountId = extractAccountId(authFallback?.access)?.trim() || undefined;
 		const fallbackAccountEmail = sanitizeEmail(extractAccountEmail(authFallback?.access));
 
 		if (stored && stored.accounts.length > 0) {
-			const duplicateCountByAccountId = new Map<string, number>();
-			for (const account of stored.accounts) {
-				const accountId = account.accountId?.trim();
-				if (!accountId) continue;
-				duplicateCountByAccountId.set(
-					accountId,
-					(duplicateCountByAccountId.get(accountId) ?? 0) + 1,
-				);
+			const storedIdentityRows: Array<{
+				index: number;
+				accountId: string | undefined;
+				email: string | undefined;
+				refreshToken: string;
+			}> = [];
+			for (let index = 0; index < stored.accounts.length; index += 1) {
+				const account = stored.accounts[index];
+				if (
+					typeof account?.refreshToken !== "string" ||
+					!account.refreshToken.trim()
+				) {
+					continue;
+				}
+				storedIdentityRows.push({
+					index,
+					accountId: account.accountId,
+					email: account.email,
+					refreshToken: account.refreshToken,
+				});
 			}
-			const fallbackAccountIdIsUnique = fallbackAccountId
-				? (duplicateCountByAccountId.get(fallbackAccountId) ?? 0) <= 1
-				: false;
+			const fallbackMatchedRowIndex =
+				authFallback && storedIdentityRows.length > 0
+					? storedIdentityRows[
+						findMatchingAccountIndex(
+							storedIdentityRows,
+							{
+								accountId: fallbackAccountId,
+								email: fallbackAccountEmail,
+								refreshToken: authFallback.refresh,
+							},
+							{
+								allowUniqueAccountIdFallbackWithoutEmail: true,
+							},
+						) ?? -1
+					]?.index
+					: undefined;
 			const baseNow = nowMs();
 			this.accounts = stored.accounts
 				.map((account, index): ManagedAccount | null => {
-					if (!account.refreshToken || typeof account.refreshToken !== "string") {
+					if (
+						typeof account.refreshToken !== "string" ||
+						!account.refreshToken.trim()
+					) {
 						return null;
 					}
 
 					const matchesFallback =
 						!!authFallback &&
-						(account.refreshToken === authFallback.refresh ||
-							(!!fallbackAccountEmail &&
-								sanitizeEmail(account.email) === fallbackAccountEmail) ||
-							(fallbackAccountIdIsUnique &&
-								fallbackAccountId &&
-								account.accountId === fallbackAccountId));
+						fallbackMatchedRowIndex === index;
 
 					const refreshToken = matchesFallback && authFallback ? authFallback.refresh : account.refreshToken;
  
@@ -263,11 +287,7 @@ export class AccountManager {
 
 			const hasMatchingFallback =
 				!!authFallback &&
-				this.accounts.some(
-					(account) =>
-						account.refreshToken === authFallback.refresh ||
-						(!!fallbackAccountEmail && account.email === fallbackAccountEmail),
-				);
+				fallbackMatchedRowIndex !== undefined;
 
 			if (authFallback && !hasMatchingFallback) {
 				const now = nowMs();
@@ -838,7 +858,10 @@ export class AccountManager {
 		return account.workspaces[idx] ?? null;
 	}
 
-	disableCurrentWorkspace(account: ManagedAccount): boolean {
+	disableCurrentWorkspace(
+		account: ManagedAccount,
+		expectedWorkspaceId?: string,
+	): boolean {
 		if (!account.workspaces || account.workspaces.length === 0) {
 			return false;
 		}
@@ -848,6 +871,12 @@ export class AccountManager {
 		}
 		const workspace = account.workspaces[idx];
 		if (!workspace) return false;
+		if (expectedWorkspaceId && workspace.id !== expectedWorkspaceId) {
+			return false;
+		}
+		if (workspace.enabled === false) {
+			return false;
+		}
 		workspace.enabled = false;
 		workspace.disabledAt = nowMs();
 		return true;
@@ -873,6 +902,10 @@ export class AccountManager {
 		return null; // No enabled workspaces found
 	}
 
+	/**
+	 * Legacy accounts without tracked workspaces are treated as having one
+	 * implicit enabled workspace for backwards compatibility.
+	 */
 	hasEnabledWorkspaces(account: ManagedAccount): boolean {
 		if (!account.workspaces || account.workspaces.length === 0) {
 			return true; // No workspaces tracked yet, assume single workspace
