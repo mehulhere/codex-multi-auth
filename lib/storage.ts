@@ -151,7 +151,17 @@ async function collectNamedBackups(storagePath: string): Promise<NamedBackupSumm
 				accountCount: normalized.accounts.length,
 				mtimeMs: stats.mtimeMs,
 			});
-		} catch {
+		} catch (error) {
+			log.debug("Skipping named backup candidate after loadAccountsFromPath/fs.stat failure", {
+				candidatePath,
+				fileName: entry.name,
+				error: error instanceof Error
+					? {
+						message: error.message,
+						stack: error.stack,
+					}
+					: String(error),
+			});
 			continue;
 		}
 	}

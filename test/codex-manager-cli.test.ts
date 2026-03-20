@@ -3064,7 +3064,7 @@ describe("codex manager cli commands", () => {
 					},
 				],
 			})
-			.mockResolvedValueOnce({
+			.mockResolvedValue({
 				version: 3,
 				activeIndex: 0,
 				activeIndexByFamily: { codex: 0 },
@@ -3088,6 +3088,90 @@ describe("codex manager cli commands", () => {
 
 		expect(exitCode).toBe(0);
 		expect(getNamedBackupsMock).not.toHaveBeenCalled();
+	});
+
+	it("keeps the restored pool when Codex sync returns false", async () => {
+		const now = Date.now();
+		setInteractiveTTY(true);
+		const restoredStorage = {
+			version: 3 as const,
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0 },
+			accounts: [
+				{
+					email: "warn@example.com",
+					accountId: "acc_warn",
+					refreshToken: "refresh-warn",
+					accessToken: "access-warn",
+					expiresAt: now + 3_600_000,
+					addedAt: now - 1_000,
+					lastUsed: now - 1_000,
+					enabled: true,
+				},
+			],
+		};
+		loadAccountsMock.mockResolvedValue(null);
+		getNamedBackupsMock.mockResolvedValue([
+			{
+				path: "/mock/backups/warn.json",
+				fileName: "warn.json",
+				accountCount: 1,
+				mtimeMs: now,
+			},
+		]);
+		restoreAccountsFromBackupMock.mockResolvedValue(structuredClone(restoredStorage));
+		setCodexCliActiveSelectionMock.mockResolvedValueOnce(false);
+		selectMock
+			.mockResolvedValueOnce("restore-backup")
+			.mockResolvedValueOnce("latest")
+			.mockResolvedValueOnce("cancel");
+		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+
+		const exitCode = await runCodexMultiAuthCli(["auth", "login"]);
+
+		expect(exitCode).toBe(0);
+		expect(restoreAccountsFromBackupMock).toHaveBeenCalledWith(
+			"/mock/backups/warn.json",
+		);
+		expect(setCodexCliActiveSelectionMock).toHaveBeenCalledWith(
+			expect.objectContaining({
+				accountId: "acc_warn",
+				email: "warn@example.com",
+			}),
+		);
+	});
+
+	it("does not restore a manually chosen backup when confirmation is declined", async () => {
+		const now = Date.now();
+		setInteractiveTTY(true);
+		loadAccountsMock.mockResolvedValueOnce(null).mockResolvedValue(null);
+		getNamedBackupsMock.mockResolvedValue([
+			{
+				path: "/mock/backups/manual-choice.json",
+				fileName: "manual-choice.json",
+				accountCount: 1,
+				mtimeMs: now,
+			},
+		]);
+		confirmMock.mockResolvedValueOnce(false);
+		selectMock
+			.mockResolvedValueOnce("restore-backup")
+			.mockResolvedValueOnce("manual")
+			.mockResolvedValueOnce({
+				path: "/mock/backups/manual-choice.json",
+				fileName: "manual-choice.json",
+				accountCount: 1,
+				mtimeMs: now,
+			})
+			.mockResolvedValueOnce("cancel");
+		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+
+		const exitCode = await runCodexMultiAuthCli(["auth", "login"]);
+
+		expect(exitCode).toBe(0);
+		expect(confirmMock).toHaveBeenCalledWith("Load manual-choice.json (1 account)?");
+		expect(restoreAccountsFromBackupMock).not.toHaveBeenCalled();
+		expect(setCodexCliActiveSelectionMock).not.toHaveBeenCalled();
 	});
 
 	it("lets onboarding open a manual backup picker before restore", async () => {

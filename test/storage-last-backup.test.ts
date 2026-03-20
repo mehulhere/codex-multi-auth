@@ -1,7 +1,7 @@
 import { promises as fs } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
 	buildNamedBackupPath,
 	getNamedBackups,
@@ -48,6 +48,32 @@ describe("storage last backup restore", () => {
 		await removeWithRetry(testRoot, { recursive: true, force: true });
 	});
 
+	it("returns null when the named backups directory is missing", async () => {
+		await expect(getLatestNamedBackup()).resolves.toBeNull();
+		await expect(getNamedBackups()).resolves.toEqual([]);
+	});
+
+	it("returns null when every named backup has zero accounts", async () => {
+		const emptyOnePath = buildNamedBackupPath("empty-one");
+		const emptyTwoPath = buildNamedBackupPath("empty-two");
+		await fs.mkdir(dirname(emptyOnePath), { recursive: true });
+		for (const backupPath of [emptyOnePath, emptyTwoPath]) {
+			await fs.writeFile(
+				backupPath,
+				JSON.stringify({
+					version: 3,
+					activeIndex: 0,
+					activeIndexByFamily: { codex: 0 },
+					accounts: [],
+				}),
+				"utf-8",
+			);
+		}
+
+		await expect(getLatestNamedBackup()).resolves.toBeNull();
+		await expect(getNamedBackups()).resolves.toEqual([]);
+	});
+
 	it("prefers the most recently modified valid named backup with accounts", async () => {
 		const oldBackupPath = buildNamedBackupPath("backup-old");
 		const newBackupPath = buildNamedBackupPath("backup-new");
@@ -91,6 +117,59 @@ describe("storage last backup restore", () => {
 			"backup-new.json",
 			"backup-old.json",
 		]);
+	});
+
+	it("skips a backup that disappears before stat and falls back to the next valid backup", async () => {
+		const flakyBackupPath = buildNamedBackupPath("backup-flaky");
+		const stableBackupPath = buildNamedBackupPath("backup-stable");
+		await fs.mkdir(dirname(flakyBackupPath), { recursive: true });
+		await fs.writeFile(
+			flakyBackupPath,
+			JSON.stringify({
+				version: 3,
+				activeIndex: 0,
+				activeIndexByFamily: { codex: 0 },
+				accounts: [{ refreshToken: "flaky-refresh", addedAt: 1, lastUsed: 1 }],
+			}),
+			"utf-8",
+		);
+		await fs.writeFile(
+			stableBackupPath,
+			JSON.stringify({
+				version: 3,
+				activeIndex: 0,
+				activeIndexByFamily: { codex: 0 },
+				accounts: [{ refreshToken: "stable-refresh", addedAt: 2, lastUsed: 2 }],
+			}),
+			"utf-8",
+		);
+		await fs.utimes(flakyBackupPath, new Date("2026-03-03T00:00:00.000Z"), new Date("2026-03-03T00:00:00.000Z"));
+		await fs.utimes(stableBackupPath, new Date("2026-03-02T00:00:00.000Z"), new Date("2026-03-02T00:00:00.000Z"));
+
+		const originalStat = fs.stat.bind(fs);
+		const statSpy = vi.spyOn(fs, "stat").mockImplementation(async (path, options) => {
+			if (String(path) === flakyBackupPath) {
+				await fs.rm(flakyBackupPath, { force: true });
+				const error = new Error(
+					`ENOENT: no such file or directory, stat '${flakyBackupPath}'`,
+				) as NodeJS.ErrnoException;
+				error.code = "ENOENT";
+				throw error;
+			}
+			return originalStat(
+				path as Parameters<typeof originalStat>[0],
+				options as Parameters<typeof originalStat>[1],
+			);
+		});
+
+		const latest = await getLatestNamedBackup();
+
+		statSpy.mockRestore();
+		expect(latest).toMatchObject({
+			path: stableBackupPath,
+			fileName: "backup-stable.json",
+			accountCount: 1,
+		});
 	});
 
 	it("restores a named backup into active storage", async () => {
