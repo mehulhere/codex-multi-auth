@@ -200,4 +200,56 @@ describe("storage last backup restore", () => {
 		expect(loaded?.activeIndex).toBe(1);
 		expect(loaded?.accounts[1]?.refreshToken).toBe("refresh-2");
 	});
+
+	it("returns restored backup data without persisting when persist is false", async () => {
+		const backupPath = buildNamedBackupPath("backup-no-persist");
+		await fs.mkdir(dirname(backupPath), { recursive: true });
+		await fs.writeFile(
+			backupPath,
+			JSON.stringify({
+				version: 3,
+				activeIndex: 1,
+				activeIndexByFamily: { codex: 1 },
+				accounts: [
+					{ refreshToken: "restore-1", addedAt: 1, lastUsed: 1 },
+					{ refreshToken: "restore-2", addedAt: 2, lastUsed: 2 },
+				],
+			}),
+			"utf-8",
+		);
+		await saveAccounts({
+			version: 3,
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0 },
+			accounts: [{ refreshToken: "current-refresh", addedAt: 10, lastUsed: 10 }],
+		});
+
+		const restored = await restoreAccountsFromBackup(backupPath, { persist: false });
+		const loaded = await loadAccounts();
+
+		expect(restored.accounts).toHaveLength(2);
+		expect(restored.activeIndex).toBe(1);
+		expect(loaded?.accounts).toHaveLength(1);
+		expect(loaded?.accounts[0]?.refreshToken).toBe("current-refresh");
+		expect(loaded?.activeIndex).toBe(0);
+	});
+
+	it("throws when the named backup has no accounts", async () => {
+		const backupPath = buildNamedBackupPath("backup-empty-restore");
+		await fs.mkdir(dirname(backupPath), { recursive: true });
+		await fs.writeFile(
+			backupPath,
+			JSON.stringify({
+				version: 3,
+				activeIndex: 0,
+				activeIndexByFamily: { codex: 0 },
+				accounts: [],
+			}),
+			"utf-8",
+		);
+
+		await expect(restoreAccountsFromBackup(backupPath)).rejects.toThrow(
+			"Backup does not contain any accounts",
+		);
+	});
 });

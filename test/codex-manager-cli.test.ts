@@ -3469,6 +3469,7 @@ describe("codex manager cli commands", () => {
 			},
 		]);
 		restoreAccountsFromBackupMock.mockResolvedValue(structuredClone(restoredStorage));
+		setCodexCliActiveSelectionMock.mockResolvedValueOnce(true);
 		selectMock
 			.mockResolvedValueOnce("restore-backup")
 			.mockResolvedValueOnce("manual")
@@ -3490,6 +3491,13 @@ describe("codex manager cli commands", () => {
 		);
 		expect(confirmMock).toHaveBeenCalledWith("Load manual-choice.json (1 account)?");
 		expect(saveAccountsMock).toHaveBeenCalledTimes(1);
+		expect(setCodexCliActiveSelectionMock).toHaveBeenCalledWith(
+			expect.objectContaining({
+				accountId: "acc_manual",
+				email: "manual@example.com",
+			}),
+		);
+		expect(promptLoginModeMock).toHaveBeenCalledTimes(1);
 	});
 
 	it("preserves distinct same-email workspaces when oauth login reuses a refresh token", async () => {
