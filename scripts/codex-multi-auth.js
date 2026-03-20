@@ -36,5 +36,5 @@ if (args.length === 1 && versionFlags.has(args[0])) {
 } else {
 	const { runCodexMultiAuthCli } = await import("../dist/lib/codex-manager.js");
 	const exitCode = await runCodexMultiAuthCli(args);
-process.exitCode = Number.isInteger(exitCode) ? exitCode : 1;
+	process.exitCode = Number.isInteger(exitCode) ? exitCode : 1;
 }
