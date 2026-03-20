@@ -35,6 +35,10 @@ import {
 	loadCodexCliState,
 } from "./codex-cli/state.js";
 import { setCodexCliActiveSelection } from "./codex-cli/writer.js";
+import {
+	type BestCliOptions,
+	runBestCommand,
+} from "./codex-manager/commands/best.js";
 import { runCheckCommand } from "./codex-manager/commands/check.js";
 import { runForecastCommand } from "./codex-manager/commands/forecast.js";
 import { runReportCommand } from "./codex-manager/commands/report.js";
@@ -2247,13 +2251,6 @@ async function runHealthCheck(options: HealthCheckOptions = {}): Promise<void> {
 	);
 }
 
-interface BestCliOptions {
-	live: boolean;
-	json: boolean;
-	model: string;
-	modelProvided: boolean;
-}
-
 interface FixCliOptions {
 	dryRun: boolean;
 	json: boolean;
@@ -4282,279 +4279,26 @@ async function persistAndSyncSelectedAccount({
 }
 
 async function runBest(args: string[]): Promise<number> {
-	if (args.includes("--help") || args.includes("-h")) {
-		printBestUsage();
-		return 0;
-	}
-
-	const parsedArgs = parseBestArgs(args);
-	if (!parsedArgs.ok) {
-		console.error(parsedArgs.message);
-		printBestUsage();
-		return 1;
-	}
-	const options = parsedArgs.options;
-	if (options.modelProvided && !options.live) {
-		console.error("--model requires --live for codex auth best");
-		printBestUsage();
-		return 1;
-	}
-
-	setStoragePath(null);
-	const storage = await loadAccounts();
-	if (!storage || storage.accounts.length === 0) {
-		if (options.json) {
-			console.log(
-				JSON.stringify({ error: "No accounts configured." }, null, 2),
-			);
-		} else {
-			console.log("No accounts configured.");
-		}
-		return 1;
-	}
-
-	const now = Date.now();
-	const refreshFailures = new Map<number, TokenFailure>();
-	const liveQuotaByIndex = new Map<
-		number,
-		Awaited<ReturnType<typeof fetchCodexQuotaSnapshot>>
-	>();
-	const probeIdTokenByIndex = new Map<number, string>();
-	const probeRefreshedIndices = new Set<number>();
-	const probeErrors: string[] = [];
-	let changed = false;
-
-	const printProbeNotes = (): void => {
-		if (probeErrors.length === 0) return;
-		console.log(`Live check notes (${probeErrors.length}):`);
-		for (const error of probeErrors) {
-			console.log(`  - ${error}`);
-		}
-	};
-
-	const persistProbeChangesIfNeeded = async (): Promise<void> => {
-		if (!changed) return;
-		await saveAccounts(storage);
-		changed = false;
-	};
-
-	for (let i = 0; i < storage.accounts.length; i += 1) {
-		const account = storage.accounts[i];
-		if (!account || !options.live) continue;
-		if (account.enabled === false) continue;
-
-		let probeAccessToken = account.accessToken;
-		let probeAccountId =
-			account.accountId ?? extractAccountId(account.accessToken);
-		if (!hasUsableAccessToken(account, now)) {
-			const refreshResult = await queuedRefresh(account.refreshToken);
-			if (refreshResult.type !== "success") {
-				refreshFailures.set(i, {
-					...refreshResult,
-					message: normalizeFailureDetail(
-						refreshResult.message,
-						refreshResult.reason,
-					),
-				});
-				continue;
-			}
-
-			const refreshedEmail = sanitizeEmail(
-				extractAccountEmail(refreshResult.access, refreshResult.idToken),
-			);
-			const refreshedAccountId = extractAccountId(refreshResult.access);
-
-			if (account.refreshToken !== refreshResult.refresh) {
-				account.refreshToken = refreshResult.refresh;
-				changed = true;
-			}
-			if (account.accessToken !== refreshResult.access) {
-				account.accessToken = refreshResult.access;
-				changed = true;
-			}
-			if (account.expiresAt !== refreshResult.expires) {
-				account.expiresAt = refreshResult.expires;
-				changed = true;
-			}
-			if (refreshedEmail && refreshedEmail !== account.email) {
-				account.email = refreshedEmail;
-				changed = true;
-			}
-			if (refreshedAccountId && refreshedAccountId !== account.accountId) {
-				account.accountId = refreshedAccountId;
-				account.accountIdSource = "token";
-				changed = true;
-			}
-			if (refreshResult.idToken) {
-				probeIdTokenByIndex.set(i, refreshResult.idToken);
-			}
-			probeRefreshedIndices.add(i);
-
-			probeAccessToken = account.accessToken;
-			probeAccountId = account.accountId ?? refreshedAccountId;
-		}
-
-		if (!probeAccessToken || !probeAccountId) {
-			probeErrors.push(
-				`${formatAccountLabel(account, i)}: missing accountId for live probe`,
-			);
-			continue;
-		}
-
-		try {
-			const liveQuota = await fetchCodexQuotaSnapshot({
-				accountId: probeAccountId,
-				accessToken: probeAccessToken,
-				model: options.model,
-			});
-			liveQuotaByIndex.set(i, liveQuota);
-		} catch (error) {
-			const message = normalizeFailureDetail(
-				error instanceof Error ? error.message : String(error),
-				undefined,
-			);
-			probeErrors.push(`${formatAccountLabel(account, i)}: ${message}`);
-		}
-	}
-
-	const forecastInputs = storage.accounts.map((account, index) => ({
-		index,
-		account,
-		isCurrent: index === resolveActiveIndex(storage, "codex"),
-		now,
-		refreshFailure: refreshFailures.get(index),
-		liveQuota: liveQuotaByIndex.get(index),
-	}));
-
-	const forecastResults = evaluateForecastAccounts(forecastInputs);
-	const recommendation = recommendForecastAccount(forecastResults);
-
-	if (recommendation.recommendedIndex === null) {
-		await persistProbeChangesIfNeeded();
-		if (options.json) {
-			console.log(
-				JSON.stringify(
-					{
-						error: recommendation.reason,
-						...(probeErrors.length > 0 ? { probeErrors } : {}),
-					},
-					null,
-					2,
-				),
-			);
-		} else {
-			console.log(`No best account available: ${recommendation.reason}`);
-			printProbeNotes();
-		}
-		return 1;
-	}
-
-	const bestIndex = recommendation.recommendedIndex;
-	const bestAccount = storage.accounts[bestIndex];
-	if (!bestAccount) {
-		await persistProbeChangesIfNeeded();
-		if (options.json) {
-			console.log(
-				JSON.stringify({ error: "Best account not found." }, null, 2),
-			);
-		} else {
-			console.log("Best account not found.");
-		}
-		return 1;
-	}
-
-	// Check if already on best account
-	const currentIndex = resolveActiveIndex(storage, "codex");
-	if (currentIndex === bestIndex) {
-		const shouldSyncCurrentBest =
-			probeRefreshedIndices.has(bestIndex) ||
-			probeIdTokenByIndex.has(bestIndex);
-		let alreadyBestSynced: boolean | undefined;
-		if (changed) {
-			bestAccount.lastUsed = now;
-			await persistProbeChangesIfNeeded();
-		}
-		if (shouldSyncCurrentBest) {
-			alreadyBestSynced = await setCodexCliActiveSelection({
-				accountId: bestAccount.accountId,
-				email: bestAccount.email,
-				accessToken: bestAccount.accessToken,
-				refreshToken: bestAccount.refreshToken,
-				expiresAt: bestAccount.expiresAt,
-				...(probeIdTokenByIndex.has(bestIndex)
-					? { idToken: probeIdTokenByIndex.get(bestIndex) }
-					: {}),
-			});
-			if (!alreadyBestSynced && !options.json) {
-				console.warn(
-					"Codex auth sync did not complete. Multi-auth routing will still use this account.",
-				);
-			}
-		}
-		if (options.json) {
-			console.log(
-				JSON.stringify(
-					{
-						message: `Already on best account: ${formatAccountLabel(bestAccount, bestIndex)}`,
-						accountIndex: bestIndex + 1,
-						reason: recommendation.reason,
-						...(alreadyBestSynced !== undefined
-							? { synced: alreadyBestSynced }
-							: {}),
-						...(probeErrors.length > 0 ? { probeErrors } : {}),
-					},
-					null,
-					2,
-				),
-			);
-		} else {
-			console.log(
-				`Already on best account ${bestIndex + 1}: ${formatAccountLabel(bestAccount, bestIndex)}`,
-			);
-			console.log(`Reason: ${recommendation.reason}`);
-			printProbeNotes();
-		}
-		return 0;
-	}
-
-	const targetIndex = bestIndex;
-	const parsed = targetIndex + 1;
-	const { synced, wasDisabled } = await persistAndSyncSelectedAccount({
-		storage,
-		targetIndex,
-		parsed,
-		switchReason: "best",
-		initialSyncIdToken: probeIdTokenByIndex.get(bestIndex),
+	return runBestCommand(args, {
+		setStoragePath,
+		loadAccounts,
+		saveAccounts,
+		parseBestArgs,
+		printBestUsage,
+		resolveActiveIndex,
+		hasUsableAccessToken,
+		queuedRefresh,
+		normalizeFailureDetail,
+		extractAccountId,
+		extractAccountEmail,
+		sanitizeEmail,
+		formatAccountLabel,
+		fetchCodexQuotaSnapshot,
+		evaluateForecastAccounts,
+		recommendForecastAccount,
+		persistAndSyncSelectedAccount,
+		setCodexCliActiveSelection,
 	});
-
-	if (options.json) {
-		console.log(
-			JSON.stringify(
-				{
-					message: `Switched to best account: ${formatAccountLabel(bestAccount, targetIndex)}`,
-					accountIndex: parsed,
-					reason: recommendation.reason,
-					synced,
-					wasDisabled,
-					...(probeErrors.length > 0 ? { probeErrors } : {}),
-				},
-				null,
-				2,
-			),
-		);
-	} else {
-		console.log(
-			`Switched to best account ${parsed}: ${formatAccountLabel(bestAccount, targetIndex)}${wasDisabled ? " (re-enabled)" : ""}`,
-		);
-		console.log(`Reason: ${recommendation.reason}`);
-		printProbeNotes();
-		if (!synced) {
-			console.warn(
-				"Codex auth sync did not complete. Multi-auth routing will still use this account.",
-			);
-		}
-	}
-	return 0;
 }
 
 export async function autoSyncActiveAccountToCodex(): Promise<boolean> {
