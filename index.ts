@@ -44,7 +44,6 @@ import {
 import {
 	createAuthorizationFlow,
 	exchangeAuthorizationCode,
-	parseAuthorizationInput,
 	REDIRECT_URI,
 	redactOAuthUrlForLog,
 } from "./lib/auth/auth.js";
@@ -175,6 +174,7 @@ import {
 	resolveAccountSelection,
 	type TokenSuccessWithAccount,
 } from "./lib/runtime/account-selection.js";
+import { buildManualOAuthFlow } from "./lib/runtime/manual-oauth-flow.js";
 import {
 	createRuntimeMetrics,
 	parseEnvInt,
@@ -283,60 +283,6 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 	};
 
 	const runtimeMetrics: RuntimeMetrics = createRuntimeMetrics();
-
-	const buildManualOAuthFlow = (
-		pkce: { verifier: string },
-		url: string,
-		expectedState: string,
-		onSuccess?: (tokens: TokenSuccessWithAccount) => Promise<void>,
-	) => ({
-		url,
-		method: "code" as const,
-		instructions: AUTH_LABELS.INSTRUCTIONS_MANUAL,
-		validate: (input: string): string | undefined => {
-			const parsed = parseAuthorizationInput(input);
-			if (!parsed.code) {
-				return `No authorization code found. Paste the full callback URL (e.g., ${REDIRECT_URI}?code=...)`;
-			}
-			if (!parsed.state) {
-				return "Missing OAuth state. Paste the full callback URL including both code and state parameters.";
-			}
-			if (parsed.state !== expectedState) {
-				return "OAuth state mismatch. Restart login and paste the callback URL generated for this login attempt.";
-			}
-			return undefined;
-		},
-		callback: async (input: string) => {
-			const parsed = parseAuthorizationInput(input);
-			if (!parsed.code || !parsed.state) {
-				return {
-					type: "failed" as const,
-					reason: "invalid_response" as const,
-					message: "Missing authorization code or OAuth state",
-				};
-			}
-			if (parsed.state !== expectedState) {
-				return {
-					type: "failed" as const,
-					reason: "invalid_response" as const,
-					message: "OAuth state mismatch. Restart login and try again.",
-				};
-			}
-			const tokens = await exchangeAuthorizationCode(
-				parsed.code,
-				pkce.verifier,
-				REDIRECT_URI,
-			);
-			if (tokens?.type === "success") {
-				const resolved = resolveAccountSelection(tokens, { logInfo });
-				if (onSuccess) {
-					await onSuccess(resolved);
-				}
-				return resolved;
-			}
-			return tokens?.type === "failed" ? tokens : { type: "failed" as const };
-		},
-	});
 
 	const runOAuthFlow = async (
 		forceNewLogin: boolean = false,
@@ -3848,26 +3794,30 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 
 						if (useManualMode) {
 							const { pkce, state, url } = await createAuthorizationFlow();
-							return buildManualOAuthFlow(pkce, url, state, async (tokens) => {
-								try {
-									await persistAccountPool([tokens], startFresh);
-									invalidateAccountManagerCache();
-								} catch (err) {
-									const storagePath = getStoragePath();
-									const errorCode =
-										(err as NodeJS.ErrnoException)?.code || "UNKNOWN";
-									const hint =
-										err instanceof StorageError
-											? err.hint
-											: formatStorageErrorHint(err, storagePath);
-									logError(
-										`[${PLUGIN_NAME}] Failed to persist account: [${errorCode}] ${(err as Error)?.message ?? String(err)}`,
-									);
-									await showToast(hint, "error", {
-										title: "Account Persistence Failed",
-										duration: 10000,
-									});
-								}
+							return buildManualOAuthFlow(pkce, url, state, {
+								instructions: AUTH_LABELS.INSTRUCTIONS_MANUAL,
+								logInfo,
+								onSuccess: async (tokens: TokenSuccessWithAccount) => {
+									try {
+										await persistAccountPool([tokens], startFresh);
+										invalidateAccountManagerCache();
+									} catch (err) {
+										const storagePath = getStoragePath();
+										const errorCode =
+											(err as NodeJS.ErrnoException)?.code || "UNKNOWN";
+										const hint =
+											err instanceof StorageError
+												? err.hint
+												: formatStorageErrorHint(err, storagePath);
+										logError(
+											`[${PLUGIN_NAME}] Failed to persist account: [${errorCode}] ${(err as Error)?.message ?? String(err)}`,
+										);
+										await showToast(hint, "error", {
+											title: "Account Persistence Failed",
+											duration: 10000,
+										});
+									}
+								},
 							});
 						}
 
@@ -4039,25 +3989,29 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 						applyAccountStorageScope(manualPluginConfig);
 
 						const { pkce, state, url } = await createAuthorizationFlow();
-						return buildManualOAuthFlow(pkce, url, state, async (tokens) => {
-							try {
-								await persistAccountPool([tokens], false);
-							} catch (err) {
-								const storagePath = getStoragePath();
-								const errorCode =
-									(err as NodeJS.ErrnoException)?.code || "UNKNOWN";
-								const hint =
-									err instanceof StorageError
-										? err.hint
-										: formatStorageErrorHint(err, storagePath);
-								logError(
-									`[${PLUGIN_NAME}] Failed to persist account: [${errorCode}] ${(err as Error)?.message ?? String(err)}`,
-								);
-								await showToast(hint, "error", {
-									title: "Account Persistence Failed",
-									duration: 10000,
-								});
-							}
+						return buildManualOAuthFlow(pkce, url, state, {
+							instructions: AUTH_LABELS.INSTRUCTIONS_MANUAL,
+							logInfo,
+							onSuccess: async (tokens: TokenSuccessWithAccount) => {
+								try {
+									await persistAccountPool([tokens], false);
+								} catch (err) {
+									const storagePath = getStoragePath();
+									const errorCode =
+										(err as NodeJS.ErrnoException)?.code || "UNKNOWN";
+									const hint =
+										err instanceof StorageError
+											? err.hint
+											: formatStorageErrorHint(err, storagePath);
+									logError(
+										`[${PLUGIN_NAME}] Failed to persist account: [${errorCode}] ${(err as Error)?.message ?? String(err)}`,
+									);
+									await showToast(hint, "error", {
+										title: "Account Persistence Failed",
+										duration: 10000,
+									});
+								}
+							},
 						});
 					},
 				},
