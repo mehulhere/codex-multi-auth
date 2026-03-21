@@ -186,6 +186,7 @@ import { runOAuthBrowserFlow } from "./lib/runtime/oauth-browser-flow.js";
 import { applyRuntimePreemptiveQuotaSettings } from "./lib/runtime/preemptive-quota.js";
 import { ensureRuntimeRefreshGuardian } from "./lib/runtime/refresh-guardian.js";
 import { ensureRuntimeSessionAffinity } from "./lib/runtime/session-affinity.js";
+import { getRuntimeStatusMarker } from "./lib/runtime/status-marker.js";
 import { showRuntimeToast } from "./lib/runtime/toast.js";
 import { applyRuntimeUiOptions } from "./lib/runtime/ui-runtime.js";
 import { SessionAffinityStore } from "./lib/session-affinity.js";
@@ -409,16 +410,7 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 	const getStatusMarker = (
 		ui: UiRuntimeOptions,
 		status: "ok" | "warning" | "error",
-	): string => {
-		if (!ui.v2Enabled) {
-			if (status === "ok") return "✓";
-			if (status === "warning") return "!";
-			return "✗";
-		}
-		if (status === "ok") return ui.theme.glyphs.check;
-		if (status === "warning") return "!";
-		return ui.theme.glyphs.cross;
-	};
+	): string => getRuntimeStatusMarker(ui, status);
 
 	const invalidateAccountManagerCache = (): void => {
 		cachedAccountManager = null;
