@@ -1855,7 +1855,7 @@ export async function clearAccounts(): Promise<void> {
 		getBackupPaths: () =>
 			getAccountsBackupRecoveryCandidatesWithDiscovery(path),
 		clearAccountStorageArtifacts,
-		logError: (message, details) => {
+		logError: (message: string, details: Record<string, unknown>) => {
 			log.error(message, details);
 		},
 	});
