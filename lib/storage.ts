@@ -32,6 +32,10 @@ import {
 	collectBackupMetadata,
 } from "./storage/restore-assessment.js";
 import {
+	createEmptyStorageWithRestoreMetadata,
+	withRestoreMetadata,
+} from "./storage/restore-metadata.js";
+import {
 	describeAccountsWalSnapshot,
 	describeFlaggedSnapshot,
 } from "./storage/snapshot-inspectors.js";
@@ -115,11 +119,6 @@ export interface FlaggedAccountStorageV1 {
 }
 
 type RestoreReason = "empty-storage" | "intentional-reset" | "missing-storage";
-
-type AccountStorageWithMetadata = AccountStorageV3 & {
-	restoreEligible?: boolean;
-	restoreReason?: RestoreReason;
-};
 
 export type BackupMetadata = {
 	accounts: BackupMetadataSection;
@@ -470,32 +469,6 @@ async function cleanupStaleRotatingBackupArtifacts(
 			});
 		}
 	}
-}
-
-function createEmptyStorageWithMetadata(
-	restoreEligible: boolean,
-	restoreReason: RestoreReason,
-): AccountStorageWithMetadata {
-	return {
-		version: 3,
-		accounts: [],
-		activeIndex: 0,
-		activeIndexByFamily: {},
-		restoreEligible,
-		restoreReason,
-	};
-}
-
-function withRestoreMetadata(
-	storage: AccountStorageV3,
-	restoreEligible: boolean,
-	restoreReason: RestoreReason,
-): AccountStorageWithMetadata {
-	return {
-		...storage,
-		restoreEligible,
-		restoreReason,
-	};
 }
 
 async function loadFlaggedAccountsFromPath(
@@ -1313,7 +1286,7 @@ async function loadAccountsInternal(
 		}
 
 		if (existsSync(resetMarkerPath)) {
-			return createEmptyStorageWithMetadata(false, "intentional-reset");
+			return createEmptyStorageWithRestoreMetadata(false, "intentional-reset");
 		}
 
 		if (normalized && normalized.accounts.length === 0) {
@@ -1370,7 +1343,7 @@ async function loadAccountsInternal(
 	} catch (error) {
 		const code = (error as NodeJS.ErrnoException).code;
 		if (existsSync(resetMarkerPath)) {
-			return createEmptyStorageWithMetadata(false, "intentional-reset");
+			return createEmptyStorageWithRestoreMetadata(false, "intentional-reset");
 		}
 		if (code === "ENOENT" && migratedLegacyStorage) {
 			return migratedLegacyStorage;
@@ -1391,7 +1364,7 @@ async function loadAccountsInternal(
 			return recoveredFromWal;
 		}
 		if (existsSync(resetMarkerPath)) {
-			return createEmptyStorageWithMetadata(false, "intentional-reset");
+			return createEmptyStorageWithRestoreMetadata(false, "intentional-reset");
 		}
 
 		if (storageBackupEnabled) {
@@ -1439,7 +1412,7 @@ async function loadAccountsInternal(
 			log.error("Failed to load account storage", { error: String(error) });
 		}
 		if (code === "ENOENT") {
-			return createEmptyStorageWithMetadata(true, "missing-storage");
+			return createEmptyStorageWithRestoreMetadata(true, "missing-storage");
 		}
 		return null;
 	}
