@@ -644,12 +644,7 @@ function hasPlaceholderEmail(value: string | undefined): boolean {
 	if (!value) return false;
 	const email = value.trim().toLowerCase();
 	if (!email) return false;
-	return (
-		email.endsWith("@example.com")
-		|| email.includes("account1@example.com")
-		|| email.includes("account2@example.com")
-		|| email.includes("account3@example.com")
-	);
+	return email.endsWith("@example.com");
 }
 
 function normalizeDoctorIndexes(storage: AccountStorageV3): boolean {
@@ -2003,7 +1998,7 @@ export async function runDoctor(
 		});
 	}
 
-	if (pendingCodexActiveSync) {
+	if (pendingCodexActiveSync && (!doctorRefreshMutation || storageFixChanged)) {
 		const synced = await setCodexCliActiveSelection(pendingCodexActiveSync);
 		if (synced) {
 			supplementalFixActions.push({

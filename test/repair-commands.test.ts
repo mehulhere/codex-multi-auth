@@ -765,4 +765,87 @@ describe("repair-commands direct deps coverage", () => {
 		expect(payload.fix.changed).toBe(false);
 		expect(payload.fix.actions).toEqual([]);
 	});
+
+	it("runDoctor skips Codex sync when the refreshed account disappears before persistence", async () => {
+		const now = Date.now();
+		loadAccountsMock.mockResolvedValueOnce({
+			version: 3,
+			accounts: [
+				{
+					email: "doctor@example.com",
+					refreshToken: "doctor-refresh",
+					accessToken: "doctor-access",
+					expiresAt: now - 60_000,
+					accountId: "doctor-account",
+					accountIdSource: "manual" as const,
+					enabled: true,
+				},
+			],
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0 },
+		});
+		withAccountStorageTransactionMock.mockImplementation(async (handler) =>
+			handler(
+				{
+					version: 3,
+					accounts: [
+						{
+							email: "remaining@example.com",
+							refreshToken: "remaining-refresh",
+							accessToken: "remaining-access",
+							expiresAt: now + 60_000,
+							accountId: "remaining-account",
+							accountIdSource: "manual" as const,
+							enabled: true,
+						},
+					],
+					activeIndex: 0,
+					activeIndexByFamily: {
+						codex: 0,
+						"codex-max": 0,
+						"gpt-5-codex": 0,
+						"gpt-5.1": 0,
+						"gpt-5.2": 0,
+					},
+				},
+				async () => undefined,
+			),
+		);
+		queuedRefreshMock.mockResolvedValueOnce({
+			type: "success",
+			access: "doctor-access-next",
+			refresh: "doctor-refresh-next",
+			expires: now + 3_600_000,
+			idToken: "doctor-id-next",
+		});
+		extractAccountEmailMock.mockImplementation((accessToken: string | undefined) =>
+			accessToken === "doctor-access-next" ? "doctor-fresh@example.com" : "doctor@example.com"
+		);
+		extractAccountIdMock.mockImplementation((accessToken: string | undefined) =>
+			accessToken === "doctor-access-next" ? "doctor-token-account" : "doctor-account"
+		);
+		const consoleSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+
+		const exitCode = await runDoctor(
+			["--json", "--fix"],
+			createDeps({
+				hasUsableAccessToken: () => false,
+				resolveActiveIndex: () => -1,
+			}),
+		);
+
+		expect(exitCode).toBe(1);
+		expect(withAccountStorageTransactionMock).toHaveBeenCalledTimes(1);
+		expect(setCodexCliActiveSelectionMock).not.toHaveBeenCalled();
+		const payload = JSON.parse(String(consoleSpy.mock.calls.at(-1)?.[0] ?? "{}")) as {
+			fix: {
+				changed: boolean;
+				actions: Array<{ key: string }>;
+			};
+		};
+		expect(payload.fix.changed).toBe(true);
+		expect(payload.fix.actions).not.toContainEqual(
+			expect.objectContaining({ key: "codex-active-sync" }),
+		);
+	});
 });
