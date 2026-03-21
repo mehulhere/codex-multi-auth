@@ -21,6 +21,7 @@ import {
 	buildMetadataSection,
 } from "./storage/backup-metadata.js";
 import { formatStorageErrorHint } from "./storage/error-hints.js";
+import { loadFlaggedAccountsFromFile } from "./storage/flagged-storage-file.js";
 import {
 	collectNamedBackups,
 	type NamedBackupSummary,
@@ -507,9 +508,10 @@ function isCacheLikeBackupArtifactName(entryName: string): boolean {
 async function loadFlaggedAccountsFromPath(
 	path: string,
 ): Promise<FlaggedAccountStorageV1> {
-	const content = await fs.readFile(path, "utf-8");
-	const data = JSON.parse(content) as unknown;
-	return normalizeFlaggedStorage(data);
+	return loadFlaggedAccountsFromFile(path, {
+		readFile: fs.readFile,
+		normalizeFlaggedStorage,
+	});
 }
 
 type AccountsJournalEntry = {
