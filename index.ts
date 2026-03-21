@@ -183,6 +183,7 @@ import {
 } from "./lib/runtime/metrics.js";
 import { runOAuthBrowserFlow } from "./lib/runtime/oauth-browser-flow.js";
 import { ensureRuntimeRefreshGuardian } from "./lib/runtime/refresh-guardian.js";
+import { ensureRuntimeSessionAffinity } from "./lib/runtime/session-affinity.js";
 import { showRuntimeToast } from "./lib/runtime/toast.js";
 import { SessionAffinityStore } from "./lib/session-affinity.js";
 import { registerCleanup } from "./lib/shutdown.js";
@@ -505,18 +506,16 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 	const ensureSessionAffinity = (
 		pluginConfig: ReturnType<typeof loadPluginConfig>,
 	): void => {
-		if (!getSessionAffinity(pluginConfig)) {
-			sessionAffinityStore = null;
-			sessionAffinityConfigKey = null;
-			return;
-		}
-
-		const ttlMs = getSessionAffinityTtlMs(pluginConfig);
-		const maxEntries = getSessionAffinityMaxEntries(pluginConfig);
-		const configKey = `${ttlMs}:${maxEntries}`;
-		if (sessionAffinityStore && sessionAffinityConfigKey === configKey) return;
-		sessionAffinityStore = new SessionAffinityStore({ ttlMs, maxEntries });
-		sessionAffinityConfigKey = configKey;
+		const ensured = ensureRuntimeSessionAffinity({
+			pluginConfig,
+			getSessionAffinity,
+			currentStore: sessionAffinityStore,
+			currentConfigKey: sessionAffinityConfigKey,
+			getSessionAffinityTtlMs,
+			getSessionAffinityMaxEntries,
+		});
+		sessionAffinityStore = ensured.store;
+		sessionAffinityConfigKey = ensured.configKey;
 	};
 
 	const applyPreemptiveQuotaSettings = (
