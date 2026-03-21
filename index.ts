@@ -126,7 +126,6 @@ import {
 } from "./lib/prompts/codex.js";
 import { prewarmHostCodexPrompt } from "./lib/prompts/host-codex-prompt.js";
 import {
-	createSessionRecoveryHook,
 	detectErrorType,
 	getRecoveryToastContent,
 	isRecoverableError,
@@ -217,6 +216,7 @@ import {
 	parseRuntimeRequestBody,
 } from "./lib/runtime/request-init.js";
 import { ensureRuntimeSessionAffinity } from "./lib/runtime/session-affinity.js";
+import { createRuntimeSessionRecoveryHook } from "./lib/runtime/session-recovery.js";
 import { getRuntimeStatusMarker } from "./lib/runtime/status-marker.js";
 import { showRuntimeToast } from "./lib/runtime/toast.js";
 import {
@@ -704,12 +704,12 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 						}
 					}
 
-					const recoveryHook = sessionRecoveryEnabled
-						? createSessionRecoveryHook(
-								{ client, directory: process.cwd() },
-								{ sessionRecovery: true, autoResume: autoResumeEnabled },
-							)
-						: null;
+					const recoveryHook = createRuntimeSessionRecoveryHook({
+						enabled: sessionRecoveryEnabled,
+						client,
+						directory: process.cwd(),
+						autoResume: autoResumeEnabled,
+					});
 
 					checkAndNotify(async (message, variant) => {
 						await showToast(message, variant);
