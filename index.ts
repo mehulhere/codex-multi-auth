@@ -161,6 +161,10 @@ import { isEmptyResponse } from "./lib/request/response-handler.js";
 import { withStreamingFailover } from "./lib/request/stream-failover.js";
 import { addJitter } from "./lib/rotation.js";
 import {
+	type AccountCheckWorkingState,
+	createAccountCheckWorkingState,
+} from "./lib/runtime/account-check-types.js";
+import {
 	invalidateRuntimeAccountManagerCache,
 	reloadRuntimeAccountManager,
 } from "./lib/runtime/account-manager-cache.js";
@@ -190,12 +194,12 @@ import {
 } from "./lib/runtime/metrics.js";
 import { runOAuthBrowserFlow } from "./lib/runtime/oauth-browser-flow.js";
 import { applyRuntimePreemptiveQuotaSettings } from "./lib/runtime/preemptive-quota.js";
-import { fetchRuntimeCodexQuotaSnapshot } from "./lib/runtime/quota-probe.js";
 import {
 	type CodexQuotaSnapshot,
 	formatCodexQuotaLine,
 	parseCodexQuotaSnapshot,
 } from "./lib/runtime/quota-headers.js";
+import { fetchRuntimeCodexQuotaSnapshot } from "./lib/runtime/quota-probe.js";
 import { ensureRuntimeRefreshGuardian } from "./lib/runtime/refresh-guardian.js";
 import {
 	normalizeRuntimeRequestInit,
@@ -2431,21 +2435,21 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 						};
 
 						const fetchCodexQuotaSnapshot = async (params: {
-									accountId: string;
-									accessToken: string;
-								}): Promise<CodexQuotaSnapshot> =>
-								fetchRuntimeCodexQuotaSnapshot({
-									accountId: params.accountId,
-									accessToken: params.accessToken,
-									baseUrl: CODEX_BASE_URL,
-									fetchImpl: fetch,
-									getCodexInstructions,
-									createCodexHeaders,
-									parseCodexQuotaSnapshot,
-									getUnsupportedCodexModelInfo,
-								});
+							accountId: string;
+							accessToken: string;
+						}): Promise<CodexQuotaSnapshot> =>
+							fetchRuntimeCodexQuotaSnapshot({
+								accountId: params.accountId,
+								accessToken: params.accessToken,
+								baseUrl: CODEX_BASE_URL,
+								fetchImpl: fetch,
+								getCodexInstructions,
+								createCodexHeaders,
+								parseCodexQuotaSnapshot,
+								getUnsupportedCodexModelInfo,
+							});
 
-const runAccountCheck = async (
+						const runAccountCheck = async (
 							deepProbe: boolean,
 						): Promise<void> => {
 							const loadedStorage = await hydrateEmails(await loadAccounts());
@@ -2472,13 +2476,9 @@ const runAccountCheck = async (
 							}
 
 							const flaggedStorage = await loadFlaggedAccounts();
-							let storageChanged = false;
-							let flaggedChanged = false;
-							const removeFromActive = new Set<string>();
+							const state: AccountCheckWorkingState =
+								createAccountCheckWorkingState(flaggedStorage);
 							const total = workingStorage.accounts.length;
-							let ok = 0;
-							let disabled = 0;
-							let errors = 0;
 
 							console.log(
 								`\nChecking ${deepProbe ? "full account health" : "quotas"} for all accounts...\n`,
@@ -2490,7 +2490,7 @@ const runAccountCheck = async (
 								const label =
 									account.email ?? account.accountLabel ?? `Account ${i + 1}`;
 								if (account.enabled === false) {
-									disabled += 1;
+									state.disabled += 1;
 									console.log(`[${i + 1}/${total}] ${label}: DISABLED`);
 									continue;
 								}
@@ -2523,7 +2523,7 @@ const runAccountCheck = async (
 										) {
 											account.accountId = tokenAccountId;
 											account.accountIdSource = "token";
-											storageChanged = true;
+											state.storageChanged = true;
 										}
 									}
 
@@ -2547,18 +2547,18 @@ const runAccountCheck = async (
 												cached.refreshToken !== account.refreshToken
 											) {
 												account.refreshToken = cached.refreshToken;
-												storageChanged = true;
+												state.storageChanged = true;
 											}
 											if (
 												cached.accessToken &&
 												cached.accessToken !== account.accessToken
 											) {
 												account.accessToken = cached.accessToken;
-												storageChanged = true;
+												state.storageChanged = true;
 											}
 											if (cached.expiresAt !== account.expiresAt) {
 												account.expiresAt = cached.expiresAt;
-												storageChanged = true;
+												state.storageChanged = true;
 											}
 
 											const hydratedEmail = sanitizeEmail(
@@ -2566,7 +2566,7 @@ const runAccountCheck = async (
 											);
 											if (hydratedEmail && hydratedEmail !== account.email) {
 												account.email = hydratedEmail;
-												storageChanged = true;
+												state.storageChanged = true;
 											}
 
 											tokenAccountId = extractAccountId(cached.accessToken);
@@ -2580,7 +2580,7 @@ const runAccountCheck = async (
 											) {
 												account.accountId = tokenAccountId;
 												account.accountIdSource = "token";
-												storageChanged = true;
+												state.storageChanged = true;
 											}
 										}
 									}
@@ -2590,7 +2590,7 @@ const runAccountCheck = async (
 											account.refreshToken,
 										);
 										if (refreshResult.type !== "success") {
-											errors += 1;
+											state.errors += 1;
 											const message =
 												refreshResult.message ??
 												refreshResult.reason ??
@@ -2599,7 +2599,7 @@ const runAccountCheck = async (
 												`[${i + 1}/${total}] ${label}: ERROR (${message})`,
 											);
 											if (deepProbe && isFlaggableFailure(refreshResult)) {
-												const existingIndex = flaggedStorage.accounts.findIndex(
+												const existingIndex = state.flaggedStorage.accounts.findIndex(
 													(flagged) =>
 														flagged.refreshToken === account.refreshToken,
 												);
@@ -2610,13 +2610,13 @@ const runAccountCheck = async (
 													lastError: message,
 												};
 												if (existingIndex >= 0) {
-													flaggedStorage.accounts[existingIndex] =
+													state.flaggedStorage.accounts[existingIndex] =
 														flaggedRecord;
 												} else {
-													flaggedStorage.accounts.push(flaggedRecord);
+													state.flaggedStorage.accounts.push(flaggedRecord);
 												}
-												removeFromActive.add(account.refreshToken);
-												flaggedChanged = true;
+												state.removeFromActive.add(account.refreshToken);
+												state.flaggedChanged = true;
 											}
 											continue;
 										}
@@ -2625,21 +2625,21 @@ const runAccountCheck = async (
 										authDetail = "OK";
 										if (refreshResult.refresh !== account.refreshToken) {
 											account.refreshToken = refreshResult.refresh;
-											storageChanged = true;
+											state.storageChanged = true;
 										}
 										if (
 											refreshResult.access &&
 											refreshResult.access !== account.accessToken
 										) {
 											account.accessToken = refreshResult.access;
-											storageChanged = true;
+											state.storageChanged = true;
 										}
 										if (
 											typeof refreshResult.expires === "number" &&
 											refreshResult.expires !== account.expiresAt
 										) {
 											account.expiresAt = refreshResult.expires;
-											storageChanged = true;
+											state.storageChanged = true;
 										}
 										const hydratedEmail = sanitizeEmail(
 											extractAccountEmail(
@@ -2649,7 +2649,7 @@ const runAccountCheck = async (
 										);
 										if (hydratedEmail && hydratedEmail !== account.email) {
 											account.email = hydratedEmail;
-											storageChanged = true;
+											state.storageChanged = true;
 										}
 										tokenAccountId = extractAccountId(refreshResult.access);
 										if (
@@ -2662,7 +2662,7 @@ const runAccountCheck = async (
 										) {
 											account.accountId = tokenAccountId;
 											account.accountIdSource = "token";
-											storageChanged = true;
+											state.storageChanged = true;
 										}
 									}
 
@@ -2671,7 +2671,7 @@ const runAccountCheck = async (
 									}
 
 									if (deepProbe) {
-										ok += 1;
+										state.ok += 1;
 										const detail = tokenAccountId
 											? `${authDetail} (id:${tokenAccountId.slice(-6)})`
 											: authDetail;
@@ -2697,12 +2697,12 @@ const runAccountCheck = async (
 											accountId: requestAccountId,
 											accessToken,
 										});
-										ok += 1;
+										state.ok += 1;
 										console.log(
 											`[${i + 1}/${total}] ${label}: ${formatCodexQuotaLine(snapshot)}`,
 										);
 									} catch (error) {
-										errors += 1;
+										state.errors += 1;
 										const message =
 											error instanceof Error ? error.message : String(error);
 										console.log(
@@ -2710,7 +2710,7 @@ const runAccountCheck = async (
 										);
 									}
 								} catch (error) {
-									errors += 1;
+									state.errors += 1;
 									const message =
 										error instanceof Error ? error.message : String(error);
 									console.log(
@@ -2719,29 +2719,29 @@ const runAccountCheck = async (
 								}
 							}
 
-							if (removeFromActive.size > 0) {
+							if (state.removeFromActive.size > 0) {
 								workingStorage.accounts = workingStorage.accounts.filter(
-									(account) => !removeFromActive.has(account.refreshToken),
+									(account) => !state.removeFromActive.has(account.refreshToken),
 								);
 								clampActiveIndices(workingStorage);
-								storageChanged = true;
+								state.storageChanged = true;
 							}
 
-							if (storageChanged) {
+							if (state.storageChanged) {
 								await saveAccounts(workingStorage);
 								invalidateAccountManagerCache();
 							}
-							if (flaggedChanged) {
-								await saveFlaggedAccounts(flaggedStorage);
+							if (state.flaggedChanged) {
+								await saveFlaggedAccounts(state.flaggedStorage);
 							}
 
 							console.log("");
 							console.log(
-								`Results: ${ok} ok, ${errors} error, ${disabled} disabled`,
+								`Results: ${state.ok} ok, ${state.errors} error, ${state.disabled} disabled`,
 							);
-							if (removeFromActive.size > 0) {
+							if (state.removeFromActive.size > 0) {
 								console.log(
-									`Moved ${removeFromActive.size} account(s) to flagged pool (invalid refresh token).`,
+									`Moved ${state.removeFromActive.size} account(s) to flagged pool (invalid refresh token).`,
 								);
 							}
 							console.log("");
