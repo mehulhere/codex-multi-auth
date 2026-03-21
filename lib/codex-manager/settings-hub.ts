@@ -63,6 +63,11 @@ import {
 	mapExperimentalMenuHotkey,
 	mapExperimentalStatusHotkey,
 } from "./experimental-settings-schema.js";
+import {
+	RETRYABLE_SETTINGS_WRITE_CODES,
+	SETTINGS_WRITE_MAX_ATTEMPTS,
+	withQueuedRetry,
+} from "./settings-write-queue.js";
 import { promptStatuslineSettingsPanel } from "./statusline-settings-panel.js";
 import { promptThemeSettingsPanel } from "./theme-settings-panel.js";
 
@@ -196,18 +201,6 @@ type SettingsHubAction =
 
 type DashboardSettingKey = keyof DashboardDisplaySettings;
 
-const RETRYABLE_SETTINGS_WRITE_CODES = new Set([
-	"EBUSY",
-	"EPERM",
-	"EAGAIN",
-	"ENOTEMPTY",
-	"EACCES",
-]);
-const SETTINGS_WRITE_MAX_ATTEMPTS = 4;
-const SETTINGS_WRITE_BASE_DELAY_MS = 20;
-const SETTINGS_WRITE_MAX_DELAY_MS = 30_000;
-const settingsWriteQueues = new Map<string, Promise<void>>();
-
 const ACCOUNT_LIST_PANEL_KEYS = [
 	"menuShowStatusBadge",
 	"menuShowCurrentBadge",
@@ -238,103 +231,6 @@ const THEME_PANEL_KEYS = [
 	"uiThemePreset",
 	"uiAccentColor",
 ] as const satisfies readonly DashboardSettingKey[];
-
-function readErrorNumber(value: unknown): number | undefined {
-	if (typeof value === "number" && Number.isFinite(value)) return value;
-	if (typeof value === "string" && value.trim().length > 0) {
-		const parsed = Number.parseInt(value, 10);
-		if (Number.isFinite(parsed)) return parsed;
-	}
-	return undefined;
-}
-
-function getErrorStatusCode(error: unknown): number | undefined {
-	if (!error || typeof error !== "object") return undefined;
-	const record = error as Record<string, unknown>;
-	return readErrorNumber(record.status) ?? readErrorNumber(record.statusCode);
-}
-
-function getRetryAfterMs(error: unknown): number | undefined {
-	if (!error || typeof error !== "object") return undefined;
-	const record = error as Record<string, unknown>;
-	return (
-		readErrorNumber(record.retryAfterMs) ??
-		readErrorNumber(record.retry_after_ms) ??
-		readErrorNumber(record.retryAfter) ??
-		readErrorNumber(record.retry_after)
-	);
-}
-
-function isRetryableSettingsWriteError(error: unknown): boolean {
-	const statusCode = getErrorStatusCode(error);
-	if (statusCode === 429) return true;
-	const code = (error as NodeJS.ErrnoException | undefined)?.code;
-	return typeof code === "string" && RETRYABLE_SETTINGS_WRITE_CODES.has(code);
-}
-
-function resolveRetryDelayMs(error: unknown, attempt: number): number {
-	const retryAfterMs = getRetryAfterMs(error);
-	if (
-		typeof retryAfterMs === "number" &&
-		Number.isFinite(retryAfterMs) &&
-		retryAfterMs > 0
-	) {
-		return Math.max(
-			10,
-			Math.min(SETTINGS_WRITE_MAX_DELAY_MS, Math.round(retryAfterMs)),
-		);
-	}
-	return Math.min(
-		SETTINGS_WRITE_MAX_DELAY_MS,
-		SETTINGS_WRITE_BASE_DELAY_MS * 2 ** attempt,
-	);
-}
-
-async function enqueueSettingsWrite<T>(
-	pathKey: string,
-	task: () => Promise<T>,
-): Promise<T> {
-	const previous = settingsWriteQueues.get(pathKey) ?? Promise.resolve();
-	const queued = previous.catch(() => {}).then(task);
-	const queueTail = queued.then(
-		() => undefined,
-		() => undefined,
-	);
-	settingsWriteQueues.set(pathKey, queueTail);
-	try {
-		return await queued;
-	} finally {
-		if (settingsWriteQueues.get(pathKey) === queueTail) {
-			settingsWriteQueues.delete(pathKey);
-		}
-	}
-}
-
-async function withQueuedRetry<T>(
-	pathKey: string,
-	task: () => Promise<T>,
-): Promise<T> {
-	return enqueueSettingsWrite(pathKey, async () => {
-		let lastError: unknown;
-		for (let attempt = 0; attempt < SETTINGS_WRITE_MAX_ATTEMPTS; attempt += 1) {
-			try {
-				return await task();
-			} catch (error) {
-				lastError = error;
-				if (
-					!isRetryableSettingsWriteError(error) ||
-					attempt + 1 >= SETTINGS_WRITE_MAX_ATTEMPTS
-				) {
-					throw error;
-				}
-				await sleep(resolveRetryDelayMs(error, attempt));
-			}
-		}
-		throw lastError instanceof Error
-			? lastError
-			: new Error("settings save retry exhausted");
-	});
-}
 
 function copyDashboardSettingValue(
 	target: DashboardDisplaySettings,
@@ -394,14 +290,18 @@ async function persistDashboardSettingsSelection(
 ): Promise<DashboardDisplaySettings> {
 	const fallback = cloneDashboardSettings(selected);
 	try {
-		return await withQueuedRetry(getDashboardSettingsPath(), async () => {
-			const latest = cloneDashboardSettings(
-				await loadDashboardDisplaySettings(),
-			);
-			const merged = mergeDashboardSettingsForKeys(latest, selected, keys);
-			await saveDashboardDisplaySettings(merged);
-			return merged;
-		});
+		return await withQueuedRetry(
+			getDashboardSettingsPath(),
+			async () => {
+				const latest = cloneDashboardSettings(
+					await loadDashboardDisplaySettings(),
+				);
+				const merged = mergeDashboardSettingsForKeys(latest, selected, keys);
+				await saveDashboardDisplaySettings(merged);
+				return merged;
+			},
+			{ sleep },
+		);
 	} catch (error) {
 		warnPersistFailure(scope, error);
 		return fallback;
@@ -435,9 +335,13 @@ async function persistBackendConfigSelection(
 ): Promise<PluginConfig> {
 	const fallback = cloneBackendPluginConfig(selected);
 	try {
-		await withQueuedRetry(resolvePluginConfigSavePathKey(), async () => {
-			await savePluginConfig(buildBackendConfigPatch(selected));
-		});
+		await withQueuedRetry(
+			resolvePluginConfigSavePathKey(),
+			async () => {
+				await savePluginConfig(buildBackendConfigPatch(selected));
+			},
+			{ sleep },
+		);
 		return fallback;
 	} catch (error) {
 		warnPersistFailure(scope, error);
@@ -676,7 +580,7 @@ async function withQueuedRetryForTests<T>(
 	pathKey: string,
 	task: () => Promise<T>,
 ): Promise<T> {
-	return withQueuedRetry(pathKey, task);
+	return withQueuedRetry(pathKey, task, { sleep });
 }
 
 async function persistDashboardSettingsSelectionForTests(
