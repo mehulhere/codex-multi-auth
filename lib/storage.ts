@@ -20,6 +20,7 @@ import {
 	type BackupSnapshotMetadata,
 	buildMetadataSection,
 } from "./storage/backup-metadata.js";
+import { isCacheLikeBackupArtifactName } from "./storage/cache-artifacts.js";
 import { formatStorageErrorHint } from "./storage/error-hints.js";
 import { loadFlaggedAccountsFromFile } from "./storage/flagged-storage-file.js";
 import {
@@ -499,10 +500,6 @@ function withRestoreMetadata(
 		restoreEligible,
 		restoreReason,
 	};
-}
-
-function isCacheLikeBackupArtifactName(entryName: string): boolean {
-	return entryName.toLowerCase().includes(".cache");
 }
 
 async function loadFlaggedAccountsFromPath(
