@@ -31,6 +31,10 @@ import {
 } from "./storage/backup-paths.js";
 import { restoreAccountsFromBackupPath } from "./storage/backup-restore.js";
 import { looksLikeSyntheticFixtureStorage } from "./storage/fixture-guards.js";
+import {
+	clearFlaggedAccountsEntry,
+	saveFlaggedAccountsEntry,
+} from "./storage/flagged-entry.js";
 import { normalizeFlaggedStorage } from "./storage/flagged-storage.js";
 import {
 	clearFlaggedAccountsOnDisk,
