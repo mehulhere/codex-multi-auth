@@ -3,7 +3,6 @@ import { createInterface } from "node:readline/promises";
 import { loadPluginConfig, savePluginConfig } from "../config.js";
 import {
 	type DashboardAccentColor,
-	type DashboardAccountSortMode,
 	type DashboardDisplaySettings,
 	type DashboardStatuslineField,
 	type DashboardThemePreset,
@@ -51,6 +50,12 @@ import {
 } from "./backend-settings-schema.js";
 import { promptBehaviorSettingsPanel } from "./behavior-settings-panel.js";
 import { promptDashboardDisplayPanel } from "./dashboard-display-panel.js";
+import {
+	formatDashboardSettingState,
+	formatMenuLayoutMode,
+	formatMenuQuotaTtl,
+	formatMenuSortMode,
+} from "./dashboard-formatters.js";
 import {
 	cloneDashboardSettingsData,
 	dashboardSettingsDataEqual,
@@ -500,14 +505,6 @@ function applyUiThemeFromDashboardSettings(
 	});
 }
 
-function formatDashboardSettingState(value: boolean): string {
-	return value ? "[x]" : "[ ]";
-}
-
-function formatMenuSortMode(mode: DashboardAccountSortMode): string {
-	return mode === "ready-first" ? "Ready-First" : "Manual";
-}
-
 function resolveMenuLayoutMode(
 	settings: DashboardDisplaySettings,
 ): "compact-details" | "expanded-rows" {
@@ -520,22 +517,6 @@ function resolveMenuLayoutMode(
 	return settings.menuShowDetailsForUnselectedRows === true
 		? "expanded-rows"
 		: "compact-details";
-}
-
-function formatMenuLayoutMode(
-	mode: "compact-details" | "expanded-rows",
-): string {
-	return mode === "expanded-rows" ? "Expanded Rows" : "Compact + Details Pane";
-}
-
-function formatMenuQuotaTtl(ttlMs: number): string {
-	if (ttlMs >= 60_000 && ttlMs % 60_000 === 0) {
-		return `${Math.round(ttlMs / 60_000)}m`;
-	}
-	if (ttlMs >= 1_000 && ttlMs % 1_000 === 0) {
-		return `${Math.round(ttlMs / 1_000)}s`;
-	}
-	return `${ttlMs}ms`;
 }
 
 async function withQueuedRetryForTests<T>(
