@@ -10,6 +10,7 @@ const getNamedBackupsMock = vi.fn();
 const restoreAccountsFromBackupMock = vi.fn();
 const queuedRefreshMock = vi.fn();
 const setCodexCliActiveSelectionMock = vi.fn();
+const loadCodexCliStateMock = vi.fn();
 const promptAddAnotherAccountMock = vi.fn();
 const promptLoginModeMock = vi.fn();
 const fetchCodexQuotaSnapshotMock = vi.fn();
@@ -150,6 +151,12 @@ vi.mock("../lib/refresh-queue.js", () => ({
 
 vi.mock("../lib/codex-cli/writer.js", () => ({
 	setCodexCliActiveSelection: setCodexCliActiveSelectionMock,
+}));
+
+vi.mock("../lib/codex-cli/state.js", () => ({
+	getCodexCliAuthPath: vi.fn(() => "/mock/.codex/auth.json"),
+	getCodexCliConfigPath: vi.fn(() => "/mock/.codex/config.toml"),
+	loadCodexCliState: loadCodexCliStateMock,
 }));
 
 vi.mock("../lib/quota-probe.js", () => ({
@@ -482,6 +489,7 @@ describe("codex manager cli commands", () => {
 		withAccountStorageTransactionMock.mockReset();
 		queuedRefreshMock.mockReset();
 		setCodexCliActiveSelectionMock.mockReset();
+		loadCodexCliStateMock.mockReset();
 		promptAddAnotherAccountMock.mockReset();
 		promptLoginModeMock.mockReset();
 		fetchCodexQuotaSnapshotMock.mockReset();
@@ -508,6 +516,7 @@ describe("codex manager cli commands", () => {
 			version: 1,
 			accounts: [],
 		});
+		loadCodexCliStateMock.mockResolvedValue(null);
 		withAccountStorageTransactionMock.mockImplementation(async (handler) => {
 			const current = await loadAccountsMock();
 			return handler(
@@ -732,6 +741,14 @@ describe("codex manager cli commands", () => {
 			version: 1,
 			accounts: [{ refreshToken: "flagged-1" }],
 		});
+		loadCodexCliStateMock.mockResolvedValueOnce({
+			path: "/mock/.codex/state.json",
+			accounts: [{ email: "codex@example.com" }],
+			activeEmail: "codex@example.com",
+			activeAccountId: "acc_codex",
+			syncVersion: 7,
+			sourceUpdatedAtMs: 1_710_000_000_000,
+		});
 		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
 		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
 
@@ -743,10 +760,74 @@ describe("codex manager cli commands", () => {
 		]);
 
 		expect(exitCode).toBe(0);
-		expect(logSpy).toHaveBeenCalledWith(
-			expect.stringContaining('"storagePath"'),
-		);
-		expect(logSpy).toHaveBeenCalledWith(expect.stringContaining('"codexCli"'));
+		expect(loadCodexCliStateMock).toHaveBeenCalledWith({
+			forceRefresh: true,
+		});
+		expect(JSON.parse(String(logSpy.mock.calls[0]?.[0]))).toMatchObject({
+			storagePath: "/mock/openai-codex-accounts.json",
+			flaggedAccounts: { total: 1 },
+			codexCli: {
+				path: "/mock/.codex/state.json",
+				accountCount: 1,
+				activeEmail: "codex@example.com",
+				activeAccountId: "acc_codex",
+				syncVersion: 7,
+				sourceUpdatedAtMs: 1_710_000_000_000,
+			},
+		});
+	});
+
+	it.each([
+		["flagged accounts", () =>
+			loadFlaggedAccountsMock.mockRejectedValueOnce(
+				new Error("flagged storage unavailable"),
+			)],
+		["codex cli state", () =>
+			loadCodexCliStateMock.mockRejectedValueOnce(
+				new Error("codex cli state unavailable"),
+			)],
+	])(
+		"returns an error when debug bundle loading fails for %s",
+		async (_label, primeFailure) => {
+			loadAccountsMock.mockResolvedValueOnce({
+				version: 3,
+				accounts: [{ refreshToken: "token-1", enabled: true }],
+				activeIndex: 0,
+				activeIndexByFamily: { codex: 0 },
+			});
+			primeFailure();
+			const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+			const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+			const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+
+			const exitCode = await runCodexMultiAuthCli([
+				"auth",
+				"debug",
+				"bundle",
+				"--json",
+			]);
+
+			expect(exitCode).toBe(1);
+			expect(logSpy).not.toHaveBeenCalled();
+			expect(errorSpy).toHaveBeenCalledWith(
+				expect.stringContaining("Failed to generate debug bundle:"),
+			);
+		},
+	);
+
+	it("rejects unknown debug bundle args", async () => {
+		const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+
+		const exitCode = await runCodexMultiAuthCli([
+			"auth",
+			"debug",
+			"bundle",
+			"--bogus",
+		]);
+
+		expect(exitCode).toBe(1);
+		expect(errorSpy).toHaveBeenCalledWith("Unknown option: --bogus");
 	});
 
 	it("prints populated account status for auth status", async () => {
