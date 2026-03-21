@@ -15,7 +15,15 @@ import { AnyAccountStorageSchema, getValidationErrors } from "./schemas.js";
 import { formatStorageErrorHint } from "./storage/error-hints.js";
 
 export { formatStorageErrorHint } from "./storage/error-hints.js";
+export {
+	getAccountIdentityKey,
+	normalizeEmailKey,
+} from "./storage/identity.js";
 
+import {
+	type AccountIdentityRef,
+	toAccountIdentityRef,
+} from "./storage/identity.js";
 import {
 	type AccountMetadataV1,
 	type AccountMetadataV3,
@@ -1143,57 +1151,6 @@ function selectNewestAccount<T extends AccountLike>(
 	return candidateAddedAt >= currentAddedAt ? candidate : current;
 }
 
-function normalizeAccountIdKey(
-	accountId: string | undefined,
-): string | undefined {
-	if (!accountId) return undefined;
-	const trimmed = accountId.trim();
-	return trimmed || undefined;
-}
-
-/**
- * Normalize email keys for case-insensitive account identity matching.
- */
-export function normalizeEmailKey(
-	email: string | undefined,
-): string | undefined {
-	if (!email) return undefined;
-	const trimmed = email.trim();
-	if (!trimmed) return undefined;
-	return trimmed.toLowerCase();
-}
-
-function normalizeRefreshTokenKey(
-	refreshToken: string | undefined,
-): string | undefined {
-	if (!refreshToken) return undefined;
-	const trimmed = refreshToken.trim();
-	return trimmed || undefined;
-}
-
-type AccountIdentityRef = {
-	accountId?: string;
-	emailKey?: string;
-	refreshToken?: string;
-};
-
-type AccountMatchOptions = {
-	allowUniqueAccountIdFallbackWithoutEmail?: boolean;
-};
-
-function toAccountIdentityRef(
-	account:
-		| Pick<AccountLike, "accountId" | "email" | "refreshToken">
-		| null
-		| undefined,
-): AccountIdentityRef {
-	return {
-		accountId: normalizeAccountIdKey(account?.accountId),
-		emailKey: normalizeEmailKey(account?.email),
-		refreshToken: normalizeRefreshTokenKey(account?.refreshToken),
-	};
-}
-
 function collectDistinctIdentityValues(
 	values: Array<string | undefined>,
 ): Set<string> {
@@ -1204,18 +1161,9 @@ function collectDistinctIdentityValues(
 	return distinct;
 }
 
-export function getAccountIdentityKey(
-	account: Pick<AccountLike, "accountId" | "email" | "refreshToken">,
-): string | undefined {
-	const ref = toAccountIdentityRef(account);
-	if (ref.accountId && ref.emailKey) {
-		return `account:${ref.accountId}::email:${ref.emailKey}`;
-	}
-	if (ref.accountId) return `account:${ref.accountId}`;
-	if (ref.emailKey) return `email:${ref.emailKey}`;
-	if (ref.refreshToken) return `refresh:${ref.refreshToken}`;
-	return undefined;
-}
+type AccountMatchOptions = {
+	allowUniqueAccountIdFallbackWithoutEmail?: boolean;
+};
 
 function findNewestMatchingIndex<T extends AccountLike>(
 	accounts: readonly T[],
