@@ -1,11 +1,7 @@
 import { promises as fs } from "node:fs";
 import { stdin as input, stdout as output } from "node:process";
 import { createInterface } from "node:readline/promises";
-import {
-	getDefaultPluginConfig,
-	loadPluginConfig,
-	savePluginConfig,
-} from "../config.js";
+import { loadPluginConfig, savePluginConfig } from "../config.js";
 import {
 	type DashboardAccentColor,
 	type DashboardAccountSortMode,
@@ -31,6 +27,23 @@ import { getUiRuntimeOptions, setUiRuntimeOptions } from "../ui/runtime.js";
 import { type MenuItem, type SelectOptions, select } from "../ui/select.js";
 import { getUnifiedSettingsPath } from "../unified-settings.js";
 import { sleep } from "../utils.js";
+import {
+	BACKEND_CATEGORY_OPTIONS,
+	BACKEND_DEFAULTS,
+	BACKEND_NUMBER_OPTION_BY_KEY,
+	BACKEND_NUMBER_OPTIONS,
+	BACKEND_TOGGLE_OPTION_BY_KEY,
+	BACKEND_TOGGLE_OPTIONS,
+	type BackendCategoryConfigAction,
+	type BackendCategoryKey,
+	type BackendCategoryOption,
+	type BackendNumberSettingKey,
+	type BackendNumberSettingOption,
+	type BackendSettingFocusKey,
+	type BackendSettingsHubAction,
+	type BackendToggleSettingKey,
+	type BackendToggleSettingOption,
+} from "./backend-settings-schema.js";
 import { promptBehaviorSettingsPanel } from "./behavior-settings-panel.js";
 import { promptDashboardDisplayPanel } from "./dashboard-display-panel.js";
 import { promptStatuslineSettingsPanel } from "./statusline-settings-panel.js";
@@ -155,84 +168,6 @@ type PreviewFocusKey =
 	| "menuLayoutMode"
 	| null;
 
-type BackendToggleSettingKey =
-	| "liveAccountSync"
-	| "sessionAffinity"
-	| "proactiveRefreshGuardian"
-	| "retryAllAccountsRateLimited"
-	| "parallelProbing"
-	| "storageBackupEnabled"
-	| "preemptiveQuotaEnabled"
-	| "fastSession"
-	| "sessionRecovery"
-	| "autoResume"
-	| "perProjectAccounts";
-
-type BackendNumberSettingKey =
-	| "liveAccountSyncDebounceMs"
-	| "liveAccountSyncPollMs"
-	| "sessionAffinityTtlMs"
-	| "sessionAffinityMaxEntries"
-	| "proactiveRefreshIntervalMs"
-	| "proactiveRefreshBufferMs"
-	| "parallelProbingMaxConcurrency"
-	| "fastSessionMaxInputItems"
-	| "networkErrorCooldownMs"
-	| "serverErrorCooldownMs"
-	| "fetchTimeoutMs"
-	| "streamStallTimeoutMs"
-	| "tokenRefreshSkewMs"
-	| "preemptiveQuotaRemainingPercent5h"
-	| "preemptiveQuotaRemainingPercent7d"
-	| "preemptiveQuotaMaxDeferralMs";
-
-type BackendSettingFocusKey =
-	| BackendToggleSettingKey
-	| BackendNumberSettingKey
-	| null;
-
-interface BackendToggleSettingOption {
-	key: BackendToggleSettingKey;
-	label: string;
-	description: string;
-}
-
-interface BackendNumberSettingOption {
-	key: BackendNumberSettingKey;
-	label: string;
-	description: string;
-	min: number;
-	max: number;
-	step: number;
-	unit: "ms" | "percent" | "count";
-}
-
-type BackendCategoryKey =
-	| "session-sync"
-	| "rotation-quota"
-	| "refresh-recovery"
-	| "performance-timeouts";
-
-interface BackendCategoryOption {
-	key: BackendCategoryKey;
-	label: string;
-	description: string;
-	toggleKeys: BackendToggleSettingKey[];
-	numberKeys: BackendNumberSettingKey[];
-}
-
-type BackendCategoryConfigAction =
-	| { type: "toggle"; key: BackendToggleSettingKey }
-	| { type: "bump"; key: BackendNumberSettingKey; direction: -1 | 1 }
-	| { type: "reset-category" }
-	| { type: "back" };
-
-type BackendSettingsHubAction =
-	| { type: "open-category"; key: BackendCategoryKey }
-	| { type: "reset" }
-	| { type: "save" }
-	| { type: "cancel" };
-
 type SettingsHubAction =
 	| { type: "account-list" }
 	| { type: "summary-fields" }
@@ -287,273 +222,6 @@ function mapExperimentalStatusHotkey(
 ): ExperimentalSettingsAction | undefined {
 	return raw.toLowerCase() === "q" ? { type: "back" } : undefined;
 }
-
-const BACKEND_TOGGLE_OPTIONS: BackendToggleSettingOption[] = [
-	{
-		key: "liveAccountSync",
-		label: "Enable Live Sync",
-		description: "Keep accounts synced when files change in another window.",
-	},
-	{
-		key: "sessionAffinity",
-		label: "Enable Session Affinity",
-		description: "Try to keep each conversation on the same account.",
-	},
-	{
-		key: "proactiveRefreshGuardian",
-		label: "Enable Token Refresh Guard",
-		description: "Refresh tokens early in the background.",
-	},
-	{
-		key: "retryAllAccountsRateLimited",
-		label: "Retry When All Rate-Limited",
-		description: "If all accounts are limited, wait and try again.",
-	},
-	{
-		key: "parallelProbing",
-		label: "Enable Parallel Probing",
-		description: "Check multiple accounts at the same time.",
-	},
-	{
-		key: "storageBackupEnabled",
-		label: "Enable Storage Backups",
-		description: "Create a backup before account data changes.",
-	},
-	{
-		key: "preemptiveQuotaEnabled",
-		label: "Enable Quota Deferral",
-		description: "Delay requests before limits are fully exhausted.",
-	},
-	{
-		key: "fastSession",
-		label: "Enable Fast Session Mode",
-		description: "Use lighter request handling for faster responses.",
-	},
-	{
-		key: "sessionRecovery",
-		label: "Enable Session Recovery",
-		description: "Restore recoverable sessions after restart.",
-	},
-	{
-		key: "autoResume",
-		label: "Enable Auto Resume",
-		description: "Automatically continue sessions when possible.",
-	},
-	{
-		key: "perProjectAccounts",
-		label: "Enable Per-Project Accounts",
-		description: "Keep separate account lists for each project.",
-	},
-];
-
-const BACKEND_NUMBER_OPTIONS: BackendNumberSettingOption[] = [
-	{
-		key: "liveAccountSyncDebounceMs",
-		label: "Live Sync Debounce",
-		description: "Wait this long before applying sync file changes.",
-		min: 50,
-		max: 10_000,
-		step: 50,
-		unit: "ms",
-	},
-	{
-		key: "liveAccountSyncPollMs",
-		label: "Live Sync Poll",
-		description: "How often to check files for account updates.",
-		min: 500,
-		max: 60_000,
-		step: 500,
-		unit: "ms",
-	},
-	{
-		key: "sessionAffinityTtlMs",
-		label: "Session Affinity TTL",
-		description: "How long conversation-to-account mapping is kept.",
-		min: 1_000,
-		max: 24 * 60 * 60_000,
-		step: 60_000,
-		unit: "ms",
-	},
-	{
-		key: "sessionAffinityMaxEntries",
-		label: "Session Affinity Max Entries",
-		description: "Maximum stored conversation mappings.",
-		min: 8,
-		max: 4_096,
-		step: 32,
-		unit: "count",
-	},
-	{
-		key: "proactiveRefreshIntervalMs",
-		label: "Refresh Guard Interval",
-		description: "How often to scan for tokens near expiry.",
-		min: 5_000,
-		max: 10 * 60_000,
-		step: 5_000,
-		unit: "ms",
-	},
-	{
-		key: "proactiveRefreshBufferMs",
-		label: "Refresh Guard Buffer",
-		description: "How early to refresh before expiry.",
-		min: 30_000,
-		max: 10 * 60_000,
-		step: 30_000,
-		unit: "ms",
-	},
-	{
-		key: "parallelProbingMaxConcurrency",
-		label: "Parallel Probe Concurrency",
-		description: "Maximum checks running at once.",
-		min: 1,
-		max: 5,
-		step: 1,
-		unit: "count",
-	},
-	{
-		key: "fastSessionMaxInputItems",
-		label: "Fast Session Max Inputs",
-		description: "Max number of input items kept in fast mode.",
-		min: 8,
-		max: 200,
-		step: 2,
-		unit: "count",
-	},
-	{
-		key: "networkErrorCooldownMs",
-		label: "Network Error Cooldown",
-		description: "Wait time after network errors before retry.",
-		min: 0,
-		max: 120_000,
-		step: 500,
-		unit: "ms",
-	},
-	{
-		key: "serverErrorCooldownMs",
-		label: "Server Error Cooldown",
-		description: "Wait time after server errors before retry.",
-		min: 0,
-		max: 120_000,
-		step: 500,
-		unit: "ms",
-	},
-	{
-		key: "fetchTimeoutMs",
-		label: "Request Timeout",
-		description: "Max time to wait for a request.",
-		min: 1_000,
-		max: 10 * 60_000,
-		step: 5_000,
-		unit: "ms",
-	},
-	{
-		key: "streamStallTimeoutMs",
-		label: "Stream Stall Timeout",
-		description: "Max wait before a stuck stream is retried.",
-		min: 1_000,
-		max: 10 * 60_000,
-		step: 5_000,
-		unit: "ms",
-	},
-	{
-		key: "tokenRefreshSkewMs",
-		label: "Token Refresh Buffer",
-		description: "Refresh this long before token expiry.",
-		min: 0,
-		max: 10 * 60_000,
-		step: 10_000,
-		unit: "ms",
-	},
-	{
-		key: "preemptiveQuotaRemainingPercent5h",
-		label: "5h Remaining Threshold",
-		description: "Start delaying when 5h remaining reaches this percent.",
-		min: 0,
-		max: 100,
-		step: 1,
-		unit: "percent",
-	},
-	{
-		key: "preemptiveQuotaRemainingPercent7d",
-		label: "7d Remaining Threshold",
-		description: "Start delaying when weekly remaining reaches this percent.",
-		min: 0,
-		max: 100,
-		step: 1,
-		unit: "percent",
-	},
-	{
-		key: "preemptiveQuotaMaxDeferralMs",
-		label: "Max Preemptive Deferral",
-		description: "Maximum time allowed for quota-based delay.",
-		min: 1_000,
-		max: 24 * 60 * 60_000,
-		step: 60_000,
-		unit: "ms",
-	},
-];
-
-const BACKEND_DEFAULTS = getDefaultPluginConfig();
-const BACKEND_TOGGLE_OPTION_BY_KEY = new Map<
-	BackendToggleSettingKey,
-	BackendToggleSettingOption
->(BACKEND_TOGGLE_OPTIONS.map((option) => [option.key, option]));
-const BACKEND_NUMBER_OPTION_BY_KEY = new Map<
-	BackendNumberSettingKey,
-	BackendNumberSettingOption
->(BACKEND_NUMBER_OPTIONS.map((option) => [option.key, option]));
-const BACKEND_CATEGORY_OPTIONS: BackendCategoryOption[] = [
-	{
-		key: "session-sync",
-		label: "Session & Sync",
-		description: "Sync and session behavior.",
-		toggleKeys: [
-			"liveAccountSync",
-			"sessionAffinity",
-			"perProjectAccounts",
-			"sessionRecovery",
-			"autoResume",
-		],
-		numberKeys: [
-			"liveAccountSyncDebounceMs",
-			"liveAccountSyncPollMs",
-			"sessionAffinityTtlMs",
-			"sessionAffinityMaxEntries",
-		],
-	},
-	{
-		key: "rotation-quota",
-		label: "Rotation & Quota",
-		description: "Quota and retry behavior.",
-		toggleKeys: ["preemptiveQuotaEnabled", "retryAllAccountsRateLimited"],
-		numberKeys: [
-			"preemptiveQuotaRemainingPercent5h",
-			"preemptiveQuotaRemainingPercent7d",
-			"preemptiveQuotaMaxDeferralMs",
-		],
-	},
-	{
-		key: "refresh-recovery",
-		label: "Refresh & Recovery",
-		description: "Token refresh and recovery safety.",
-		toggleKeys: ["storageBackupEnabled"],
-		numberKeys: ["proactiveRefreshBufferMs", "tokenRefreshSkewMs"],
-	},
-	{
-		key: "performance-timeouts",
-		label: "Performance & Timeouts",
-		description: "Speed, probing, and timeout controls.",
-		toggleKeys: ["fastSession", "parallelProbing"],
-		numberKeys: [
-			"fastSessionMaxInputItems",
-			"parallelProbingMaxConcurrency",
-			"fetchTimeoutMs",
-			"streamStallTimeoutMs",
-			"networkErrorCooldownMs",
-			"serverErrorCooldownMs",
-		],
-	},
-];
 
 type DashboardSettingKey = keyof DashboardDisplaySettings;
 
