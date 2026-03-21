@@ -171,6 +171,7 @@ import {
 	getRateLimitResetTimeForFamily,
 	resolveActiveIndex,
 } from "./lib/runtime/account-state.js";
+import { ensureRuntimeLiveAccountSync } from "./lib/runtime/live-sync.js";
 import { buildManualOAuthFlow } from "./lib/runtime/manual-oauth-flow.js";
 import {
 	createRuntimeMetrics,
@@ -460,55 +461,23 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 		pluginConfig: ReturnType<typeof loadPluginConfig>,
 		authFallback?: OAuthAuthDetails,
 	): Promise<void> => {
-		if (!getLiveAccountSync(pluginConfig)) {
-			if (liveAccountSync) {
-				liveAccountSync.stop();
-				liveAccountSync = null;
-				liveAccountSyncPath = null;
-			}
-			return;
-		}
-
-		const targetPath = getStoragePath();
-		if (!liveAccountSync) {
-			liveAccountSync = new LiveAccountSync(
-				async () => {
-					await reloadAccountManagerFromDisk(authFallback);
-				},
-				{
-					debounceMs: getLiveAccountSyncDebounceMs(pluginConfig),
-					pollIntervalMs: getLiveAccountSyncPollMs(pluginConfig),
-				},
-			);
-			registerCleanup(() => {
-				liveAccountSync?.stop();
-			});
-		}
-
-		if (liveAccountSyncPath !== targetPath) {
-			let switched = false;
-			for (let attempt = 0; attempt < 3; attempt += 1) {
-				try {
-					await liveAccountSync.syncToPath(targetPath);
-					liveAccountSyncPath = targetPath;
-					switched = true;
-					break;
-				} catch (error) {
-					const code = (error as NodeJS.ErrnoException | undefined)?.code;
-					if (code !== "EBUSY" && code !== "EPERM") {
-						throw error;
-					}
-					await new Promise((resolve) =>
-						setTimeout(resolve, 25 * 2 ** attempt),
-					);
-				}
-			}
-			if (!switched) {
-				logWarn(
-					`[${PLUGIN_NAME}] Live account sync path switch failed due to transient filesystem locks; keeping previous watcher.`,
-				);
-			}
-		}
+		const ensured = await ensureRuntimeLiveAccountSync({
+			pluginConfig,
+			authFallback,
+			getLiveAccountSync,
+			getStoragePath,
+			currentSync: liveAccountSync,
+			currentPath: liveAccountSyncPath,
+			createSync: (onChange, options) => new LiveAccountSync(onChange, options),
+			reloadAccountManagerFromDisk,
+			getLiveAccountSyncDebounceMs,
+			getLiveAccountSyncPollMs,
+			registerCleanup,
+			logWarn,
+			pluginName: PLUGIN_NAME,
+		});
+		liveAccountSync = ensured.sync;
+		liveAccountSyncPath = ensured.path;
 	};
 
 	const ensureRefreshGuardian = (
