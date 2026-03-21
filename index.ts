@@ -189,6 +189,10 @@ import {
 import { runOAuthBrowserFlow } from "./lib/runtime/oauth-browser-flow.js";
 import { applyRuntimePreemptiveQuotaSettings } from "./lib/runtime/preemptive-quota.js";
 import { ensureRuntimeRefreshGuardian } from "./lib/runtime/refresh-guardian.js";
+import {
+	normalizeRuntimeRequestInit,
+	parseRuntimeRequestBody,
+} from "./lib/runtime/request-init.js";
 import { ensureRuntimeSessionAffinity } from "./lib/runtime/session-affinity.js";
 import { getRuntimeStatusMarker } from "./lib/runtime/status-marker.js";
 import { showRuntimeToast } from "./lib/runtime/toast.js";
@@ -801,82 +805,10 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 								// Instructions are fetched per model family (codex-max, codex, gpt-5.1)
 								// Capture original stream value before transformation
 								// generateText() sends no stream field, streamText() sends stream=true
-								const normalizeRequestInit = async (
-									requestInput: Request | string | URL,
-									requestInit: RequestInit | undefined,
-								): Promise<RequestInit | undefined> => {
-									if (requestInit) return requestInit;
-									if (!(requestInput instanceof Request)) return requestInit;
-
-									const method = requestInput.method || "GET";
-									const normalized: RequestInit = {
-										method,
-										headers: new Headers(requestInput.headers),
-									};
-
-									if (method !== "GET" && method !== "HEAD") {
-										try {
-											const bodyText = await requestInput.clone().text();
-											if (bodyText) {
-												normalized.body = bodyText;
-											}
-										} catch {
-											// Body may be unreadable; proceed without it.
-										}
-									}
-
-									return normalized;
-								};
-
-								const parseRequestBodyFromInit = async (
-									body: unknown,
-								): Promise<Record<string, unknown>> => {
-									if (!body) return {};
-
-									try {
-										if (typeof body === "string") {
-											return JSON.parse(body) as Record<string, unknown>;
-										}
-
-										if (body instanceof Uint8Array) {
-											return JSON.parse(
-												new TextDecoder().decode(body),
-											) as Record<string, unknown>;
-										}
-
-										if (body instanceof ArrayBuffer) {
-											return JSON.parse(
-												new TextDecoder().decode(new Uint8Array(body)),
-											) as Record<string, unknown>;
-										}
-
-										if (ArrayBuffer.isView(body)) {
-											const view = new Uint8Array(
-												body.buffer,
-												body.byteOffset,
-												body.byteLength,
-											);
-											return JSON.parse(
-												new TextDecoder().decode(view),
-											) as Record<string, unknown>;
-										}
-
-										if (typeof Blob !== "undefined" && body instanceof Blob) {
-											return JSON.parse(await body.text()) as Record<
-												string,
-												unknown
-											>;
-										}
-									} catch {
-										logWarn("Failed to parse request body, using empty object");
-									}
-
-									return {};
-								};
-
-								const baseInit = await normalizeRequestInit(input, init);
-								const originalBody = await parseRequestBodyFromInit(
+								const baseInit = await normalizeRuntimeRequestInit(input, init);
+								const originalBody = await parseRuntimeRequestBody(
 									baseInit?.body,
+									{ logWarn },
 								);
 								const isStreaming = originalBody.stream === true;
 								const parsedBody =
