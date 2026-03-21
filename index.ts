@@ -33,16 +33,13 @@ import {
 	formatAccountLabel,
 	formatCooldown,
 	formatWaitTime,
-	getAccountIdCandidates,
 	isCodexCliSyncEnabled,
 	lookupCodexCliTokensByEmail,
 	parseRateLimitReason,
 	resolveRequestAccountId,
 	resolveRuntimeRequestIdentity,
 	sanitizeEmail,
-	selectBestAccountCandidate,
 	shouldUpdateAccountIdFromToken,
-	type Workspace,
 } from "./lib/accounts.js";
 import {
 	createAuthorizationFlow,
@@ -175,6 +172,10 @@ import { isEmptyResponse } from "./lib/request/response-handler.js";
 import { withStreamingFailover } from "./lib/request/stream-failover.js";
 import { addJitter } from "./lib/rotation.js";
 import {
+	resolveAccountSelection,
+	type TokenSuccessWithAccount,
+} from "./lib/runtime/account-selection.js";
+import {
 	createRuntimeMetrics,
 	parseEnvInt,
 	parseFailoverMode,
@@ -213,7 +214,6 @@ import {
 	createHashlineReadTool,
 } from "./lib/tools/hashline-tools.js";
 import type {
-	AccountIdSource,
 	OAuthAuthDetails,
 	RequestBody,
 	TokenResult,
@@ -284,71 +284,6 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 
 	const runtimeMetrics: RuntimeMetrics = createRuntimeMetrics();
 
-	type TokenSuccess = Extract<TokenResult, { type: "success" }>;
-	type TokenSuccessWithAccount = TokenSuccess & {
-		accountIdOverride?: string;
-		accountIdSource?: AccountIdSource;
-		accountLabel?: string;
-		workspaces?: Workspace[];
-	};
-
-	const resolveAccountSelection = (
-		tokens: TokenSuccess,
-	): TokenSuccessWithAccount => {
-		const override = (process.env.CODEX_AUTH_ACCOUNT_ID ?? "").trim();
-		if (override) {
-			const suffix = override.length > 6 ? override.slice(-6) : override;
-			logInfo(
-				`Using account override from CODEX_AUTH_ACCOUNT_ID (id:${suffix}).`,
-			);
-			return {
-				...tokens,
-				accountIdOverride: override,
-				accountIdSource: "manual",
-				accountLabel: `Override [id:${suffix}]`,
-			};
-		}
-
-		const candidates = getAccountIdCandidates(tokens.access, tokens.idToken);
-		if (candidates.length === 0) {
-			return tokens;
-		}
-
-		// Convert candidates to workspaces
-		const workspaces: Workspace[] = candidates.map((c) => ({
-			id: c.accountId,
-			name: c.label,
-			enabled: true,
-			isDefault: c.isDefault,
-		}));
-
-		if (candidates.length === 1) {
-			const [candidate] = candidates;
-			if (candidate) {
-				return {
-					...tokens,
-					accountIdOverride: candidate.accountId,
-					accountIdSource: candidate.source,
-					accountLabel: candidate.label,
-					workspaces,
-				};
-			}
-		}
-
-		// Auto-select the best workspace candidate without prompting.
-		// This honors org/default/id-token signals and avoids forcing personal token IDs.
-		const choice = selectBestAccountCandidate(candidates);
-		if (!choice) return tokens;
-
-		return {
-			...tokens,
-			accountIdOverride: choice.accountId,
-			accountIdSource: choice.source ?? "token",
-			accountLabel: choice.label,
-			workspaces,
-		};
-	};
-
 	const buildManualOAuthFlow = (
 		pkce: { verifier: string },
 		url: string,
@@ -393,7 +328,7 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 				REDIRECT_URI,
 			);
 			if (tokens?.type === "success") {
-				const resolved = resolveAccountSelection(tokens);
+				const resolved = resolveAccountSelection(tokens, { logInfo });
 				if (onSuccess) {
 					await onSuccess(resolved);
 				}
@@ -3628,13 +3563,16 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 											cached.refreshToken.trim()
 												? cached.refreshToken.trim()
 												: flagged.refreshToken;
-										const resolved = resolveAccountSelection({
-											type: "success",
-											access: cached.accessToken,
-											refresh: refreshToken,
-											expires: cached.expiresAt,
-											multiAccount: true,
-										});
+										const resolved = resolveAccountSelection(
+											{
+												type: "success",
+												access: cached.accessToken,
+												refresh: refreshToken,
+												expires: cached.expiresAt,
+												multiAccount: true,
+											},
+											{ logInfo },
+										);
 										if (!resolved.accountIdOverride && flagged.accountId) {
 											resolved.accountIdOverride = flagged.accountId;
 											resolved.accountIdSource =
@@ -3661,7 +3599,9 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 										continue;
 									}
 
-									const resolved = resolveAccountSelection(refreshResult);
+									const resolved = resolveAccountSelection(refreshResult, {
+										logInfo,
+									});
 									if (!resolved.accountIdOverride && flagged.accountId) {
 										resolved.accountIdOverride = flagged.accountId;
 										resolved.accountIdSource =
@@ -3943,7 +3883,7 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 
 							let resolved: TokenSuccessWithAccount | null = null;
 							if (result.type === "success") {
-								resolved = resolveAccountSelection(result);
+								resolved = resolveAccountSelection(result, { logInfo });
 								const email = extractAccountEmail(
 									resolved.access,
 									resolved.idToken,
