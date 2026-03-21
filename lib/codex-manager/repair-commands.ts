@@ -454,6 +454,34 @@ function findMatchingFlaggedAccountIndex(
 	});
 }
 
+function findFlaggedAccountIndexByStableIdentity(
+	accounts: readonly FlaggedAccountMetadataV1[],
+	target: FlaggedAccountMetadataV1,
+): number {
+	const targetEmail = sanitizeEmail(target.email);
+	return accounts.findIndex((account) => {
+		if (target.accountId && account.accountId === target.accountId) {
+			if (!targetEmail) {
+				return true;
+			}
+			return sanitizeEmail(account.email) === targetEmail;
+		}
+		return Boolean(targetEmail) && sanitizeEmail(account.email) === targetEmail;
+	});
+}
+
+function hasFlaggedRefreshTokenDrift(
+	accounts: readonly FlaggedAccountMetadataV1[],
+	target: FlaggedAccountMetadataV1,
+): boolean {
+	const targetIndex = findFlaggedAccountIndexByStableIdentity(accounts, target);
+	if (targetIndex < 0) {
+		return false;
+	}
+	const current = accounts[targetIndex];
+	return current ? current.refreshToken !== target.refreshToken : false;
+}
+
 function applyFlaggedStorageMutations(
 	flaggedStorage: FlaggedAccountStorageV1,
 	mutations: readonly FlaggedStorageMutation[],
@@ -983,7 +1011,23 @@ export async function runVerifyFlagged(
 						? structuredClone(loadedStorage)
 						: createEmptyAccountStorage();
 					const nextFlaggedStorage = structuredClone(loadedFlaggedStorage);
-					applyRefreshChecks(nextStorage, refreshChecks);
+					const staleRefreshChecks = refreshChecks.filter((check) =>
+						hasFlaggedRefreshTokenDrift(nextFlaggedStorage.accounts, check.flagged),
+					);
+					const safeRefreshChecks = refreshChecks.filter(
+						(check) =>
+							!hasFlaggedRefreshTokenDrift(nextFlaggedStorage.accounts, check.flagged),
+					);
+					applyRefreshChecks(nextStorage, safeRefreshChecks);
+					for (const check of staleRefreshChecks) {
+						reports.push({
+							index: check.index,
+							label: check.label,
+							outcome: "restore-skipped",
+							message:
+								"Skipped restore because flagged refresh token changed before persistence",
+						});
+					}
 					applyFlaggedStorageMutations(nextFlaggedStorage, flaggedMutations);
 					remainingFlagged = nextFlaggedStorage.accounts.length;
 					if (!storageChanged && !flaggedChanged) {

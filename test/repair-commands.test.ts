@@ -273,6 +273,73 @@ describe("repair-commands direct deps coverage", () => {
 		});
 	});
 
+	it("runVerifyFlagged skips stale restore results when flagged refresh tokens changed before persistence", async () => {
+		const flaggedAccount = {
+			email: "flagged@example.com",
+			refreshToken: "flagged-refresh",
+			accessToken: "old-access",
+			expiresAt: 10,
+			accountId: "stored-account",
+			accountIdSource: "manual" as const,
+			lastError: "old-error",
+			lastUsed: 1,
+		};
+		const persistSpy = vi.fn();
+
+		loadFlaggedAccountsMock.mockResolvedValue({
+			version: 1,
+			accounts: [structuredClone(flaggedAccount)],
+		});
+		queuedRefreshMock.mockResolvedValue({
+			type: "success",
+			access: "fresh-access",
+			refresh: "fresh-refresh",
+			expires: 999,
+			idToken: "fresh-id-token",
+		});
+		extractAccountEmailMock.mockReturnValue("flagged@example.com");
+		extractAccountIdMock.mockReturnValue("token-account");
+		withAccountAndFlaggedStorageTransactionMock.mockImplementation(async (handler) =>
+			handler(
+				null,
+				persistSpy,
+				{
+					version: 1,
+					accounts: [
+						{
+							...structuredClone(flaggedAccount),
+							refreshToken: "rotated-refresh",
+						},
+					],
+				},
+			),
+		);
+		const consoleSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+
+		const exitCode = await runVerifyFlagged(
+			["--json"],
+			createDeps(),
+		);
+
+		expect(exitCode).toBe(0);
+		expect(withAccountAndFlaggedStorageTransactionMock).toHaveBeenCalledTimes(1);
+		expect(persistSpy).not.toHaveBeenCalled();
+		expect(
+			JSON.parse(String(consoleSpy.mock.calls.at(-1)?.[0] ?? "{}")),
+		).toMatchObject({
+			total: 1,
+			restored: 0,
+			remainingFlagged: 1,
+			changed: false,
+			reports: [
+				expect.objectContaining({
+					outcome: "restore-skipped",
+					message: expect.stringContaining("changed before persistence"),
+				}),
+			],
+		});
+	});
+
 	it("runFix uses the injected token-identity applier in the direct concurrent-write path", async () => {
 		const prescanStorage = {
 			version: 3,
