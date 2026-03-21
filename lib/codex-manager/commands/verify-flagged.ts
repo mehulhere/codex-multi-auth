@@ -337,7 +337,13 @@ export async function runVerifyFlaggedCommand(
 					transactionResult = attemptResult;
 				},
 			);
-			if (transactionResult) assignRefreshCheckResult(transactionResult);
+			if (!transactionResult) {
+				logError(
+					"verify-flagged: transaction completed without a result; storage may be unchanged",
+				);
+				return 1;
+			}
+			assignRefreshCheckResult(transactionResult);
 		}
 	} else {
 		assignRefreshCheckResult(
