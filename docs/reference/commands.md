@@ -49,6 +49,7 @@ Compatibility aliases are supported:
 | --- | --- | --- |
 | `--manual`, `--no-browser` | login | Skip browser launch and use manual callback flow |
 | `--json` | verify-flagged, forecast, report, fix, doctor, config explain, debug bundle | Print machine-readable output |
+| `--explain` | report | Include per-account reasons in text output |
 | `--live` | forecast, report, fix | Use live probe before decisions/output |
 | `--dry-run` | verify-flagged, fix, doctor | Preview without writing storage |
 | `--model <model>` | forecast, report, fix | Specify model for live probe paths |

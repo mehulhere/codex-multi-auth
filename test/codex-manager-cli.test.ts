@@ -749,6 +749,38 @@ describe("codex manager cli commands", () => {
 		expect(logSpy).toHaveBeenCalledWith(expect.stringContaining('"codexCli"'));
 	});
 
+	it("prints report explain account rows in text mode", async () => {
+		loadAccountsMock.mockResolvedValueOnce({
+			version: 3,
+			accounts: [
+				{
+					email: "one@example.com",
+					refreshToken: "token-1",
+					addedAt: Date.now(),
+					lastUsed: Date.now(),
+				},
+			],
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0 },
+		});
+		queuedRefreshMock.mockResolvedValueOnce({
+			type: "failed",
+			reason: "invalid_grant",
+			message: "refresh expired",
+		});
+		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+
+		const exitCode = await runCodexMultiAuthCli([
+			"auth",
+			"report",
+			"--explain",
+		]);
+
+		expect(exitCode).toBe(0);
+		expect(logSpy).toHaveBeenCalledWith(expect.stringContaining("Account 1:"));
+	});
+
 	it("prints populated account status for auth status", async () => {
 		const now = Date.now();
 		loadAccountsMock.mockResolvedValueOnce({

@@ -17,6 +17,7 @@ import type { TokenFailure, TokenResult } from "../../types.js";
 interface ReportCliOptions {
 	live: boolean;
 	json: boolean;
+	explain: boolean;
 	model: string;
 	outPath?: string;
 }
@@ -70,6 +71,7 @@ function parseReportArgs(args: string[]): ParsedArgsResult<ReportCliOptions> {
 	const options: ReportCliOptions = {
 		live: false,
 		json: false,
+		explain: false,
 		model: "gpt-5-codex",
 	};
 
@@ -82,6 +84,10 @@ function parseReportArgs(args: string[]): ParsedArgsResult<ReportCliOptions> {
 		}
 		if (arg === "--json" || arg === "-j") {
 			options.json = true;
+			continue;
+		}
+		if (arg === "--explain") {
+			options.explain = true;
 			continue;
 		}
 		if (arg === "--model" || arg === "-m") {
@@ -334,6 +340,23 @@ export async function runReportCommand(
 	}
 	if (report.forecast.probeErrors.length > 0) {
 		logInfo(`Probe notes: ${report.forecast.probeErrors.length}`);
+	}
+	if (options.explain) {
+		logInfo("");
+		for (const account of report.forecast.accounts) {
+			logInfo(
+				`Account ${account.index + 1}: ${account.availability}, ${account.riskLevel} risk (${account.riskScore})`,
+			);
+			if (account.reasons.length > 0) {
+				logInfo(`  Reasons: ${account.reasons.join("; ")}`);
+			}
+			if (account.refreshFailure?.message) {
+				logInfo(`  Refresh failure: ${account.refreshFailure.message}`);
+			}
+			if (account.liveQuota?.summary) {
+				logInfo(`  Live quota: ${account.liveQuota.summary}`);
+			}
+		}
 	}
 	return 0;
 }
