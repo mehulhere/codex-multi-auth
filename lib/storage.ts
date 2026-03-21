@@ -11,14 +11,18 @@ import {
 } from "./named-backup-export.js";
 import { MODEL_FAMILIES, type ModelFamily } from "./prompts/codex.js";
 import { AnyAccountStorageSchema, getValidationErrors } from "./schemas.js";
-
 import { formatStorageErrorHint } from "./storage/error-hints.js";
+import {
+	collectNamedBackups,
+	type NamedBackupSummary,
+} from "./storage/named-backups.js";
 
 export { formatStorageErrorHint } from "./storage/error-hints.js";
 export {
 	getAccountIdentityKey,
 	normalizeEmailKey,
 } from "./storage/identity.js";
+export type { NamedBackupSummary } from "./storage/named-backups.js";
 
 import {
 	getFlaggedAccountsPath as buildFlaggedAccountsPath,
@@ -138,82 +142,6 @@ export type RestoreAssessment = {
 	latestSnapshot?: BackupSnapshotMetadata;
 	backupMetadata: BackupMetadata;
 };
-
-export interface NamedBackupSummary {
-	path: string;
-	fileName: string;
-	accountCount: number;
-	mtimeMs: number;
-}
-
-async function collectNamedBackups(
-	storagePath: string,
-): Promise<NamedBackupSummary[]> {
-	const backupRoot = getNamedBackupRoot(storagePath);
-	let entries: Array<{ isFile(): boolean; name: string }>;
-	try {
-		entries = await fs.readdir(backupRoot, {
-			withFileTypes: true,
-			encoding: "utf8",
-		});
-	} catch (error) {
-		const code = (error as NodeJS.ErrnoException).code;
-		if (code === "ENOENT") return [];
-		throw error;
-	}
-
-	const candidates: NamedBackupSummary[] = [];
-	for (const entry of entries) {
-		if (!entry.isFile()) continue;
-		if (!entry.name.toLowerCase().endsWith(".json")) continue;
-		const candidatePath = join(backupRoot, entry.name);
-		try {
-			const statsBefore = await fs.stat(candidatePath);
-			const { normalized } = await loadAccountsFromPath(candidatePath);
-			if (!normalized || normalized.accounts.length === 0) continue;
-			const statsAfter = await fs.stat(candidatePath).catch(() => null);
-			if (statsAfter && statsAfter.mtimeMs !== statsBefore.mtimeMs) {
-				log.debug(
-					"backup file changed between stat and load, mtime may be stale",
-					{
-						candidatePath,
-						fileName: entry.name,
-						beforeMtimeMs: statsBefore.mtimeMs,
-						afterMtimeMs: statsAfter.mtimeMs,
-					},
-				);
-			}
-			candidates.push({
-				path: candidatePath,
-				fileName: entry.name,
-				accountCount: normalized.accounts.length,
-				mtimeMs: statsBefore.mtimeMs,
-			});
-		} catch (error) {
-			log.debug(
-				"Skipping named backup candidate after loadAccountsFromPath/fs.stat failure",
-				{
-					candidatePath,
-					fileName: entry.name,
-					error:
-						error instanceof Error
-							? {
-									message: error.message,
-									stack: error.stack,
-								}
-							: String(error),
-				},
-			);
-		}
-	}
-
-	candidates.sort((left, right) => {
-		const mtimeDelta = right.mtimeMs - left.mtimeMs;
-		if (mtimeDelta !== 0) return mtimeDelta;
-		return left.fileName.localeCompare(right.fileName);
-	});
-	return candidates;
-}
 
 /**
  * Custom error class for storage operations with platform-aware hints.
@@ -868,7 +796,12 @@ export function buildNamedBackupPath(name: string): string {
 }
 
 export async function getNamedBackups(): Promise<NamedBackupSummary[]> {
-	return collectNamedBackups(getStoragePath());
+	return collectNamedBackups(getStoragePath(), {
+		readDir: fs.readdir,
+		stat: fs.stat,
+		loadAccountsFromPath,
+		logDebug: (message, meta) => log.debug(message, meta),
+	});
 }
 
 export async function restoreAccountsFromBackup(
