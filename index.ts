@@ -211,6 +211,7 @@ import { applyAccountStorageScopeEntry } from "./lib/runtime/account-storage-sco
 import { runBrowserOAuthFlow } from "./lib/runtime/browser-oauth-flow.js";
 import { handleRuntimeEvent } from "./lib/runtime/event-handler.js";
 import { ensureLiveAccountSyncEntry } from "./lib/runtime/live-sync-entry.js";
+import { applyLoaderRuntimeSetup } from "./lib/runtime/loader-setup.js";
 import { buildManualOAuthFlow } from "./lib/runtime/manual-oauth-flow.js";
 import {
 	applyPreemptiveQuotaSettingsFromConfig,
@@ -691,11 +692,15 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 			async loader(getAuth: () => Promise<Auth>, provider: unknown) {
 				const auth = await getAuth();
 				const pluginConfig = loadPluginConfig();
-				applyUiRuntimeFromConfig(pluginConfig, setUiRuntimeOptions);
-				applyAccountStorageScope(pluginConfig);
-				ensureSessionAffinity(pluginConfig);
-				ensureRefreshGuardian(pluginConfig);
-				applyPreemptiveQuotaSettings(pluginConfig);
+				applyLoaderRuntimeSetup({
+					pluginConfig,
+					applyUiRuntimeFromConfig: (config) =>
+						applyUiRuntimeFromConfig(config, setUiRuntimeOptions),
+					applyAccountStorageScope,
+					ensureSessionAffinity,
+					ensureRefreshGuardian,
+					applyPreemptiveQuotaSettings,
+				});
 
 				// Only handle OAuth auth type, skip API key auth
 				if (auth.type !== "oauth") {
