@@ -3995,7 +3995,6 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 							onSuccess: async (tokens: TokenSuccessWithAccount) => {
 								try {
 									await persistAccountPool([tokens], false);
-									invalidateAccountManagerCache();
 								} catch (err) {
 									const storagePath = getStoragePath();
 									const errorCode =
