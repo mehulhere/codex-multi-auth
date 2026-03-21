@@ -56,6 +56,7 @@ import {
 	migrateV1ToV3,
 	type RateLimitStateV3,
 } from "./storage/migrations.js";
+import { exportNamedBackupEntry } from "./storage/named-backup-entry.js";
 import {
 	collectNamedBackups,
 	type NamedBackupSummary,
@@ -825,14 +826,13 @@ export async function exportNamedBackup(
 	name: string,
 	options?: { force?: boolean },
 ): Promise<string> {
-	return exportNamedBackupFile(
+	return exportNamedBackupEntry({
 		name,
-		{
-			getStoragePath,
-			exportAccounts,
-		},
 		options,
-	);
+		exportNamedBackupFile,
+		getStoragePath,
+		exportAccounts,
+	});
 }
 
 export function getFlaggedAccountsPath(): string {
