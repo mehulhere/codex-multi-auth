@@ -27,6 +27,20 @@ describe("runRuntimeOAuthFlow", () => {
 		expect(logDebug).toHaveBeenCalledWith("[codex-multi-auth] debug message");
 		expect(logWarn).toHaveBeenCalledWith("[codex-multi-auth] warn message");
 	});
+	it("returns existing reload promise when one is in flight", async () => {
+		const reloadRuntimeAccountManager = vi.fn(async () => "manager");
+		const inFlight = Promise.resolve("existing-manager");
+		const reloader = createAccountManagerReloader({
+			reloadRuntimeAccountManager,
+			getReloadInFlight: () => inFlight as Promise<string>,
+			loadFromDisk: vi.fn(async () => "manager"),
+			setCachedAccountManager: vi.fn(),
+			setAccountManagerPromise: vi.fn(),
+			setReloadInFlight: vi.fn(),
+		});
+		await expect(reloader()).resolves.toBe("existing-manager");
+		expect(reloadRuntimeAccountManager).not.toHaveBeenCalled();
+	});
 });
 
 describe("createPersistAccounts", () => {

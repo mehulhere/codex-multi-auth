@@ -139,15 +139,15 @@ export async function verifyRuntimeFlaggedAccounts(deps: {
 		}
 	}
 
-	if (state.restored.length > 0) {
-		await deps.persistAccounts(state.restored, false);
-		deps.invalidateAccountManagerCache();
-	}
-
 	await deps.saveFlaggedAccounts({
 		version: 1,
 		accounts: state.remaining,
 	});
+
+	if (state.restored.length > 0) {
+		await deps.persistAccounts(state.restored, false);
+		deps.invalidateAccountManagerCache();
+	}
 
 	deps.showLine("");
 	deps.showLine(

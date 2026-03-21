@@ -90,4 +90,42 @@ describe("verifyRuntimeFlaggedAccounts", () => {
 			accounts: [expect.objectContaining({ refreshToken: "broken-refresh", lastError: "cache unavailable" })],
 		});
 	});
+	it("writes flagged state before restored accounts", async () => {
+		const calls: string[] = [];
+		await verifyRuntimeFlaggedAccounts({
+			loadFlaggedAccounts: async () => ({ version: 1, accounts: [{ email: "refresh@example.com", refreshToken: "refresh-token", addedAt: 1, lastUsed: 1 }] }),
+			lookupCodexCliTokensByEmail: async () => null,
+			queuedRefresh: async () => ({ type: "success", access: "new-access", refresh: "new-refresh", expires: Date.now() + 60_000 }),
+			resolveAccountSelection: (tokens) => ({ refreshToken: tokens.refresh, accessToken: tokens.access }) as never,
+			persistAccounts: vi.fn(async () => { calls.push("persistAccounts"); }),
+			invalidateAccountManagerCache: vi.fn(),
+			saveFlaggedAccounts: vi.fn(async () => { calls.push("saveFlaggedAccounts"); }),
+			logInfo: vi.fn(),
+			showLine: vi.fn(),
+		});
+		expect(calls).toEqual(["saveFlaggedAccounts", "persistAccounts"]);
+	});
+
+	it("keeps flagged state saved when persistAccounts throws EBUSY", async () => {
+		const saveFlaggedAccounts = vi.fn(async () => {});
+		const persistAccounts = vi.fn(async () => {
+			const error = new Error("busy") as Error & { code?: string };
+			error.code = "EBUSY";
+			throw error;
+		});
+		await expect(
+			verifyRuntimeFlaggedAccounts({
+				loadFlaggedAccounts: async () => ({ version: 1, accounts: [{ email: "refresh@example.com", refreshToken: "refresh-token", addedAt: 1, lastUsed: 1 }] }),
+				lookupCodexCliTokensByEmail: async () => null,
+				queuedRefresh: async () => ({ type: "success", access: "new-access", refresh: "new-refresh", expires: Date.now() + 60_000 }),
+				resolveAccountSelection: (tokens) => ({ refreshToken: tokens.refresh, accessToken: tokens.access }) as never,
+				persistAccounts,
+				invalidateAccountManagerCache: vi.fn(),
+				saveFlaggedAccounts,
+				logInfo: vi.fn(),
+				showLine: vi.fn(),
+			}),
+		).rejects.toThrow("busy");
+		expect(saveFlaggedAccounts).toHaveBeenCalledTimes(1);
+	});
 });
