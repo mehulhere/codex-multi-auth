@@ -11,12 +11,11 @@ import {
 } from "./named-backup-export.js";
 import { MODEL_FAMILIES, type ModelFamily } from "./prompts/codex.js";
 import { clearAccountStorageArtifacts } from "./storage/account-clear.js";
+import { clearAccountsEntry } from "./storage/account-clear-entry.js";
 import { cloneAccountStorageForPersistence } from "./storage/account-persistence.js";
 import {
-	clearFlaggedAccountsEntry,
 	exportAccountsSnapshot,
 	importAccountsSnapshot,
-	saveFlaggedAccountsEntry,
 } from "./storage/account-port.js";
 import { saveAccountsToDisk } from "./storage/account-save.js";
 import { buildBackupMetadata } from "./storage/backup-metadata-builder.js";
@@ -1847,17 +1846,18 @@ export async function saveAccounts(storage: AccountStorageV3): Promise<void> {
  * Silently ignores if file doesn't exist.
  */
 export async function clearAccounts(): Promise<void> {
-	return withStorageLock(async () => {
-		const path = getStoragePath();
-		await clearAccountStorageArtifacts({
-			path,
-			resetMarkerPath: getIntentionalResetMarkerPath(path),
-			walPath: getAccountsWalPath(path),
-			backupPaths: await getAccountsBackupRecoveryCandidatesWithDiscovery(path),
-			logError: (message, details) => {
-				log.error(message, details);
-			},
-		});
+	const path = getStoragePath();
+	return clearAccountsEntry({
+		path,
+		withStorageLock,
+		resetMarkerPath: getIntentionalResetMarkerPath(path),
+		walPath: getAccountsWalPath(path),
+		getBackupPaths: () =>
+			getAccountsBackupRecoveryCandidatesWithDiscovery(path),
+		clearAccountStorageArtifacts,
+		logError: (message, details) => {
+			log.error(message, details);
+		},
 	});
 }
 
