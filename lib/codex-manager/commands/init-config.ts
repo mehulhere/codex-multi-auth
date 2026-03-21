@@ -1,5 +1,5 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
-import { dirname, resolve } from "node:path";
+import { dirname, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const TEMPLATE_MAP = {
@@ -75,7 +75,10 @@ export async function runInitConfigCommand(
 		deps?.readTemplate ??
 		(async (template: TemplateName) => {
 			const currentFile = fileURLToPath(import.meta.url);
-			const repoRoot = resolve(dirname(currentFile), "../../../");
+			const currentDir = dirname(currentFile);
+			const repoRoot = currentDir.includes(`${sep}dist${sep}`)
+				? resolve(currentDir, "../../../../")
+				: resolve(currentDir, "../../../");
 			const templatePath = resolve(repoRoot, "config", TEMPLATE_MAP[template]);
 			return readFile(templatePath, "utf8");
 		});
