@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 
+// @ts-check
+
 import { createRequire } from "node:module";
 import { runCodexMultiAuthCli } from "../dist/lib/codex-manager.js";
 
