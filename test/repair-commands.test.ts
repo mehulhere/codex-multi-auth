@@ -442,6 +442,54 @@ describe("repair-commands direct deps coverage", () => {
 		});
 	});
 
+	it("runFix reports saved updates for quota-cache-only live changes in display mode", async () => {
+		const consoleSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+
+		loadQuotaCacheMock.mockResolvedValueOnce({
+			byAccountId: {},
+			byEmail: {},
+		});
+		loadAccountsMock.mockResolvedValueOnce({
+			version: 3,
+			accounts: [
+				{
+					email: "quota@example.com",
+					refreshToken: "quota-refresh",
+					accessToken: "quota-access",
+					expiresAt: Date.now() + 60_000,
+					accountId: "quota-account",
+					accountIdSource: "manual" as const,
+					enabled: true,
+				},
+			],
+			activeIndex: 0,
+			activeIndexByFamily: {},
+		});
+		fetchCodexQuotaSnapshotMock.mockResolvedValueOnce({
+			status: 200,
+			model: "gpt-5-codex",
+			primary: {},
+			secondary: {},
+		});
+
+		const exitCode = await runFix(
+			["--live"],
+			createDeps({
+				hasUsableAccessToken: () => true,
+				updateQuotaCacheForAccount: () => true,
+			}),
+		);
+
+		expect(exitCode).toBe(0);
+		expect(withAccountStorageTransactionMock).not.toHaveBeenCalled();
+		expect(saveQuotaCacheMock).toHaveBeenCalledTimes(1);
+		const output = consoleSpy.mock.calls
+			.map((call) => call.map((value) => String(value)).join(" "))
+			.join("\n");
+		expect(output).toContain("Saved updates.");
+		expect(output).not.toContain("No changes were needed.");
+	});
+
 	it("runFix does not double-count a live probe failure followed by refresh fallback", async () => {
 		loadQuotaCacheMock.mockResolvedValueOnce({
 			byAccountId: {},
@@ -673,6 +721,87 @@ describe("repair-commands direct deps coverage", () => {
 				severity: "warn",
 				message: expect.stringMatching(/Applied \d+ fix\(es\)/),
 			}),
+		);
+	});
+
+	it("runDoctor records active-index fixes when normalization changes the snapshot", async () => {
+		const now = Date.now();
+		let persistedAccountStorage: unknown;
+		loadAccountsMock.mockResolvedValueOnce({
+			version: 3,
+			accounts: [
+				{
+					email: "doctor@example.com",
+					refreshToken: "doctor-refresh",
+					accessToken: "doctor-access",
+					expiresAt: now + 60_000,
+					accountId: "doctor-account",
+					accountIdSource: "manual" as const,
+					enabled: true,
+				},
+			],
+			activeIndex: 7,
+			activeIndexByFamily: {
+				codex: 7,
+				"codex-max": 7,
+				"gpt-5-codex": 7,
+			},
+		});
+		withAccountStorageTransactionMock.mockImplementation(async (handler) =>
+			handler(
+				{
+					version: 3,
+					accounts: [
+						{
+							email: "doctor@example.com",
+							refreshToken: "doctor-refresh",
+							accessToken: "doctor-access",
+							expiresAt: now + 60_000,
+							accountId: "doctor-account",
+							accountIdSource: "manual" as const,
+							enabled: true,
+						},
+					],
+					activeIndex: 7,
+					activeIndexByFamily: {
+						codex: 7,
+						"codex-max": 7,
+						"gpt-5-codex": 7,
+					},
+				},
+				async (nextStorage: unknown) => {
+					persistedAccountStorage = nextStorage;
+				},
+			),
+		);
+		const consoleSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+
+		const exitCode = await runDoctor(
+			["--json", "--fix"],
+			createDeps({
+				hasUsableAccessToken: () => true,
+			}),
+		);
+
+		expect(exitCode).toBe(0);
+		expect(withAccountStorageTransactionMock).toHaveBeenCalledTimes(1);
+		expect(persistedAccountStorage).toMatchObject({
+			activeIndex: 0,
+			activeIndexByFamily: {
+				codex: 0,
+				"codex-max": 0,
+				"gpt-5-codex": 0,
+			},
+		});
+		const payload = JSON.parse(String(consoleSpy.mock.calls.at(-1)?.[0] ?? "{}")) as {
+			fix: {
+				changed: boolean;
+				actions: Array<{ key: string }>;
+			};
+		};
+		expect(payload.fix.changed).toBe(true);
+		expect(payload.fix.actions).toContainEqual(
+			expect.objectContaining({ key: "active-index" }),
 		);
 	});
 

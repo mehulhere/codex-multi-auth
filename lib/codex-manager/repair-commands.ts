@@ -681,13 +681,17 @@ function applyDoctorFixes(
 ): { changed: boolean; actions: DoctorFixAction[] } {
 	let changed = false;
 	const actions: DoctorFixAction[] = [];
-
-	if (normalizeDoctorIndexes(storage)) {
-		changed = true;
+	const recordActiveIndexAction = () => {
+		if (actions.some((action) => action.key === "active-index")) return;
 		actions.push({
 			key: "active-index",
 			message: "Normalized active account indexes",
 		});
+	};
+
+	if (normalizeDoctorIndexes(storage)) {
+		changed = true;
+		recordActiveIndexAction();
 	}
 
 	const seenRefreshTokens = new Map<string, number>();
@@ -749,6 +753,7 @@ function applyDoctorFixes(
 
 	if (normalizeDoctorIndexes(storage)) {
 		changed = true;
+		recordActiveIndexAction();
 	}
 
 	return { changed, actions };
@@ -1400,6 +1405,7 @@ export async function runFix(
 	}
 
 	const changed = accountStorageChanged;
+	const anyChanged = accountStorageChanged || quotaCacheChanged;
 
 	if (options.json) {
 		if (!options.dryRun && workingQuotaCache && quotaCacheChanged) {
@@ -1508,9 +1514,9 @@ export async function runFix(
 		await saveQuotaCache(workingQuotaCache);
 	}
 
-	if (changed && options.dryRun) {
+	if (anyChanged && options.dryRun) {
 		console.log(`\n${deps.stylePromptText("Preview only: no changes were saved.", "warning")}`);
-	} else if (changed) {
+	} else if (anyChanged) {
 		console.log(`\n${deps.stylePromptText("Saved updates.", "success")}`);
 	} else {
 		console.log(`\n${deps.stylePromptText("No changes were needed.", "muted")}`);
@@ -1686,6 +1692,8 @@ export async function runDoctor(
 
 	const loadedStorage = await loadAccounts();
 	const storage = loadedStorage ? structuredClone(loadedStorage) : loadedStorage;
+	const storageForChecks =
+		options.fix && storage ? structuredClone(storage) : storage;
 	let fixChanged = false;
 	let storageFixChanged = false;
 	let structuralFixActions: DoctorFixAction[] = [];
@@ -1699,12 +1707,12 @@ export async function runDoctor(
 		expiresAt: number | undefined;
 		idToken?: string;
 	} | null = null;
-	if (options.fix && storage && storage.accounts.length > 0) {
-		const fixed = applyDoctorFixes(storage, deps);
+	if (options.fix && storageForChecks && storageForChecks.accounts.length > 0) {
+		const fixed = applyDoctorFixes(storageForChecks, deps);
 		storageFixChanged = fixed.changed;
 		structuralFixActions = fixed.actions;
 	}
-	if (!storage || storage.accounts.length === 0) {
+	if (!storageForChecks || storageForChecks.accounts.length === 0) {
 		addCheck({
 			key: "accounts",
 			severity: "warn",
@@ -1714,11 +1722,12 @@ export async function runDoctor(
 		addCheck({
 			key: "accounts",
 			severity: "ok",
-			message: `Loaded ${storage.accounts.length} account(s)`,
+			message: `Loaded ${storageForChecks.accounts.length} account(s)`,
 		});
 
-		const activeIndex = deps.resolveActiveIndex(storage, "codex");
-		const activeExists = activeIndex >= 0 && activeIndex < storage.accounts.length;
+		const activeIndex = deps.resolveActiveIndex(storageForChecks, "codex");
+		const activeExists =
+			activeIndex >= 0 && activeIndex < storageForChecks.accounts.length;
 		addCheck({
 			key: "active-index",
 			severity: activeExists ? "ok" : "error",
@@ -1727,19 +1736,22 @@ export async function runDoctor(
 				: "Active index is out of range",
 		});
 
-		const disabledCount = storage.accounts.filter((a) => a.enabled === false).length;
+		const disabledCount = storageForChecks.accounts.filter(
+			(a) => a.enabled === false,
+		).length;
 		addCheck({
 			key: "enabled-accounts",
-			severity: disabledCount >= storage.accounts.length ? "error" : "ok",
+			severity:
+				disabledCount >= storageForChecks.accounts.length ? "error" : "ok",
 			message:
-				disabledCount >= storage.accounts.length
+				disabledCount >= storageForChecks.accounts.length
 					? "All accounts are disabled"
-					: `${storage.accounts.length - disabledCount} enabled / ${disabledCount} disabled`,
+					: `${storageForChecks.accounts.length - disabledCount} enabled / ${disabledCount} disabled`,
 		});
 
 		const seenRefreshTokens = new Set<string>();
 		let duplicateTokenCount = 0;
-		for (const account of storage.accounts) {
+		for (const account of storageForChecks.accounts) {
 			const token = getDoctorRefreshTokenKey(account.refreshToken);
 			if (!token) continue;
 			if (seenRefreshTokens.has(token)) {
@@ -1761,7 +1773,7 @@ export async function runDoctor(
 		let duplicateEmailCount = 0;
 		let placeholderEmailCount = 0;
 		let likelyInvalidRefreshTokenCount = 0;
-		for (const account of storage.accounts) {
+		for (const account of storageForChecks.accounts) {
 			if (deps.hasLikelyInvalidRefreshToken(account.refreshToken)) {
 				likelyInvalidRefreshTokenCount += 1;
 			}
@@ -1798,7 +1810,7 @@ export async function runDoctor(
 
 		const now = Date.now();
 		const forecastResults = evaluateForecastAccounts(
-			storage.accounts.map((account, index) => ({
+			storageForChecks.accounts.map((account, index) => ({
 				index,
 				account,
 				isCurrent: index === activeIndex,
@@ -1825,7 +1837,7 @@ export async function runDoctor(
 		}
 
 		if (activeExists) {
-			const activeAccount = storage.accounts[activeIndex];
+			const activeAccount = storageForChecks.accounts[activeIndex];
 			const managerActiveEmail = sanitizeEmail(activeAccount?.email);
 			const managerActiveAccountId = activeAccount?.accountId;
 			const codexActiveEmail =
@@ -1936,7 +1948,13 @@ export async function runDoctor(
 		}
 	}
 
-	if (options.fix && storage && storage.accounts.length > 0 && storageFixChanged && !options.dryRun) {
+	if (
+		options.fix
+		&& storageForChecks
+		&& storageForChecks.accounts.length > 0
+		&& storageFixChanged
+		&& !options.dryRun
+	) {
 		await withAccountStorageTransaction(async (loadedStorage, persist) => {
 			const nextStorage = loadedStorage
 				? structuredClone(loadedStorage)
@@ -2016,7 +2034,7 @@ export async function runDoctor(
 
 	const fixActions = [...structuralFixActions, ...supplementalFixActions];
 
-	if (options.fix && storage && storage.accounts.length > 0) {
+	if (options.fix && storageForChecks && storageForChecks.accounts.length > 0) {
 		fixChanged = storageFixChanged || fixActions.length > 0;
 		addCheck({
 			key: "auto-fix",
