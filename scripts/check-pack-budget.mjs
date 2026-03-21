@@ -56,7 +56,8 @@ if (packageSize > MAX_PACKAGE_SIZE) {
 
 const paths = pack.files
 	.map((/** @type {{ path?: unknown }} */ file) => file.path)
-	.filter((/** @type {unknown} */ value) => typeof value === "string");
+	.filter((/** @type {unknown} */ value) => typeof value === "string")
+	.map((/** @type {string} */ value) => value.replaceAll("\\", "/"));
 
 for (const forbidden of FORBIDDEN_PREFIXES) {
 	const leaked = paths.find(
