@@ -407,11 +407,6 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 		return applyUiRuntimeFromConfig(loadPluginConfig());
 	};
 
-	const getStatusMarker = (
-		ui: UiRuntimeOptions,
-		status: "ok" | "warning" | "error",
-	): string => getRuntimeStatusMarker(ui, status);
-
 	const invalidateAccountManagerCache = (): void => {
 		cachedAccountManager = null;
 		accountManagerPromise = null;
@@ -3894,7 +3889,7 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 							"",
 							formatUiItem(
 								ui,
-								`${getStatusMarker(ui, "ok")} Switched to ${label}`,
+								`${getRuntimeStatusMarker(ui, "ok")} Switched to ${label}`,
 								"success",
 							),
 						].join("\n");
@@ -4309,12 +4304,12 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 							const refreshResult = await queuedRefresh(account.refreshToken);
 							if (refreshResult.type === "success") {
 								results.push(
-									`  ${getStatusMarker(ui, "ok")} ${label}: Healthy`,
+									`  ${getRuntimeStatusMarker(ui, "ok")} ${label}: Healthy`,
 								);
 								healthyCount++;
 							} else {
 								results.push(
-									`  ${getStatusMarker(ui, "error")} ${label}: Token refresh failed`,
+									`  ${getRuntimeStatusMarker(ui, "error")} ${label}: Token refresh failed`,
 								);
 								unhealthyCount++;
 							}
@@ -4322,7 +4317,7 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 							const errorMsg =
 								error instanceof Error ? error.message : String(error);
 							results.push(
-								`  ${getStatusMarker(ui, "error")} ${label}: Error - ${errorMsg.slice(0, 120)}`,
+								`  ${getRuntimeStatusMarker(ui, "error")} ${label}: Error - ${errorMsg.slice(0, 120)}`,
 							);
 							unhealthyCount++;
 						}
@@ -4470,7 +4465,7 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 										"",
 										formatUiItem(
 											ui,
-											`${getStatusMarker(ui, "ok")} Removed: ${label}`,
+											`${getRuntimeStatusMarker(ui, "ok")} Removed: ${label}`,
 											"success",
 										),
 										remaining > 0
@@ -4536,12 +4531,12 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 											account.accessToken = refreshResult.access;
 											account.expiresAt = refreshResult.expires;
 											results.push(
-												`  ${getStatusMarker(ui, "ok")} ${label}: Refreshed`,
+												`  ${getRuntimeStatusMarker(ui, "ok")} ${label}: Refreshed`,
 											);
 											refreshedCount++;
 										} else {
 											results.push(
-												`  ${getStatusMarker(ui, "error")} ${label}: Failed - ${refreshResult.message ?? refreshResult.reason}`,
+												`  ${getRuntimeStatusMarker(ui, "error")} ${label}: Failed - ${refreshResult.message ?? refreshResult.reason}`,
 											);
 											failedCount++;
 										}
@@ -4549,7 +4544,7 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 										const errorMsg =
 											error instanceof Error ? error.message : String(error);
 										results.push(
-											`  ${getStatusMarker(ui, "error")} ${label}: Error - ${errorMsg.slice(0, 120)}`,
+											`  ${getRuntimeStatusMarker(ui, "error")} ${label}: Error - ${errorMsg.slice(0, 120)}`,
 										);
 										failedCount++;
 									}
@@ -4600,7 +4595,7 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 											"",
 											formatUiItem(
 												ui,
-												`${getStatusMarker(ui, "ok")} Exported ${count} account(s)`,
+												`${getRuntimeStatusMarker(ui, "ok")} Exported ${count} account(s)`,
 												"success",
 											),
 											formatUiKeyValue(ui, "Path", filePath, "muted"),
@@ -4616,7 +4611,7 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 											"",
 											formatUiItem(
 												ui,
-												`${getStatusMarker(ui, "error")} Export failed`,
+												`${getRuntimeStatusMarker(ui, "error")} Export failed`,
 												"danger",
 											),
 											formatUiKeyValue(ui, "Error", msg, "danger"),
@@ -4656,7 +4651,7 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 											"",
 											formatUiItem(
 												ui,
-												`${getStatusMarker(ui, "ok")} Import complete`,
+												`${getRuntimeStatusMarker(ui, "ok")} Import complete`,
 												"success",
 											),
 											formatUiKeyValue(ui, "Path", filePath, "muted"),
@@ -4691,7 +4686,7 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 											"",
 											formatUiItem(
 												ui,
-												`${getStatusMarker(ui, "error")} Import failed`,
+												`${getRuntimeStatusMarker(ui, "error")} Import failed`,
 												"danger",
 											),
 											formatUiKeyValue(ui, "Error", msg, "danger"),
