@@ -749,6 +749,22 @@ describe("codex manager cli commands", () => {
 		expect(logSpy).toHaveBeenCalledWith(expect.stringContaining('"codexCli"'));
 	});
 
+	it("prints init-config template to stdout by default", async () => {
+		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+
+		const exitCode = await runCodexMultiAuthCli([
+			"auth",
+			"init-config",
+			"minimal",
+		]);
+
+		expect(exitCode).toBe(0);
+		expect(logSpy).toHaveBeenCalledWith(
+			expect.stringContaining('"plugin": ["codex-multi-auth"]'),
+		);
+	});
+
 	it("prints populated account status for auth status", async () => {
 		const now = Date.now();
 		loadAccountsMock.mockResolvedValueOnce({
