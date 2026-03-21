@@ -182,6 +182,7 @@ import {
 } from "./lib/runtime/account-state.js";
 import { buildCapabilityBoostByAccount } from "./lib/runtime/capability-boost.js";
 import { createRuntimeEventHandler } from "./lib/runtime/event-handler.js";
+import { createFlaggedVerificationState } from "./lib/runtime/flagged-verify-types.js";
 import { ensureRuntimeLiveAccountSync } from "./lib/runtime/live-sync.js";
 import { buildManualOAuthFlow } from "./lib/runtime/manual-oauth-flow.js";
 import {
@@ -2599,10 +2600,11 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 												`[${i + 1}/${total}] ${label}: ERROR (${message})`,
 											);
 											if (deepProbe && isFlaggableFailure(refreshResult)) {
-												const existingIndex = state.flaggedStorage.accounts.findIndex(
-													(flagged) =>
-														flagged.refreshToken === account.refreshToken,
-												);
+												const existingIndex =
+													state.flaggedStorage.accounts.findIndex(
+														(flagged) =>
+															flagged.refreshToken === account.refreshToken,
+													);
 												const flaggedRecord: FlaggedAccountMetadataV1 = {
 													...account,
 													flaggedAt: Date.now(),
@@ -2721,7 +2723,8 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 
 							if (state.removeFromActive.size > 0) {
 								workingStorage.accounts = workingStorage.accounts.filter(
-									(account) => !state.removeFromActive.has(account.refreshToken),
+									(account) =>
+										!state.removeFromActive.has(account.refreshToken),
 								);
 								clampActiveIndices(workingStorage);
 								state.storageChanged = true;
@@ -2755,8 +2758,7 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 							}
 
 							console.log("\nVerifying flagged accounts...\n");
-							const remaining: FlaggedAccountMetadataV1[] = [];
-							const restored: TokenSuccessWithAccount[] = [];
+							const state = createFlaggedVerificationState();
 
 							for (let i = 0; i < flaggedStorage.accounts.length; i += 1) {
 								const flagged = flaggedStorage.accounts[i];
@@ -2797,7 +2799,7 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 										if (!resolved.accountLabel && flagged.accountLabel) {
 											resolved.accountLabel = flagged.accountLabel;
 										}
-										restored.push(resolved);
+										state.restored.push(resolved);
 										console.log(
 											`[${i + 1}/${flaggedStorage.accounts.length}] ${label}: RESTORED (Codex CLI cache)`,
 										);
@@ -2811,7 +2813,7 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 										console.log(
 											`[${i + 1}/${flaggedStorage.accounts.length}] ${label}: STILL FLAGGED (${refreshResult.message ?? refreshResult.reason ?? "refresh failed"})`,
 										);
-										remaining.push(flagged);
+										state.remaining.push(flagged);
 										continue;
 									}
 
@@ -2826,7 +2828,7 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 									if (!resolved.accountLabel && flagged.accountLabel) {
 										resolved.accountLabel = flagged.accountLabel;
 									}
-									restored.push(resolved);
+									state.restored.push(resolved);
 									console.log(
 										`[${i + 1}/${flaggedStorage.accounts.length}] ${label}: RESTORED`,
 									);
@@ -2836,26 +2838,26 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 									console.log(
 										`[${i + 1}/${flaggedStorage.accounts.length}] ${label}: ERROR (${message.slice(0, 120)})`,
 									);
-									remaining.push({
+									state.remaining.push({
 										...flagged,
 										lastError: message,
 									});
 								}
 							}
 
-							if (restored.length > 0) {
-								await persistAccounts(restored, false);
+							if (state.restored.length > 0) {
+								await persistAccounts(state.restored, false);
 								invalidateAccountManagerCache();
 							}
 
 							await saveFlaggedAccounts({
 								version: 1,
-								accounts: remaining,
+								accounts: state.remaining,
 							});
 
 							console.log("");
 							console.log(
-								`Results: ${restored.length} restored, ${remaining.length} still flagged`,
+								`Results: ${state.restored.length} restored, ${state.remaining.length} still flagged`,
 							);
 							console.log("");
 						};
