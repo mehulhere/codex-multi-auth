@@ -676,6 +676,79 @@ describe("codex manager cli commands", () => {
 		expect(logSpy).toHaveBeenCalledWith(expect.stringContaining('"entries"'));
 	});
 
+	it("prints debug bundle output in json mode", async () => {
+		loadPluginConfigMock.mockReturnValue({
+			codexMode: true,
+			codexTuiV2: true,
+			codexTuiColorProfile: "truecolor",
+			codexTuiGlyphMode: "ascii",
+			fastSession: false,
+			fastSessionStrategy: "hybrid",
+			fastSessionMaxInputItems: 30,
+			retryAllAccountsRateLimited: true,
+			retryAllAccountsMaxWaitMs: 0,
+			retryAllAccountsMaxRetries: Infinity,
+			unsupportedCodexPolicy: "strict",
+			fallbackOnUnsupportedCodexModel: false,
+			fallbackToGpt52OnUnsupportedGpt53: true,
+			unsupportedCodexFallbackChain: {},
+			tokenRefreshSkewMs: 60000,
+			rateLimitToastDebounceMs: 60000,
+			toastDurationMs: 5000,
+			perProjectAccounts: true,
+			sessionRecovery: true,
+			autoResume: true,
+			parallelProbing: false,
+			parallelProbingMaxConcurrency: 2,
+			emptyResponseMaxRetries: 2,
+			emptyResponseRetryDelayMs: 1000,
+			pidOffsetEnabled: false,
+			fetchTimeoutMs: 60000,
+			streamStallTimeoutMs: 45000,
+			liveAccountSync: true,
+			liveAccountSyncDebounceMs: 250,
+			liveAccountSyncPollMs: 2000,
+			sessionAffinity: true,
+			sessionAffinityTtlMs: 1200000,
+			sessionAffinityMaxEntries: 512,
+			proactiveRefreshGuardian: true,
+			proactiveRefreshIntervalMs: 60000,
+			proactiveRefreshBufferMs: 300000,
+			networkErrorCooldownMs: 6000,
+			serverErrorCooldownMs: 4000,
+			storageBackupEnabled: true,
+			preemptiveQuotaEnabled: true,
+			preemptiveQuotaRemainingPercent5h: 5,
+			preemptiveQuotaRemainingPercent7d: 5,
+			preemptiveQuotaMaxDeferralMs: 7200000,
+		});
+		loadAccountsMock.mockResolvedValueOnce({
+			version: 3,
+			accounts: [{ refreshToken: "token-1", enabled: true }],
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0 },
+		});
+		loadFlaggedAccountsMock.mockResolvedValueOnce({
+			version: 1,
+			accounts: [{ refreshToken: "flagged-1" }],
+		});
+		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+
+		const exitCode = await runCodexMultiAuthCli([
+			"auth",
+			"debug",
+			"bundle",
+			"--json",
+		]);
+
+		expect(exitCode).toBe(0);
+		expect(logSpy).toHaveBeenCalledWith(
+			expect.stringContaining('"storagePath"'),
+		);
+		expect(logSpy).toHaveBeenCalledWith(expect.stringContaining('"codexCli"'));
+	});
+
 	it("prints populated account status for auth status", async () => {
 		const now = Date.now();
 		loadAccountsMock.mockResolvedValueOnce({
