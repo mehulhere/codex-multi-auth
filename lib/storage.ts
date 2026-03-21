@@ -12,6 +12,10 @@ import {
 import { MODEL_FAMILIES, type ModelFamily } from "./prompts/codex.js";
 import { AnyAccountStorageSchema, getValidationErrors } from "./schemas.js";
 import {
+	describeAccountSnapshot,
+	statSnapshot,
+} from "./storage/account-snapshot.js";
+import {
 	type BackupMetadataSection,
 	type BackupSnapshotMetadata,
 	buildMetadataSection,
@@ -114,17 +118,6 @@ type AccountStorageWithMetadata = AccountStorageV3 & {
 	restoreEligible?: boolean;
 	restoreReason?: RestoreReason;
 };
-
-type BackupSnapshotKind =
-	| "accounts-primary"
-	| "accounts-wal"
-	| "accounts-backup"
-	| "accounts-backup-history"
-	| "accounts-discovered-backup"
-	| "flagged-primary"
-	| "flagged-backup"
-	| "flagged-backup-history"
-	| "flagged-discovered-backup";
 
 export type BackupMetadata = {
 	accounts: BackupMetadataSection;
@@ -509,70 +502,6 @@ function withRestoreMetadata(
 
 function isCacheLikeBackupArtifactName(entryName: string): boolean {
 	return entryName.toLowerCase().includes(".cache");
-}
-
-async function statSnapshot(path: string): Promise<{
-	exists: boolean;
-	bytes?: number;
-	mtimeMs?: number;
-}> {
-	try {
-		const stats = await fs.stat(path);
-		return { exists: true, bytes: stats.size, mtimeMs: stats.mtimeMs };
-	} catch (error) {
-		const code = (error as NodeJS.ErrnoException).code;
-		if (code !== "ENOENT") {
-			log.warn("Failed to stat backup candidate", {
-				path,
-				error: String(error),
-			});
-		}
-		return { exists: false };
-	}
-}
-
-async function describeAccountSnapshot(
-	path: string,
-	kind: BackupSnapshotKind,
-	index?: number,
-): Promise<BackupSnapshotMetadata> {
-	const stats = await statSnapshot(path);
-	if (!stats.exists) {
-		return { kind, path, index, exists: false, valid: false };
-	}
-	try {
-		const { normalized, schemaErrors, storedVersion } =
-			await loadAccountsFromPath(path);
-		return {
-			kind,
-			path,
-			index,
-			exists: true,
-			valid: !!normalized,
-			bytes: stats.bytes,
-			mtimeMs: stats.mtimeMs,
-			version: typeof storedVersion === "number" ? storedVersion : undefined,
-			accountCount: normalized?.accounts.length,
-			schemaErrors: schemaErrors.length > 0 ? schemaErrors : undefined,
-		};
-	} catch (error) {
-		const code = (error as NodeJS.ErrnoException).code;
-		if (code !== "ENOENT") {
-			log.warn("Failed to inspect account snapshot", {
-				path,
-				error: String(error),
-			});
-		}
-		return {
-			kind,
-			path,
-			index,
-			exists: true,
-			valid: false,
-			bytes: stats.bytes,
-			mtimeMs: stats.mtimeMs,
-		};
-	}
 }
 
 async function loadFlaggedAccountsFromPath(
@@ -1241,10 +1170,24 @@ export async function getBackupMetadata(): Promise<BackupMetadata> {
 		flaggedPath,
 		getAccountsWalPath,
 		getAccountsBackupRecoveryCandidatesWithDiscovery,
-		describeAccountSnapshot,
+		describeAccountSnapshot: (path, kind, index) =>
+			describeAccountSnapshot(path, kind, {
+				index,
+				statSnapshot: (targetPath) =>
+					statSnapshot(targetPath, {
+						stat: fs.stat,
+						logWarn: (message, meta) => log.warn(message, meta),
+					}),
+				loadAccountsFromPath,
+				logWarn: (message, meta) => log.warn(message, meta),
+			}),
 		describeAccountsWalSnapshot: (path) =>
 			describeAccountsWalSnapshot(path, {
-				statSnapshot,
+				statSnapshot: (targetPath) =>
+					statSnapshot(targetPath, {
+						stat: fs.stat,
+						logWarn: (message, meta) => log.warn(message, meta),
+					}),
 				readFile: fs.readFile,
 				isRecord,
 				computeSha256,
@@ -1253,7 +1196,11 @@ export async function getBackupMetadata(): Promise<BackupMetadata> {
 		describeFlaggedSnapshot: (path, kind, index) =>
 			describeFlaggedSnapshot(path, kind, {
 				index,
-				statSnapshot,
+				statSnapshot: (targetPath) =>
+					statSnapshot(targetPath, {
+						stat: fs.stat,
+						logWarn: (message, meta) => log.warn(message, meta),
+					}),
 				loadFlaggedAccountsFromPath,
 				logWarn: (message, meta) => log.warn(message, meta),
 			}),
