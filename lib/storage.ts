@@ -75,6 +75,7 @@ import {
 	mergeStorageForMigration,
 } from "./storage/project-migration.js";
 import { buildRestoreAssessment } from "./storage/restore-assessment.js";
+import { restoreAccountsFromBackupEntry } from "./storage/restore-backup-entry.js";
 import {
 	loadAccountsFromPath,
 	parseAndNormalizeStorage,
@@ -810,9 +811,12 @@ export async function restoreAccountsFromBackup(
 	path: string,
 	options?: { persist?: boolean },
 ): Promise<AccountStorageV3> {
-	return restoreAccountsFromBackupPath(path, {
-		persist: options?.persist,
-		backupRoot: getNamedBackupRoot(getStoragePath()),
+	return restoreAccountsFromBackupEntry({
+		path,
+		options,
+		restoreAccountsFromBackupPath,
+		getNamedBackupRoot,
+		getStoragePath,
 		realpath: fs.realpath,
 		loadAccountsFromPath: (path) =>
 			loadAccountsFromPath(path, {
