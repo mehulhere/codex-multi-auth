@@ -254,12 +254,7 @@ import {
 	createHashlineEditTool,
 	createHashlineReadTool,
 } from "./lib/tools/hashline-tools.js";
-import type {
-	OAuthAuthDetails,
-	RequestBody,
-	TokenResult,
-	UserConfig,
-} from "./lib/types.js";
+import type { OAuthAuthDetails, RequestBody, UserConfig } from "./lib/types.js";
 import {
 	formatUiBadge,
 	formatUiHeader,
@@ -324,18 +319,6 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 	};
 
 	const runtimeMetrics: RuntimeMetrics = createRuntimeMetrics();
-
-	const runOAuthFlow = async (
-		forceNewLogin: boolean = false,
-	): Promise<TokenResult> =>
-		runRuntimeOAuthFlow(forceNewLogin, {
-			runOAuthBrowserFlow,
-			manualModeLabel: AUTH_LABELS.OAUTH_MANUAL,
-			logInfo,
-			logDebug,
-			logWarn,
-			pluginName: PLUGIN_NAME,
-		});
 
 	const persistAccounts = createPersistAccounts({
 		persistAccountPool,
@@ -2890,7 +2873,14 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 							logInfo(`=== OpenAI OAuth (Account ${accounts.length + 1}) ===`);
 							const forceNewLogin =
 								accounts.length > 0 || refreshAccountIndex !== undefined;
-							const result = await runOAuthFlow(forceNewLogin);
+							const result = await runRuntimeOAuthFlow(forceNewLogin, {
+								runOAuthBrowserFlow,
+								manualModeLabel: AUTH_LABELS.OAUTH_MANUAL,
+								logInfo,
+								logDebug,
+								logWarn,
+								pluginName: PLUGIN_NAME,
+							});
 
 							let resolved: TokenSuccessWithAccount | null = null;
 							if (result.type === "success") {
