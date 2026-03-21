@@ -33,6 +33,26 @@ describe("parsePackMetadata", () => {
 			parsePackMetadata(JSON.stringify([{ size: 0, files: [] }])),
 		).toThrow(/valid package size/);
 	});
+	it("wraps npm pack execution errors with command context", async () => {
+		await expect(
+			runPackBudgetCheck({
+				execAsync: vi.fn(async () => {
+					throw new Error("spawn failed");
+				}),
+				log: vi.fn(),
+			}),
+		).rejects.toThrow(/npm pack --dry-run --json failed/);
+	});
+
+	it("wraps malformed pack output errors with validation context", async () => {
+		await expect(
+			runPackBudgetCheck({
+				execAsync: vi.fn(async () => ({ stdout: "not-json" })),
+				log: vi.fn(),
+			}),
+		).rejects.toThrow(/Failed to validate npm pack output/);
+	});
+
 });
 
 describe("validatePackMetadata", () => {

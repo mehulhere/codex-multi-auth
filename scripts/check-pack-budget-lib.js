@@ -87,11 +87,23 @@ export async function runPackBudgetCheck(deps = {}) {
 	const npmCommand = process.platform === "win32" ? "npm.cmd" : "npm";
 	const runExec = deps.execAsync ?? execAsync;
 	const log = deps.log ?? console.log;
-	const { stdout } = await runExec(`${npmCommand} pack --dry-run --json`, {
-		windowsHide: true,
-		maxBuffer: 10 * 1024 * 1024,
-	});
-	const summary = validatePackMetadata(parsePackMetadata(stdout));
+	let stdout = "";
+	try {
+		({ stdout } = await runExec(`${npmCommand} pack --dry-run --json`, {
+			windowsHide: true,
+			maxBuffer: 10 * 1024 * 1024,
+		}));
+	} catch (error) {
+		const message = error instanceof Error ? error.message : String(error);
+		throw new Error(`npm pack --dry-run --json failed via ${npmCommand}: ${message}`);
+	}
+	let summary;
+	try {
+		summary = validatePackMetadata(parsePackMetadata(stdout));
+	} catch (error) {
+		const message = error instanceof Error ? error.message : String(error);
+		throw new Error(`Failed to validate npm pack output: ${message}`);
+	}
 	log(summary);
 	return summary;
 }
