@@ -25,7 +25,7 @@ export async function handleAccountSelectEvent(input: {
 		return false;
 	}
 
-	const props = event.properties as {
+	const props = (event.properties ?? {}) as {
 		index?: number;
 		accountIndex?: number;
 		provider?: string;
