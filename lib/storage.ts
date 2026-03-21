@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import { existsSync, promises as fs } from "node:fs";
 import { basename, dirname, isAbsolute, join, relative } from "node:path";
 import { ACCOUNT_LIMITS } from "./constants.js";
+import { StorageError } from "./errors.js";
 import { createLogger } from "./logger.js";
 import {
 	exportNamedBackupFile,
@@ -14,6 +15,7 @@ import { AnyAccountStorageSchema, getValidationErrors } from "./schemas.js";
 
 import { formatStorageErrorHint } from "./storage/error-hints.js";
 
+export { StorageError } from "./errors.js";
 export { formatStorageErrorHint } from "./storage/error-hints.js";
 
 import {
@@ -194,29 +196,6 @@ async function collectNamedBackups(
 		return left.fileName.localeCompare(right.fileName);
 	});
 	return candidates;
-}
-
-/**
- * Custom error class for storage operations with platform-aware hints.
- */
-export class StorageError extends Error {
-	readonly code: string;
-	readonly path: string;
-	readonly hint: string;
-
-	constructor(
-		message: string,
-		code: string,
-		path: string,
-		hint: string,
-		cause?: Error,
-	) {
-		super(message, { cause });
-		this.name = "StorageError";
-		this.code = code;
-		this.path = path;
-		this.hint = hint;
-	}
 }
 
 let storageMutex: Promise<void> = Promise.resolve();
