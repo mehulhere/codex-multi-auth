@@ -21,7 +21,7 @@ export async function showRuntimeToast(
 				message,
 				variant,
 				...(options?.title && { title: options.title }),
-				...(options?.duration && { duration: options.duration }),
+				...(options?.duration !== undefined ? { duration: options.duration } : {}),
 			},
 		});
 	} catch {
