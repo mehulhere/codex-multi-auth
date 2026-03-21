@@ -126,6 +126,7 @@ export async function verifyRuntimeFlaggedAccounts(deps: {
 			);
 		} catch (error) {
 			const message = error instanceof Error ? error.message : String(error);
+			deps.logError?.(`Failed to verify flagged account ${label}: ${message}`);
 			deps.showLine(
 				`[${i + 1}/${flaggedStorage.accounts.length}] ${label}: ERROR (${message.slice(0, 120)})`,
 			);

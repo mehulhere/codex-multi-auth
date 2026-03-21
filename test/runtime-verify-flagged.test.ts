@@ -33,4 +33,33 @@ describe("verifyRuntimeFlaggedAccounts", () => {
 		});
 		expect(showLine).toHaveBeenCalledWith(expect.stringContaining("RESTORED (Codex CLI cache)"));
 	});
+
+	it("logs verification failures through logError and keeps the account flagged", async () => {
+		const logError = vi.fn();
+		const saveFlaggedAccounts = vi.fn(async () => {});
+		await verifyRuntimeFlaggedAccounts({
+			loadFlaggedAccounts: async () => ({
+				version: 1,
+				accounts: [{ email: "broken@example.com", refreshToken: "broken-refresh", addedAt: 1, lastUsed: 1 }],
+			}),
+			lookupCodexCliTokensByEmail: async () => {
+				throw new Error("cache unavailable");
+			},
+			queuedRefresh: async () => ({ type: "failed", reason: "invalid_grant" }),
+			resolveAccountSelection: () => ({}) as never,
+			persistAccounts: vi.fn(async () => {}),
+			invalidateAccountManagerCache: vi.fn(),
+			saveFlaggedAccounts,
+			logInfo: vi.fn(),
+			logError,
+			showLine: vi.fn(),
+		});
+		expect(logError).toHaveBeenCalledWith(
+			expect.stringContaining("Failed to verify flagged account broken@example.com: cache unavailable"),
+		);
+		expect(saveFlaggedAccounts).toHaveBeenCalledWith({
+			version: 1,
+			accounts: [expect.objectContaining({ refreshToken: "broken-refresh", lastError: "cache unavailable" })],
+		});
+	});
 });
