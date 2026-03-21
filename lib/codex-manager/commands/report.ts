@@ -56,11 +56,12 @@ export interface ReportCommandDeps {
 function printReportUsage(logInfo: (message: string) => void): void {
 	logInfo(
 		[
-			"Usage: codex auth report [--live] [--json] [--model MODEL] [--out PATH]",
+			"Usage: codex auth report [--live] [--json] [--explain] [--model MODEL] [--out PATH]",
 			"",
 			"Options:",
 			"  --live, -l         Probe live quota headers via Codex backend",
 			"  --json, -j         Print machine-readable JSON output",
+			"  --explain          Print per-account reasoning in text mode",
 			"  --model, -m        Probe model for live mode (default: gpt-5-codex)",
 			"  --out              Write JSON report to a file path",
 		].join("\n"),

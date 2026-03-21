@@ -778,7 +778,9 @@ describe("codex manager cli commands", () => {
 		]);
 
 		expect(exitCode).toBe(0);
-		expect(logSpy).toHaveBeenCalledWith(expect.stringContaining("Account 1:"));
+		expect(logSpy).toHaveBeenCalledWith(
+			expect.stringContaining("Account 1: ready, low risk"),
+		);
 	});
 
 	it("prints populated account status for auth status", async () => {
