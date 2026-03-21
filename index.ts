@@ -416,17 +416,6 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 		status: "ok" | "warning" | "error",
 	): string => getRuntimeStatusMarker(ui, status);
 
-	const invalidateAccountManagerCache = (): void => {
-		invalidateRuntimeAccountManagerCache({
-			setCachedAccountManager: (value) => {
-				cachedAccountManager = value as AccountManager | null;
-			},
-			setAccountManagerPromise: (value) => {
-				accountManagerPromise = value as Promise<AccountManager> | null;
-			},
-		});
-	};
-
 	const reloadAccountManagerFromDisk = async (
 		authFallback?: OAuthAuthDetails,
 	): Promise<AccountManager> =>
@@ -3117,7 +3106,14 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 
 							if (storageChanged) {
 								await saveAccounts(workingStorage);
-								invalidateAccountManagerCache();
+								invalidateRuntimeAccountManagerCache({
+							setCachedAccountManager: (value) => {
+								cachedAccountManager = value as AccountManager | null;
+							},
+							setAccountManagerPromise: (value) => {
+								accountManagerPromise = value as Promise<AccountManager> | null;
+							},
+						});
 							}
 							if (flaggedChanged) {
 								await saveFlaggedAccounts(flaggedStorage);
@@ -3233,7 +3229,14 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 
 							if (restored.length > 0) {
 								await persistAccounts(restored, false);
-								invalidateAccountManagerCache();
+								invalidateRuntimeAccountManagerCache({
+							setCachedAccountManager: (value) => {
+								cachedAccountManager = value as AccountManager | null;
+							},
+							setAccountManagerPromise: (value) => {
+								accountManagerPromise = value as Promise<AccountManager> | null;
+							},
+						});
 							}
 
 							await saveFlaggedAccounts({
@@ -3361,7 +3364,14 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 														flagged.refreshToken !== target.refreshToken,
 												),
 											});
-											invalidateAccountManagerCache();
+											invalidateRuntimeAccountManagerCache({
+							setCachedAccountManager: (value) => {
+								cachedAccountManager = value as AccountManager | null;
+							},
+							setAccountManagerPromise: (value) => {
+								accountManagerPromise = value as Promise<AccountManager> | null;
+							},
+						});
 											console.log(
 												`\nDeleted ${target.email ?? `Account ${menuResult.deleteAccountIndex + 1}`}.\n`,
 											);
@@ -3375,7 +3385,14 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 										if (target) {
 											target.enabled = target.enabled === false ? true : false;
 											await saveAccounts(workingStorage);
-											invalidateAccountManagerCache();
+											invalidateRuntimeAccountManagerCache({
+							setCachedAccountManager: (value) => {
+								cachedAccountManager = value as AccountManager | null;
+							},
+							setAccountManagerPromise: (value) => {
+								accountManagerPromise = value as Promise<AccountManager> | null;
+							},
+						});
 											console.log(
 												`\n${target.email ?? `Account ${menuResult.toggleAccountIndex + 1}`} ${target.enabled === false ? "disabled" : "enabled"}.\n`,
 											);
@@ -3397,7 +3414,14 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 									if (menuResult.deleteAll) {
 										await clearAccounts();
 										await clearFlaggedAccounts();
-										invalidateAccountManagerCache();
+										invalidateRuntimeAccountManagerCache({
+							setCachedAccountManager: (value) => {
+								cachedAccountManager = value as AccountManager | null;
+							},
+							setAccountManagerPromise: (value) => {
+								accountManagerPromise = value as Promise<AccountManager> | null;
+							},
+						});
 										console.log(
 											"\nCleared saved accounts from active storage. Recovery snapshots remain available. Starting fresh.\n",
 										);
@@ -3458,7 +3482,14 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 								onSuccess: async (tokens: TokenSuccessWithAccount) => {
 									try {
 										await persistAccounts([tokens], startFresh);
-										invalidateAccountManagerCache();
+										invalidateRuntimeAccountManagerCache({
+							setCachedAccountManager: (value) => {
+								cachedAccountManager = value as AccountManager | null;
+							},
+							setAccountManagerPromise: (value) => {
+								accountManagerPromise = value as Promise<AccountManager> | null;
+							},
+						});
 									} catch (err) {
 										const storagePath = getStoragePath();
 										const errorCode =
@@ -3562,7 +3593,14 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 							try {
 								const isFirstAccount = accounts.length === 1;
 								await persistAccounts([resolved], isFirstAccount && startFresh);
-								invalidateAccountManagerCache();
+								invalidateRuntimeAccountManagerCache({
+							setCachedAccountManager: (value) => {
+								cachedAccountManager = value as AccountManager | null;
+							},
+							setAccountManagerPromise: (value) => {
+								accountManagerPromise = value as Promise<AccountManager> | null;
+							},
+						});
 							} catch (err) {
 								const storagePath = getStoragePath();
 								const errorCode =
@@ -4650,7 +4688,14 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 								const ui = resolveUiRuntime();
 								try {
 									const result = await importAccounts(filePath);
-									invalidateAccountManagerCache();
+									invalidateRuntimeAccountManagerCache({
+							setCachedAccountManager: (value) => {
+								cachedAccountManager = value as AccountManager | null;
+							},
+							setAccountManagerPromise: (value) => {
+								accountManagerPromise = value as Promise<AccountManager> | null;
+							},
+						});
 									const lines = [`Import complete.`, ``];
 									if (result.imported > 0) {
 										lines.push(`New accounts: ${result.imported}`);
