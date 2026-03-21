@@ -22,6 +22,10 @@ import {
 	type NamedBackupSummary,
 } from "./storage/named-backups.js";
 import {
+	buildRestoreAssessment,
+	collectBackupMetadata,
+} from "./storage/restore-assessment.js";
+import {
 	describeAccountsWalSnapshot,
 	describeFlaggedSnapshot,
 } from "./storage/snapshot-inspectors.js";
@@ -1231,113 +1235,41 @@ export async function loadAccounts(): Promise<AccountStorageV3 | null> {
 
 export async function getBackupMetadata(): Promise<BackupMetadata> {
 	const storagePath = getStoragePath();
-	const walPath = getAccountsWalPath(storagePath);
-	const accountCandidates =
-		await getAccountsBackupRecoveryCandidatesWithDiscovery(storagePath);
-	const accountSnapshots: BackupSnapshotMetadata[] = [
-		await describeAccountSnapshot(storagePath, "accounts-primary"),
-		await describeAccountsWalSnapshot(walPath, {
-			statSnapshot,
-			readFile: fs.readFile,
-			isRecord,
-			computeSha256,
-			parseAndNormalizeStorage,
-		}),
-	];
-	for (const [index, candidate] of accountCandidates.entries()) {
-		const kind: BackupSnapshotKind =
-			candidate === `${storagePath}.bak`
-				? "accounts-backup"
-				: candidate.startsWith(`${storagePath}.bak.`)
-					? "accounts-backup-history"
-					: "accounts-discovered-backup";
-		accountSnapshots.push(
-			await describeAccountSnapshot(candidate, kind, index),
-		);
-	}
-
 	const flaggedPath = getFlaggedAccountsPath();
-	const flaggedCandidates =
-		await getAccountsBackupRecoveryCandidatesWithDiscovery(flaggedPath);
-	const flaggedSnapshots: BackupSnapshotMetadata[] = [
-		await describeFlaggedSnapshot(flaggedPath, "flagged-primary", {
-			statSnapshot,
-			loadFlaggedAccountsFromPath,
-			logWarn: (message, meta) => log.warn(message, meta),
-		}),
-	];
-	for (const [index, candidate] of flaggedCandidates.entries()) {
-		const kind: BackupSnapshotKind =
-			candidate === `${flaggedPath}.bak`
-				? "flagged-backup"
-				: candidate.startsWith(`${flaggedPath}.bak.`)
-					? "flagged-backup-history"
-					: "flagged-discovered-backup";
-		flaggedSnapshots.push(
-			await describeFlaggedSnapshot(candidate, kind, {
+	return collectBackupMetadata({
+		storagePath,
+		flaggedPath,
+		getAccountsWalPath,
+		getAccountsBackupRecoveryCandidatesWithDiscovery,
+		describeAccountSnapshot,
+		describeAccountsWalSnapshot: (path) =>
+			describeAccountsWalSnapshot(path, {
+				statSnapshot,
+				readFile: fs.readFile,
+				isRecord,
+				computeSha256,
+				parseAndNormalizeStorage,
+			}),
+		describeFlaggedSnapshot: (path, kind, index) =>
+			describeFlaggedSnapshot(path, kind, {
 				index,
 				statSnapshot,
 				loadFlaggedAccountsFromPath,
 				logWarn: (message, meta) => log.warn(message, meta),
 			}),
-		);
-	}
-
-	return {
-		accounts: buildMetadataSection(storagePath, accountSnapshots),
-		flaggedAccounts: buildMetadataSection(flaggedPath, flaggedSnapshots),
-	};
+		buildMetadataSection,
+	});
 }
 
 export async function getRestoreAssessment(): Promise<RestoreAssessment> {
 	const storagePath = getStoragePath();
 	const resetMarkerPath = getIntentionalResetMarkerPath(storagePath);
 	const backupMetadata = await getBackupMetadata();
-	if (existsSync(resetMarkerPath)) {
-		return {
-			storagePath,
-			restoreEligible: false,
-			restoreReason: "intentional-reset",
-			backupMetadata,
-		};
-	}
-	const primarySnapshot = backupMetadata.accounts.snapshots.find(
-		(snapshot) => snapshot.kind === "accounts-primary",
-	);
-	if (!primarySnapshot?.exists) {
-		return {
-			storagePath,
-			restoreEligible: true,
-			restoreReason: "missing-storage",
-			latestSnapshot: backupMetadata.accounts.latestValidPath
-				? backupMetadata.accounts.snapshots.find(
-						(snapshot) =>
-							snapshot.path === backupMetadata.accounts.latestValidPath,
-					)
-				: undefined,
-			backupMetadata,
-		};
-	}
-	if (primarySnapshot.valid && primarySnapshot.accountCount === 0) {
-		return {
-			storagePath,
-			restoreEligible: true,
-			restoreReason: "empty-storage",
-			latestSnapshot: primarySnapshot,
-			backupMetadata,
-		};
-	}
-	return {
+	return buildRestoreAssessment({
 		storagePath,
-		restoreEligible: false,
-		latestSnapshot: backupMetadata.accounts.latestValidPath
-			? backupMetadata.accounts.snapshots.find(
-					(snapshot) =>
-						snapshot.path === backupMetadata.accounts.latestValidPath,
-				)
-			: undefined,
+		resetMarkerExists: existsSync(resetMarkerPath),
 		backupMetadata,
-	};
+	});
 }
 
 function parseAndNormalizeStorage(data: unknown): {
