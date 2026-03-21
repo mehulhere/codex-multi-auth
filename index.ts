@@ -177,6 +177,7 @@ import {
 	resolveActiveIndex,
 } from "./lib/runtime/account-state.js";
 import { buildCapabilityBoostByAccount } from "./lib/runtime/capability-boost.js";
+import { createRuntimeEventHandler } from "./lib/runtime/event-handler.js";
 import { ensureRuntimeLiveAccountSync } from "./lib/runtime/live-sync.js";
 import { buildManualOAuthFlow } from "./lib/runtime/manual-oauth-flow.js";
 import {
@@ -547,32 +548,23 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 	};
 
 	// Event handler for session recovery and account selection
-	const eventHandler = async (input: {
-		event: { type: string; properties?: unknown };
-	}) => {
-		try {
-			const handled = await handleAccountSelectEvent({
-				event: input.event,
-				providerId: PROVIDER_ID,
-				loadAccounts,
-				saveAccounts,
-				modelFamilies: MODEL_FAMILIES,
-				cachedAccountManager,
-				reloadAccountManagerFromDisk: async () => {
-					await reloadAccountManagerFromDisk();
-				},
-				setLastCodexCliActiveSyncIndex: (index) => {
-					lastCodexCliActiveSyncIndex = index;
-				},
-				showToast,
-			});
-			if (handled) return;
-		} catch (error) {
-			logDebug(
-				`[${PLUGIN_NAME}] Event handler error: ${error instanceof Error ? error.message : String(error)}`,
-			);
-		}
-	};
+	const eventHandler = createRuntimeEventHandler({
+		handleAccountSelectEvent,
+		providerId: PROVIDER_ID,
+		loadAccounts,
+		saveAccounts,
+		modelFamilies: MODEL_FAMILIES,
+		getCachedAccountManager: () => cachedAccountManager,
+		reloadAccountManagerFromDisk: async () => {
+			await reloadAccountManagerFromDisk();
+		},
+		setLastCodexCliActiveSyncIndex: (index) => {
+			lastCodexCliActiveSyncIndex = index;
+		},
+		showToast,
+		logDebug,
+		pluginName: PLUGIN_NAME,
+	});
 
 	// Initialize runtime UI settings once on plugin load; auth/tools refresh this dynamically.
 	resolveUiRuntime();
