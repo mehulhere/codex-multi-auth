@@ -576,6 +576,50 @@ describe("codex manager cli commands", () => {
 		vi.restoreAllMocks();
 	});
 
+	it("keeps backend settings schema maps, categories, and defaults aligned", async () => {
+		const {
+			BACKEND_CATEGORY_OPTIONS,
+			BACKEND_DEFAULTS,
+			BACKEND_NUMBER_OPTIONS,
+			BACKEND_NUMBER_OPTION_BY_KEY,
+			BACKEND_TOGGLE_OPTIONS,
+			BACKEND_TOGGLE_OPTION_BY_KEY,
+		} = await import("../lib/codex-manager/backend-settings-schema.js");
+
+		const toggleKeys = BACKEND_TOGGLE_OPTIONS.map((option) => option.key);
+		const numberKeys = BACKEND_NUMBER_OPTIONS.map((option) => option.key);
+		const categorizedToggleKeys = new Set(
+			BACKEND_CATEGORY_OPTIONS.flatMap((category) => category.toggleKeys),
+		);
+		const categorizedNumberKeys = new Set(
+			BACKEND_CATEGORY_OPTIONS.flatMap((category) => category.numberKeys),
+		);
+
+		expect(toggleKeys.every((key) => BACKEND_TOGGLE_OPTION_BY_KEY.has(key))).toBe(
+			true,
+		);
+		expect(numberKeys.every((key) => BACKEND_NUMBER_OPTION_BY_KEY.has(key))).toBe(
+			true,
+		);
+		expect(
+			BACKEND_CATEGORY_OPTIONS.every((category) =>
+				category.toggleKeys.every((key) => BACKEND_TOGGLE_OPTION_BY_KEY.has(key)),
+			),
+		).toBe(true);
+		expect(
+			BACKEND_CATEGORY_OPTIONS.every((category) =>
+				category.numberKeys.every((key) => BACKEND_NUMBER_OPTION_BY_KEY.has(key)),
+			),
+		).toBe(true);
+		expect(toggleKeys.every((key) => categorizedToggleKeys.has(key))).toBe(true);
+		expect(numberKeys.every((key) => categorizedNumberKeys.has(key))).toBe(true);
+		expect(
+			[...toggleKeys, ...numberKeys].every((key) =>
+				Object.prototype.hasOwnProperty.call(BACKEND_DEFAULTS, key),
+			),
+		).toBe(true);
+	});
+
 	it("formats backup saved-at timestamps with the runtime locale options", async () => {
 		const localeSpy = vi
 			.spyOn(Date.prototype, "toLocaleString")
