@@ -481,27 +481,6 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 		liveAccountSyncPath = ensured.path;
 	};
 
-	const ensureRefreshGuardian = (
-		pluginConfig: ReturnType<typeof loadPluginConfig>,
-	): void => {
-		const ensured = ensureRuntimeRefreshGuardian({
-			pluginConfig,
-			getProactiveRefreshGuardian,
-			currentGuardian: refreshGuardian,
-			currentConfigKey: refreshGuardianConfigKey,
-			getProactiveRefreshIntervalMs,
-			getProactiveRefreshBufferMs,
-			createGuardian: ({ intervalMs, bufferMs }) =>
-				new RefreshGuardian(() => cachedAccountManager, {
-					intervalMs,
-					bufferMs,
-				}),
-			registerCleanup,
-		});
-		refreshGuardian = ensured.guardian;
-		refreshGuardianConfigKey = ensured.configKey;
-	};
-
 	const ensureSessionAffinity = (
 		pluginConfig: ReturnType<typeof loadPluginConfig>,
 	): void => {
@@ -628,7 +607,24 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 				applyUiRuntimeFromConfig(pluginConfig);
 				applyStorageScope(pluginConfig);
 				ensureSessionAffinity(pluginConfig);
-				ensureRefreshGuardian(pluginConfig);
+				{
+					const ensured = ensureRuntimeRefreshGuardian({
+						pluginConfig,
+						getProactiveRefreshGuardian,
+						currentGuardian: refreshGuardian,
+						currentConfigKey: refreshGuardianConfigKey,
+						getProactiveRefreshIntervalMs,
+						getProactiveRefreshBufferMs,
+						createGuardian: ({ intervalMs, bufferMs }) =>
+							new RefreshGuardian(() => cachedAccountManager, {
+								intervalMs,
+								bufferMs,
+							}),
+						registerCleanup,
+					});
+					refreshGuardian = ensured.guardian;
+					refreshGuardianConfigKey = ensured.configKey;
+				}
 				applyPreemptiveQuotaSettings(pluginConfig);
 
 				// Only handle OAuth auth type, skip API key auth
