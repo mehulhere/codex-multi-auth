@@ -135,4 +135,45 @@ describe("runRuntimeAccountCheck", () => {
 		});
 		expect(calls).toEqual(["saveFlaggedAccounts", "saveAccounts"]);
 	});
+	it("keeps flagged accounts durable when saving active accounts fails", async () => {
+		const saveFlaggedAccounts = vi.fn(async () => {});
+		const saveAccounts = vi.fn(async () => {
+			const error = new Error("busy") as Error & { code?: string };
+			error.code = "EBUSY";
+			throw error;
+		});
+		await expect(
+			runRuntimeAccountCheck(true, {
+				hydrateEmails: async (storage) => storage,
+				loadAccounts: async () => ({
+					version: 3,
+					accounts: [{ email: "one@example.com", refreshToken: "refresh-1", accessToken: undefined, addedAt: 1, lastUsed: 1 }],
+					activeIndex: 0,
+					activeIndexByFamily: { codex: 0 },
+				}),
+				createEmptyStorage: () => ({ version: 3, accounts: [], activeIndex: 0, activeIndexByFamily: {} }),
+				loadFlaggedAccounts: async () => ({ version: 1, accounts: [] }),
+				createAccountCheckWorkingState: (flaggedStorage) => ({ flaggedStorage, removeFromActive: new Set(), storageChanged: false, flaggedChanged: false, ok: 0, errors: 0, disabled: 0 }),
+				lookupCodexCliTokensByEmail: async () => null,
+				extractAccountId: () => undefined,
+				shouldUpdateAccountIdFromToken: () => false,
+				sanitizeEmail: (email) => email,
+				extractAccountEmail: () => undefined,
+				queuedRefresh: async () => ({ type: "failed", reason: "invalid_grant", message: "refresh failed" }),
+				isRuntimeFlaggableFailure: () => true,
+				fetchCodexQuotaSnapshot: async () => { throw new Error("should not probe quota in deep mode"); },
+				resolveRequestAccountId: () => undefined,
+				formatCodexQuotaLine: () => "quota",
+				clampRuntimeActiveIndices: vi.fn(),
+				MODEL_FAMILIES: ["codex"],
+				saveAccounts,
+				invalidateAccountManagerCache: vi.fn(),
+				saveFlaggedAccounts,
+				showLine: vi.fn(),
+			}),
+		).rejects.toThrow("busy");
+		expect(saveFlaggedAccounts).toHaveBeenCalledTimes(1);
+		expect(saveAccounts).toHaveBeenCalledTimes(1);
+		expect(saveFlaggedAccounts.mock.invocationCallOrder[0]).toBeLessThan(saveAccounts.mock.invocationCallOrder[0]);
+	});
 });
