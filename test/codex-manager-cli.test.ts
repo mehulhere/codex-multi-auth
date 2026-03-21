@@ -82,7 +82,9 @@ vi.mock("../lib/accounts.js", () => ({
 	extractAccountEmail: vi.fn(() => undefined),
 	extractAccountId: vi.fn(() => "acc_test"),
 	formatAccountLabel: vi.fn((account: { email?: string }, index: number) =>
-		account.email ? `${index + 1}. ${account.email}` : `Account ${index + 1}`,
+		account.email
+			? `Account ${index + 1} (${account.email})`
+			: `Account ${index + 1}`,
 	),
 	formatCooldown: vi.fn(() => null),
 	formatWaitTime: vi.fn(
@@ -649,10 +651,12 @@ describe("codex manager cli commands", () => {
 			"Storage: /mock/openai-codex-accounts.json",
 		);
 		expect(logSpy).toHaveBeenCalledWith(
-			expect.stringContaining("1. 1. active@example.com [current]"),
+			expect.stringContaining("1. Account 1 (active@example.com) [current]"),
 		);
 		expect(logSpy).toHaveBeenCalledWith(
-			expect.stringContaining("2. 2. disabled@example.com [disabled, rate-limited]"),
+			expect.stringContaining(
+				"2. Account 2 (disabled@example.com) [disabled, rate-limited]",
+			),
 		);
 	});
 
