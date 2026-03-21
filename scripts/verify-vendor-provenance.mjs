@@ -24,7 +24,16 @@ for (const component of manifest.components) {
 		if (!file?.path || !file?.sha256) {
 			throw new Error(`Invalid file provenance entry in ${component.name}`);
 		}
-		const content = await readFile(new URL(`../${file.path}`, import.meta.url));
+		let content;
+		try {
+			content = await readFile(new URL(`../${file.path}`, import.meta.url));
+		} catch (error) {
+			const code = error && typeof error === "object" ? /** @type {{ code?: string }} */ (error).code : undefined;
+			if (code === "ENOENT") {
+				throw new Error(`Vendor file not found in ${component.name}: ${file.path} (${code})`);
+			}
+			throw error;
+		}
 		const actual = createHash("sha256").update(content).digest("hex");
 		if (actual !== file.sha256) {
 			throw new Error(

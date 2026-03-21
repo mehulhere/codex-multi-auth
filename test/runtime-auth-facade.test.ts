@@ -49,6 +49,24 @@ describe("createPersistAccounts", () => {
 			expect.objectContaining({ MODEL_FAMILIES: ["codex"] }),
 		);
 	});
+	it("keeps replaceAll optional and false by default", async () => {
+		const persistAccountPool = vi.fn(async () => {});
+		const persistAccounts = createPersistAccounts({
+			persistAccountPool,
+			withAccountStorageTransaction: vi.fn(),
+			extractAccountId: vi.fn(),
+			extractAccountEmail: vi.fn(),
+			sanitizeEmail: vi.fn(),
+			findMatchingAccountIndex: vi.fn(),
+			MODEL_FAMILIES: ["codex"],
+		});
+		await persistAccounts([{ refreshToken: "r2" }] as never[]);
+		expect(persistAccountPool).toHaveBeenCalledWith(
+			expect.any(Array),
+			false,
+			expect.objectContaining({ MODEL_FAMILIES: ["codex"] }),
+		);
+	});
 });
 
 describe("createAccountManagerReloader", () => {
