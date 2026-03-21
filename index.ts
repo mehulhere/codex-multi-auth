@@ -570,7 +570,10 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 	};
 
 	// Initialize runtime UI settings once on plugin load; auth/tools refresh this dynamically.
-	resolveUiRuntime();
+	resolveRuntimeUiOptions({
+		loadPluginConfig,
+		applyUiRuntimeFromConfig,
+	});
 
 	return {
 		event: eventHandler,
