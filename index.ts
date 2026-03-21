@@ -545,7 +545,7 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 				loadAccounts,
 				saveAccounts,
 				modelFamilies: MODEL_FAMILIES,
-				cachedAccountManager,
+				getCachedAccountManager: () => cachedAccountManager,
 				reloadAccountManagerFromDisk: async () => {
 					await reloadAccountManagerFromDisk();
 				},
