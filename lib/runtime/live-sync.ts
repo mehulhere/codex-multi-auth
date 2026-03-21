@@ -41,6 +41,11 @@ export async function ensureRuntimeLiveAccountSync<
 }> {
 	if (!deps.getLiveAccountSync(deps.pluginConfig)) {
 		deps.currentSync?.stop();
+		deps.commitState({
+			sync: null,
+			path: null,
+			cleanupRegistered: deps.currentCleanupRegistered,
+		});
 		return {
 			sync: null,
 			path: null,

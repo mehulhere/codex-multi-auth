@@ -95,6 +95,11 @@ describe("runtime live sync", () => {
 			cleanupRegistered: true,
 		});
 		expect(currentSync.stop).toHaveBeenCalledTimes(1);
+		expect(deps.commitState).toHaveBeenCalledWith({
+			sync: null,
+			path: null,
+			cleanupRegistered: true,
+		});
 	});
 
 	it("creates a sync, registers cleanup once, and skips redundant path switches", async () => {

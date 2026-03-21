@@ -484,9 +484,7 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 			logWarn,
 			pluginName: PLUGIN_NAME,
 		});
-		liveAccountSync = ensured.sync;
-		liveAccountSyncPath = ensured.path;
-		liveAccountSyncCleanupRegistered = ensured.cleanupRegistered;
+		void ensured;
 	};
 
 	const ensureRefreshGuardian = (
