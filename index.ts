@@ -209,6 +209,7 @@ import {
 } from "./lib/runtime/account-status.js";
 import { runBrowserOAuthFlow } from "./lib/runtime/browser-oauth-flow.js";
 import { handleRuntimeEvent } from "./lib/runtime/event-handler.js";
+import { ensureLiveAccountSyncEntry } from "./lib/runtime/live-sync-entry.js";
 import { buildManualOAuthFlow } from "./lib/runtime/manual-oauth-flow.js";
 import {
 	applyPreemptiveQuotaSettingsFromConfig,
@@ -560,12 +561,13 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 		pluginConfig: ReturnType<typeof loadPluginConfig>,
 		authFallback?: OAuthAuthDetails,
 	): Promise<void> => {
-		const next = await ensureLiveAccountSyncState({
-			enabled: getLiveAccountSync(pluginConfig),
-			targetPath: getStoragePath(),
+		const next = await ensureLiveAccountSyncEntry({
+			pluginConfig,
+			authFallback,
 			currentSync: liveAccountSync,
 			currentPath: liveAccountSyncPath,
-			authFallback,
+			getLiveAccountSync,
+			getStoragePath,
 			createSync: (oauthFallback) =>
 				new LiveAccountSync(
 					async () => {
@@ -579,6 +581,7 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 			registerCleanup,
 			logWarn,
 			pluginName: PLUGIN_NAME,
+			ensureLiveAccountSyncState,
 		});
 		liveAccountSync = next.liveAccountSync;
 		liveAccountSyncPath = next.liveAccountSyncPath;
