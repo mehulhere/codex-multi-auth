@@ -71,4 +71,36 @@ describe("runRuntimeAccountCheck", () => {
 		expect(flaggedStorage.accounts[0]?.flaggedAt).toBe(1000);
 		expect(now).toHaveBeenCalledTimes(1);
 	});
+	it("persists flagged storage before saving active accounts", async () => {
+		const calls: string[] = [];
+		await runRuntimeAccountCheck(true, {
+			hydrateEmails: async (storage) => storage,
+			loadAccounts: async () => ({
+				version: 3,
+				accounts: [{ email: "one@example.com", refreshToken: "refresh-1", accessToken: undefined, addedAt: 1, lastUsed: 1 }],
+				activeIndex: 0,
+				activeIndexByFamily: { codex: 0 },
+			}),
+			createEmptyStorage: () => ({ version: 3, accounts: [], activeIndex: 0, activeIndexByFamily: {} }),
+			loadFlaggedAccounts: async () => ({ version: 1, accounts: [] }),
+			createAccountCheckWorkingState: (flaggedStorage) => ({ flaggedStorage, removeFromActive: new Set(), storageChanged: false, flaggedChanged: false, ok: 0, errors: 0, disabled: 0 }),
+			lookupCodexCliTokensByEmail: async () => null,
+			extractAccountId: () => undefined,
+			shouldUpdateAccountIdFromToken: () => false,
+			sanitizeEmail: (email) => email,
+			extractAccountEmail: () => undefined,
+			queuedRefresh: async () => ({ type: "failed", reason: "invalid_grant", message: "refresh failed" }),
+			isRuntimeFlaggableFailure: () => true,
+			fetchCodexQuotaSnapshot: async () => { throw new Error("should not probe quota in deep mode"); },
+			resolveRequestAccountId: () => undefined,
+			formatCodexQuotaLine: () => "quota",
+			clampRuntimeActiveIndices: vi.fn(),
+			MODEL_FAMILIES: ["codex"],
+			saveAccounts: vi.fn(async () => { calls.push("saveAccounts"); }),
+			invalidateAccountManagerCache: vi.fn(),
+			saveFlaggedAccounts: vi.fn(async () => { calls.push("saveFlaggedAccounts"); }),
+			showLine: vi.fn(),
+		});
+		expect(calls).toEqual(["saveFlaggedAccounts", "saveAccounts"]);
+	});
 });
