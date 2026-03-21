@@ -33,6 +33,7 @@ import { getUnifiedSettingsPath } from "../unified-settings.js";
 import { sleep } from "../utils.js";
 import { promptBehaviorSettingsPanel } from "./behavior-settings-panel.js";
 import { promptDashboardDisplayPanel } from "./dashboard-display-panel.js";
+import { promptStatuslineSettingsPanel } from "./statusline-settings-panel.js";
 import { promptThemeSettingsPanel } from "./theme-settings-panel.js";
 
 type DashboardDisplaySettingKey =
@@ -153,14 +154,6 @@ type PreviewFocusKey =
 	| "menuSortMode"
 	| "menuLayoutMode"
 	| null;
-
-type StatuslineConfigAction =
-	| { type: "toggle"; key: DashboardStatuslineField }
-	| { type: "move-up"; key: DashboardStatuslineField }
-	| { type: "move-down"; key: DashboardStatuslineField }
-	| { type: "reset" }
-	| { type: "save" }
-	| { type: "cancel" };
 
 type BackendToggleSettingKey =
 	| "liveAccountSync"
@@ -1372,193 +1365,17 @@ function reorderField(
 async function promptStatuslineSettings(
 	initial: DashboardDisplaySettings,
 ): Promise<DashboardDisplaySettings | null> {
-	if (!input.isTTY || !output.isTTY) {
-		return null;
-	}
-
-	const ui = getUiRuntimeOptions();
-	let draft = cloneDashboardSettings(initial);
-	let focusKey: DashboardStatuslineField =
-		draft.menuStatuslineFields?.[0] ?? "last-used";
-	while (true) {
-		const preview = buildAccountListPreview(draft, ui, focusKey);
-		const selectedSet = new Set(
-			normalizeStatuslineFields(draft.menuStatuslineFields),
-		);
-		const ordered = normalizeStatuslineFields(draft.menuStatuslineFields);
-		const orderMap = new Map<DashboardStatuslineField, number>();
-		for (let index = 0; index < ordered.length; index += 1) {
-			const key = ordered[index];
-			if (key) orderMap.set(key, index + 1);
-		}
-
-		const optionItems: MenuItem<StatuslineConfigAction>[] =
-			STATUSLINE_FIELD_OPTIONS.map((option, index) => {
-				const enabled = selectedSet.has(option.key);
-				const rank = orderMap.get(option.key);
-				const label = `${formatDashboardSettingState(enabled)} ${index + 1}. ${option.label}${rank ? ` (order ${rank})` : ""}`;
-				return {
-					label,
-					hint: option.description,
-					value: { type: "toggle", key: option.key },
-					color: enabled ? "green" : "yellow",
-				};
-			});
-
-		const items: MenuItem<StatuslineConfigAction>[] = [
-			{
-				label: UI_COPY.settings.previewHeading,
-				value: { type: "cancel" },
-				kind: "heading",
-			},
-			{
-				label: preview.label,
-				hint: preview.hint,
-				value: { type: "cancel" },
-				color: "green",
-				disabled: true,
-				hideUnavailableSuffix: true,
-			},
-			{ label: "", value: { type: "cancel" }, separator: true },
-			{
-				label: UI_COPY.settings.displayHeading,
-				value: { type: "cancel" },
-				kind: "heading",
-			},
-			...optionItems,
-			{ label: "", value: { type: "cancel" }, separator: true },
-			{
-				label: UI_COPY.settings.moveUp,
-				value: { type: "move-up", key: focusKey },
-				color: "green",
-			},
-			{
-				label: UI_COPY.settings.moveDown,
-				value: { type: "move-down", key: focusKey },
-				color: "green",
-			},
-			{ label: "", value: { type: "cancel" }, separator: true },
-			{
-				label: UI_COPY.settings.resetDefault,
-				value: { type: "reset" },
-				color: "yellow",
-			},
-			{
-				label: UI_COPY.settings.saveAndBack,
-				value: { type: "save" },
-				color: "green",
-			},
-			{
-				label: UI_COPY.settings.backNoSave,
-				value: { type: "cancel" },
-				color: "red",
-			},
-		];
-
-		const initialCursor = items.findIndex(
-			(item) => item.value.type === "toggle" && item.value.key === focusKey,
-		);
-
-		const updateFocusedPreview = (cursor: number) => {
-			const focusedItem = items[cursor];
-			const focusedKey =
-				focusedItem?.value.type === "toggle" ? focusedItem.value.key : focusKey;
-			const nextPreview = buildAccountListPreview(draft, ui, focusedKey);
-			const previewItem = items[1];
-			if (!previewItem) return;
-			previewItem.label = nextPreview.label;
-			previewItem.hint = nextPreview.hint;
-		};
-
-		const result = await select<StatuslineConfigAction>(items, {
-			message: UI_COPY.settings.summaryTitle,
-			subtitle: UI_COPY.settings.summarySubtitle,
-			help: UI_COPY.settings.summaryHelp,
-			clearScreen: true,
-			theme: ui.theme,
-			selectedEmphasis: "minimal",
-			initialCursor: initialCursor >= 0 ? initialCursor : undefined,
-			onCursorChange: ({ cursor }) => {
-				const focusedItem = items[cursor];
-				if (focusedItem?.value.type === "toggle") {
-					focusKey = focusedItem.value.key;
-				}
-				updateFocusedPreview(cursor);
-			},
-			onInput: (raw) => {
-				const lower = raw.toLowerCase();
-				if (lower === "q") return { type: "cancel" };
-				if (lower === "s") return { type: "save" };
-				if (lower === "r") return { type: "reset" };
-				if (lower === "[") return { type: "move-up", key: focusKey };
-				if (lower === "]") return { type: "move-down", key: focusKey };
-				const parsed = Number.parseInt(raw, 10);
-				if (
-					Number.isFinite(parsed) &&
-					parsed >= 1 &&
-					parsed <= STATUSLINE_FIELD_OPTIONS.length
-				) {
-					const target = STATUSLINE_FIELD_OPTIONS[parsed - 1];
-					if (target) {
-						return { type: "toggle", key: target.key };
-					}
-				}
-				return undefined;
-			},
-		});
-
-		if (!result || result.type === "cancel") {
-			return null;
-		}
-		if (result.type === "save") {
-			return draft;
-		}
-		if (result.type === "reset") {
-			draft = applyDashboardDefaultsForKeys(draft, STATUSLINE_PANEL_KEYS);
-			focusKey = draft.menuStatuslineFields?.[0] ?? "last-used";
-			continue;
-		}
-		if (result.type === "move-up") {
-			draft = {
-				...draft,
-				menuStatuslineFields: reorderField(
-					normalizeStatuslineFields(draft.menuStatuslineFields),
-					result.key,
-					-1,
-				),
-			};
-			focusKey = result.key;
-			continue;
-		}
-		if (result.type === "move-down") {
-			draft = {
-				...draft,
-				menuStatuslineFields: reorderField(
-					normalizeStatuslineFields(draft.menuStatuslineFields),
-					result.key,
-					1,
-				),
-			};
-			focusKey = result.key;
-			continue;
-		}
-
-		focusKey = result.key;
-		const fields = normalizeStatuslineFields(draft.menuStatuslineFields);
-		const isEnabled = fields.includes(result.key);
-		if (isEnabled) {
-			const next = fields.filter((field) => field !== result.key);
-			draft = {
-				...draft,
-				menuStatuslineFields: next.length > 0 ? next : [result.key],
-			};
-		} else {
-			draft = {
-				...draft,
-				menuStatuslineFields: [...fields, result.key],
-			};
-		}
-	}
+	return promptStatuslineSettingsPanel(initial, {
+		cloneDashboardSettings,
+		buildAccountListPreview,
+		normalizeStatuslineFields,
+		formatDashboardSettingState,
+		reorderField,
+		applyDashboardDefaultsForKeys,
+		STATUSLINE_FIELD_OPTIONS,
+		STATUSLINE_PANEL_KEYS,
+		UI_COPY,
+	});
 }
 
 async function configureStatuslineSettings(
