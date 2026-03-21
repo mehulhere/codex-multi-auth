@@ -186,7 +186,6 @@ import {
 } from "./lib/runtime/account-state.js";
 import { buildCapabilityBoostByAccount } from "./lib/runtime/capability-boost.js";
 import { createRuntimeEventHandler } from "./lib/runtime/event-handler.js";
-import { createFlaggedVerificationState } from "./lib/runtime/flagged-verify-types.js";
 import { hydrateRuntimeEmails } from "./lib/runtime/hydrate-emails.js";
 import { ensureRuntimeLiveAccountSync } from "./lib/runtime/live-sync.js";
 import { buildLoginMenuAccounts } from "./lib/runtime/login-menu-accounts.js";
@@ -219,6 +218,7 @@ import {
 	applyRuntimeUiOptions,
 	resolveRuntimeUiOptions,
 } from "./lib/runtime/ui-runtime.js";
+import { verifyRuntimeFlaggedAccounts } from "./lib/runtime/verify-flagged.js";
 import { SessionAffinityStore } from "./lib/session-affinity.js";
 import { registerCleanup } from "./lib/shutdown.js";
 import {
@@ -2663,115 +2663,17 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 						};
 
 						const verifyFlaggedAccounts = async (): Promise<void> => {
-							const flaggedStorage = await loadFlaggedAccounts();
-							if (flaggedStorage.accounts.length === 0) {
-								console.log("\nNo flagged accounts to verify.\n");
-								return;
-							}
-
-							console.log("\nVerifying flagged accounts...\n");
-							const state = createFlaggedVerificationState();
-
-							for (let i = 0; i < flaggedStorage.accounts.length; i += 1) {
-								const flagged = flaggedStorage.accounts[i];
-								if (!flagged) continue;
-								const label =
-									flagged.email ?? flagged.accountLabel ?? `Flagged ${i + 1}`;
-								try {
-									const cached = await lookupCodexCliTokensByEmail(
-										flagged.email,
-									);
-									const now = Date.now();
-									if (
-										cached &&
-										typeof cached.expiresAt === "number" &&
-										Number.isFinite(cached.expiresAt) &&
-										cached.expiresAt > now
-									) {
-										const refreshToken =
-											typeof cached.refreshToken === "string" &&
-											cached.refreshToken.trim()
-												? cached.refreshToken.trim()
-												: flagged.refreshToken;
-										const resolved = resolveAccountSelection(
-											{
-												type: "success",
-												access: cached.accessToken,
-												refresh: refreshToken,
-												expires: cached.expiresAt,
-												multiAccount: true,
-											},
-											{ logInfo },
-										);
-										if (!resolved.accountIdOverride && flagged.accountId) {
-											resolved.accountIdOverride = flagged.accountId;
-											resolved.accountIdSource =
-												flagged.accountIdSource ?? "manual";
-										}
-										if (!resolved.accountLabel && flagged.accountLabel) {
-											resolved.accountLabel = flagged.accountLabel;
-										}
-										state.restored.push(resolved);
-										console.log(
-											`[${i + 1}/${flaggedStorage.accounts.length}] ${label}: RESTORED (Codex CLI cache)`,
-										);
-										continue;
-									}
-
-									const refreshResult = await queuedRefresh(
-										flagged.refreshToken,
-									);
-									if (refreshResult.type !== "success") {
-										console.log(
-											`[${i + 1}/${flaggedStorage.accounts.length}] ${label}: STILL FLAGGED (${refreshResult.message ?? refreshResult.reason ?? "refresh failed"})`,
-										);
-										state.remaining.push(flagged);
-										continue;
-									}
-
-									const resolved = resolveAccountSelection(refreshResult, {
-										logInfo,
-									});
-									if (!resolved.accountIdOverride && flagged.accountId) {
-										resolved.accountIdOverride = flagged.accountId;
-										resolved.accountIdSource =
-											flagged.accountIdSource ?? "manual";
-									}
-									if (!resolved.accountLabel && flagged.accountLabel) {
-										resolved.accountLabel = flagged.accountLabel;
-									}
-									state.restored.push(resolved);
-									console.log(
-										`[${i + 1}/${flaggedStorage.accounts.length}] ${label}: RESTORED`,
-									);
-								} catch (error) {
-									const message =
-										error instanceof Error ? error.message : String(error);
-									console.log(
-										`[${i + 1}/${flaggedStorage.accounts.length}] ${label}: ERROR (${message.slice(0, 120)})`,
-									);
-									state.remaining.push({
-										...flagged,
-										lastError: message,
-									});
-								}
-							}
-
-							if (state.restored.length > 0) {
-								await persistAccounts(state.restored, false);
-								invalidateAccountManagerCache();
-							}
-
-							await saveFlaggedAccounts({
-								version: 1,
-								accounts: state.remaining,
+							await verifyRuntimeFlaggedAccounts({
+								loadFlaggedAccounts,
+								lookupCodexCliTokensByEmail,
+								queuedRefresh,
+								resolveAccountSelection,
+								persistAccounts,
+								invalidateAccountManagerCache,
+								saveFlaggedAccounts,
+								logInfo,
+								showLine: (message) => console.log(message),
 							});
-
-							console.log("");
-							console.log(
-								`Results: ${state.restored.length} restored, ${state.remaining.length} still flagged`,
-							);
-							console.log("");
 						};
 
 						if (!explicitLoginMode) {
