@@ -783,6 +783,37 @@ describe("codex manager cli commands", () => {
 		);
 	});
 
+	it("keeps explain output out of json mode", async () => {
+		loadAccountsMock.mockResolvedValueOnce({
+			version: 3,
+			accounts: [
+				{
+					email: "one@example.com",
+					refreshToken: "token-1",
+					addedAt: Date.now(),
+					lastUsed: Date.now(),
+				},
+			],
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0 },
+		});
+		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+
+		const exitCode = await runCodexMultiAuthCli([
+			"auth",
+			"report",
+			"--json",
+			"--explain",
+		]);
+
+		expect(exitCode).toBe(0);
+		const payload = String(logSpy.mock.calls[0]?.[0]);
+		expect(payload).toContain('"forecast"');
+		expect(payload).not.toContain("Account 1:");
+		expect(payload).not.toContain("Refresh failure:");
+	});
+
 	it("prints populated account status for auth status", async () => {
 		const now = Date.now();
 		loadAccountsMock.mockResolvedValueOnce({
