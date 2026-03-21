@@ -25,7 +25,7 @@ export function buildCapabilityBoostByAccount(input: {
 	};
 	getBoost: (accountKey: string, capabilityKey: string) => number;
 }): number[] {
-	const boosts = new Array<number>(Math.max(0, input.accountCount)).fill(0);
+	const boosts = new Array<number>(Math.max(0, input.accountCount));
 	const accountSnapshotList =
 		typeof input.accountSnapshotSource.getAccountsSnapshot === "function"
 			? (input.accountSnapshotSource.getAccountsSnapshot() ?? [])
@@ -47,6 +47,13 @@ export function buildCapabilityBoostByAccount(input: {
 	}
 
 	for (const candidate of accountSnapshotList) {
+		if (
+			!Number.isInteger(candidate.index) ||
+			candidate.index < 0 ||
+			candidate.index >= boosts.length
+		) {
+			continue;
+		}
 		const accountKey = resolveEntitlementAccountKey(candidate);
 		boosts[candidate.index] = input.getBoost(
 			accountKey,
