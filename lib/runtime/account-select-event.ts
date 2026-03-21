@@ -35,7 +35,7 @@ export async function handleAccountSelectEvent(input: {
 		props.provider !== "openai" &&
 		props.provider !== input.providerId
 	) {
-		return true;
+		return false;
 	}
 
 	const index = props.index ?? props.accountIndex;
