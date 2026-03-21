@@ -721,14 +721,14 @@ describe("codex manager cli commands", () => {
 		expect(errorSpy).toHaveBeenCalledWith("Unknown option: --bogus");
 	});
 
-	it("errors for unknown config explain args", async () => {
+	it("errors when auth config is missing a subcommand", async () => {
 		const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
 		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
 
-		const exitCode = await runCodexMultiAuthCli(["auth", "config", "explain", "--bogus"]);
+		const exitCode = await runCodexMultiAuthCli(["auth", "config"]);
 
 		expect(exitCode).toBe(1);
-		expect(errorSpy).toHaveBeenCalledWith("Unknown option: --bogus");
+		expect(errorSpy).toHaveBeenCalledWith("Unknown config command: (missing)");
 	});
 
 	it("errors for unknown config subcommands", async () => {

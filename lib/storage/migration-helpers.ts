@@ -1,3 +1,4 @@
+import { sleep } from "../utils.js";
 import type { AccountStorageV3 } from "../storage.js";
 
 export async function loadNormalizedStorageFromPathOrNull(
@@ -9,26 +10,35 @@ export async function loadNormalizedStorageFromPathOrNull(
 			schemaErrors: string[];
 		}>;
 		logWarn: (message: string, meta: Record<string, unknown>) => void;
+		sleep?: (ms: number) => Promise<void>;
 	},
 ): Promise<AccountStorageV3 | null> {
-	try {
-		const { normalized, schemaErrors } = await deps.loadAccountsFromPath(path);
-		if (schemaErrors.length > 0) {
-			deps.logWarn(`${label} schema validation warnings`, {
-				path,
-				errors: schemaErrors.slice(0, 5),
-			});
+	for (let attempt = 0; ; attempt += 1) {
+		try {
+			const { normalized, schemaErrors } = await deps.loadAccountsFromPath(path);
+			if (schemaErrors.length > 0) {
+				deps.logWarn(`${label} schema validation warnings`, {
+					path,
+					errors: schemaErrors.slice(0, 5),
+				});
+			}
+			return normalized;
+		} catch (error) {
+			const code = (error as NodeJS.ErrnoException).code;
+			if (code === "EBUSY" || code === "EPERM" || code === "EAGAIN") {
+				if (attempt < 3) {
+					await (deps.sleep ?? sleep)(10 * 2 ** attempt);
+					continue;
+				}
+			}
+			if (code !== "ENOENT") {
+				deps.logWarn(`Failed to load ${label}`, {
+					path,
+					error: String(error),
+				});
+			}
+			return null;
 		}
-		return normalized;
-	} catch (error) {
-		const code = (error as NodeJS.ErrnoException).code;
-		if (code !== "ENOENT") {
-			deps.logWarn(`Failed to load ${label}`, {
-				path,
-				error: String(error),
-			});
-		}
-		return null;
 	}
 }
 
