@@ -195,6 +195,27 @@ describe("runtime live sync", () => {
 		expect(deps.logWarn).not.toHaveBeenCalled();
 	});
 
+	it("keeps a newly created sync reachable when the initial path switch fails", async () => {
+		const createdSync = {
+			stop: vi.fn(),
+			syncToPath: vi.fn().mockRejectedValue(new Error("boom")),
+		};
+		const { deps, createSync, getCleanupCallback, getCommittedState } = createDeps();
+		createSync.mockReturnValue(createdSync);
+
+		await expect(ensureRuntimeLiveAccountSync(deps)).rejects.toThrow("boom");
+
+		const committed = getCommittedState();
+		expect(committed.sync).toBe(createdSync);
+		expect(committed.path).toBeNull();
+		expect(committed.cleanupRegistered).toBe(true);
+
+		const cleanup = getCleanupCallback();
+		expect(cleanup).not.toBeNull();
+		cleanup?.();
+		expect(createdSync.stop).toHaveBeenCalledTimes(1);
+	});
+
 	it("commits a newly created sync before awaiting the initial path switch", async () => {
 		let resolveSwitch: (() => void) | null = null;
 		const switchPromise = new Promise<void>((resolve) => {
