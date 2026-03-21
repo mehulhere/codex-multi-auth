@@ -1,10 +1,4 @@
 import { describe, expect, it, vi } from "vitest";
-import {
-	HealthScoreTracker,
-	TokenBucketTracker,
-	exponentialBackoff,
-	selectHybridAccount,
-} from "../lib/rotation.js";
 import { getTopCandidates } from "../lib/parallel-probe.js";
 import { createCodexHeaders } from "../lib/request/fetch-helpers.js";
 import {
@@ -12,6 +6,12 @@ import {
 	getRateLimitBackoffWithReason,
 } from "../lib/request/rate-limit-backoff.js";
 import { transformRequestBody } from "../lib/request/request-transformer.js";
+import {
+	exponentialBackoff,
+	HealthScoreTracker,
+	selectHybridAccount,
+	TokenBucketTracker,
+} from "../lib/rotation.js";
 import type { RequestBody } from "../lib/types.js";
 
 describe("public api contract", () => {
@@ -22,22 +22,50 @@ describe("public api contract", () => {
 		expect(root.default).toBe(root.OpenAIOAuthPlugin);
 	});
 
+	it("publishes stable package subpath exports", async () => {
+		const pkg = await import("../package.json", { with: { type: "json" } });
+		const exportsField = pkg.default.exports as Record<string, unknown>;
+		expect(exportsField["./auth"]).toEqual({
+			types: "./dist/lib/auth/auth.d.ts",
+			default: "./dist/lib/auth/auth.js",
+		});
+		expect(exportsField["./storage"]).toEqual({
+			types: "./dist/lib/storage.d.ts",
+			default: "./dist/lib/storage.js",
+		});
+		expect(exportsField["./config"]).toEqual({
+			types: "./dist/lib/config.d.ts",
+			default: "./dist/lib/config.js",
+		});
+		expect(exportsField["./request"]).toEqual({
+			types: "./dist/lib/request/fetch-helpers.d.ts",
+			default: "./dist/lib/request/fetch-helpers.js",
+		});
+		expect(exportsField["./cli"]).toEqual({
+			types: "./dist/lib/codex-manager.d.ts",
+			default: "./dist/lib/codex-manager.js",
+		});
+	});
+
 	it("keeps compatibility exports for module helpers", async () => {
 		const rotation = await import("../lib/rotation.js");
 		const parallelProbe = await import("../lib/parallel-probe.js");
 		const fetchHelpers = await import("../lib/request/fetch-helpers.js");
-		const rateLimitBackoff = await import("../lib/request/rate-limit-backoff.js");
-		const requestTransformer = await import("../lib/request/request-transformer.js");
-		const required: ReadonlyArray<
-			readonly [string, Record<string, unknown>]
-		> = [
-			["selectHybridAccount", rotation],
-			["exponentialBackoff", rotation],
-			["getTopCandidates", parallelProbe],
-			["createCodexHeaders", fetchHelpers],
-			["getRateLimitBackoffWithReason", rateLimitBackoff],
-			["transformRequestBody", requestTransformer],
-		];
+		const rateLimitBackoff = await import(
+			"../lib/request/rate-limit-backoff.js"
+		);
+		const requestTransformer = await import(
+			"../lib/request/request-transformer.js"
+		);
+		const required: ReadonlyArray<readonly [string, Record<string, unknown>]> =
+			[
+				["selectHybridAccount", rotation],
+				["exponentialBackoff", rotation],
+				["getTopCandidates", parallelProbe],
+				["createCodexHeaders", fetchHelpers],
+				["getRateLimitBackoffWithReason", rateLimitBackoff],
+				["transformRequestBody", requestTransformer],
+			];
 		for (const [name, mod] of required) {
 			expect(name in mod, `missing export: ${name}`).toBe(true);
 			expect(typeof mod[name], `${name} should be a function`).toBe("function");
@@ -47,16 +75,31 @@ describe("public api contract", () => {
 	it("keeps positional and options-object overload behavior aligned", async () => {
 		const healthTracker = new HealthScoreTracker();
 		const tokenTracker = new TokenBucketTracker();
-		const accounts = [{ index: 0, isAvailable: true, lastUsed: 1_709_280_000_000 }];
+		const accounts = [
+			{ index: 0, isAvailable: true, lastUsed: 1_709_280_000_000 },
+		];
 
-		const selectedPositional = selectHybridAccount(accounts, healthTracker, tokenTracker);
-		const selectedNamed = selectHybridAccount({ accounts, healthTracker, tokenTracker });
+		const selectedPositional = selectHybridAccount(
+			accounts,
+			healthTracker,
+			tokenTracker,
+		);
+		const selectedNamed = selectHybridAccount({
+			accounts,
+			healthTracker,
+			tokenTracker,
+		});
 		expect(selectedNamed?.index).toBe(selectedPositional?.index);
 
 		const randomSpy = vi.spyOn(Math, "random").mockReturnValue(0.5);
 		try {
 			const backoffPositional = exponentialBackoff(3, 1000, 60000, 0);
-			const backoffNamed = exponentialBackoff({ attempt: 3, baseMs: 1000, maxMs: 60000, jitterFactor: 0 });
+			const backoffNamed = exponentialBackoff({
+				attempt: 3,
+				baseMs: 1000,
+				maxMs: 60000,
+				jitterFactor: 0,
+			});
 			expect(backoffNamed).toBe(backoffPositional);
 		} finally {
 			randomSpy.mockRestore();
@@ -82,7 +125,9 @@ describe("public api contract", () => {
 			1,
 		);
 		const topNamed = getTopCandidates({
-			accountManager: manager as unknown as Parameters<typeof getTopCandidates>[0],
+			accountManager: manager as unknown as Parameters<
+				typeof getTopCandidates
+			>[0],
 			modelFamily: "codex",
 			model: null,
 			maxCandidates: 1,
@@ -99,11 +144,22 @@ describe("public api contract", () => {
 			accessToken: "token",
 			opts: { model: "gpt-5", promptCacheKey: "session-compat" },
 		});
-		expect(headersNamed.get("Authorization")).toBe(headersPositional.get("Authorization"));
-		expect(headersNamed.get("conversation_id")).toBe(headersPositional.get("conversation_id"));
-		expect(headersNamed.get("session_id")).toBe(headersPositional.get("session_id"));
+		expect(headersNamed.get("Authorization")).toBe(
+			headersPositional.get("Authorization"),
+		);
+		expect(headersNamed.get("conversation_id")).toBe(
+			headersPositional.get("conversation_id"),
+		);
+		expect(headersNamed.get("session_id")).toBe(
+			headersPositional.get("session_id"),
+		);
 
-		const ratePositional = getRateLimitBackoffWithReason(1, "compat", 1000, "tokens");
+		const ratePositional = getRateLimitBackoffWithReason(
+			1,
+			"compat",
+			1000,
+			"tokens",
+		);
 		clearRateLimitBackoffState();
 		const rateNamed = getRateLimitBackoffWithReason({
 			accountIndex: 1,
