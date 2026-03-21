@@ -106,10 +106,17 @@ export async function runInitConfigCommand(
 	}
 
 	const outputPath = resolve(cwd, parsed.writePath);
-	await writeTemplate(
-		outputPath,
-		content.endsWith("\n") ? content : `${content}\n`,
-	);
+	try {
+		await writeTemplate(
+			outputPath,
+			content.endsWith("\n") ? content : `${content}\n`,
+		);
+	} catch (error) {
+		const message =
+			error instanceof Error ? error.message : "Failed to write config template";
+		logError(message);
+		return 1;
+	}
 	logInfo(`Wrote ${parsed.template} template to ${outputPath}`);
 	return 0;
 }
