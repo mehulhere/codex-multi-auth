@@ -503,21 +503,6 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 		refreshGuardianConfigKey = ensured.configKey;
 	};
 
-	const ensureSessionAffinity = (
-		pluginConfig: ReturnType<typeof loadPluginConfig>,
-	): void => {
-		const ensured = ensureRuntimeSessionAffinity({
-			pluginConfig,
-			getSessionAffinity,
-			currentStore: sessionAffinityStore,
-			currentConfigKey: sessionAffinityConfigKey,
-			getSessionAffinityTtlMs,
-			getSessionAffinityMaxEntries,
-		});
-		sessionAffinityStore = ensured.store;
-		sessionAffinityConfigKey = ensured.configKey;
-	};
-
 	const applyPreemptiveQuotaSettings = (
 		pluginConfig: ReturnType<typeof loadPluginConfig>,
 	): void => {
@@ -626,7 +611,18 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 				const pluginConfig = loadPluginConfig();
 				applyUiRuntimeFromConfig(pluginConfig);
 				applyStorageScope(pluginConfig);
-				ensureSessionAffinity(pluginConfig);
+				{
+					const ensured = ensureRuntimeSessionAffinity({
+						pluginConfig,
+						getSessionAffinity,
+						currentStore: sessionAffinityStore,
+						currentConfigKey: sessionAffinityConfigKey,
+						getSessionAffinityTtlMs,
+						getSessionAffinityMaxEntries,
+					});
+					sessionAffinityStore = ensured.store;
+					sessionAffinityConfigKey = ensured.configKey;
+				}
 				ensureRefreshGuardian(pluginConfig);
 				applyPreemptiveQuotaSettings(pluginConfig);
 
