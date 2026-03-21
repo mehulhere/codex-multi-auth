@@ -48,6 +48,11 @@ export {
 export type { NamedBackupSummary } from "./storage/named-backups.js";
 
 import {
+	collectDistinctIdentityValues,
+	findNewestMatchingIndex,
+	selectNewestAccount,
+} from "./storage/account-match-utils.js";
+import {
 	getFlaggedAccountsPath as buildFlaggedAccountsPath,
 	getLegacyFlaggedAccountsPath as buildLegacyFlaggedAccountsPath,
 	getAccountsBackupPath,
@@ -729,58 +734,9 @@ async function loadNormalizedStorageFromPath(
 	});
 }
 
-function selectNewestAccount<T extends AccountLike>(
-	current: T | undefined,
-	candidate: T,
-): T {
-	if (!current) return candidate;
-	const currentLastUsed = current.lastUsed || 0;
-	const candidateLastUsed = candidate.lastUsed || 0;
-	if (candidateLastUsed > currentLastUsed) return candidate;
-	if (candidateLastUsed < currentLastUsed) return current;
-	const currentAddedAt = current.addedAt || 0;
-	const candidateAddedAt = candidate.addedAt || 0;
-	return candidateAddedAt >= currentAddedAt ? candidate : current;
-}
-
-function collectDistinctIdentityValues(
-	values: Array<string | undefined>,
-): Set<string> {
-	const distinct = new Set<string>();
-	for (const value of values) {
-		if (value) distinct.add(value);
-	}
-	return distinct;
-}
-
 type AccountMatchOptions = {
 	allowUniqueAccountIdFallbackWithoutEmail?: boolean;
 };
-
-function findNewestMatchingIndex<T extends AccountLike>(
-	accounts: readonly T[],
-	predicate: (ref: AccountIdentityRef) => boolean,
-): number | undefined {
-	let matchIndex: number | undefined;
-	let match: T | undefined;
-	for (let i = 0; i < accounts.length; i += 1) {
-		const account = accounts[i];
-		if (!account) continue;
-		const ref = toAccountIdentityRef(account);
-		if (!predicate(ref)) continue;
-		if (matchIndex === undefined) {
-			matchIndex = i;
-			match = account;
-			continue;
-		}
-		const newest = selectNewestAccount(match, account);
-		if (newest === account) {
-			matchIndex = i;
-			match = account;
-		}
-	}
-	return matchIndex;
-}
 
 function findCompositeAccountMatchIndex<T extends AccountLike>(
 	accounts: readonly T[],
@@ -789,9 +745,11 @@ function findCompositeAccountMatchIndex<T extends AccountLike>(
 	if (!candidateRef.accountId || !candidateRef.emailKey) return undefined;
 	return findNewestMatchingIndex(
 		accounts,
+		(account) => toAccountIdentityRef(account),
 		(ref) =>
 			ref.accountId === candidateRef.accountId &&
 			ref.emailKey === candidateRef.emailKey,
+		selectNewestAccount,
 	);
 }
 
@@ -819,7 +777,9 @@ function findSafeEmailMatchIndex<T extends AccountLike>(
 
 	return findNewestMatchingIndex(
 		accounts,
+		(account) => toAccountIdentityRef(account),
 		(ref) => ref.emailKey === candidateRef.emailKey,
+		selectNewestAccount,
 	);
 }
 
