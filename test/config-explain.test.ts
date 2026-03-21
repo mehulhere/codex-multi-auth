@@ -13,11 +13,28 @@ vi.mock("../lib/unified-settings.js", () => ({
 
 describe("getPluginConfigExplainReport", () => {
 	afterEach(async () => {
+		delete process.env.CODEX_MODE;
 		delete process.env.CODEX_AUTH_FAST_SESSION_STRATEGY;
 		delete process.env.CODEX_MULTI_AUTH_CONFIG_PATH;
 		loadUnifiedPluginConfigSyncMock.mockReset();
 		loadUnifiedPluginConfigSyncMock.mockReturnValue(null);
 		vi.resetModules();
+	});
+
+	it('marks entries sourced from unified settings as "unified"', async () => {
+		loadUnifiedPluginConfigSyncMock.mockReturnValue({
+			unsupportedCodexPolicy: "fallback",
+		});
+		const { getPluginConfigExplainReport } = await import("../lib/config.js");
+
+		const report = getPluginConfigExplainReport();
+		const entry = report.entries.find(
+			(item) => item.key === "unsupportedCodexPolicy",
+		);
+
+		expect(report.storageKind).toBe("unified");
+		expect(entry).toBeDefined();
+		expect(entry?.source).toBe("unified");
 	});
 
 	it("treats invalid string env values as non-env sources", async () => {
