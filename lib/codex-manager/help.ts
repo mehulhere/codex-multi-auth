@@ -37,7 +37,8 @@ export type AuthLoginOptions = {
 
 export type ParsedAuthLoginArgs =
 	| { ok: true; options: AuthLoginOptions }
-	| { ok: false; message: string };
+	| { ok: false; reason: "help" }
+	| { ok: false; reason: "error"; message: string };
 
 export function parseAuthLoginArgs(args: string[]): ParsedAuthLoginArgs {
 	const options: AuthLoginOptions = {
@@ -50,11 +51,11 @@ export function parseAuthLoginArgs(args: string[]): ParsedAuthLoginArgs {
 			continue;
 		}
 		if (arg === "--help" || arg === "-h") {
-			printUsage();
-			return { ok: false, message: "" };
+			return { ok: false, reason: "help" };
 		}
 		return {
 			ok: false,
+			reason: "error",
 			message: `Unknown login option: ${arg}`,
 		};
 	}
@@ -71,7 +72,8 @@ export interface BestCliOptions {
 
 export type ParsedBestArgs =
 	| { ok: true; options: BestCliOptions }
-	| { ok: false; message: string };
+	| { ok: false; reason: "help" }
+	| { ok: false; reason: "error"; message: string };
 
 export function printBestUsage(): void {
 	console.log(
@@ -102,6 +104,9 @@ export function parseBestArgs(args: string[]): ParsedBestArgs {
 	for (let i = 0; i < args.length; i += 1) {
 		const arg = args[i];
 		if (!arg) continue;
+		if (arg === "--help" || arg === "-h") {
+			return { ok: false, reason: "help" };
+		}
 		if (arg === "--live" || arg === "-l") {
 			options.live = true;
 			continue;
@@ -113,7 +118,11 @@ export function parseBestArgs(args: string[]): ParsedBestArgs {
 		if (arg === "--model" || arg === "-m") {
 			const value = args[i + 1];
 			if (!value) {
-				return { ok: false, message: "Missing value for --model" };
+				return {
+					ok: false,
+					reason: "error",
+					message: "Missing value for --model",
+				};
 			}
 			options.model = value;
 			options.modelProvided = true;
@@ -123,13 +132,21 @@ export function parseBestArgs(args: string[]): ParsedBestArgs {
 		if (arg.startsWith("--model=")) {
 			const value = arg.slice("--model=".length).trim();
 			if (!value) {
-				return { ok: false, message: "Missing value for --model" };
+				return {
+					ok: false,
+					reason: "error",
+					message: "Missing value for --model",
+				};
 			}
 			options.model = value;
 			options.modelProvided = true;
 			continue;
 		}
-		return { ok: false, message: `Unknown option: ${arg}` };
+		return {
+			ok: false,
+			reason: "error",
+			message: `Unknown option: ${arg}`,
+		};
 	}
 
 	return { ok: true, options };

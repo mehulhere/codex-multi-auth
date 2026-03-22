@@ -264,17 +264,21 @@ export async function runSwitch(
 	return 0;
 }
 
+/**
+ * `codex auth best` still follows the monolith's single-writer storage pattern.
+ * Callers should keep concurrent CLI dispatches serialized while the live probe
+ * path mutates refreshed tokens before persisting them back to disk.
+ */
 export async function runBest(
 	args: string[],
 	helpers: AuthCommandHelpers,
 ): Promise<number> {
-	if (args.includes("--help") || args.includes("-h")) {
-		printBestUsage();
-		return 0;
-	}
-
 	const parsedArgs = parseBestArgs(args);
 	if (!parsedArgs.ok) {
+		if (parsedArgs.reason === "help") {
+			printBestUsage();
+			return 0;
+		}
 		console.error(parsedArgs.message);
 		printBestUsage();
 		return 1;
@@ -506,11 +510,12 @@ export async function runAuthLogin(
 ): Promise<number> {
 	const parsedArgs = parseAuthLoginArgs(args);
 	if (!parsedArgs.ok) {
-		if (parsedArgs.message) {
+		if (parsedArgs.reason === "error") {
 			console.error(parsedArgs.message);
 			printUsage();
 			return 1;
 		}
+		printUsage();
 		return 0;
 	}
 
