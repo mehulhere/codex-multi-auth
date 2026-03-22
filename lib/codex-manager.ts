@@ -3183,6 +3183,7 @@ export async function runCodexMultiAuthCli(rawArgs: string[]): Promise<number> {
 	if (command === "list" || command === "status") {
 		return runStatusCommand({
 			setStoragePath,
+			getStoragePath,
 			loadAccounts,
 			resolveActiveIndex,
 			formatRateLimitEntry,
