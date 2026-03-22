@@ -634,6 +634,35 @@ describe('Request Transformer Module', () => {
 				expect(result.prompt_cache_retention).toBe('24h');
 			});
 
+			it('uses prompt_cache_retention from providerOptions when body omits it', async () => {
+				const body: RequestBody = {
+					model: 'gpt-5.4',
+					input: [],
+					providerOptions: {
+						openai: {
+							promptCacheRetention: '1h',
+						},
+					},
+				};
+				const result = await transformRequestBody(body, codexInstructions);
+				expect(result.prompt_cache_retention).toBe('1h');
+			});
+
+			it('prefers body prompt_cache_retention over providerOptions', async () => {
+				const body: RequestBody = {
+					model: 'gpt-5.4',
+					input: [],
+					prompt_cache_retention: '24h',
+					providerOptions: {
+						openai: {
+							promptCacheRetention: '1h',
+						},
+					},
+				};
+				const result = await transformRequestBody(body, codexInstructions);
+				expect(result.prompt_cache_retention).toBe('24h');
+			});
+
 			it('preserves text.format when applying text verbosity defaults', async () => {
 				const body: RequestBody = {
 					model: 'gpt-5.4',
@@ -1252,6 +1281,19 @@ describe('Request Transformer Module', () => {
 			};
 			const result = await transformRequestBody(body, codexInstructions);
 			expect(result.text?.verbosity).toBe('low');
+		});
+
+		it('should inherit prompt_cache_retention from user config', async () => {
+			const body: RequestBody = {
+				model: 'gpt-5.4',
+				input: [],
+			};
+			const userConfig: UserConfig = {
+				global: { promptCacheRetention: '7d' },
+				models: {},
+			};
+			const result = await transformRequestBody(body, codexInstructions, userConfig);
+			expect(result.prompt_cache_retention).toBe('7d');
 		});
 
 		it('should prefer body text verbosity over providerOptions', async () => {

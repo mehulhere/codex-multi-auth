@@ -116,6 +116,21 @@ describe("public api contract", () => {
 		const baseBody: RequestBody = {
 			model: "gpt-5-codex",
 			input: [{ type: "message", role: "user", content: "hi" }],
+			prompt_cache_retention: "24h",
+			text: {
+				format: {
+					type: "json_schema",
+					name: "compat_response",
+					schema: {
+						type: "object",
+						properties: {
+							answer: { type: "string" },
+						},
+						required: ["answer"],
+					},
+					strict: true,
+				},
+			},
 		};
 		const transformedPositional = await transformRequestBody(
 			JSON.parse(JSON.stringify(baseBody)) as RequestBody,
