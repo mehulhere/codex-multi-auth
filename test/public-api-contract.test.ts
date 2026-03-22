@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, expectTypeOf, it, vi } from "vitest";
 import { getTopCandidates } from "../lib/parallel-probe.js";
 import { createCodexHeaders } from "../lib/request/fetch-helpers.js";
 import {
@@ -12,7 +12,7 @@ import {
 	selectHybridAccount,
 	TokenBucketTracker,
 } from "../lib/rotation.js";
-import type { RequestBody } from "../lib/types.js";
+import type { RequestBody, RequestToolDefinition } from "../lib/types.js";
 import pkg from "../package.json" with { type: "json" };
 
 describe("public api contract", () => {
@@ -132,6 +132,10 @@ describe("public api contract", () => {
 	});
 
 	it("keeps positional and options-object overload behavior aligned", async () => {
+		expectTypeOf<RequestBody["tools"]>().toEqualTypeOf<
+			RequestToolDefinition[] | undefined
+		>();
+
 		const healthTracker = new HealthScoreTracker();
 		const tokenTracker = new TokenBucketTracker();
 		const accounts = [
@@ -229,9 +233,18 @@ describe("public api contract", () => {
 		expect(rateNamed).toEqual(ratePositional);
 
 		const baseBody: RequestBody = {
-			model: "gpt-5-codex",
+			model: "gpt-5.4",
 			input: [{ type: "message", role: "user", content: "hi" }],
 			prompt_cache_retention: "24h",
+			tools: [
+				{ type: "tool_search", max_num_results: 2 },
+				{
+					type: "mcp",
+					server_label: "docs",
+					server_url: "https://mcp.example.com",
+					defer_loading: true,
+				},
+			] satisfies RequestToolDefinition[],
 			text: {
 				format: {
 					type: "json_schema",
@@ -260,5 +273,6 @@ describe("public api contract", () => {
 		expect(transformedNamed.prompt_cache_retention).toBe(baseBody.prompt_cache_retention);
 		expect(transformedPositional.text?.format).toEqual(baseBody.text?.format);
 		expect(transformedNamed.text?.format).toEqual(baseBody.text?.format);
+		expect(transformedNamed.tools).toEqual(baseBody.tools);
 	});
 });
