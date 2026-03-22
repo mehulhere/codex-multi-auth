@@ -56,6 +56,12 @@ const compatibilityAliasAllowedFiles = new Set([
 	"docs/upgrade.md",
 ]);
 
+const maintainerRunbooks = [
+	"docs/development/RUNBOOK_ADD_AUTH_COMMAND.md",
+	"docs/development/RUNBOOK_ADD_CONFIG_FIELD.md",
+	"docs/development/RUNBOOK_CHANGE_ROUTING_POLICY.md",
+];
+
 function read(filePath: string): string {
 	return readFileSync(join(projectRoot, filePath), "utf-8");
 }
@@ -454,6 +460,28 @@ describe("Documentation Integrity", () => {
 		const conduct = read("CODE_OF_CONDUCT.md").toLowerCase();
 		expect(conduct).toContain("respectful");
 		expect(conduct).toContain("security.md");
+	});
+
+	it("publishes maintainer runbooks for refactor-era changes", () => {
+		const docsPortal = read("docs/README.md");
+		const testingGuide = read("docs/development/TESTING.md");
+
+		for (const filePath of maintainerRunbooks) {
+			expect(existsSync(join(projectRoot, filePath)), `${filePath} should exist`).toBe(
+				true,
+			);
+			const content = read(filePath).toLowerCase();
+			expect(content).toContain("validation");
+			expect(content).toContain("review checklist");
+		}
+
+		expect(docsPortal).toContain("development/RUNBOOK_ADD_AUTH_COMMAND.md");
+		expect(docsPortal).toContain("development/RUNBOOK_ADD_CONFIG_FIELD.md");
+		expect(docsPortal).toContain("development/RUNBOOK_CHANGE_ROUTING_POLICY.md");
+		expect(testingGuide).toContain("## Refactor Guardrail Checklist");
+		expect(testingGuide).toContain("stream: true");
+		expect(testingGuide).toContain("store: false");
+		expect(testingGuide).toContain("reasoning.encrypted_content");
 	});
 
 	it("has valid internal links in README.md", () => {
