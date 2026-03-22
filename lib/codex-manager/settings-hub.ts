@@ -93,6 +93,7 @@ import {
 	configureUnifiedSettingsController,
 	type SettingsHubActionType,
 } from "./unified-settings-controller.js";
+import { configureUnifiedSettingsEntry } from "./unified-settings-entry.js";
 
 type DashboardDisplaySettingKey =
 	| "menuShowStatusBadge"
@@ -776,7 +777,8 @@ async function promptSettingsHub(
 async function configureUnifiedSettings(
 	initialSettings?: DashboardDisplaySettings,
 ): Promise<DashboardDisplaySettings> {
-	return configureUnifiedSettingsController(initialSettings, {
+	return configureUnifiedSettingsEntry(initialSettings, {
+		configureUnifiedSettingsController,
 		cloneDashboardSettings,
 		cloneBackendPluginConfig,
 		loadDashboardDisplaySettings,
