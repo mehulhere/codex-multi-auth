@@ -23,6 +23,36 @@ describe("public api contract", () => {
 		expect(root.default).toBe(root.OpenAIOAuthPlugin);
 	});
 
+	it("publishes stable package subpath exports", async () => {
+		const pkg = await import("../package.json", { with: { type: "json" } });
+		const exportsField = pkg.default.exports as Record<string, unknown>;
+		expect(exportsField["./auth"]).toEqual({
+			types: "./dist/lib/auth/index.d.ts",
+			import: "./dist/lib/auth/index.js",
+			default: "./dist/lib/auth/index.js",
+		});
+		expect(exportsField["./storage"]).toEqual({
+			types: "./dist/lib/storage.d.ts",
+			import: "./dist/lib/storage.js",
+			default: "./dist/lib/storage.js",
+		});
+		expect(exportsField["./config"]).toEqual({
+			types: "./dist/lib/config.d.ts",
+			import: "./dist/lib/config.js",
+			default: "./dist/lib/config.js",
+		});
+		expect(exportsField["./request"]).toEqual({
+			types: "./dist/lib/request/index.d.ts",
+			import: "./dist/lib/request/index.js",
+			default: "./dist/lib/request/index.js",
+		});
+		expect(exportsField["./cli"]).toEqual({
+			types: "./dist/lib/codex-cli/index.d.ts",
+			import: "./dist/lib/codex-cli/index.js",
+			default: "./dist/lib/codex-cli/index.js",
+		});
+	});
+
 	it("keeps compatibility exports for module helpers", async () => {
 		const rotation = await import("../lib/rotation.js");
 		const parallelProbe = await import("../lib/parallel-probe.js");
