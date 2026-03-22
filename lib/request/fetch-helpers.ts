@@ -738,7 +738,7 @@ export async function transformRequestForCodex(
 			body: transformedBody as unknown as Record<string, unknown>,
 		});
 
-			return {
+	return {
 				body: transformedBody,
 				updatedInit: { ...(init ?? {}), body: JSON.stringify(transformedBody) },
 				deferredFastSessionInputTrim:
@@ -748,6 +748,12 @@ export async function transformRequestForCodex(
 						: undefined,
 			};
 	} catch (e) {
+		if (
+			e instanceof Error &&
+			e.message.startsWith("Responses background mode")
+		) {
+			throw e;
+		}
 		logError(`${ERROR_MESSAGES.REQUEST_PARSE_ERROR}`, e);
 		return undefined;
 	}

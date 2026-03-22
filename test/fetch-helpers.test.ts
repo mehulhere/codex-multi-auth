@@ -1127,6 +1127,58 @@ describe('createEntitlementErrorResponse', () => {
 				expect(typeof result?.updatedInit.body).toBe('string');
 			});
 
+			it('rethrows background-mode compatibility errors instead of falling back to the raw request', async () => {
+				const { transformRequestForCodex } = await import('../lib/request/fetch-helpers.js');
+
+				await expect(
+					transformRequestForCodex(
+						{
+							body: JSON.stringify({
+								model: 'gpt-5.4',
+								background: true,
+								input: [{ type: 'message', role: 'user', content: 'hello' }],
+							}),
+						},
+						'https://example.com',
+						{ global: {}, models: {} },
+					),
+				).rejects.toThrow(
+					'Responses background mode is disabled. Enable pluginConfig.backgroundResponses or CODEX_AUTH_BACKGROUND_RESPONSES=1 to opt in.',
+				);
+			});
+
+			it('suppresses deferred fast-session trimming for allowed background requests', async () => {
+				const { transformRequestForCodex } = await import('../lib/request/fetch-helpers.js');
+
+				const result = await transformRequestForCodex(
+					{
+						body: JSON.stringify({
+							model: 'gpt-5.4',
+							background: true,
+							input: [
+								{ id: 'msg_1', type: 'message', role: 'user', content: 'hello' },
+								{ id: 'msg_2', type: 'message', role: 'assistant', content: 'hi' },
+							],
+						}),
+					},
+					'https://example.com',
+					{ global: {}, models: {} },
+					true,
+					undefined,
+					{
+						fastSession: true,
+						fastSessionStrategy: 'always',
+						fastSessionMaxInputItems: 1,
+						deferFastSessionInputTrimming: true,
+						allowBackgroundResponses: true,
+					},
+				);
+
+				expect(result).toBeDefined();
+				expect(result?.body.background).toBe(true);
+				expect(result?.deferredFastSessionInputTrim).toBeUndefined();
+			});
+
 			it('returns undefined when parsedBody is empty object and init body is unavailable', async () => {
 				const { transformRequestForCodex } = await import('../lib/request/fetch-helpers.js');
 				const result = await transformRequestForCodex(

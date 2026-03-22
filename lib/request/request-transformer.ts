@@ -978,12 +978,12 @@ export async function transformRequestBody(
 		}) ?? inputItems;
 		body.input = inputItems;
 
-		// istanbul ignore next -- filterInput always removes IDs; this is defensive debug code
+		// istanbul ignore next -- filterInput always removes IDs in stateless mode; this is defensive debug code
 		const remainingIds = (body.input || [])
 			.filter((item) => item.id)
 			.map((item) => item.id);
-		// istanbul ignore if -- filterInput always removes IDs; defensive debug warning
-		if (remainingIds.length > 0) {
+		// istanbul ignore if -- filterInput always removes IDs in stateless mode; background mode intentionally preserves them
+		if (remainingIds.length > 0 && !backgroundModeRequested) {
 			logWarn(
 				`WARNING: ${remainingIds.length} IDs still present after filtering:`,
 				remainingIds,
