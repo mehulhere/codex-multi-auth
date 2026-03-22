@@ -198,6 +198,10 @@ import {
 	reloadAccountManagerFromDiskState,
 } from "./lib/runtime/account-manager-cache.js";
 import {
+	invalidateAccountManagerCacheEntry,
+	reloadAccountManagerFromDiskEntry,
+} from "./lib/runtime/account-manager-cache-entry.js";
+import {
 	type TokenSuccessWithAccount as AccountPoolTokenSuccessWithAccount,
 	persistAccountPoolResults,
 } from "./lib/runtime/account-pool.js";
@@ -524,18 +528,25 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 	};
 
 	const invalidateAccountManagerCache = (): void => {
-		const next = invalidateAccountManagerCacheState();
-		cachedAccountManager = next.cachedAccountManager;
-		accountManagerPromise = next.accountManagerPromise;
+		invalidateAccountManagerCacheEntry<AccountManager>({
+			invalidateAccountManagerCacheState,
+			setCachedAccountManager: (manager) => {
+				cachedAccountManager = manager;
+			},
+			setAccountManagerPromise: (promise) => {
+				accountManagerPromise = promise;
+			},
+		});
 	};
 
 	const reloadAccountManagerFromDisk = async (
 		authFallback?: OAuthAuthDetails,
-	): Promise<AccountManager> => {
-		accountReloadInFlight = reloadAccountManagerFromDiskState({
-			currentReloadInFlight: accountReloadInFlight,
-			loadFromDisk: (fallback) => AccountManager.loadFromDisk(fallback),
+	): Promise<AccountManager> =>
+		reloadAccountManagerFromDiskEntry<AccountManager>({
 			authFallback,
+			currentReloadInFlight: accountReloadInFlight,
+			reloadAccountManagerFromDiskState,
+			loadFromDisk: (fallback) => AccountManager.loadFromDisk(fallback),
 			onLoaded: (reloaded) => {
 				cachedAccountManager = reloaded;
 				accountManagerPromise = Promise.resolve(reloaded);
@@ -543,9 +554,10 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 			onSettled: () => {
 				accountReloadInFlight = null;
 			},
+			setReloadInFlight: (promise) => {
+				accountReloadInFlight = promise;
+			},
 		});
-		return accountReloadInFlight;
-	};
 
 	const applyAccountStorageScope = (
 		pluginConfig: ReturnType<typeof loadPluginConfig>,
