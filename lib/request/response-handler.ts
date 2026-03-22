@@ -430,10 +430,10 @@ function maybeCaptureResponseEvent(
 
 	if (isRecord(data.response)) {
 		state.finalResponse = { ...data.response };
-		notifyResponseId(state, onResponseId, data.response);
 	}
 
 	if (data.type === "response.done" || data.type === "response.completed") {
+		notifyResponseId(state, onResponseId, data.response);
 		return;
 	}
 

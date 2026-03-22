@@ -134,7 +134,7 @@ data: {"type":"response.completed","response":{"id":"resp_456","output":"done"}}
 			};
 
 			expect(body.reasoning_summary_text).toBe('Canonical summary');
-			expect(body.output?.[0]?.summary?.[0]?.text).toBe('Draft summary');
+			expect(body.output?.[1]?.summary?.[0]?.text).toBe('Draft summary');
 		});
 
 		it('preserves richer terminal output when semantic items arrive with empty content arrays', async () => {
