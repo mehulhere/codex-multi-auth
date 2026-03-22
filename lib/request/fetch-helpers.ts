@@ -9,7 +9,11 @@ import { queuedRefresh } from "../refresh-queue.js";
 import { logRequest, logError, logWarn } from "../logger.js";
 import { getCodexInstructions, getModelFamily } from "../prompts/codex.js";
 import { transformRequestBody, normalizeModel } from "./request-transformer.js";
-import { convertSseToJson, ensureContentType } from "./response-handler.js";
+import {
+	attachResponseIdCapture,
+	convertSseToJson,
+	ensureContentType,
+} from "./response-handler.js";
 import type { UserConfig, RequestBody } from "../types.js";
 import { registerCleanup } from "../shutdown.js";
 import { CodexAuthError } from "../errors.js";
@@ -841,7 +845,10 @@ export async function handleErrorResponse(
 export async function handleSuccessResponse(
     response: Response,
     isStreaming: boolean,
-    options?: { streamStallTimeoutMs?: number },
+    options?: {
+		onResponseId?: (responseId: string) => void;
+		streamStallTimeoutMs?: number;
+	},
 ): Promise<Response> {
     // Check for deprecation headers (RFC 8594)
     const deprecation = response.headers.get("Deprecation");
@@ -858,11 +865,7 @@ export async function handleSuccessResponse(
 	}
 
 	// For streaming requests (streamText), return stream as-is
-	return new Response(response.body, {
-		status: response.status,
-		statusText: response.statusText,
-		headers: responseHeaders,
-	});
+	return attachResponseIdCapture(response, responseHeaders, options?.onResponseId);
 }
 
 async function safeReadBody(response: Response): Promise<string> {

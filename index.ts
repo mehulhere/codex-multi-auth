@@ -65,6 +65,7 @@ import {
 	getLiveAccountSync,
 	getLiveAccountSyncDebounceMs,
 	getLiveAccountSyncPollMs,
+	getResponseContinuation,
 	getSessionAffinity,
 	getSessionAffinityTtlMs,
 	getSessionAffinityMaxEntries,
@@ -1336,7 +1337,27 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 								const originalBody = await parseRequestBodyFromInit(baseInit?.body);
 								const isStreaming = originalBody.stream === true;
 								const parsedBody =
-									Object.keys(originalBody).length > 0 ? originalBody : undefined;
+									Object.keys(originalBody).length > 0 ? { ...originalBody } : undefined;
+								const requestPromptCacheKey =
+									typeof parsedBody?.prompt_cache_key === "string"
+										? parsedBody.prompt_cache_key.trim()
+										: "";
+								const requestThreadId =
+									(process.env.CODEX_THREAD_ID ?? requestPromptCacheKey ?? "")
+										.toString()
+										.trim() || undefined;
+								const continuationSessionKey = requestThreadId ?? requestPromptCacheKey ?? null;
+								const shouldUseResponseContinuation =
+									Boolean(parsedBody) &&
+									getResponseContinuation(pluginConfig) &&
+									!parsedBody?.previous_response_id;
+								if (shouldUseResponseContinuation) {
+									const lastResponseId =
+										sessionAffinityStore?.getLastResponseId(continuationSessionKey);
+									if (lastResponseId && parsedBody) {
+										parsedBody.previous_response_id = lastResponseId;
+									}
+								}
 
 								const transformation = await transformRequestForCodex(
 									baseInit,
@@ -2447,7 +2468,15 @@ accountAttemptLoop: while (attempted.size < Math.max(1, accountCount)) {
 								},
 							);
 						}
+						let capturedResponseId: string | null = null;
 						const successResponse = await handleSuccessResponse(responseForSuccess, isStreaming, {
+							onResponseId: (responseId) => {
+								capturedResponseId = responseId;
+								sessionAffinityStore?.rememberLastResponseId(
+									sessionAffinityKey,
+									responseId,
+								);
+							},
 							streamStallTimeoutMs,
 						});
 
@@ -2516,6 +2545,12 @@ accountAttemptLoop: while (attempted.size < Math.max(1, accountCount)) {
 							sessionAffinityKey,
 							successAccountForResponse.index,
 						);
+						if (capturedResponseId) {
+							sessionAffinityStore?.rememberLastResponseId(
+								sessionAffinityKey,
+								capturedResponseId,
+							);
+						}
 					runtimeMetrics.successfulRequests++;
 					runtimeMetrics.lastError = null;
 					if (lastCodexCliActiveSyncIndex !== successAccountForResponse.index) {

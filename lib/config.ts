@@ -148,6 +148,7 @@ export const DEFAULT_PLUGIN_CONFIG: PluginConfig = {
 	sessionAffinity: true,
 	sessionAffinityTtlMs: 20 * 60_000,
 	sessionAffinityMaxEntries: 512,
+	responseContinuation: false,
 	proactiveRefreshGuardian: true,
 	proactiveRefreshIntervalMs: 60_000,
 	proactiveRefreshBufferMs: 5 * 60_000,
@@ -914,6 +915,24 @@ export function getSessionAffinityMaxEntries(pluginConfig: PluginConfig): number
 		pluginConfig.sessionAffinityMaxEntries,
 		512,
 		{ min: 8 },
+	);
+}
+
+/**
+ * Controls whether the plugin should automatically continue Responses API turns
+ * with the last known `previous_response_id` for the active session key.
+ *
+ * Reads the `responseContinuation` value from `pluginConfig` and allows an
+ * environment override via `CODEX_AUTH_RESPONSE_CONTINUATION`.
+ *
+ * @param pluginConfig - The plugin configuration to consult for the setting
+ * @returns `true` if automatic response continuation is enabled, `false` otherwise
+ */
+export function getResponseContinuation(pluginConfig: PluginConfig): boolean {
+	return resolveBooleanSetting(
+		"CODEX_AUTH_RESPONSE_CONTINUATION",
+		pluginConfig.responseContinuation,
+		false,
 	);
 }
 

@@ -10,6 +10,7 @@ export interface SessionAffinityOptions {
 interface SessionAffinityEntry {
 	accountIndex: number;
 	expiresAt: number;
+	lastResponseId?: string;
 	updatedAt: number;
 }
 
@@ -65,6 +66,8 @@ export class SessionAffinityStore {
 		if (!key) return;
 		if (!Number.isFinite(accountIndex) || accountIndex < 0) return;
 
+		const existingEntry = this.entries.get(key);
+
 		if (this.entries.size >= this.maxEntries && !this.entries.has(key)) {
 			const oldest = this.findOldestKey();
 			if (oldest) this.entries.delete(oldest);
@@ -73,6 +76,47 @@ export class SessionAffinityStore {
 		this.entries.set(key, {
 			accountIndex,
 			expiresAt: now + this.ttlMs,
+			lastResponseId: existingEntry?.lastResponseId,
+			updatedAt: now,
+		});
+	}
+
+	getLastResponseId(sessionKey: string | null | undefined, now = Date.now()): string | null {
+		const key = normalizeSessionKey(sessionKey);
+		if (!key) return null;
+
+		const entry = this.entries.get(key);
+		if (!entry) return null;
+		if (entry.expiresAt <= now) {
+			this.entries.delete(key);
+			return null;
+		}
+
+		const lastResponseId =
+			typeof entry.lastResponseId === "string" ? entry.lastResponseId.trim() : "";
+		return lastResponseId || null;
+	}
+
+	rememberLastResponseId(
+		sessionKey: string | null | undefined,
+		responseId: string | null | undefined,
+		now = Date.now(),
+	): void {
+		const key = normalizeSessionKey(sessionKey);
+		const normalizedResponseId = typeof responseId === "string" ? responseId.trim() : "";
+		if (!key || !normalizedResponseId) return;
+
+		const entry = this.entries.get(key);
+		if (!entry) return;
+		if (entry.expiresAt <= now) {
+			this.entries.delete(key);
+			return;
+		}
+
+		this.entries.set(key, {
+			...entry,
+			expiresAt: now + this.ttlMs,
+			lastResponseId: normalizedResponseId,
 			updatedAt: now,
 		});
 	}

@@ -32,6 +32,28 @@ export interface ReasoningConfig {
 	summary: "auto" | "concise" | "detailed";
 }
 
+export type TextFormatConfig =
+	| {
+			type: "text";
+			[key: string]: unknown;
+	  }
+	| {
+			type: "json_object";
+			[key: string]: unknown;
+	  }
+	| {
+			type: "json_schema";
+			name?: string;
+			description?: string;
+			schema?: Record<string, unknown>;
+			strict?: boolean;
+			[key: string]: unknown;
+	  }
+	| {
+			type: string;
+			[key: string]: unknown;
+	  };
+
 export interface OAuthServerInfo {
 	port: number;
 	ready: boolean;
@@ -99,6 +121,7 @@ export interface RequestBody {
 	reasoning?: Partial<ReasoningConfig>;
 	text?: {
 		verbosity?: "low" | "medium" | "high";
+		format?: TextFormatConfig;
 	};
 	include?: string[];
 	providerOptions?: {
@@ -107,6 +130,10 @@ export interface RequestBody {
 	};
 	/** Stable key to enable prompt-token caching on Codex backend */
 	prompt_cache_key?: string;
+	/** Retention mode for server-side prompt cache entries */
+	prompt_cache_retention?: string;
+	/** Resume a prior Responses API turn without resending the full transcript */
+	previous_response_id?: string;
 	max_output_tokens?: number;
 	max_completion_tokens?: number;
 	[key: string]: unknown;

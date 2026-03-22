@@ -96,9 +96,10 @@ vi.mock("../lib/config.js", () => ({
 	getLiveAccountSync: vi.fn(() => false),
 	getLiveAccountSyncDebounceMs: () => 250,
 	getLiveAccountSyncPollMs: () => 2000,
-	getSessionAffinity: () => false,
-	getSessionAffinityTtlMs: () => 1_200_000,
-	getSessionAffinityMaxEntries: () => 512,
+	getSessionAffinity: vi.fn(() => false),
+	getSessionAffinityTtlMs: vi.fn(() => 1_200_000),
+	getSessionAffinityMaxEntries: vi.fn(() => 512),
+	getResponseContinuation: vi.fn(() => false),
 	getProactiveRefreshGuardian: () => false,
 	getProactiveRefreshIntervalMs: () => 60000,
 	getProactiveRefreshBufferMs: () => 300000,
@@ -1313,6 +1314,121 @@ describe("OpenAIOAuthPlugin fetch handler", () => {
 
 		expect(response.status).toBe(200);
 		expect(syncCodexCliSelectionMock).toHaveBeenCalledWith(0);
+	});
+
+	it("injects stored previous_response_id on follow-up requests when continuation is enabled", async () => {
+		const { AccountManager } = await import("../lib/accounts.js");
+		const configModule = await import("../lib/config.js");
+		const fetchHelpers = await import("../lib/request/fetch-helpers.js");
+
+		vi.spyOn(AccountManager, "loadFromDisk").mockResolvedValueOnce(
+			buildRoutingManager([
+				{
+					index: 0,
+					accountId: "acc-1",
+					email: "user@example.com",
+					refreshToken: "refresh-1",
+				},
+			]) as never,
+		);
+		vi.mocked(configModule.getSessionAffinity).mockReturnValue(true);
+		vi.mocked(configModule.getResponseContinuation).mockReturnValue(true);
+		vi.mocked(fetchHelpers.transformRequestForCodex).mockImplementation(
+			async (init, _url, _userConfig, _codexMode, body) => ({
+				updatedInit: {
+					...(init as RequestInit),
+					body: JSON.stringify(body ?? {}),
+				},
+				body: (body ?? { model: "gpt-5.4" }) as { model: string },
+			}),
+		);
+		vi.mocked(fetchHelpers.handleSuccessResponse)
+			.mockImplementationOnce(async (response, _isStreaming, options) => {
+				options?.onResponseId?.("resp_prev_123");
+				return response;
+			})
+			.mockImplementationOnce(async (response) => response);
+
+		globalThis.fetch = vi
+			.fn()
+			.mockResolvedValue(new Response(JSON.stringify({ content: "ok" }), { status: 200 }));
+
+		const { sdk } = await setupPlugin();
+		await sdk.fetch!("https://api.openai.com/v1/chat", {
+			method: "POST",
+			body: JSON.stringify({ model: "gpt-5.4", prompt_cache_key: "ses_contract" }),
+		});
+		await sdk.fetch!("https://api.openai.com/v1/chat", {
+			method: "POST",
+			body: JSON.stringify({ model: "gpt-5.4", prompt_cache_key: "ses_contract" }),
+		});
+
+		const firstBody = vi.mocked(fetchHelpers.transformRequestForCodex).mock.calls[0]?.[4] as
+			| { previous_response_id?: string }
+			| undefined;
+		const secondBody = vi.mocked(fetchHelpers.transformRequestForCodex).mock.calls[1]?.[4] as
+			| { previous_response_id?: string }
+			| undefined;
+
+		expect(firstBody?.previous_response_id).toBeUndefined();
+		expect(secondBody?.previous_response_id).toBe("resp_prev_123");
+	});
+
+	it("preserves explicit previous_response_id over stored continuation state", async () => {
+		const { AccountManager } = await import("../lib/accounts.js");
+		const configModule = await import("../lib/config.js");
+		const fetchHelpers = await import("../lib/request/fetch-helpers.js");
+
+		vi.spyOn(AccountManager, "loadFromDisk").mockResolvedValueOnce(
+			buildRoutingManager([
+				{
+					index: 0,
+					accountId: "acc-1",
+					email: "user@example.com",
+					refreshToken: "refresh-1",
+				},
+			]) as never,
+		);
+		vi.mocked(configModule.getSessionAffinity).mockReturnValue(true);
+		vi.mocked(configModule.getResponseContinuation).mockReturnValue(true);
+		vi.mocked(fetchHelpers.transformRequestForCodex).mockImplementation(
+			async (init, _url, _userConfig, _codexMode, body) => ({
+				updatedInit: {
+					...(init as RequestInit),
+					body: JSON.stringify(body ?? {}),
+				},
+				body: (body ?? { model: "gpt-5.4" }) as { model: string },
+			}),
+		);
+		vi.mocked(fetchHelpers.handleSuccessResponse)
+			.mockImplementationOnce(async (response, _isStreaming, options) => {
+				options?.onResponseId?.("resp_prev_123");
+				return response;
+			})
+			.mockImplementationOnce(async (response) => response);
+
+		globalThis.fetch = vi
+			.fn()
+			.mockResolvedValue(new Response(JSON.stringify({ content: "ok" }), { status: 200 }));
+
+		const { sdk } = await setupPlugin();
+		await sdk.fetch!("https://api.openai.com/v1/chat", {
+			method: "POST",
+			body: JSON.stringify({ model: "gpt-5.4", prompt_cache_key: "ses_contract" }),
+		});
+		await sdk.fetch!("https://api.openai.com/v1/chat", {
+			method: "POST",
+			body: JSON.stringify({
+				model: "gpt-5.4",
+				prompt_cache_key: "ses_contract",
+				previous_response_id: "resp_explicit_456",
+			}),
+		});
+
+		const secondBody = vi.mocked(fetchHelpers.transformRequestForCodex).mock.calls[1]?.[4] as
+			| { previous_response_id?: string }
+			| undefined;
+		expect(secondBody?.previous_response_id).toBe("resp_explicit_456");
 	});
 
 	it("uses the refreshed token email when checking entitlement blocks", async () => {
