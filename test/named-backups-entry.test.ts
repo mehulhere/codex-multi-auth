@@ -36,4 +36,25 @@ describe("named backups entry", () => {
 			},
 		]);
 	});
+
+	it("passes through windows-style storage paths unchanged", async () => {
+		const windowsStoragePath = "C:\\Users\\dev\\.codex\\accounts.json";
+		const collectNamedBackups = vi.fn(async () => []);
+		const loadAccountsFromPath = vi.fn(async () => ({
+			normalized: { accounts: [] },
+		}));
+		const logDebug = vi.fn();
+
+		await getNamedBackupsEntry({
+			getStoragePath: () => windowsStoragePath,
+			collectNamedBackups,
+			loadAccountsFromPath,
+			logDebug,
+		});
+
+		expect(collectNamedBackups).toHaveBeenCalledWith(windowsStoragePath, {
+			loadAccountsFromPath,
+			logDebug,
+		});
+	});
 });
