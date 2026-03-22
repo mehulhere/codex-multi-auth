@@ -1,4 +1,5 @@
 import type { OAuthAuthDetails } from "../types.js";
+import { ensureRuntimeRefreshGuardian } from "./refresh-guardian.js";
 
 type LiveAccountSyncLike = {
 	stop: () => void;
@@ -81,6 +82,8 @@ export function ensureRefreshGuardianState<
 	bufferMs: number;
 	currentGuardian: TGuardian | null;
 	currentConfigKey: string | null;
+	currentCleanupRegistered?: boolean;
+	getCurrentGuardian?: () => TGuardian | null;
 	createGuardian: (options: {
 		intervalMs: number;
 		bufferMs: number;
@@ -89,38 +92,31 @@ export function ensureRefreshGuardianState<
 }): {
 	refreshGuardian: TGuardian | null;
 	refreshGuardianConfigKey: string | null;
+	refreshGuardianCleanupRegistered: boolean;
 } {
-	let refreshGuardian = params.currentGuardian;
-	let refreshGuardianConfigKey = params.currentConfigKey;
-
-	if (!params.enabled) {
-		if (refreshGuardian) {
-			refreshGuardian.stop();
-			refreshGuardian = null;
-			refreshGuardianConfigKey = null;
-		}
-		return { refreshGuardian, refreshGuardianConfigKey };
-	}
-
-	const configKey = `${params.intervalMs}:${params.bufferMs}`;
-	if (refreshGuardian && refreshGuardianConfigKey === configKey) {
-		return { refreshGuardian, refreshGuardianConfigKey };
-	}
-
-	if (refreshGuardian) {
-		refreshGuardian.stop();
-	}
-	refreshGuardian = params.createGuardian({
-		intervalMs: params.intervalMs,
-		bufferMs: params.bufferMs,
-	});
-	refreshGuardianConfigKey = configKey;
-	refreshGuardian.start();
-	params.registerCleanup(() => {
-		refreshGuardian?.stop();
+	const ensured = ensureRuntimeRefreshGuardian({
+		pluginConfig: {
+			enabled: params.enabled,
+			intervalMs: params.intervalMs,
+			bufferMs: params.bufferMs,
+		},
+		getProactiveRefreshGuardian: (config) => config.enabled,
+		currentGuardian: params.currentGuardian,
+		currentConfigKey: params.currentConfigKey,
+		currentCleanupRegistered: params.currentCleanupRegistered ?? false,
+		getCurrentGuardian:
+			params.getCurrentGuardian ?? (() => params.currentGuardian),
+		getProactiveRefreshIntervalMs: (config) => config.intervalMs,
+		getProactiveRefreshBufferMs: (config) => config.bufferMs,
+		createGuardian: params.createGuardian,
+		registerCleanup: params.registerCleanup,
 	});
 
-	return { refreshGuardian, refreshGuardianConfigKey };
+	return {
+		refreshGuardian: ensured.guardian,
+		refreshGuardianConfigKey: ensured.configKey,
+		refreshGuardianCleanupRegistered: ensured.cleanupRegistered,
+	};
 }
 
 export function ensureSessionAffinityState<

@@ -289,6 +289,7 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 	let liveAccountSyncPath: string | null = null;
 	let refreshGuardian: RefreshGuardian | null = null;
 	let refreshGuardianConfigKey: string | null = null;
+	let refreshGuardianCleanupRegistered = false;
 	let sessionAffinityStore: SessionAffinityStore | null =
 		new SessionAffinityStore();
 	let sessionAffinityConfigKey: string | null = null;
@@ -570,6 +571,8 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 			bufferMs: getProactiveRefreshBufferMs(pluginConfig),
 			currentGuardian: refreshGuardian,
 			currentConfigKey: refreshGuardianConfigKey,
+			currentCleanupRegistered: refreshGuardianCleanupRegistered,
+			getCurrentGuardian: () => refreshGuardian,
 			createGuardian: ({ intervalMs, bufferMs }) =>
 				new RefreshGuardian(() => cachedAccountManager, {
 					intervalMs,
@@ -579,6 +582,8 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 		});
 		refreshGuardian = next.refreshGuardian;
 		refreshGuardianConfigKey = next.refreshGuardianConfigKey;
+		refreshGuardianCleanupRegistered =
+			next.refreshGuardianCleanupRegistered;
 	};
 
 	const ensureSessionAffinity = (
