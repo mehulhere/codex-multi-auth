@@ -1,8 +1,30 @@
+import {
+	exchangeAuthorizationCode,
+	parseAuthorizationInput,
+	REDIRECT_URI,
+} from "../auth/auth.js";
+import {
+	getAccountIdCandidates,
+	selectBestAccountCandidate,
+} from "../auth/token-utils.js";
 import type { TokenResult } from "../types.js";
+import {
+	resolveAccountSelection,
+	type TokenSuccessWithAccount,
+} from "./account-selection.js";
 
 type TokenSuccess = Extract<TokenResult, { type: "success" }>;
+type RuntimeResolvedToken = TokenSuccessWithAccount<TokenSuccess>;
 
-export function buildManualOAuthFlow<TResolved extends TokenSuccess>(params: {
+type ManualOAuthFlow<TResolved extends TokenSuccess> = {
+	url: string;
+	method: "code";
+	instructions: string;
+	validate: (input: string) => string | undefined;
+	callback: (input: string) => Promise<TokenResult | TResolved>;
+};
+
+type ManualOAuthFlowParams<TResolved extends TokenSuccess> = {
 	pkce: { verifier: string };
 	url: string;
 	expectedState: string;
@@ -19,13 +41,17 @@ export function buildManualOAuthFlow<TResolved extends TokenSuccess>(params: {
 	resolveTokenSuccess: (tokens: TokenSuccess) => TResolved;
 	onSuccess?: (tokens: TResolved) => Promise<void>;
 	instructions: string;
-}): {
-	url: string;
-	method: "code";
+};
+
+type RuntimeManualOAuthFlowDeps = {
 	instructions: string;
-	validate: (input: string) => string | undefined;
-	callback: (input: string) => Promise<TokenResult | TResolved>;
-} {
+	logInfo: (message: string) => void;
+	onSuccess?: (tokens: RuntimeResolvedToken) => Promise<void>;
+};
+
+function buildManualOAuthFlowFromParams<TResolved extends TokenSuccess>(
+	params: ManualOAuthFlowParams<TResolved>,
+): ManualOAuthFlow<TResolved> {
 	return {
 		url: params.url,
 		method: "code",
@@ -43,7 +69,7 @@ export function buildManualOAuthFlow<TResolved extends TokenSuccess>(params: {
 			}
 			return undefined;
 		},
-		callback: async (input: string) => {
+		callback: async (input: string): Promise<TokenResult | TResolved> => {
 			const parsed = params.parseAuthorizationInput(input);
 			if (!parsed.code || !parsed.state) {
 				return {
@@ -74,4 +100,46 @@ export function buildManualOAuthFlow<TResolved extends TokenSuccess>(params: {
 			return tokens?.type === "failed" ? tokens : { type: "failed" as const };
 		},
 	};
+}
+
+export function buildManualOAuthFlow<TResolved extends TokenSuccess>(
+	params: ManualOAuthFlowParams<TResolved>,
+): ManualOAuthFlow<TResolved>;
+
+export function buildManualOAuthFlow(
+	pkce: { verifier: string },
+	url: string,
+	expectedState: string,
+	deps: RuntimeManualOAuthFlowDeps,
+): ManualOAuthFlow<RuntimeResolvedToken>;
+
+export function buildManualOAuthFlow<TResolved extends TokenSuccess>(
+	paramsOrPkce: ManualOAuthFlowParams<TResolved> | { verifier: string },
+	url?: string,
+	expectedState?: string,
+	deps?: RuntimeManualOAuthFlowDeps,
+): ManualOAuthFlow<TResolved | RuntimeResolvedToken> {
+	if (typeof url === "string" && typeof expectedState === "string" && deps) {
+		return buildManualOAuthFlowFromParams<RuntimeResolvedToken>({
+			pkce: paramsOrPkce as { verifier: string },
+			url,
+			expectedState,
+			redirectUri: REDIRECT_URI,
+			parseAuthorizationInput,
+			exchangeAuthorizationCode,
+			resolveTokenSuccess: (tokens) =>
+				resolveAccountSelection(tokens, {
+					envAccountId: process.env.CODEX_AUTH_ACCOUNT_ID,
+					logInfo: deps.logInfo,
+					getAccountIdCandidates,
+					selectBestAccountCandidate,
+				}),
+			onSuccess: deps.onSuccess,
+			instructions: deps.instructions,
+		});
+	}
+
+	return buildManualOAuthFlowFromParams(
+		paramsOrPkce as ManualOAuthFlowParams<TResolved>,
+	);
 }
