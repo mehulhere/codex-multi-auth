@@ -27,4 +27,17 @@ describe("showRuntimeToast", () => {
 		await expect(showRuntimeToast({ tui: { showToast } }, "Saved", "error")).resolves.toBeUndefined();
 		expect(showToast).toHaveBeenCalledTimes(1);
 	});
+
+	it("omits title and duration when they are not provided", async () => {
+		const showToast = vi.fn().mockResolvedValue(undefined);
+
+		await showRuntimeToast({ tui: { showToast } }, "hello");
+
+		expect(showToast).toHaveBeenCalledWith({
+			body: {
+				message: "hello",
+				variant: "success",
+			},
+		});
+	});
 });
