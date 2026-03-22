@@ -14,6 +14,12 @@ import { clearAccountStorageArtifacts } from "./storage/account-clear.js";
 import { cloneAccountStorageForPersistence } from "./storage/account-persistence.js";
 import { buildBackupMetadata } from "./storage/backup-metadata-builder.js";
 import {
+	type BackupMetadataSection,
+	type BackupSnapshotKind,
+	type BackupSnapshotMetadata,
+	buildMetadataSection,
+} from "./storage/backup-metadata.js";
+import {
 	ACCOUNTS_BACKUP_SUFFIX,
 	ACCOUNTS_WAL_SUFFIX,
 	getAccountsBackupPath,
@@ -35,7 +41,6 @@ import {
 	mergeImportedAccounts,
 	readImportFile,
 } from "./storage/import-export.js";
-import { buildMetadataSection } from "./storage/metadata-section.js";
 import { toStorageError } from "./storage/error-hints.js";
 export { StorageError } from "./errors.js";
 export { formatStorageErrorHint, toStorageError } from "./storage/error-hints.js";
@@ -128,39 +133,6 @@ type RestoreReason = "empty-storage" | "intentional-reset" | "missing-storage";
 type AccountStorageWithMetadata = AccountStorageV3 & {
 	restoreEligible?: boolean;
 	restoreReason?: RestoreReason;
-};
-
-type BackupSnapshotKind =
-	| "accounts-primary"
-	| "accounts-wal"
-	| "accounts-backup"
-	| "accounts-backup-history"
-	| "accounts-discovered-backup"
-	| "flagged-primary"
-	| "flagged-backup"
-	| "flagged-backup-history"
-	| "flagged-discovered-backup";
-
-type BackupSnapshotMetadata = {
-	kind: BackupSnapshotKind;
-	path: string;
-	index?: number;
-	exists: boolean;
-	valid: boolean;
-	bytes?: number;
-	mtimeMs?: number;
-	version?: number;
-	accountCount?: number;
-	flaggedCount?: number;
-	schemaErrors?: string[];
-};
-
-type BackupMetadataSection = {
-	storagePath: string;
-	latestValidPath?: string;
-	snapshotCount: number;
-	validSnapshotCount: number;
-	snapshots: BackupSnapshotMetadata[];
 };
 
 export type BackupMetadata = {
