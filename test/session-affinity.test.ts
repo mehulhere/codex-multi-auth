@@ -133,4 +133,14 @@ describe("SessionAffinityStore", () => {
 		expect(store.getLastResponseId("session-a", 2_500)).toBeNull();
 		expect(store.size()).toBe(0);
 	});
+
+	it("preserves response id when account index is updated via remember()", () => {
+		const store = new SessionAffinityStore({ ttlMs: 10_000, maxEntries: 4 });
+		store.remember("session-a", 1, 1_000);
+		store.rememberLastResponseId("session-a", "resp_123", 2_000);
+		store.remember("session-a", 2, 3_000);
+
+		expect(store.getLastResponseId("session-a", 3_500)).toBe("resp_123");
+		expect(store.getPreferredAccountIndex("session-a", 3_500)).toBe(2);
+	});
 });

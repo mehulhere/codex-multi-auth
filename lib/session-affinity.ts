@@ -68,12 +68,7 @@ export class SessionAffinityStore {
 
 		const existingEntry = this.entries.get(key);
 
-		if (this.entries.size >= this.maxEntries && !this.entries.has(key)) {
-			const oldest = this.findOldestKey();
-			if (oldest) this.entries.delete(oldest);
-		}
-
-		this.entries.set(key, {
+		this.setEntry(key, {
 			accountIndex,
 			expiresAt: now + this.ttlMs,
 			lastResponseId: existingEntry?.lastResponseId,
@@ -113,8 +108,32 @@ export class SessionAffinityStore {
 			return;
 		}
 
-		this.entries.set(key, {
+		this.setEntry(key, {
 			...entry,
+			expiresAt: now + this.ttlMs,
+			lastResponseId: normalizedResponseId,
+			updatedAt: now,
+		});
+	}
+
+	rememberWithResponseId(
+		sessionKey: string | null | undefined,
+		accountIndex: number,
+		responseId: string | null | undefined,
+		now = Date.now(),
+	): void {
+		const key = normalizeSessionKey(sessionKey);
+		const normalizedResponseId = typeof responseId === "string" ? responseId.trim() : "";
+		if (!key || !normalizedResponseId) return;
+		if (!Number.isFinite(accountIndex) || accountIndex < 0) return;
+
+		const entry = this.entries.get(key);
+		if (entry?.expiresAt !== undefined && entry.expiresAt <= now) {
+			this.entries.delete(key);
+		}
+
+		this.setEntry(key, {
+			accountIndex,
 			expiresAt: now + this.ttlMs,
 			lastResponseId: normalizedResponseId,
 			updatedAt: now,
@@ -170,6 +189,15 @@ export class SessionAffinityStore {
 
 	size(): number {
 		return this.entries.size;
+	}
+
+	private setEntry(key: string, entry: SessionAffinityEntry): void {
+		if (this.entries.size >= this.maxEntries && !this.entries.has(key)) {
+			const oldest = this.findOldestKey();
+			if (oldest) this.entries.delete(oldest);
+		}
+
+		this.entries.set(key, entry);
 	}
 
 	private findOldestKey(): string | null {

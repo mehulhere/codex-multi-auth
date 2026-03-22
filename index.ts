@@ -978,7 +978,10 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 		const ensureSessionAffinity = (
 			pluginConfig: ReturnType<typeof loadPluginConfig>,
 		): void => {
-			if (!getSessionAffinity(pluginConfig)) {
+			if (
+				!getSessionAffinity(pluginConfig) &&
+				!getResponseContinuation(pluginConfig)
+			) {
 				sessionAffinityStore = null;
 				sessionAffinityConfigKey = null;
 				return;
@@ -1338,27 +1341,6 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 								const isStreaming = originalBody.stream === true;
 								const parsedBody =
 									Object.keys(originalBody).length > 0 ? { ...originalBody } : undefined;
-								const requestPromptCacheKey =
-									typeof parsedBody?.prompt_cache_key === "string"
-										? parsedBody.prompt_cache_key.trim()
-										: "";
-								const requestThreadId =
-									(process.env.CODEX_THREAD_ID ?? requestPromptCacheKey ?? "")
-										.toString()
-										.trim() || undefined;
-								const continuationSessionKey = requestThreadId ?? requestPromptCacheKey ?? null;
-								const shouldUseResponseContinuation =
-									Boolean(parsedBody) &&
-									getResponseContinuation(pluginConfig) &&
-									!parsedBody?.previous_response_id;
-								if (shouldUseResponseContinuation) {
-									const lastResponseId =
-										sessionAffinityStore?.getLastResponseId(continuationSessionKey);
-									if (lastResponseId && parsedBody) {
-										parsedBody.previous_response_id = lastResponseId;
-									}
-								}
-
 								const transformation = await transformRequestForCodex(
 									baseInit,
 									url,
@@ -1377,6 +1359,8 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 										let model = transformedBody?.model;
 										let modelFamily = model ? getModelFamily(model) : "gpt-5.1";
 										let quotaKey = model ? `${modelFamily}:${model}` : modelFamily;
+										const responseContinuationEnabled =
+											getResponseContinuation(pluginConfig);
 						const threadIdCandidate =
 							(process.env.CODEX_THREAD_ID ?? promptCacheKey ?? "")
 								.toString()
@@ -1384,6 +1368,24 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 						const sessionAffinityKey = threadIdCandidate ?? promptCacheKey ?? null;
 						const effectivePromptCacheKey =
 							(sessionAffinityKey ?? promptCacheKey ?? "").toString().trim() || undefined;
+						const shouldUseResponseContinuation =
+							Boolean(transformedBody) &&
+							responseContinuationEnabled &&
+							!transformedBody?.previous_response_id;
+						if (shouldUseResponseContinuation && transformedBody) {
+							const lastResponseId =
+								sessionAffinityStore?.getLastResponseId(sessionAffinityKey);
+							if (lastResponseId) {
+								transformedBody = {
+									...transformedBody,
+									previous_response_id: lastResponseId,
+								};
+								requestInit = {
+									...requestInit,
+									body: JSON.stringify(transformedBody),
+								};
+							}
+						}
 						const preferredSessionAccountIndex = sessionAffinityStore?.getPreferredAccountIndex(
 							sessionAffinityKey,
 						);
@@ -2418,7 +2420,10 @@ accountAttemptLoop: while (attempted.size < Math.max(1, accountCount)) {
 											successAccountForResponse = fallbackAccount;
 											successEntitlementAccountKey = fallbackEntitlementAccountKey;
 											runtimeMetrics.streamFailoverRecoveries += 1;
-											if (fallbackAccount.index !== account.index) {
+											if (
+												fallbackAccount.index !== account.index &&
+												!responseContinuationEnabled
+											) {
 												runtimeMetrics.streamFailoverCrossAccountRecoveries += 1;
 												runtimeMetrics.accountRotations += 1;
 												sessionAffinityStore?.remember(
@@ -2468,14 +2473,16 @@ accountAttemptLoop: while (attempted.size < Math.max(1, accountCount)) {
 								},
 							);
 						}
-						let capturedResponseId: string | null = null;
+						let storedResponseIdForSuccess = false;
 						const successResponse = await handleSuccessResponse(responseForSuccess, isStreaming, {
 							onResponseId: (responseId) => {
-								capturedResponseId = responseId;
-								sessionAffinityStore?.rememberLastResponseId(
+								if (!responseContinuationEnabled) return;
+								sessionAffinityStore?.rememberWithResponseId(
 									sessionAffinityKey,
+									successAccountForResponse.index,
 									responseId,
 								);
+								storedResponseIdForSuccess = true;
 							},
 							streamStallTimeoutMs,
 						});
@@ -2541,14 +2548,13 @@ accountAttemptLoop: while (attempted.size < Math.max(1, accountCount)) {
 							capabilityModelKey,
 						);
 						entitlementCache.clear(successAccountKey, capabilityModelKey);
-						sessionAffinityStore?.remember(
-							sessionAffinityKey,
-							successAccountForResponse.index,
-						);
-						if (capturedResponseId) {
-							sessionAffinityStore?.rememberLastResponseId(
+						if (
+							!responseContinuationEnabled ||
+							(!isStreaming && !storedResponseIdForSuccess)
+						) {
+							sessionAffinityStore?.remember(
 								sessionAffinityKey,
-								capturedResponseId,
+								successAccountForResponse.index,
 							);
 						}
 					runtimeMetrics.successfulRequests++;
