@@ -163,39 +163,49 @@ export async function runDoctorCommand(
 	if (existsSync(codexAuthPath)) {
 		try {
 			const raw = await fs.readFile(codexAuthPath, "utf-8");
-			const parsed = JSON.parse(raw) as Record<string, unknown>;
-			const tokens =
-				parsed.tokens && typeof parsed.tokens === "object"
-					? (parsed.tokens as Record<string, unknown>)
-					: null;
-			const accessToken =
-				tokens && typeof tokens.access_token === "string"
-					? tokens.access_token
-					: undefined;
-			const idToken =
-				tokens && typeof tokens.id_token === "string"
-					? tokens.id_token
-					: undefined;
-			const accountIdFromFile =
-				tokens && typeof tokens.account_id === "string"
-					? tokens.account_id
-					: undefined;
-			const emailFromFile =
-				typeof parsed.email === "string" ? parsed.email : undefined;
-			codexAuthEmail = deps.sanitizeEmail(
-				emailFromFile ?? deps.extractAccountEmail(accessToken, idToken),
-			);
-			codexAuthAccountId =
-				accountIdFromFile ?? deps.extractAccountId(accessToken);
-			addCheck({
-				key: "codex-auth-readable",
-				severity: "ok",
-				message: "Codex auth file is readable",
-				details:
-					codexAuthEmail || codexAuthAccountId
-						? `email=${codexAuthEmail ?? "unknown"}, accountId=${codexAuthAccountId ?? "unknown"}`
-						: undefined,
-			});
+			const parsedUnknown = JSON.parse(raw) as unknown;
+			if (!parsedUnknown || typeof parsedUnknown !== "object") {
+				addCheck({
+					key: "codex-auth-readable",
+					severity: "error",
+					message: "Codex auth file contains invalid JSON shape",
+					details: codexAuthPath,
+				});
+			} else {
+				const parsed = parsedUnknown as Record<string, unknown>;
+				const tokens =
+					parsed.tokens && typeof parsed.tokens === "object"
+						? (parsed.tokens as Record<string, unknown>)
+						: null;
+				const accessToken =
+					tokens && typeof tokens.access_token === "string"
+						? tokens.access_token
+						: undefined;
+				const idToken =
+					tokens && typeof tokens.id_token === "string"
+						? tokens.id_token
+						: undefined;
+				const accountIdFromFile =
+					tokens && typeof tokens.account_id === "string"
+						? tokens.account_id
+						: undefined;
+				const emailFromFile =
+					typeof parsed.email === "string" ? parsed.email : undefined;
+				codexAuthEmail = deps.sanitizeEmail(
+					emailFromFile ?? deps.extractAccountEmail(accessToken, idToken),
+				);
+				codexAuthAccountId =
+					accountIdFromFile ?? deps.extractAccountId(accessToken);
+				addCheck({
+					key: "codex-auth-readable",
+					severity: "ok",
+					message: "Codex auth file is readable",
+					details:
+						codexAuthEmail || codexAuthAccountId
+							? `email=${codexAuthEmail ?? "unknown"}, accountId=${codexAuthAccountId ?? "unknown"}`
+							: undefined,
+				});
+			}
 		} catch (error) {
 			addCheck({
 				key: "codex-auth-readable",
@@ -256,20 +266,12 @@ export async function runDoctorCommand(
 	const storage = await deps.loadAccounts();
 	let fixChanged = false;
 	let fixActions: DoctorFixAction[] = [];
+	let storageNeedsSave = false;
 	if (options.fix && storage && storage.accounts.length > 0) {
 		const fixed = deps.applyDoctorFixes(storage);
 		fixChanged = fixed.changed;
 		fixActions = fixed.actions;
-		if (fixChanged && !options.dryRun) await deps.saveAccounts(storage);
-		addCheck({
-			key: "auto-fix",
-			severity: fixChanged ? "warn" : "ok",
-			message: fixChanged
-				? options.dryRun
-					? `Prepared ${fixActions.length} fix(es) (dry-run)`
-					: `Applied ${fixActions.length} fix(es)`
-				: "No safe auto-fixes needed",
-		});
+		storageNeedsSave = fixed.changed;
 	}
 
 	if (!storage || storage.accounts.length === 0) {
@@ -414,7 +416,103 @@ export async function runDoctorCommand(
 						: "Manager active account and Codex active account are aligned",
 				details: `manager=${managerActiveEmail ?? managerActiveAccountId ?? "unknown"} | codex=${codexActiveEmail ?? codexActiveAccountId ?? "unknown"}`,
 			});
+
+			if (options.fix && activeAccount) {
+				let syncAccessToken = activeAccount.accessToken;
+				let syncRefreshToken = activeAccount.refreshToken;
+				let syncExpiresAt = activeAccount.expiresAt;
+				let syncIdToken: string | undefined;
+
+				if (!deps.hasUsableAccessToken(activeAccount, now)) {
+					if (options.dryRun) {
+						fixChanged = true;
+						fixActions.push({
+							key: "doctor-refresh",
+							message: `Prepared active-account token refresh for account ${activeIndex + 1} (dry-run)`,
+						});
+					} else {
+						const refreshResult = await deps.queuedRefresh(activeAccount.refreshToken);
+						if (refreshResult.type === "success") {
+							const refreshedEmail = deps.sanitizeEmail(
+								deps.extractAccountEmail(refreshResult.access, refreshResult.idToken),
+							);
+							const refreshedAccountId = deps.extractAccountId(refreshResult.access);
+							activeAccount.accessToken = refreshResult.access;
+							activeAccount.refreshToken = refreshResult.refresh;
+							activeAccount.expiresAt = refreshResult.expires;
+							if (refreshedEmail) activeAccount.email = refreshedEmail;
+							deps.applyTokenAccountIdentity(activeAccount, refreshedAccountId);
+							syncAccessToken = refreshResult.access;
+							syncRefreshToken = refreshResult.refresh;
+							syncExpiresAt = refreshResult.expires;
+							syncIdToken = refreshResult.idToken;
+							storageNeedsSave = true;
+							fixChanged = true;
+							fixActions.push({
+								key: "doctor-refresh",
+								message: `Refreshed active account tokens for account ${activeIndex + 1}`,
+							});
+						} else {
+							addCheck({
+								key: "doctor-refresh",
+								severity: "warn",
+								message: "Unable to refresh active account before Codex sync",
+								details: deps.normalizeFailureDetail(
+									refreshResult.message,
+									refreshResult.reason,
+								),
+							});
+						}
+					}
+				}
+
+				if (!options.dryRun) {
+					const synced = await deps.setCodexCliActiveSelection({
+						accountId: activeAccount.accountId,
+						email: activeAccount.email,
+						accessToken: syncAccessToken,
+						refreshToken: syncRefreshToken,
+						expiresAt: syncExpiresAt,
+						...(syncIdToken ? { idToken: syncIdToken } : {}),
+					});
+					if (synced) {
+						fixChanged = true;
+						fixActions.push({
+							key: "codex-active-sync",
+							message: "Synced manager active account into Codex auth state",
+						});
+					} else {
+						addCheck({
+							key: "codex-active-sync",
+							severity: "warn",
+							message: "Failed to sync manager active account into Codex auth state",
+						});
+					}
+				} else {
+					fixChanged = true;
+					fixActions.push({
+						key: "codex-active-sync",
+						message: "Prepared Codex active-account sync (dry-run)",
+					});
+				}
+			}
 		}
+	}
+
+	if (options.fix) {
+		addCheck({
+			key: "auto-fix",
+			severity: fixChanged ? "warn" : "ok",
+			message: fixChanged
+				? options.dryRun
+					? `Prepared ${fixActions.length} fix(es) (dry-run)`
+					: `Applied ${fixActions.length} fix(es)`
+				: "No safe auto-fixes needed",
+		});
+	}
+
+	if (storageNeedsSave && !options.dryRun && storage) {
+		await deps.saveAccounts(storage);
 	}
 
 	const summary = checks.reduce(
