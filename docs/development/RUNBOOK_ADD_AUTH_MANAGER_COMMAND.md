@@ -34,4 +34,5 @@ Add a command without breaking the existing CLI surface, help text, JSON mode, o
 - `npm run typecheck`
 - `npm run lint -- lib/codex-manager.ts test/codex-manager-cli.test.ts docs/reference/commands.md test/documentation.test.ts`
 - `npm run test -- test/codex-manager-cli.test.ts test/documentation.test.ts`
+- For auth flows, never paste raw tokens/session headers in PRs, issues, or logs; redact sensitive output.
 - Run the real command or `--help` path in Bash and inspect output
