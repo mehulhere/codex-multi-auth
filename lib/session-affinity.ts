@@ -92,7 +92,13 @@ export class SessionAffinityStore {
 		return lastResponseId || null;
 	}
 
-	rememberLastResponseId(
+	/**
+	 * Update the last response id for an existing live session.
+	 *
+	 * This method does not create a new affinity entry; callers that need to
+	 * upsert continuation state should use `rememberWithResponseId`.
+	 */
+	updateLastResponseId(
 		sessionKey: string | null | undefined,
 		responseId: string | null | undefined,
 		now = Date.now(),
