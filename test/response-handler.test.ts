@@ -173,6 +173,32 @@ data: {"type":"response.completed","response":{"id":"resp_456","output":"done"}}
 			expect(body.output_text).toBe('Thinking...Done.');
 		});
 
+		it('replaces phase text when output_text.done corrects earlier deltas', async () => {
+			const sseContent = [
+				'data: {"type":"response.created","response":{"id":"resp_phase_fix","object":"response"}}',
+				'data: {"type":"response.output_item.added","output_index":0,"item":{"id":"msg_fix","type":"message","role":"assistant","phase":"final_answer"}}',
+				'data: {"type":"response.output_text.delta","output_index":0,"content_index":0,"delta":"Hellp","phase":"final_answer"}',
+				'data: {"type":"response.output_text.done","output_index":0,"content_index":0,"text":"Hello","phase":"final_answer"}',
+				'data: {"type":"response.done","response":{"id":"resp_phase_fix","object":"response"}}',
+				'',
+			].join('\n');
+			const response = new Response(sseContent);
+			const headers = new Headers();
+
+			const result = await convertSseToJson(response, headers);
+			const body = await result.json() as {
+				output_text?: string;
+				final_answer_text?: string;
+				phase_text?: Record<string, string>;
+				output?: Array<{ content?: Array<{ text?: string }> }>;
+			};
+
+			expect(body.output?.[0]?.content?.[0]?.text).toBe('Hello');
+			expect(body.output_text).toBe('Hello');
+			expect(body.final_answer_text).toBe('Hello');
+			expect(body.phase_text).toEqual({ final_answer: 'Hello' });
+		});
+
 		it('should return original text if no final response found', async () => {
 			const sseContent = `data: {"type":"response.started"}
 data: {"type":"chunk","delta":"text"}
@@ -329,6 +355,7 @@ data: {"type":"response.done","response":{"id":"resp_789"}}
 			const text = await captured.text();
 
 			expect(text).toBe(sseContent);
+			expect(onResponseId).toHaveBeenCalledTimes(1);
 			expect(onResponseId).toHaveBeenCalledWith('resp_stream_123');
 			expect(captured.headers.get('content-type')).toBe('text/event-stream');
 		});

@@ -16,6 +16,7 @@ interface ParsedResponseState {
 	lastPhase: string | null;
 	outputItems: Map<number, MutableRecord>;
 	outputText: Map<string, string>;
+	phaseTextSegments: Map<string, string>;
 	phaseText: Map<string, string>;
 	reasoningSummaryText: Map<string, string>;
 	seenResponseIds: Set<string>;
@@ -27,6 +28,7 @@ function createParsedResponseState(): ParsedResponseState {
 		lastPhase: null,
 		outputItems: new Map<number, MutableRecord>(),
 		outputText: new Map<string, string>(),
+		phaseTextSegments: new Map<string, string>(),
 		phaseText: new Map<string, string>(),
 		reasoningSummaryText: new Map<string, string>(),
 		seenResponseIds: new Set<string>(),
@@ -70,6 +72,10 @@ function makeOutputTextKey(outputIndex: number | null, contentIndex: number | nu
 	return `${outputIndex}:${contentIndex}`;
 }
 
+function makePhaseTextSegmentKey(phase: string, outputTextKey: string): string {
+	return `${phase}\u0000${outputTextKey}`;
+}
+
 function makeSummaryKey(outputIndex: number | null, summaryIndex: number | null): string | null {
 	if (outputIndex === null || summaryIndex === null) return null;
 	return `${outputIndex}:${summaryIndex}`;
@@ -85,15 +91,58 @@ function getPartText(part: unknown): string | null {
 function capturePhase(
 	state: ParsedResponseState,
 	phase: unknown,
-	text: string | null = null,
+): void {
+	if (typeof phase !== "string" || phase.trim().length === 0) return;
+	state.lastPhase = phase.trim();
+}
+
+function syncPhaseText(state: ParsedResponseState, phase: string): void {
+	const prefix = `${phase}\u0000`;
+	const text = [...state.phaseTextSegments.entries()]
+		.filter(([key]) => key.startsWith(prefix))
+		.map(([, value]) => value)
+		.join("");
+	if (text.length === 0) {
+		state.phaseText.delete(phase);
+		return;
+	}
+	state.phaseText.set(phase, text);
+}
+
+function setPhaseTextSegment(
+	state: ParsedResponseState,
+	phase: unknown,
+	outputTextKey: string,
+	text: string | null,
 ): void {
 	if (typeof phase !== "string" || phase.trim().length === 0) return;
 	const normalizedPhase = phase.trim();
 	state.lastPhase = normalizedPhase;
-	if (text && text.length > 0) {
-		const existing = state.phaseText.get(normalizedPhase) ?? "";
-		state.phaseText.set(normalizedPhase, `${existing}${text}`);
+	const segmentKey = makePhaseTextSegmentKey(normalizedPhase, outputTextKey);
+	if (!text || text.length === 0) {
+		state.phaseTextSegments.delete(segmentKey);
+		syncPhaseText(state, normalizedPhase);
+		return;
 	}
+	state.phaseTextSegments.set(segmentKey, text);
+	syncPhaseText(state, normalizedPhase);
+}
+
+function appendPhaseTextSegment(
+	state: ParsedResponseState,
+	phase: unknown,
+	outputTextKey: string,
+	delta: string | null,
+): void {
+	if (!delta || delta.length === 0 || typeof phase !== "string" || phase.trim().length === 0) {
+		return;
+	}
+	const normalizedPhase = phase.trim();
+	state.lastPhase = normalizedPhase;
+	const segmentKey = makePhaseTextSegmentKey(normalizedPhase, outputTextKey);
+	const existing = state.phaseTextSegments.get(segmentKey) ?? "";
+	state.phaseTextSegments.set(segmentKey, `${existing}${delta}`);
+	syncPhaseText(state, normalizedPhase);
 }
 
 function upsertOutputItem(state: ParsedResponseState, outputIndex: number | null, item: unknown): void {
@@ -114,14 +163,8 @@ function setOutputTextValue(
 	if (!text) return;
 	const key = makeOutputTextKey(outputIndex, contentIndex);
 	if (!key) return;
-	const existing = state.outputText.get(key) ?? "";
 	state.outputText.set(key, text);
-	const phaseDelta = existing.length > 0 && text.startsWith(existing)
-		? text.slice(existing.length)
-		: existing === text
-			? ""
-			: text;
-	capturePhase(state, phase, phaseDelta);
+	setPhaseTextSegment(state, phase, key, text);
 }
 
 function appendOutputTextValue(
@@ -136,7 +179,7 @@ function appendOutputTextValue(
 	if (!key) return;
 	const existing = state.outputText.get(key) ?? "";
 	state.outputText.set(key, `${existing}${delta}`);
-	capturePhase(state, phase, delta);
+	appendPhaseTextSegment(state, phase, key, delta);
 }
 
 function setReasoningSummaryValue(
