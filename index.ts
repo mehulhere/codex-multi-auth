@@ -259,6 +259,7 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 	let perProjectStorageWarningShown = false;
 	let liveAccountSync: LiveAccountSync | null = null;
 	let liveAccountSyncPath: string | null = null;
+	let liveAccountSyncCleanupRegistered = false;
 	let refreshGuardian: RefreshGuardian | null = null;
 	let refreshGuardianConfigKey: string | null = null;
 	let sessionAffinityStore: SessionAffinityStore | null =
@@ -457,6 +458,34 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 			},
 		});
 
+	const ensureLiveAccountSync = async (
+		pluginConfig: ReturnType<typeof loadPluginConfig>,
+		authFallback?: OAuthAuthDetails,
+	): Promise<void> => {
+		const ensured = await ensureRuntimeLiveAccountSync({
+			pluginConfig,
+			authFallback,
+			getLiveAccountSync,
+			getStoragePath,
+			currentSync: liveAccountSync,
+			currentPath: liveAccountSyncPath,
+			currentCleanupRegistered: liveAccountSyncCleanupRegistered,
+			getCurrentSync: () => liveAccountSync,
+			createSync: (onChange, options) => new LiveAccountSync(onChange, options),
+			reloadAccountManagerFromDisk,
+			getLiveAccountSyncDebounceMs,
+			getLiveAccountSyncPollMs,
+			commitState: ({ sync, path, cleanupRegistered }) => {
+				liveAccountSync = sync;
+				liveAccountSyncPath = path;
+				liveAccountSyncCleanupRegistered = cleanupRegistered;
+			},
+			registerCleanup,
+			logWarn,
+			pluginName: PLUGIN_NAME,
+		});
+		void ensured;
+	};
 	const ensureRefreshGuardian = (
 		pluginConfig: ReturnType<typeof loadPluginConfig>,
 	): void => {
@@ -642,26 +671,7 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 					resolveMutex = resolve;
 				});
 				try {
-					{
-						const ensured = await ensureRuntimeLiveAccountSync({
-							pluginConfig,
-							authFallback: auth,
-							getLiveAccountSync,
-							getStoragePath,
-							currentSync: liveAccountSync,
-							currentPath: liveAccountSyncPath,
-							createSync: (onChange, options) =>
-								new LiveAccountSync(onChange, options),
-							reloadAccountManagerFromDisk,
-							getLiveAccountSyncDebounceMs,
-							getLiveAccountSyncPollMs,
-							registerCleanup,
-							logWarn,
-							pluginName: PLUGIN_NAME,
-						});
-						liveAccountSync = ensured.sync;
-						liveAccountSyncPath = ensured.path;
-					}
+					await ensureLiveAccountSync(pluginConfig, auth);
 					if (!accountManagerPromise) {
 						await reloadAccountManagerFromDisk(auth as OAuthAuthDetails);
 					}

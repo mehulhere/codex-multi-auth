@@ -15,6 +15,8 @@ export async function ensureRuntimeLiveAccountSync<
 	getStoragePath: () => string;
 	currentSync: TSync | null;
 	currentPath: string | null;
+	currentCleanupRegistered: boolean;
+	getCurrentSync: () => TSync | null;
 	createSync: (
 		onChange: () => Promise<void>,
 		options: { debounceMs: number; pollIntervalMs: number },
@@ -24,17 +26,44 @@ export async function ensureRuntimeLiveAccountSync<
 	) => Promise<unknown>;
 	getLiveAccountSyncDebounceMs: (config: TConfig) => number;
 	getLiveAccountSyncPollMs: (config: TConfig) => number;
+	commitState: (state: {
+		sync: TSync | null;
+		path: string | null;
+		cleanupRegistered: boolean;
+	}) => void;
 	registerCleanup: (cleanup: () => void) => void;
 	logWarn: (message: string) => void;
 	pluginName: string;
-}): Promise<{ sync: TSync | null; path: string | null }> {
+}): Promise<{
+	sync: TSync | null;
+	path: string | null;
+	cleanupRegistered: boolean;
+}> {
 	if (!deps.getLiveAccountSync(deps.pluginConfig)) {
 		deps.currentSync?.stop();
-		return { sync: null, path: null };
+		deps.commitState({
+			sync: null,
+			path: null,
+			cleanupRegistered: deps.currentCleanupRegistered,
+		});
+		return {
+			sync: null,
+			path: null,
+			cleanupRegistered: deps.currentCleanupRegistered,
+		};
 	}
 
 	const targetPath = deps.getStoragePath();
 	let sync = deps.currentSync;
+	let cleanupRegistered = deps.currentCleanupRegistered;
+	let nextPath = deps.currentPath;
+	const commitState = (): void => {
+		deps.commitState({
+			sync,
+			path: nextPath,
+			cleanupRegistered,
+		});
+	};
 	if (!sync) {
 		sync = deps.createSync(
 			async () => {
@@ -45,18 +74,23 @@ export async function ensureRuntimeLiveAccountSync<
 				pollIntervalMs: deps.getLiveAccountSyncPollMs(deps.pluginConfig),
 			},
 		);
-		deps.registerCleanup(() => {
-			sync?.stop();
-		});
+		commitState();
+		if (!cleanupRegistered) {
+			deps.registerCleanup(() => {
+				deps.getCurrentSync()?.stop();
+			});
+			cleanupRegistered = true;
+			commitState();
+		}
 	}
 
-	let nextPath = deps.currentPath;
 	if (nextPath !== targetPath) {
 		let switched = false;
 		for (let attempt = 0; attempt < 3; attempt += 1) {
 			try {
 				await sync.syncToPath(targetPath);
 				nextPath = targetPath;
+				commitState();
 				switched = true;
 				break;
 			} catch (error) {
@@ -72,5 +106,5 @@ export async function ensureRuntimeLiveAccountSync<
 		}
 	}
 
-	return { sync, path: nextPath };
+	return { sync, path: nextPath, cleanupRegistered };
 }
