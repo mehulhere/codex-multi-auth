@@ -122,30 +122,6 @@ export class SessionAffinityStore {
 		});
 	}
 
-	rememberWithResponseId(
-		sessionKey: string | null | undefined,
-		accountIndex: number,
-		responseId: string | null | undefined,
-		now = Date.now(),
-	): void {
-		const key = normalizeSessionKey(sessionKey);
-		const normalizedResponseId = typeof responseId === "string" ? responseId.trim() : "";
-		if (!key || !normalizedResponseId) return;
-		if (!Number.isFinite(accountIndex) || accountIndex < 0) return;
-
-		const entry = this.entries.get(key);
-		if (entry?.expiresAt !== undefined && entry.expiresAt <= now) {
-			this.entries.delete(key);
-		}
-
-		this.setEntry(key, {
-			accountIndex,
-			expiresAt: now + this.ttlMs,
-			lastResponseId: normalizedResponseId,
-			updatedAt: now,
-		});
-	}
-
 	forgetSession(sessionKey: string | null | undefined): void {
 		const key = normalizeSessionKey(sessionKey);
 		if (!key) return;

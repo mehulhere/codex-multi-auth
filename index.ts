@@ -2477,9 +2477,12 @@ accountAttemptLoop: while (attempted.size < Math.max(1, accountCount)) {
 						const successResponse = await handleSuccessResponse(responseForSuccess, isStreaming, {
 							onResponseId: (responseId) => {
 								if (!responseContinuationEnabled) return;
-								sessionAffinityStore?.rememberWithResponseId(
+								sessionAffinityStore?.remember(
 									sessionAffinityKey,
 									successAccountForResponse.index,
+								);
+								sessionAffinityStore?.rememberLastResponseId(
+									sessionAffinityKey,
 									responseId,
 								);
 								storedResponseIdForSuccess = true;
