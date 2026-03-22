@@ -522,6 +522,21 @@ describe("codex-manager auth command helpers", () => {
 		expect(leaseAcquireMock).not.toHaveBeenCalled();
 	});
 
+	it("propagates live best lease acquisition failures before loading accounts", async () => {
+		const leaseError = Object.assign(
+			new Error("EACCES: permission denied"),
+			{ code: "EACCES" },
+		);
+		loadAccountsMock.mockResolvedValue(createStorage());
+		leaseAcquireMock.mockRejectedValueOnce(leaseError);
+
+		await expect(runBest(["--live"], createHelpers())).rejects.toBe(leaseError);
+
+		expect(loadAccountsMock).not.toHaveBeenCalled();
+		expect(saveAccountsMock).not.toHaveBeenCalled();
+		expect(setCodexCliActiveSelectionMock).not.toHaveBeenCalled();
+	});
+
 	it("reports json output when runBest switches to a healthier account", async () => {
 		const logSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
 		setCodexCliActiveSelectionMock.mockResolvedValue(false);
