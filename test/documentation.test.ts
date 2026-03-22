@@ -280,6 +280,21 @@ describe("Documentation Integrity", () => {
 		expect(manager).not.toContain("codex-multi-auth auth switch <index>");
 	});
 
+	it("keeps maintainer runbooks present", () => {
+		const runbooks = [
+			"docs/development/RUNBOOK_ADD_AUTH_MANAGER_COMMAND.md",
+			"docs/development/RUNBOOK_ADD_CONFIG_FIELD_SAFELY.md",
+			"docs/development/RUNBOOK_CHANGE_ROUTING_POLICY_SAFELY.md",
+		];
+
+		for (const runbook of runbooks) {
+			expect(
+				existsSync(join(projectRoot, runbook)),
+				`${runbook} should exist`,
+			).toBe(true);
+		}
+	});
+
 	it("documents stable overrides separately from advanced and internal overrides", () => {
 		const configGuide = read("docs/configuration.md").toLowerCase();
 		const settingsRef = read("docs/reference/settings.md").toLowerCase();
