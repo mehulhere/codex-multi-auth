@@ -80,6 +80,11 @@ import {
 import { createLogger } from "./logger.js";
 import { MODEL_FAMILIES, type ModelFamily } from "./prompts/codex.js";
 import {
+	getModelCapabilities,
+	getModelProfile,
+	resolveNormalizedModel,
+} from "./request/helpers/model-map.js";
+import {
 	loadQuotaCache,
 	type QuotaCacheData,
 	type QuotaCacheEntry,
@@ -128,6 +133,14 @@ type TokenSuccessWithAccount = TokenSuccess & {
 type PromptTone = "accent" | "success" | "warning" | "danger" | "muted";
 const log = createLogger("codex-manager");
 
+interface ModelInspection {
+	requested: string;
+	normalized: string;
+	remapped: boolean;
+	promptFamily: ModelFamily;
+	capabilities: ReturnType<typeof getModelCapabilities>;
+}
+
 function stylePromptText(text: string, tone: PromptTone): string {
 	if (!output.isTTY) return text;
 	const ui = getUiRuntimeOptions();
@@ -149,6 +162,30 @@ function stylePromptText(text: string, tone: PromptTone): string {
 						? ANSI.red
 						: ANSI.dim;
 	return `${legacyCode}${text}${ANSI.reset}`;
+}
+
+function inspectRequestedModel(requestedModel: string): ModelInspection {
+	const normalized = resolveNormalizedModel(requestedModel);
+	const profile = getModelProfile(normalized);
+	return {
+		requested: requestedModel,
+		normalized,
+		remapped: requestedModel !== normalized,
+		promptFamily: profile.promptFamily,
+		capabilities: getModelCapabilities(normalized),
+	};
+}
+
+function formatModelInspection(model: ModelInspection): string {
+	const route = model.remapped
+		? `${model.requested} -> ${model.normalized}`
+		: model.normalized;
+	return [
+		route,
+		`prompt family ${model.promptFamily}`,
+		`tool search ${model.capabilities.toolSearch ? "yes" : "no"}`,
+		`computer use ${model.capabilities.computerUse ? "yes" : "no"}`,
+	].join(" | ");
 }
 
 function collapseWhitespace(value: string): string {
@@ -2013,6 +2050,7 @@ async function runHealthCheck(options: HealthCheckOptions = {}): Promise<void> {
 	const forceRefresh = options.forceRefresh === true;
 	const liveProbe = options.liveProbe === true;
 	const probeModel = options.model?.trim() || "gpt-5-codex";
+	const modelInspection = inspectRequestedModel(probeModel);
 	const display = options.display ?? DEFAULT_DASHBOARD_DISPLAY_SETTINGS;
 	const quotaCache = liveProbe ? await loadQuotaCache() : null;
 	const workingQuotaCache = quotaCache ? cloneQuotaCacheData(quotaCache) : null;
@@ -2043,6 +2081,14 @@ async function runHealthCheck(options: HealthCheckOptions = {}): Promise<void> {
 			"accent",
 		),
 	);
+	if (liveProbe) {
+		console.log(
+			stylePromptText(
+				`Model probe: ${formatModelInspection(modelInspection)}`,
+				"muted",
+			),
+		);
+	}
 	for (let i = 0; i < storage.accounts.length; i += 1) {
 		const account = storage.accounts[i];
 		if (!account) continue;
@@ -2072,7 +2118,7 @@ async function runHealthCheck(options: HealthCheckOptions = {}): Promise<void> {
 						const snapshot = await fetchCodexQuotaSnapshot({
 							accountId: probeAccountId,
 							accessToken: currentAccessToken,
-							model: probeModel,
+							model: modelInspection.normalized,
 						});
 						if (workingQuotaCache) {
 							quotaCacheChanged =
@@ -2168,7 +2214,7 @@ async function runHealthCheck(options: HealthCheckOptions = {}): Promise<void> {
 						const snapshot = await fetchCodexQuotaSnapshot({
 							accountId: probeAccountId,
 							accessToken: result.access,
-							model: probeModel,
+							model: modelInspection.normalized,
 						});
 						if (workingQuotaCache) {
 							quotaCacheChanged =

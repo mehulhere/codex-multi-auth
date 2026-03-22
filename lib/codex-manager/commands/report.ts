@@ -11,6 +11,12 @@ import {
 	type CodexQuotaSnapshot,
 	formatQuotaSnapshotLine,
 } from "../../quota-probe.js";
+import { type ModelFamily } from "../../prompts/codex.js";
+import {
+	getModelCapabilities,
+	getModelProfile,
+	resolveNormalizedModel,
+} from "../../request/helpers/model-map.js";
 import type { AccountStorageV3 } from "../../storage.js";
 import type { TokenFailure, TokenResult } from "../../types.js";
 
@@ -24,6 +30,14 @@ interface ReportCliOptions {
 type ParsedArgsResult<T> =
 	| { ok: true; options: T }
 	| { ok: false; message: string };
+
+interface ModelInspection {
+	requested: string;
+	normalized: string;
+	remapped: boolean;
+	promptFamily: ModelFamily;
+	capabilities: ReturnType<typeof getModelCapabilities>;
+}
 
 export interface ReportCommandDeps {
 	setStoragePath: (path: string | null) => void;
@@ -163,6 +177,30 @@ function serializeForecastResults(
 	});
 }
 
+function inspectRequestedModel(requestedModel: string): ModelInspection {
+	const normalized = resolveNormalizedModel(requestedModel);
+	const profile = getModelProfile(normalized);
+	return {
+		requested: requestedModel,
+		normalized,
+		remapped: requestedModel !== normalized,
+		promptFamily: profile.promptFamily,
+		capabilities: getModelCapabilities(normalized),
+	};
+}
+
+function formatModelInspection(model: ModelInspection): string {
+	const route = model.remapped
+		? `${model.requested} -> ${model.normalized}`
+		: model.normalized;
+	return [
+		route,
+		`prompt family ${model.promptFamily}`,
+		`tool search ${model.capabilities.toolSearch ? "yes" : "no"}`,
+		`computer use ${model.capabilities.computerUse ? "yes" : "no"}`,
+	].join(" | ");
+}
+
 async function defaultWriteFile(path: string, contents: string): Promise<void> {
 	await fs.mkdir(dirname(path), { recursive: true });
 	await fs.writeFile(path, contents, "utf-8");
@@ -186,6 +224,8 @@ export async function runReportCommand(
 		return 1;
 	}
 	const options = parsedArgs.options;
+	const requestedModel = options.model?.trim() || "gpt-5-codex";
+	const modelInspection = inspectRequestedModel(requestedModel);
 
 	deps.setStoragePath(null);
 	const storagePath = deps.getStoragePath();
@@ -227,7 +267,7 @@ export async function runReportCommand(
 				const liveQuota = await deps.fetchCodexQuotaSnapshot({
 					accountId,
 					accessToken: refreshResult.access,
-					model: options.model,
+					model: modelInspection.normalized,
 				});
 				liveQuotaByIndex.set(i, liveQuota);
 			} catch (error) {
@@ -275,7 +315,14 @@ export async function runReportCommand(
 		command: "report",
 		generatedAt: new Date(now).toISOString(),
 		storagePath,
-		model: options.model,
+		model: requestedModel,
+		modelSelection: {
+			requested: modelInspection.requested,
+			normalized: modelInspection.normalized,
+			remapped: modelInspection.remapped,
+			promptFamily: modelInspection.promptFamily,
+			capabilities: modelInspection.capabilities,
+		},
 		liveProbe: options.live,
 		accounts: {
 			total: accountCount,
@@ -313,6 +360,7 @@ export async function runReportCommand(
 
 	logInfo(`Report generated at ${report.generatedAt}`);
 	logInfo(`Storage: ${report.storagePath}`);
+	logInfo(`Model: ${formatModelInspection(modelInspection)}`);
 	logInfo(
 		`Accounts: ${report.accounts.total} total (${report.accounts.enabled} enabled, ${report.accounts.disabled} disabled, ${report.accounts.coolingDown} cooling, ${report.accounts.rateLimited} rate-limited)`,
 	);

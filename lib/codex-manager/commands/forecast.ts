@@ -5,6 +5,7 @@ import {
 } from "../../forecast.js";
 import type { QuotaCacheData } from "../../quota-cache.js";
 import type { CodexQuotaSnapshot } from "../../quota-probe.js";
+import { resolveNormalizedModel } from "../../request/helpers/model-map.js";
 import type { AccountMetadataV3, AccountStorageV3 } from "../../storage.js";
 import type { TokenFailure, TokenResult } from "../../types.js";
 
@@ -229,6 +230,8 @@ export async function runForecastCommand(
 		return 1;
 	}
 	const options = parsedArgs.options;
+	const requestedModel = options.model?.trim() || "gpt-5-codex";
+	const probeModel = resolveNormalizedModel(requestedModel);
 	const display =
 		(await deps.loadDashboardDisplaySettings().catch(() => null)) ??
 		deps.defaultDisplay;
@@ -291,7 +294,7 @@ export async function runForecastCommand(
 			const liveQuota = await deps.fetchCodexQuotaSnapshot({
 				accountId: probeAccountId,
 				accessToken: probeAccessToken,
-				model: options.model,
+				model: probeModel,
 			});
 			liveQuotaByIndex.set(i, liveQuota);
 			if (workingQuotaCache) {
@@ -340,7 +343,7 @@ export async function runForecastCommand(
 			JSON.stringify(
 				{
 					command: "forecast",
-					model: options.model,
+					model: requestedModel,
 					liveProbe: options.live,
 					summary,
 					recommendation,
@@ -362,7 +365,7 @@ export async function runForecastCommand(
 
 	logInfo(
 		deps.stylePromptText(
-			`Best-account preview (${storage.accounts.length} account(s), model ${options.model}, live check ${options.live ? "on" : "off"})`,
+			`Best-account preview (${storage.accounts.length} account(s), model ${requestedModel}, live check ${options.live ? "on" : "off"})`,
 			"accent",
 		),
 	);

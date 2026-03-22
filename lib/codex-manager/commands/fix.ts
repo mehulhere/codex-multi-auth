@@ -5,6 +5,7 @@ import type {
 } from "../../forecast.js";
 import type { QuotaCacheData } from "../../quota-cache.js";
 import type { CodexQuotaSnapshot } from "../../quota-probe.js";
+import { resolveNormalizedModel } from "../../request/helpers/model-map.js";
 import type { AccountStorageV3 } from "../../storage.js";
 import type { TokenFailure, TokenResult } from "../../types.js";
 
@@ -164,6 +165,8 @@ export async function runFixCommand(
 		return 1;
 	}
 	const options = parsedArgs.options;
+	const requestedModel = options.model?.trim() || "gpt-5-codex";
+	const probeModel = resolveNormalizedModel(requestedModel);
 	const display = deps.defaultDisplay;
 	const quotaCache = options.live ? await deps.loadQuotaCache() : null;
 	const workingQuotaCache = quotaCache
@@ -215,7 +218,7 @@ export async function runFixCommand(
 						const snapshot = await deps.fetchCodexQuotaSnapshot({
 							accountId: probeAccountId,
 							accessToken: currentAccessToken,
-							model: options.model,
+							model: probeModel,
 						});
 						if (workingQuotaCache)
 							quotaCacheChanged =
@@ -315,7 +318,7 @@ export async function runFixCommand(
 						const snapshot = await deps.fetchCodexQuotaSnapshot({
 							accountId: probeAccountId,
 							accessToken: refreshResult.access,
-							model: options.model,
+							model: probeModel,
 						});
 						if (workingQuotaCache)
 							quotaCacheChanged =
@@ -434,7 +437,7 @@ export async function runFixCommand(
 					command: "fix",
 					dryRun: options.dryRun,
 					liveProbe: options.live,
-					model: options.model,
+					model: requestedModel,
 					changed,
 					summary: reportSummary,
 					recommendation,

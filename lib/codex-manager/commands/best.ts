@@ -1,5 +1,6 @@
 import type { ForecastAccountResult } from "../../forecast.js";
 import type { CodexQuotaSnapshot } from "../../quota-probe.js";
+import { resolveNormalizedModel } from "../../request/helpers/model-map.js";
 import type { AccountStorageV3 } from "../../storage.js";
 import type { TokenFailure, TokenResult } from "../../types.js";
 
@@ -99,6 +100,9 @@ export async function runBestCommand(
 		return 1;
 	}
 	const options = parsedArgs.options;
+	const probeModel = resolveNormalizedModel(
+		options.model?.trim() || "gpt-5-codex",
+	);
 	if (options.modelProvided && !options.live) {
 		logError("--model requires --live for codex auth best");
 		deps.printBestUsage();
@@ -176,7 +180,7 @@ export async function runBestCommand(
 			const liveQuota = await deps.fetchCodexQuotaSnapshot({
 				accountId: probeAccountId,
 				accessToken: probeAccessToken,
-				model: options.model,
+				model: probeModel,
 			});
 			liveQuotaByIndex.set(i, liveQuota);
 		} catch (error) {
