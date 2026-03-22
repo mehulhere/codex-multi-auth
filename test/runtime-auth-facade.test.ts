@@ -6,53 +6,53 @@ import {
 } from "../lib/runtime/auth-facade.js";
 
 describe("runRuntimeOAuthFlow", () => {
-	it("passes through info logs and prefixes debug/warn logs with the plugin name", async () => {
+	it("passes through the flow config and prefixes debug/warn logs with the plugin name", async () => {
+		const runOAuthBrowserFlow = vi.fn(async (input) => {
+			input.logInfo("info message");
+			input.logDebug("debug message");
+			input.logWarn("warn message");
+			return { type: "failed" as const, reason: "cancelled" };
+		});
 		const logInfo = vi.fn();
 		const logDebug = vi.fn();
 		const logWarn = vi.fn();
-		await runRuntimeOAuthFlow(true, {
-			runOAuthBrowserFlow: vi.fn(async (input) => {
-				input.logInfo("info message");
-				input.logDebug("debug message");
-				input.logWarn("warn message");
-				return { type: "failed", reason: "cancelled" };
+		await expect(
+			runRuntimeOAuthFlow(true, {
+				runOAuthBrowserFlow,
+				manualModeLabel: "manual",
+				logInfo,
+				logDebug,
+				logWarn,
+				pluginName: "codex-multi-auth",
 			}),
-			manualModeLabel: "manual",
-			logInfo,
-			logDebug,
-			logWarn,
-			pluginName: "codex-multi-auth",
-		});
+		).resolves.toEqual({ type: "failed", reason: "cancelled" });
+		expect(runOAuthBrowserFlow).toHaveBeenCalledWith(
+			expect.objectContaining({
+				forceNewLogin: true,
+				manualModeLabel: "manual",
+			}),
+		);
 		expect(logInfo).toHaveBeenCalledWith("info message");
 		expect(logDebug).toHaveBeenCalledWith("[codex-multi-auth] debug message");
 		expect(logWarn).toHaveBeenCalledWith("[codex-multi-auth] warn message");
-	});
-	it("returns existing reload promise when one is in flight", async () => {
-		const reloadRuntimeAccountManager = vi.fn(async () => "manager");
-		const inFlight = Promise.resolve("existing-manager");
-		const reloader = createAccountManagerReloader({
-			reloadRuntimeAccountManager,
-			getReloadInFlight: () => inFlight as Promise<string>,
-			loadFromDisk: vi.fn(async () => "manager"),
-			setCachedAccountManager: vi.fn(),
-			setAccountManagerPromise: vi.fn(),
-			setReloadInFlight: vi.fn(),
-		});
-		await expect(reloader()).resolves.toBe("existing-manager");
-		expect(reloadRuntimeAccountManager).not.toHaveBeenCalled();
 	});
 });
 
 describe("createPersistAccounts", () => {
 	it("forwards persist dependencies and replaceAll flag", async () => {
+		const withAccountStorageTransaction = vi.fn();
+		const extractAccountId = vi.fn();
+		const extractAccountEmail = vi.fn();
+		const sanitizeEmail = vi.fn();
+		const findMatchingAccountIndex = vi.fn();
 		const persistAccountPool = vi.fn(async () => {});
 		const persistAccounts = createPersistAccounts({
 			persistAccountPool,
-			withAccountStorageTransaction: vi.fn(),
-			extractAccountId: vi.fn(),
-			extractAccountEmail: vi.fn(),
-			sanitizeEmail: vi.fn(),
-			findMatchingAccountIndex: vi.fn(),
+			withAccountStorageTransaction,
+			extractAccountId,
+			extractAccountEmail,
+			sanitizeEmail,
+			findMatchingAccountIndex,
 			MODEL_FAMILIES: ["codex"],
 		});
 		const results = [{ refreshToken: "r1" }] as never[];
@@ -60,7 +60,14 @@ describe("createPersistAccounts", () => {
 		expect(persistAccountPool).toHaveBeenCalledWith(
 			results,
 			true,
-			expect.objectContaining({ MODEL_FAMILIES: ["codex"] }),
+			{
+				withAccountStorageTransaction,
+				extractAccountId,
+				extractAccountEmail,
+				sanitizeEmail,
+				findMatchingAccountIndex,
+				MODEL_FAMILIES: ["codex"],
+			},
 		);
 	});
 	it("keeps replaceAll optional and false by default", async () => {
@@ -84,6 +91,21 @@ describe("createPersistAccounts", () => {
 });
 
 describe("createAccountManagerReloader", () => {
+	it("returns existing reload promise when one is in flight", async () => {
+		const reloadRuntimeAccountManager = vi.fn(async () => "manager");
+		const inFlight = Promise.resolve("existing-manager");
+		const reloader = createAccountManagerReloader({
+			reloadRuntimeAccountManager,
+			getReloadInFlight: () => inFlight as Promise<string>,
+			loadFromDisk: vi.fn(async () => "manager"),
+			setCachedAccountManager: vi.fn(),
+			setAccountManagerPromise: vi.fn(),
+			setReloadInFlight: vi.fn(),
+		});
+		await expect(reloader()).resolves.toBe("existing-manager");
+		expect(reloadRuntimeAccountManager).not.toHaveBeenCalled();
+	});
+
 	it("forwards auth fallback and current reload state", async () => {
 		const reloadRuntimeAccountManager = vi.fn(async () => "manager");
 		const reloader = createAccountManagerReloader({

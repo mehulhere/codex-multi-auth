@@ -5,7 +5,7 @@ import { promisify } from "node:util";
 const execAsync = promisify(exec);
 
 const MAX_PACKAGE_SIZE = 8 * 1024 * 1024;
-const REQUIRED_PREFIXES = [
+const REQUIRED_PATHS = [
 	"dist/",
 	"assets/",
 	"config/",
@@ -68,7 +68,7 @@ for (const forbidden of FORBIDDEN_PREFIXES) {
 	}
 }
 
-for (const required of REQUIRED_PREFIXES) {
+for (const required of REQUIRED_PATHS) {
 	const present = paths.some(
 		(/** @type {string} */ path) => path === required || path.startsWith(required),
 	);

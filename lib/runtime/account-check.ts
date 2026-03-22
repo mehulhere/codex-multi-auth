@@ -138,13 +138,6 @@ export async function runRuntimeAccountCheck(
 					.lookupCodexCliTokensByEmail(account.email)
 					.catch(() => null);
 				if (
-					cached?.refreshToken &&
-					cached.refreshToken !== account.refreshToken
-				) {
-					account.refreshToken = cached.refreshToken;
-					state.storageChanged = true;
-				}
-				if (
 					cached &&
 					(typeof cached.expiresAt !== "number" ||
 						!Number.isFinite(cached.expiresAt) ||
