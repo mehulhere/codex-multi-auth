@@ -67,9 +67,7 @@ Positional signatures are preserved for backward compatibility.
 
 The request-transform layer intentionally preserves and/or normalizes modern Responses API fields that callers may already send through the host SDK.
 
-- `previous_response_id` is preserved when explicitly provided and may be auto-filled from plugin continuation state when `pluginConfig.responseContinuation` is enabled.
-- `text.format` is preserved when verbosity defaults are applied, so structured-output contracts continue to flow through untouched.
-- `prompt_cache_retention` is preserved from the request body and can fall back to `providerOptions.openai.promptCacheRetention` or user config defaults.
+- The plugin preserves `previous_response_id` when explicitly provided and may auto-fill it from plugin continuation state when `pluginConfig.responseContinuation` is enabled, maintains `text.format` when verbosity defaults are applied, and honors `prompt_cache_retention` from the request body before falling back to `providerOptions.openai.promptCacheRetention` or user config defaults.
 - Hosted built-in tool definitions are typed and supported for:
   - `tool_search`
   - remote `mcp`
@@ -82,6 +80,8 @@ The request-transform layer intentionally preserves and/or normalizes modern Res
   - `commentary_text`
   - `final_answer_text`
   - `phase_text`
+
+These SSE compatibility fields are synthesized only when the corresponding content is present in the response stream.
 
 These behaviors are compatibility guarantees for the current release line because they protect caller intent while keeping the plugin stateless against the ChatGPT Codex backend.
 
