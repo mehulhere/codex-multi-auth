@@ -200,6 +200,7 @@ import {
 	resolveActiveIndex,
 } from "./lib/runtime/account-status.js";
 import { runBrowserOAuthFlow } from "./lib/runtime/browser-oauth-flow.js";
+import { buildLoginMenuAccounts } from "./lib/runtime/login-menu-accounts.js";
 import { buildManualOAuthFlow } from "./lib/runtime/manual-oauth-flow.js";
 import {
 	ensureLiveAccountSyncState,
@@ -2867,41 +2868,17 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 
 								const now = Date.now();
 								const activeIndex = resolveActiveIndex(workingStorage, "codex");
-								const existingAccounts = workingStorage.accounts.map(
-									(account, index) => {
-										let status:
-											| "active"
-											| "ok"
-											| "rate-limited"
-											| "cooldown"
-											| "disabled";
-										if (account.enabled === false) {
-											status = "disabled";
-										} else if (
-											typeof account.coolingDownUntil === "number" &&
-											account.coolingDownUntil > now
-										) {
-											status = "cooldown";
-										} else if (
-											formatRateLimitEntry(account, now, formatWaitTime)
-										) {
-											status = "rate-limited";
-										} else if (index === activeIndex) {
-											status = "active";
-										} else {
-											status = "ok";
-										}
-										return {
-											accountId: account.accountId,
-											accountLabel: account.accountLabel,
-											email: account.email,
-											index,
-											addedAt: account.addedAt,
-											lastUsed: account.lastUsed,
-											status,
-											isCurrentAccount: index === activeIndex,
-											enabled: account.enabled !== false,
-										};
+								const existingAccounts = buildLoginMenuAccounts(
+									workingStorage.accounts,
+									{
+										now,
+										activeIndex,
+										formatRateLimitEntry: (account, currentNow) =>
+											formatRateLimitEntry(
+												account,
+												currentNow,
+												formatWaitTime,
+											),
 									},
 								);
 
