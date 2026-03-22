@@ -188,7 +188,18 @@ export async function runRuntimeAccountCheck(
 			}
 
 			if (!accessToken) {
-				const refreshResult = await deps.queuedRefresh(account.refreshToken);
+				const refreshToken =
+					typeof account.refreshToken === "string"
+						? account.refreshToken.trim()
+						: "";
+				if (refreshToken.length === 0) {
+					state.errors += 1;
+					deps.showLine(
+						`[${i + 1}/${total}] ${label}: ERROR (missing refreshToken)`,
+					);
+					continue;
+				}
+				const refreshResult = await deps.queuedRefresh(refreshToken);
 				if (refreshResult.type !== "success") {
 					state.errors += 1;
 					const message =
@@ -196,10 +207,11 @@ export async function runRuntimeAccountCheck(
 					deps.showLine(`[${i + 1}/${total}] ${label}: ERROR (${message})`);
 					if (deepProbe && deps.isRuntimeFlaggableFailure(refreshResult)) {
 						const existingIndex = state.flaggedStorage.accounts.findIndex(
-							(flagged) => flagged.refreshToken === account.refreshToken,
+							(flagged) => flagged.refreshToken === refreshToken,
 						);
 						const flaggedRecord: FlaggedAccountMetadataV1 = {
 							...account,
+							refreshToken,
 							flaggedAt: nowMs,
 							flaggedReason: "token-invalid",
 							lastError: message,
@@ -209,7 +221,7 @@ export async function runRuntimeAccountCheck(
 						} else {
 							state.flaggedStorage.accounts.push(flaggedRecord);
 						}
-						state.removeFromActive.add(account.refreshToken);
+						state.removeFromActive.add(refreshToken);
 						state.flaggedChanged = true;
 					}
 					continue;
@@ -258,6 +270,8 @@ export async function runRuntimeAccountCheck(
 			}
 
 			if (!accessToken) {
+				// Defensive guard: current acquisition paths either populate accessToken or
+				// return early, but keep this check to catch future refactors.
 				throw new Error("Missing access token after refresh");
 			}
 

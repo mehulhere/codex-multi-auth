@@ -44,7 +44,21 @@ const RETRYABLE_FS_CODES = new Set(["EBUSY", "EPERM"]);
 
 export type UnsupportedCodexPolicy = "strict" | "fallback";
 
-export type ConfigExplainSource = "env" | "unified" | "file" | "default";
+type ConfigExplainStorageKind =
+	| "unified"
+	| "file"
+	| "none"
+	| "unreadable";
+
+type ConfigExplainStoredSource = Extract<
+	ConfigExplainStorageKind,
+	"unified" | "file"
+>;
+
+export type ConfigExplainSource =
+	| "env"
+	| ConfigExplainStoredSource
+	| "default";
 
 export interface ConfigExplainEntry {
 	key: keyof PluginConfig;
@@ -56,7 +70,7 @@ export interface ConfigExplainEntry {
 
 export interface ConfigExplainReport {
 	configPath: string | null;
-	storageKind: "unified" | "file" | "none";
+	storageKind: ConfigExplainStorageKind;
 	entries: ConfigExplainEntry[];
 }
 
@@ -377,7 +391,7 @@ function readConfigRecordFromPath(
 
 function resolveStoredPluginConfigRecord(): {
 	configPath: string | null;
-	storageKind: "unified" | "file" | "none";
+	storageKind: ConfigExplainStorageKind;
 	record: Record<string, unknown> | null;
 } {
 	const unifiedConfig = loadUnifiedPluginConfigSync();
@@ -398,10 +412,19 @@ function resolveStoredPluginConfigRecord(): {
 		};
 	}
 
+	const record = readConfigRecordFromPath(configPath);
+	if (record) {
+		return {
+			configPath,
+			storageKind: "file",
+			record,
+		};
+	}
+
 	return {
 		configPath,
-		storageKind: "file",
-		record: readConfigRecordFromPath(configPath),
+		storageKind: existsSync(configPath) ? "unreadable" : "none",
+		record: null,
 	};
 }
 
@@ -1244,29 +1267,40 @@ function resolveConfigExplainSource(
 	entry: ConfigExplainMeta,
 	pluginConfig: PluginConfig,
 	storedRecord: Partial<PluginConfig> | null,
-	storageKind: "unified" | "file" | "none",
+	storageKind: ConfigExplainStorageKind,
 ): ConfigExplainSource {
 	const effectiveValue = entry.getValue(pluginConfig);
 	const noEnvValue = withExplainEnvUnset(entry.envNames, () => entry.getValue(pluginConfig));
 	if (!configExplainValuesEqual(effectiveValue, noEnvValue)) {
 		return "env";
 	}
-	const defaultResolvedValue = withExplainEnvUnset(entry.envNames, () =>
-		// empty config to trigger default-resolution path in getters
-		entry.getValue({} as PluginConfig),
-	);
 	const storedKeys = entry.sourceKeys ?? [entry.key];
 	const hasStoredSource =
-		storageKind !== "none" &&
+		(storageKind === "unified" || storageKind === "file") &&
 		storedRecord !== null &&
 		storedKeys.some((key) => Object.hasOwn(storedRecord, key));
-	if (hasStoredSource && !configExplainValuesEqual(noEnvValue, defaultResolvedValue)) {
-		return storageKind;
-	}
-	if (hasStoredSource && storedKeys.length > 1) {
+	if (hasStoredSource) {
 		return storageKind;
 	}
 	return "default";
+}
+
+function normalizeConfigExplainValue(value: unknown): unknown {
+	if (typeof value === "number" && !Number.isFinite(value)) {
+		if (Number.isNaN(value)) return "NaN";
+		return value > 0 ? "Infinity" : "-Infinity";
+	}
+	if (Array.isArray(value)) {
+		return value.map((item) => normalizeConfigExplainValue(item));
+	}
+	if (isRecord(value)) {
+		const normalized: Record<string, unknown> = {};
+		for (const [key, item] of Object.entries(value)) {
+			normalized[key] = normalizeConfigExplainValue(item);
+		}
+		return normalized;
+	}
+	return value;
 }
 
 const CONFIG_EXPLAIN_ENTRIES: ConfigExplainMeta[] = [
@@ -1495,8 +1529,8 @@ export function getPluginConfigExplainReport(): ConfigExplainReport {
 		const value = entry.getValue(pluginConfig);
 		return {
 			key: entry.key,
-			value,
-			defaultValue: DEFAULT_PLUGIN_CONFIG[entry.key],
+			value: normalizeConfigExplainValue(value),
+			defaultValue: normalizeConfigExplainValue(DEFAULT_PLUGIN_CONFIG[entry.key]),
 			source: resolveConfigExplainSource(entry, pluginConfig, storedRecord, stored.storageKind),
 			envNames: entry.envNames,
 		};

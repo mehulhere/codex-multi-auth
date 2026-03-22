@@ -1,9 +1,13 @@
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const createSessionRecoveryHookMock = vi.fn();
 vi.mock("../lib/recovery.js", () => ({
 	createSessionRecoveryHook: createSessionRecoveryHookMock,
 }));
+
+beforeEach(() => {
+	createSessionRecoveryHookMock.mockClear();
+});
 
 describe("createRuntimeSessionRecoveryHook", () => {
 	it("returns null when disabled", async () => {

@@ -674,6 +674,19 @@ describe("codex manager cli commands", () => {
 			preemptiveQuotaRemainingPercent7d: 5,
 			preemptiveQuotaMaxDeferralMs: 7200000,
 		});
+		getPluginConfigExplainReportMock.mockReturnValueOnce({
+			configPath: "/mock/settings.json",
+			storageKind: "unified",
+			entries: [
+				{
+					key: "retryAllAccountsMaxRetries",
+					value: "Infinity",
+					defaultValue: "Infinity",
+					source: "default",
+					envNames: [],
+				},
+			],
+		});
 		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
 		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
 
@@ -689,6 +702,12 @@ describe("codex manager cli commands", () => {
 			expect.stringContaining('"storageKind"'),
 		);
 		expect(logSpy).toHaveBeenCalledWith(expect.stringContaining('"entries"'));
+		expect(logSpy).toHaveBeenCalledWith(
+			expect.stringContaining('"key": "retryAllAccountsMaxRetries"'),
+		);
+		expect(logSpy).toHaveBeenCalledWith(
+			expect.stringContaining('"value": "Infinity"'),
+		);
 	});
 
 	it("prints config explain output in text mode", async () => {

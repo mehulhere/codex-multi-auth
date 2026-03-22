@@ -108,7 +108,11 @@ export interface FlaggedAccountStorageV1 {
 	accounts: FlaggedAccountMetadataV1[];
 }
 
-type RestoreReason = "empty-storage" | "intentional-reset" | "missing-storage";
+type RestoreReason =
+	| "corrupted-primary"
+	| "empty-storage"
+	| "intentional-reset"
+	| "missing-storage";
 
 type AccountStorageWithMetadata = AccountStorageV3 & {
 	restoreEligible?: boolean;
@@ -770,7 +774,10 @@ async function migrateLegacyProjectStorageIfNeeded(
 		const mergedStorage = mergeStorageForMigration(
 			targetStorage,
 			legacyStorage,
-			{ normalizeAccountStorage },
+			{
+				normalizeAccountStorage,
+				logWarn: (message, meta) => log.warn(message, meta),
+			},
 		);
 		const fallbackStorage = targetStorage ?? legacyStorage;
 

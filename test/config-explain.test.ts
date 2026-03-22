@@ -11,8 +11,24 @@ vi.mock("../lib/unified-settings.js", () => ({
 	saveUnifiedPluginConfig: vi.fn(),
 }));
 
+let tempConfigCounter = 0;
+
+function nextConfigPath(label: string): string {
+	tempConfigCounter += 1;
+	return join(tmpdir(), `config-explain-${label}-${tempConfigCounter}.json`);
+}
+
+function expectEntry(
+	report: { entries: Array<{ key: string }> },
+	key: string,
+) {
+	const entry = report.entries.find((item) => item.key === key);
+	expect(entry).toBeDefined();
+	return entry;
+}
+
 describe("getPluginConfigExplainReport", () => {
-	afterEach(async () => {
+	afterEach(() => {
 		delete process.env.CODEX_MODE;
 		delete process.env.CODEX_AUTH_FAST_SESSION_STRATEGY;
 		delete process.env.CODEX_MULTI_AUTH_CONFIG_PATH;
@@ -41,13 +57,15 @@ describe("getPluginConfigExplainReport", () => {
 		process.env.CODEX_AUTH_FAST_SESSION_STRATEGY = "bogus";
 		const { getPluginConfigExplainReport } = await import("../lib/config.js");
 		const report = getPluginConfigExplainReport();
-		const entry = report.entries.find((item) => item.key === "fastSessionStrategy");
+		const entry = report.entries.find(
+			(item) => item.key === "fastSessionStrategy",
+		);
 		expect(entry).toBeDefined();
 		expect(entry?.source).not.toBe("env");
 	});
 
 	it("attributes alias-backed fallback policy values to stored config", async () => {
-		const configPath = join(tmpdir(), `config-explain-${Date.now()}.json`);
+		const configPath = nextConfigPath("alias");
 		process.env.CODEX_MULTI_AUTH_CONFIG_PATH = configPath;
 		try {
 			await fs.writeFile(
@@ -57,15 +75,76 @@ describe("getPluginConfigExplainReport", () => {
 			);
 			const { getPluginConfigExplainReport } = await import("../lib/config.js");
 			const report = getPluginConfigExplainReport();
-			const policy = report.entries.find((item) => item.key === "unsupportedCodexPolicy");
-			const fallback = report.entries.find((item) => item.key === "fallbackOnUnsupportedCodexModel");
-			expect(policy).toBeDefined();
-			expect(fallback).toBeDefined();
+			const policy = expectEntry(report, "unsupportedCodexPolicy");
+			const fallback = expectEntry(report, "fallbackOnUnsupportedCodexModel");
 			expect(policy?.source).toBe("file");
 			expect(fallback?.source).toBe("file");
 		} finally {
 			await fs.unlink(configPath).catch(() => {});
 		}
+	});
+
+	it("reports missing config files as none", async () => {
+		process.env.CODEX_MULTI_AUTH_CONFIG_PATH = nextConfigPath("missing");
+		const { getPluginConfigExplainReport } = await import("../lib/config.js");
+		const report = getPluginConfigExplainReport();
+		const entry = expectEntry(report, "codexMode");
+		expect(report.storageKind).toBe("none");
+		expect(entry?.source).toBe("default");
+	});
+
+	it("attributes stored single-key defaults to file config", async () => {
+		const configPath = nextConfigPath("single-key-default");
+		process.env.CODEX_MULTI_AUTH_CONFIG_PATH = configPath;
+		try {
+			await fs.writeFile(
+				configPath,
+				JSON.stringify({ codexMode: true }, null, 2),
+				"utf-8",
+			);
+			const { getPluginConfigExplainReport } = await import("../lib/config.js");
+			const report = getPluginConfigExplainReport();
+			const entry = expectEntry(report, "codexMode");
+			expect(report.storageKind).toBe("file");
+			expect(entry?.source).toBe("file");
+		} finally {
+			await fs.unlink(configPath).catch(() => {});
+		}
+	});
+
+	it("reports unreadable config files consistently", async () => {
+		const configPath = nextConfigPath("malformed");
+		process.env.CODEX_MULTI_AUTH_CONFIG_PATH = configPath;
+		try {
+			await fs.writeFile(configPath, "{ malformed-json", "utf-8");
+			const { getPluginConfigExplainReport } = await import("../lib/config.js");
+			const report = getPluginConfigExplainReport();
+			const policy = expectEntry(report, "unsupportedCodexPolicy");
+			const fallback = expectEntry(report, "fallbackOnUnsupportedCodexModel");
+			expect(report.storageKind).toBe("unreadable");
+			expect(policy?.source).not.toBe("file");
+			expect(fallback?.source).not.toBe("file");
+		} finally {
+			await fs.unlink(configPath).catch(() => {});
+		}
+	});
+
+	it("normalizes non-finite values for json-safe output", async () => {
+		const { getPluginConfigExplainReport } = await import("../lib/config.js");
+		const report = getPluginConfigExplainReport();
+		const entry = expectEntry(report, "retryAllAccountsMaxRetries");
+		expect(entry?.value).toBe("Infinity");
+		expect(entry?.defaultValue).toBe("Infinity");
+		const serialized = JSON.parse(JSON.stringify(report)) as {
+			entries: Array<{ key: string; value: unknown; defaultValue: unknown }>;
+		};
+		const serializedEntry = serialized.entries.find(
+			(item) => item.key === "retryAllAccountsMaxRetries",
+		);
+		expect(serializedEntry).toMatchObject({
+			value: "Infinity",
+			defaultValue: "Infinity",
+		});
 	});
 
 	it("reports default and env sources", async () => {
@@ -74,6 +153,7 @@ describe("getPluginConfigExplainReport", () => {
 		let entry = report.entries.find((item) => item.key === "codexMode");
 		expect(entry).toBeDefined();
 		expect(entry?.source).toBe("default");
+		expect(report.storageKind).toBe("none");
 		vi.resetModules();
 
 		process.env.CODEX_AUTH_FAST_SESSION_STRATEGY = "always";

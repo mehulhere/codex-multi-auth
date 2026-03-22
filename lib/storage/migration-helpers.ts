@@ -47,6 +47,7 @@ export function mergeStorageForMigration(
 	incoming: AccountStorageV3,
 	deps: {
 		normalizeAccountStorage: (data: unknown) => AccountStorageV3 | null;
+		logWarn?: (message: string, meta: Record<string, unknown>) => void;
 	},
 ): AccountStorageV3 {
 	if (!current) {
@@ -60,6 +61,10 @@ export function mergeStorageForMigration(
 		accounts: [...current.accounts, ...incoming.accounts],
 	});
 	if (!merged) {
+		deps.logWarn?.("Failed to merge legacy storage, incoming accounts dropped", {
+			currentCount: current.accounts.length,
+			incomingCount: incoming.accounts.length,
+		});
 		return current;
 	}
 	return merged;

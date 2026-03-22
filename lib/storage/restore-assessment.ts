@@ -7,6 +7,24 @@ function normalizeSnapshotPath(path: string): string {
 	return path.replaceAll("\\", "/");
 }
 
+function resolveBackupKind(
+	candidatePath: string,
+	storagePath: string,
+	backupKind: BackupSnapshotKind,
+	historyKind: BackupSnapshotKind,
+	discoveredKind: BackupSnapshotKind,
+): BackupSnapshotKind {
+	const normalizedCandidatePath = normalizeSnapshotPath(candidatePath);
+	const normalizedStoragePath = normalizeSnapshotPath(storagePath);
+	if (normalizedCandidatePath === `${normalizedStoragePath}.bak`) {
+		return backupKind;
+	}
+	if (normalizedCandidatePath.startsWith(`${normalizedStoragePath}.bak.`)) {
+		return historyKind;
+	}
+	return discoveredKind;
+}
+
 function resolveLatestSnapshot(backupMetadata: BackupMetadata): BackupSnapshotMetadata | undefined {
 	const latestValidPath = backupMetadata.accounts.latestValidPath;
 	if (!latestValidPath) return undefined;
@@ -51,12 +69,13 @@ export async function collectBackupMetadata(deps: {
 		await deps.describeAccountsWalSnapshot(walPath),
 	];
 	for (const [index, candidate] of accountCandidates.entries()) {
-		const kind: BackupSnapshotKind =
-			candidate === `${deps.storagePath}.bak`
-				? "accounts-backup"
-				: candidate.startsWith(`${deps.storagePath}.bak.`)
-					? "accounts-backup-history"
-					: "accounts-discovered-backup";
+		const kind = resolveBackupKind(
+			candidate,
+			deps.storagePath,
+			"accounts-backup",
+			"accounts-backup-history",
+			"accounts-discovered-backup",
+		);
 		accountSnapshots.push(
 			await deps.describeAccountSnapshot(candidate, kind, index),
 		);
@@ -70,12 +89,13 @@ export async function collectBackupMetadata(deps: {
 		await deps.describeFlaggedSnapshot(deps.flaggedPath, "flagged-primary"),
 	];
 	for (const [index, candidate] of flaggedCandidates.entries()) {
-		const kind: BackupSnapshotKind =
-			candidate === `${deps.flaggedPath}.bak`
-				? "flagged-backup"
-				: candidate.startsWith(`${deps.flaggedPath}.bak.`)
-					? "flagged-backup-history"
-					: "flagged-discovered-backup";
+		const kind = resolveBackupKind(
+			candidate,
+			deps.flaggedPath,
+			"flagged-backup",
+			"flagged-backup-history",
+			"flagged-discovered-backup",
+		);
 		flaggedSnapshots.push(
 			await deps.describeFlaggedSnapshot(candidate, kind, index),
 		);
@@ -121,6 +141,15 @@ export function buildRestoreAssessment(deps: {
 			storagePath: deps.storagePath,
 			restoreEligible: true,
 			restoreReason: "empty-storage",
+			latestSnapshot: resolveLatestSnapshot(deps.backupMetadata) ?? primarySnapshot,
+			backupMetadata: deps.backupMetadata,
+		};
+	}
+	if (primarySnapshot.exists && !primarySnapshot.valid) {
+		return {
+			storagePath: deps.storagePath,
+			restoreEligible: true,
+			restoreReason: "corrupted-primary",
 			latestSnapshot: resolveLatestSnapshot(deps.backupMetadata) ?? primarySnapshot,
 			backupMetadata: deps.backupMetadata,
 		};
