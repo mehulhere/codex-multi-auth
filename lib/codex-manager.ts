@@ -2489,6 +2489,7 @@ async function runForecast(args: string[]): Promise<number> {
 	return runForecastCommand(args, {
 		setStoragePath,
 		loadAccounts,
+		loadDashboardDisplaySettings,
 		resolveActiveIndex,
 		loadQuotaCache,
 		saveQuotaCache,

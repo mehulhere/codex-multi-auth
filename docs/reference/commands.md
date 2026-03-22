@@ -62,6 +62,7 @@ Compatibility aliases are supported:
 | --- | --- | --- |
 | `--manual`, `--no-browser` | login | Skip browser launch and use manual callback flow |
 | `--json` | verify-flagged, best, forecast, report, fix, doctor | Print machine-readable output |
+| `--explain` | forecast | Include recommendation reasoning details in text and JSON output, even when recommendation summary lines are hidden |
 | `--live` | best, forecast, report, fix | Use live probe before decisions/output |
 | `--dry-run` | verify-flagged, fix, doctor | Preview without writing storage |
 | `--model <model>` | best, forecast, report, fix | Specify model for live probe paths |
@@ -77,6 +78,7 @@ Compatibility aliases are supported:
 - `codex auth login --manual` and `codex auth login --no-browser` force the manual callback flow instead of launching a browser.
 - `CODEX_AUTH_NO_BROWSER=1` suppresses browser launch for automation/headless sessions. False-like values such as `0` and `false` do not disable browser launch by themselves.
 - In non-TTY/manual shells, pass the full redirect URL on stdin, for example: `echo "http://127.0.0.1:1455/auth/callback?code=..." | codex auth login --manual`.
+- `codex auth forecast --explain` now keeps the explain breakdown visible in text mode even when dashboard settings hide recommendation summary lines. Pair it with `--json` for machine-readable reasoning snapshots.
 - No new npm scripts or storage migration steps were introduced for this auth-flow update.
 
 ---
@@ -134,7 +136,7 @@ Health and planning:
 
 ```bash
 codex auth check
-codex auth forecast --live --model gpt-5-codex
+codex auth forecast --live --explain --model gpt-5-codex
 codex auth report --live --json
 ```
 

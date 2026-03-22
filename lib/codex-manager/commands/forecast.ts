@@ -1,5 +1,8 @@
 import type { DashboardDisplaySettings } from "../../dashboard-settings.js";
-import type { ForecastAccountResult } from "../../forecast.js";
+import {
+	buildForecastExplanation,
+	type ForecastAccountResult,
+} from "../../forecast.js";
 import type { QuotaCacheData } from "../../quota-cache.js";
 import type { CodexQuotaSnapshot } from "../../quota-probe.js";
 import type { AccountMetadataV3, AccountStorageV3 } from "../../storage.js";
@@ -8,6 +11,7 @@ import type { TokenFailure, TokenResult } from "../../types.js";
 interface ForecastCliOptions {
 	live: boolean;
 	json: boolean;
+	explain: boolean;
 	model: string;
 }
 
@@ -24,6 +28,7 @@ type QuotaEmailFallbackState = ReadonlyMap<
 export interface ForecastCommandDeps {
 	setStoragePath: (path: string | null) => void;
 	loadAccounts: () => Promise<AccountStorageV3 | null>;
+	loadDashboardDisplaySettings: () => Promise<DashboardDisplaySettings>;
 	resolveActiveIndex: (storage: AccountStorageV3, family?: "codex") => number;
 	loadQuotaCache: () => Promise<QuotaCacheData | null>;
 	saveQuotaCache: (cache: QuotaCacheData) => Promise<void>;
@@ -101,11 +106,12 @@ function printForecastUsage(logInfo: (message: string) => void): void {
 	logInfo(
 		[
 			"Usage:",
-			"  codex auth forecast [--live] [--json] [--model <model>]",
+			"  codex auth forecast [--live] [--json] [--explain] [--model <model>]",
 			"",
 			"Options:",
 			"  --live, -l         Probe live quota headers via Codex backend",
 			"  --json, -j         Print machine-readable JSON output",
+			"  --explain          Include structured recommendation reasoning",
 			"  --model, -m        Probe model for live mode (default: gpt-5-codex)",
 		].join("\n"),
 	);
@@ -117,6 +123,7 @@ function parseForecastArgs(
 	const options: ForecastCliOptions = {
 		live: false,
 		json: false,
+		explain: false,
 		model: "gpt-5-codex",
 	};
 
@@ -129,6 +136,10 @@ function parseForecastArgs(
 		}
 		if (arg === "--json" || arg === "-j") {
 			options.json = true;
+			continue;
+		}
+		if (arg === "--explain") {
+			options.explain = true;
 			continue;
 		}
 		if (arg === "--model" || arg === "-m") {
@@ -154,6 +165,7 @@ function serializeForecastResults(
 	results: ForecastAccountResult[],
 	liveQuotaByIndex: Map<number, CodexQuotaSnapshot>,
 	refreshFailures: Map<number, TokenFailure>,
+	formatQuotaSnapshotLine: (snapshot: CodexQuotaSnapshot) => string,
 ): Array<{
 	index: number;
 	label: string;
@@ -189,7 +201,7 @@ function serializeForecastResults(
 						planType: liveQuota.planType,
 						activeLimit: liveQuota.activeLimit,
 						model: liveQuota.model,
-						summary: deps_formatQuotaSnapshotLine(liveQuota),
+						summary: formatQuotaSnapshotLine(liveQuota),
 					}
 				: undefined,
 			refreshFailure: refreshFailures.get(result.index),
@@ -197,15 +209,12 @@ function serializeForecastResults(
 	});
 }
 
-let deps_formatQuotaSnapshotLine: (snapshot: CodexQuotaSnapshot) => string;
-
 export async function runForecastCommand(
 	args: string[],
 	deps: ForecastCommandDeps & {
 		formatQuotaSnapshotLine: (snapshot: CodexQuotaSnapshot) => string;
 	},
 ): Promise<number> {
-	deps_formatQuotaSnapshotLine = deps.formatQuotaSnapshotLine;
 	const logInfo = deps.logInfo ?? console.log;
 	const logError = deps.logError ?? console.error;
 	if (args.includes("--help") || args.includes("-h")) {
@@ -220,7 +229,9 @@ export async function runForecastCommand(
 		return 1;
 	}
 	const options = parsedArgs.options;
-	const display = deps.defaultDisplay;
+	const display =
+		(await deps.loadDashboardDisplaySettings().catch(() => null)) ??
+		deps.defaultDisplay;
 	const quotaCache = options.live ? await deps.loadQuotaCache() : null;
 	const workingQuotaCache = quotaCache
 		? deps.cloneQuotaCacheData(quotaCache)
@@ -316,6 +327,10 @@ export async function runForecastCommand(
 	const forecastResults = deps.evaluateForecastAccounts(forecastInputs);
 	const summary = deps.summarizeForecast(forecastResults);
 	const recommendation = deps.recommendForecastAccount(forecastResults);
+	const explanation = buildForecastExplanation(
+		forecastResults,
+		recommendation,
+	);
 
 	if (options.json) {
 		if (workingQuotaCache && quotaCacheChanged) {
@@ -329,11 +344,13 @@ export async function runForecastCommand(
 					liveProbe: options.live,
 					summary,
 					recommendation,
+					explanation: options.explain ? explanation : undefined,
 					probeErrors,
 					accounts: serializeForecastResults(
 						forecastResults,
 						liveQuotaByIndex,
 						refreshFailures,
+						deps.formatQuotaSnapshotLine,
 					),
 				},
 				null,
@@ -415,8 +432,11 @@ export async function runForecastCommand(
 		);
 	}
 
-	if (display.showRecommendations) {
+	if (display.showRecommendations || options.explain) {
 		logInfo("");
+	}
+
+	if (display.showRecommendations) {
 		if (recommendation.recommendedIndex !== null) {
 			const index = recommendation.recommendedIndex;
 			const account = forecastResults.find((result) => result.index === index);
@@ -437,6 +457,28 @@ export async function runForecastCommand(
 			logInfo(
 				`${deps.stylePromptText("Note:", "accent")} ${deps.stylePromptText(recommendation.reason, "muted")}`,
 			);
+		}
+	}
+
+	if (options.explain) {
+		logInfo(
+			`${deps.stylePromptText("Explain:", "accent")} ${deps.stylePromptText(explanation.recommendationReason, "muted")}`,
+		);
+		for (const item of explanation.considered) {
+			const selectedLabel = item.selected ? " selected" : "";
+			const waitLabel =
+				item.waitMs > 0 ? `, wait ${deps.formatWaitTime(item.waitMs)}` : "";
+			logInfo(
+				`  ${deps.stylePromptText(item.selected ? "*" : "-", item.selected ? "success" : "muted")} ${deps.stylePromptText(
+					`${item.index + 1}. ${item.label}${item.isCurrent ? " [current]" : ""}: ${item.availability}, ${item.riskLevel} risk (${item.riskScore})${waitLabel}${selectedLabel}`,
+					item.selected ? "success" : "muted",
+				)}`,
+			);
+			if (item.reasons.length > 0) {
+				logInfo(
+					`    ${deps.stylePromptText(item.reasons.slice(0, 3).join("; "), "muted")}`,
+				);
+			}
 		}
 	}
 
