@@ -385,6 +385,9 @@ function applyReasoningSummaries(response: MutableRecord, state: ParsedResponseS
 		if (!getStringField(nextPart, "type")) {
 			nextPart.type = "summary_text";
 		}
+		if (typeof nextPart.text === "string") {
+			continue;
+		}
 		nextPart.text = text;
 		summary[summaryIndex] = nextPart;
 		item.summary = summary;

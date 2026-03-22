@@ -137,6 +137,31 @@ data: {"type":"response.completed","response":{"id":"resp_456","output":"done"}}
 			expect(body.output?.[1]?.summary?.[0]?.text).toBe('Draft summary');
 		});
 
+		it('preserves canonical terminal reasoning summary parts over synthesized semantic text', async () => {
+			const sseContent = [
+				'data: {"type":"response.created","response":{"id":"resp_semantic_part_canonical","object":"response"}}',
+				'data: {"type":"response.output_item.added","output_index":1,"item":{"id":"rs_789","type":"reasoning"}}',
+				'data: {"type":"response.reasoning_summary_part.added","output_index":1,"summary_index":0,"part":{"text":"Draft summary"}}',
+				'data: {"type":"response.reasoning_summary_part.done","output_index":1,"summary_index":0,"part":{"text":"Draft summary"}}',
+				'data: {"type":"response.completed","response":{"id":"resp_semantic_part_canonical","object":"response","output":[{},{"type":"reasoning","summary":[{"type":"summary_text","text":"Canonical summary part"}]}]}}',
+				'',
+			].join('\n');
+			const response = new Response(sseContent);
+			const headers = new Headers();
+
+			const result = await convertSseToJson(response, headers);
+			const body = await result.json() as {
+				reasoning_summary_text?: string;
+				output?: Array<{ summary?: Array<{ type?: string; text?: string }> }>;
+			};
+
+			expect(body.reasoning_summary_text).toBe('Canonical summary part');
+			expect(body.output?.[1]?.summary?.[0]).toEqual({
+				type: 'summary_text',
+				text: 'Canonical summary part',
+			});
+		});
+
 		it('synthesizes reasoning summaries from part events', async () => {
 			const sseContent = [
 				'data: {"type":"response.created","response":{"id":"resp_summary_part","object":"response"}}',
@@ -160,6 +185,35 @@ data: {"type":"response.completed","response":{"id":"resp_456","output":"done"}}
 				type: 'summary_text',
 				text: 'Need more context.',
 			});
+		});
+
+		it('synthesizes output text from content_part events', async () => {
+			const sseContent = [
+				'data: {"type":"response.created","response":{"id":"resp_content_part","object":"response"}}',
+				'data: {"type":"response.output_item.added","output_index":0,"item":{"id":"msg_part","type":"message","role":"assistant","phase":"final_answer"}}',
+				'data: {"type":"response.content_part.added","output_index":0,"content_index":0,"part":{"type":"output_text","text":"Hello ","phase":"final_answer"}}',
+				'data: {"type":"response.content_part.done","output_index":0,"content_index":0,"part":{"type":"output_text","text":"Hello world","phase":"final_answer"}}',
+				'data: {"type":"response.done","response":{"id":"resp_content_part","object":"response"}}',
+				'',
+			].join('\n');
+			const response = new Response(sseContent);
+			const headers = new Headers();
+
+			const result = await convertSseToJson(response, headers);
+			const body = await result.json() as {
+				output_text?: string;
+				final_answer_text?: string;
+				phase_text?: Record<string, string>;
+				output?: Array<{ content?: Array<{ type?: string; text?: string }> }>;
+			};
+
+			expect(body.output?.[0]?.content?.[0]).toEqual({
+				type: 'output_text',
+				text: 'Hello world',
+			});
+			expect(body.output_text).toBe('Hello world');
+			expect(body.final_answer_text).toBe('Hello world');
+			expect(body.phase_text).toEqual({ final_answer: 'Hello world' });
 		});
 
 		it('preserves whitespace-only semantic deltas when no done events override them', async () => {
