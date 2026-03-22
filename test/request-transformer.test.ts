@@ -2084,7 +2084,6 @@ describe('Request Transformer Module', () => {
 					'Removed 1 plan-mode-only tool definition(s) because collaboration mode is default',
 				);
 			});
-
 			it('removes tool_search tools when the selected model lacks search capability', async () => {
 				const body: RequestBody = {
 					model: 'gpt-5-nano',
@@ -2168,7 +2167,6 @@ describe('Request Transformer Module', () => {
 					},
 				]);
 			});
-
 			it('filters unsupported tools from nested namespaces without dropping supported descendants', async () => {
 				const body: RequestBody = {
 					model: 'gpt-5-nano',
