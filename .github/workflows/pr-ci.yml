@@ -50,6 +50,9 @@ jobs:
       - name: Build
         run: npm run build
 
+      - name: Pack budget check
+        run: npm run pack:check
+
   node22-smoke:
     name: Node 22 Smoke
     runs-on: ubuntu-latest

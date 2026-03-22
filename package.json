@@ -74,10 +74,10 @@
 		"typecheck": "tsc --noEmit",
 		"lint": "npm run lint:ts && npm run lint:scripts",
 		"lint:ts": "eslint . --ext .ts",
-		"lint:scripts": "eslint scripts --ext .js",
+		"lint:scripts": "eslint scripts --ext .js,.mjs",
 		"lint:fix": "npm run lint:ts:fix && npm run lint:scripts:fix",
 		"lint:ts:fix": "eslint . --ext .ts --fix",
-		"lint:scripts:fix": "eslint scripts --ext .js --fix",
+		"lint:scripts:fix": "eslint scripts --ext .js,.mjs --fix",
 		"test": "vitest run",
 		"test:watch": "vitest",
 		"test:ui": "vitest --ui",
@@ -86,6 +86,7 @@
 		"test:model-matrix:report": "node scripts/test-model-matrix.js --smoke --report-json=.tmp/model-matrix-report.json",
 		"clean:repo": "node scripts/repo-hygiene.js clean --mode aggressive",
 		"clean:repo:check": "node scripts/repo-hygiene.js check",
+		"pack:check": "node scripts/check-pack-budget.mjs",
 		"bench:edit-formats": "node scripts/benchmark-edit-formats.mjs --preset=codex-core",
 		"bench:edit-formats:smoke": "node scripts/benchmark-edit-formats.mjs --smoke --preset=codex-core",
 		"bench:edit-formats:render": "node scripts/benchmark-render-dashboard.mjs",
@@ -121,7 +122,7 @@
 		"*.ts": [
 			"eslint --max-warnings=0 --fix --no-warn-ignored"
 		],
-		"scripts/**/*.js": [
+		"scripts/**/*.{js,mjs}": [
 			"eslint --max-warnings=0 --fix --no-warn-ignored"
 		]
 	},
