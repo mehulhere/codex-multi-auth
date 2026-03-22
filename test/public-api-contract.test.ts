@@ -115,6 +115,8 @@ describe("public api contract", () => {
 
 		const baseBody: RequestBody = {
 			model: "gpt-5.4",
+			background: true,
+			store: true,
 			input: [{ type: "message", role: "user", content: "hi" }],
 			prompt_cache_retention: "24h",
 			tools: [
@@ -144,12 +146,22 @@ describe("public api contract", () => {
 		const transformedPositional = await transformRequestBody(
 			JSON.parse(JSON.stringify(baseBody)) as RequestBody,
 			"codex",
+			undefined,
+			true,
+			false,
+			"hybrid",
+			30,
+			false,
+			true,
 		);
 		const transformedNamed = await transformRequestBody({
 			body: JSON.parse(JSON.stringify(baseBody)) as RequestBody,
 			codexInstructions: "codex",
+			allowBackgroundResponses: true,
 		});
 		expect(transformedNamed).toEqual(transformedPositional);
 		expect(transformedNamed.tools).toEqual(baseBody.tools);
+		expect(transformedNamed.background).toBe(true);
+		expect(transformedNamed.store).toBe(true);
 	});
 });

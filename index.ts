@@ -66,6 +66,7 @@ import {
 	getLiveAccountSyncDebounceMs,
 	getLiveAccountSyncPollMs,
 	getResponseContinuation,
+	getBackgroundResponses,
 	getSessionAffinity,
 	getSessionAffinityTtlMs,
 	getSessionAffinityMaxEntries,
@@ -1371,6 +1372,7 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 										fastSessionStrategy,
 										fastSessionMaxInputItems,
 										deferFastSessionInputTrimming: fastSessionEnabled,
+										allowBackgroundResponses: getBackgroundResponses(pluginConfig),
 									},
 								);
 										let requestInit = transformation?.updatedInit ?? baseInit;

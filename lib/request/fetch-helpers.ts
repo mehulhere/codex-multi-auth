@@ -663,6 +663,7 @@ export async function transformRequestForCodex(
 		fastSessionStrategy?: "hybrid" | "always";
 		fastSessionMaxInputItems?: number;
 		deferFastSessionInputTrimming?: boolean;
+		allowBackgroundResponses?: boolean;
 	},
 ): Promise<TransformRequestForCodexResult | undefined> {
 	const hasParsedBody =
@@ -719,6 +720,7 @@ export async function transformRequestForCodex(
 			options?.fastSessionStrategy ?? "hybrid",
 			options?.fastSessionMaxInputItems ?? 30,
 			options?.deferFastSessionInputTrimming ?? false,
+			options?.allowBackgroundResponses ?? false,
 		);
 
 		// Log transformed request
@@ -740,7 +742,8 @@ export async function transformRequestForCodex(
 				body: transformedBody,
 				updatedInit: { ...(init ?? {}), body: JSON.stringify(transformedBody) },
 				deferredFastSessionInputTrim:
-					options?.deferFastSessionInputTrimming === true
+					options?.deferFastSessionInputTrimming === true &&
+					transformedBody.background !== true
 						? fastSessionInputTrimPlan.trim
 						: undefined,
 			};

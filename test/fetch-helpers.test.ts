@@ -153,6 +153,18 @@ describe('Fetch Helpers Module', () => {
 			expect(rewriteUrlForCodex(url)).toBe('https://chatgpt.com/backend-api/codex/responses');
 		});
 
+		it('should preserve response subresource paths for background polling and cancel routes', () => {
+			const retrieveUrl = 'https://api.openai.com/v1/responses/resp_123';
+			const cancelUrl = 'https://api.openai.com/v1/responses/resp_123/cancel';
+
+			expect(rewriteUrlForCodex(retrieveUrl)).toBe(
+				'https://chatgpt.com/backend-api/v1/codex/responses/resp_123',
+			);
+			expect(rewriteUrlForCodex(cancelUrl)).toBe(
+				'https://chatgpt.com/backend-api/v1/codex/responses/resp_123/cancel',
+			);
+		});
+
 		it('should keep backend-api paths when URL is already on codex origin', () => {
 			const url = 'https://chatgpt.com/backend-api/other';
 			expect(rewriteUrlForCodex(url)).toBe(url);

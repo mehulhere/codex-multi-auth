@@ -76,9 +76,12 @@ Used only for host plugin mode through the host runtime config file.
 | `sessionRecovery` | `true` |
 | `autoResume` | `true` |
 | `responseContinuation` | `false` |
+| `backgroundResponses` | `false` |
 | `proactiveRefreshGuardian` | `true` |
 | `proactiveRefreshIntervalMs` | `60000` |
 | `proactiveRefreshBufferMs` | `300000` |
+
+`backgroundResponses` is an opt-in compatibility switch for Responses API `background: true` requests. When enabled, those requests become stateful (`store=true`) instead of following the default stateless Codex routing.
 
 ### Storage / Sync
 
