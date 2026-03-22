@@ -168,8 +168,8 @@ export class CodexRateLimitError extends CodexError {
 /**
  * Storage-specific error with a filesystem code, target path, and user-facing hint.
  */
-export class StorageError extends Error {
-	readonly code: string;
+export class StorageError extends CodexError {
+	override readonly name = "StorageError";
 	readonly path: string;
 	readonly hint: string;
 
@@ -180,9 +180,7 @@ export class StorageError extends Error {
 		hint: string,
 		cause?: Error,
 	) {
-		super(message, { cause });
-		this.name = "StorageError";
-		this.code = code;
+		super(message, { code, cause });
 		this.path = path;
 		this.hint = hint;
 	}

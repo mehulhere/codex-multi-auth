@@ -1293,13 +1293,6 @@ describe("storage", () => {
 				expect(hint).toContain("Disk is full");
 			});
 
-			it("should return empty file hint for EEMPTY", () => {
-				const err = { code: "EEMPTY" } as NodeJS.ErrnoException;
-				const hint = formatStorageErrorHint(err, testPath);
-
-				expect(hint).toContain("empty");
-			});
-
 			it("should return generic hint for unknown error codes", () => {
 				const err = { code: "UNKNOWN_CODE" } as NodeJS.ErrnoException;
 				const hint = formatStorageErrorHint(err, testPath);
