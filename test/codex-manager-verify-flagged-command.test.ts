@@ -188,5 +188,143 @@ describe("runVerifyFlaggedCommand", () => {
 		);
 		expect(payload.remainingFlagged).toBe(1);
 		expect(payload.reports).toHaveLength(2);
+		expect(deps.saveFlaggedAccounts).not.toHaveBeenCalled();
+	});
+
+	it("keeps healthy accounts flagged when --no-restore is selected", async () => {
+		const deps = createDeps({
+			parseVerifyFlaggedArgs: vi.fn(() => ({
+				ok: true as const,
+				options: {
+					dryRun: false,
+					json: true,
+					restore: false,
+				} satisfies VerifyFlaggedCliOptions,
+			})),
+			queuedRefresh: vi.fn(async () => ({
+				type: "success",
+				access: "healthy-access",
+				refresh: "healthy-refresh",
+				expires: 5_000,
+			})),
+			resolveStoredAccountIdentity: vi.fn(() => ({
+				accountId: "acct_healthy",
+				accountIdSource: "jwt",
+			})),
+			extractAccountId: vi.fn(() => "acct_healthy"),
+			extractAccountEmail: vi.fn(() => "healthy@example.com"),
+		});
+
+		const result = await runVerifyFlaggedCommand([], deps);
+		const payload = JSON.parse(
+			(deps.logInfo as ReturnType<typeof vi.fn>).mock.calls.at(-1)![0],
+		);
+
+		expect(result).toBe(0);
+		expect(payload.healthyFlagged).toBe(1);
+		expect(payload.remainingFlagged).toBe(1);
+		expect(payload.reports[0]).toEqual(
+			expect.objectContaining({
+				outcome: "healthy-flagged",
+			}),
+		);
+		expect(deps.withAccountAndFlaggedStorageTransaction).not.toHaveBeenCalled();
+		expect(deps.saveFlaggedAccounts).toHaveBeenCalledTimes(1);
+	});
+
+	it("does not persist storage changes during dry-run restore", async () => {
+		const deps = createDeps({
+			parseVerifyFlaggedArgs: vi.fn(() => ({
+				ok: true as const,
+				options: {
+					dryRun: true,
+					json: true,
+					restore: true,
+				} satisfies VerifyFlaggedCliOptions,
+			})),
+			queuedRefresh: vi.fn(async () => ({
+				type: "success",
+				access: "restored-access",
+				refresh: "restored-refresh",
+				expires: 5_000,
+			})),
+			upsertRecoveredFlaggedAccount: vi.fn(() => ({
+				restored: true,
+				changed: true,
+				message: "restored",
+			})),
+		});
+
+		const result = await runVerifyFlaggedCommand([], deps);
+		const payload = JSON.parse(
+			(deps.logInfo as ReturnType<typeof vi.fn>).mock.calls.at(-1)![0],
+		);
+
+		expect(result).toBe(0);
+		expect(payload.dryRun).toBe(true);
+		expect(payload.restored).toBe(1);
+		expect(deps.withAccountAndFlaggedStorageTransaction).not.toHaveBeenCalled();
+		expect(deps.saveFlaggedAccounts).not.toHaveBeenCalled();
+	});
+
+	it("prints a human summary for non-json verification output", async () => {
+		const deps = createDeps({
+			parseVerifyFlaggedArgs: vi.fn(() => ({
+				ok: true as const,
+				options: {
+					dryRun: false,
+					json: false,
+					restore: false,
+				} satisfies VerifyFlaggedCliOptions,
+			})),
+			queuedRefresh: vi.fn(async () => ({
+				type: "failed",
+				reason: "invalid_grant",
+				message: "token expired",
+			})),
+			stylePromptText: vi.fn((text) => `styled:${text}`),
+			styleAccountDetailText: vi.fn((text) => `detail:${text}`),
+			formatResultSummary: vi.fn(() => "summary:0 restored"),
+		});
+
+		const result = await runVerifyFlaggedCommand([], deps);
+
+		expect(result).toBe(0);
+		expect(deps.stylePromptText).toHaveBeenCalledWith(
+			"Checking 1 flagged account(s)...",
+			"accent",
+		);
+		expect(deps.formatResultSummary).toHaveBeenCalledWith([
+			{ text: "0 restored", tone: "muted" },
+			{ text: "0 healthy (kept flagged)", tone: "muted" },
+			{ text: "1 still flagged", tone: "danger" },
+		]);
+		expect(deps.logInfo).toHaveBeenCalledWith("summary:0 restored");
+		expect(deps.logInfo).toHaveBeenCalledWith(
+			expect.stringContaining("detail:token expired"),
+		);
+	});
+
+	it("returns early when no flagged accounts are stored", async () => {
+		const deps = createDeps({
+			parseVerifyFlaggedArgs: vi.fn(() => ({
+				ok: true as const,
+				options: {
+					dryRun: false,
+					json: false,
+					restore: true,
+				} satisfies VerifyFlaggedCliOptions,
+			})),
+			loadFlaggedAccounts: vi.fn(async () => ({
+				version: 1 as const,
+				accounts: [],
+			})),
+		});
+
+		const result = await runVerifyFlaggedCommand([], deps);
+
+		expect(result).toBe(0);
+		expect(deps.logInfo).toHaveBeenCalledWith("No flagged accounts to check.");
+		expect(deps.queuedRefresh).not.toHaveBeenCalled();
 	});
 });
