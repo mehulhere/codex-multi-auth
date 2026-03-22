@@ -199,6 +199,12 @@ import {
 	getRateLimitResetTimeForFamily,
 	resolveActiveIndex,
 } from "./lib/runtime/account-status.js";
+import { reloadRuntimeAccountManager } from "./lib/runtime/account-manager-cache.js";
+import {
+	createAccountManagerReloader,
+	createPersistAccounts,
+	runRuntimeOAuthFlow,
+} from "./lib/runtime/auth-facade.js";
 import { runBrowserOAuthFlow } from "./lib/runtime/browser-oauth-flow.js";
 import { buildLoginMenuAccounts } from "./lib/runtime/login-menu-accounts.js";
 import { buildManualOAuthFlow } from "./lib/runtime/manual-oauth-flow.js";
@@ -377,28 +383,24 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 	const runOAuthFlow = async (
 		forceNewLogin: boolean = false,
 	): Promise<TokenResult> =>
-		runBrowserOAuthFlow({
-			forceNewLogin,
-			logInfo,
+		runRuntimeOAuthFlow(forceNewLogin, {
+			runBrowserOAuthFlow,
 			manualModeLabel: AUTH_LABELS.OAUTH_MANUAL,
-			logDebug: (message) => logDebug(`[${PLUGIN_NAME}] ${message}`),
-			logWarn: (message) => logWarn(`\n[${PLUGIN_NAME}] ${message}`),
+			logInfo,
+			logDebug,
+			logWarn,
+			pluginName: PLUGIN_NAME,
 		});
 
-	const persistAccountPool = async (
-		results: TokenSuccessWithAccount[],
-		replaceAll: boolean = false,
-	): Promise<void> =>
-		persistAccountPoolResults({
-			results,
-			replaceAll,
-			modelFamilies: MODEL_FAMILIES,
-			withAccountStorageTransaction,
-			findMatchingAccountIndex,
-			extractAccountId,
-			extractAccountEmail,
-			sanitizeEmail,
-		});
+	const persistAccountPool = createPersistAccounts({
+		persistAccountPoolResults,
+		withAccountStorageTransaction,
+		extractAccountId,
+		extractAccountEmail,
+		sanitizeEmail,
+		findMatchingAccountIndex,
+		modelFamilies: MODEL_FAMILIES,
+	});
 
 	const showToast = async (
 		message: string,
@@ -500,24 +502,21 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 		accountManagerPromise = null;
 	};
 
-	const reloadAccountManagerFromDisk = async (
-		authFallback?: OAuthAuthDetails,
-	): Promise<AccountManager> => {
-		if (accountReloadInFlight) {
-			return accountReloadInFlight;
-		}
-		accountReloadInFlight = (async () => {
-			const reloaded = await AccountManager.loadFromDisk(authFallback);
-			cachedAccountManager = reloaded;
-			accountManagerPromise = Promise.resolve(reloaded);
-			return reloaded;
-		})();
-		try {
-			return await accountReloadInFlight;
-		} finally {
-			accountReloadInFlight = null;
-		}
-	};
+	const reloadAccountManagerFromDisk =
+		createAccountManagerReloader<AccountManager>({
+			reloadRuntimeAccountManager,
+			getReloadInFlight: () => accountReloadInFlight,
+			loadFromDisk: (fallback) => AccountManager.loadFromDisk(fallback),
+			setCachedAccountManager: (value) => {
+				cachedAccountManager = value;
+			},
+			setAccountManagerPromise: (value) => {
+				accountManagerPromise = value;
+			},
+			setReloadInFlight: (value) => {
+				accountReloadInFlight = value;
+			},
+		});
 
 	const applyAccountStorageScope = (
 		pluginConfig: ReturnType<typeof loadPluginConfig>,
