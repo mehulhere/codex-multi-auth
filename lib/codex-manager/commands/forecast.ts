@@ -103,6 +103,14 @@ export interface ForecastCommandDeps {
 	getNow?: () => number;
 }
 
+function joinStyledSegments(
+	parts: string[],
+	styleText: (text: string, tone: PromptTone) => string,
+): string {
+	if (parts.length === 0) return "";
+	return parts.join(styleText(" | ", "muted"));
+}
+
 function printForecastUsage(logInfo: (message: string) => void): void {
 	logInfo(
 		[
@@ -412,7 +420,7 @@ export async function runForecastCommand(
 		const rowParts = [availabilityLabel, riskLabel];
 		if (waitLabel) rowParts.push(waitLabel);
 		logInfo(
-			`${indexLabel} ${accountLabel} ${deps.stylePromptText("|", "muted")} ${rowParts.join(deps.stylePromptText(" | ", "muted"))}`,
+			`${indexLabel} ${accountLabel} ${deps.stylePromptText("|", "muted")} ${joinStyledSegments(rowParts, deps.stylePromptText)}`,
 		);
 		if (display.showForecastReasons && result.reasons.length > 0) {
 			logInfo(
