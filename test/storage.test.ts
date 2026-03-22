@@ -19,6 +19,7 @@ import {
 	importAccounts,
 	loadAccounts,
 	loadFlaggedAccounts,
+	normalizeEmailKey,
 	normalizeAccountStorage,
 	resolveAccountSelectionIndex,
 	saveFlaggedAccounts,
@@ -26,15 +27,10 @@ import {
 	saveAccounts,
 	setStoragePath,
 	setStoragePathDirect,
+	toStorageError,
 	withAccountAndFlaggedStorageTransaction,
 	withAccountStorageTransaction,
 } from "../lib/storage.js";
-import { toStorageError } from "../lib/storage/error-hints.js";
-
-// Mocking the behavior we're about to implement for TDD
-// Since the functions aren't in lib/storage.ts yet, we'll need to mock them or
-// accept that this test won't even compile/run until we add them.
-// But Task 0 says: "Tests should fail initially (RED phase)"
 
 describe("storage", () => {
 	const _origCODEX_HOME = process.env.CODEX_HOME;
@@ -99,6 +95,15 @@ describe("storage", () => {
 	});
 
 	describe("account identity keys", () => {
+		it("normalizes mixed-case emails directly", () => {
+			expect(normalizeEmailKey(" User@Example.com ")).toBe("user@example.com");
+		});
+
+		it("returns undefined for missing or blank emails", () => {
+			expect(normalizeEmailKey(undefined)).toBeUndefined();
+			expect(normalizeEmailKey("   ")).toBeUndefined();
+		});
+
 		it("prefers accountId and normalized email when both are present", () => {
 			expect(
 				getAccountIdentityKey({

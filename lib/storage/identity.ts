@@ -6,7 +6,7 @@ type AccountLike = {
 	refreshToken?: string;
 };
 
-type AccountIdentityRef = {
+export type AccountIdentityRef = {
 	accountId?: string;
 	emailKey?: string;
 	refreshToken?: string;
@@ -39,7 +39,7 @@ function hashRefreshTokenKey(refreshToken: string): string {
 	return createHash("sha256").update(refreshToken).digest("hex");
 }
 
-function toAccountIdentityRef(
+export function toAccountIdentityRef(
 	account:
 		| Pick<AccountLike, "accountId" | "email" | "refreshToken">
 		| null

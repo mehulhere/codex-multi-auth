@@ -16,13 +16,17 @@ import { AnyAccountStorageSchema, getValidationErrors } from "./schemas.js";
 import { formatStorageErrorHint } from "./storage/error-hints.js";
 
 export { StorageError } from "./errors.js";
-export { formatStorageErrorHint } from "./storage/error-hints.js";
+export { formatStorageErrorHint, toStorageError } from "./storage/error-hints.js";
 export {
 	getAccountIdentityKey,
 	normalizeEmailKey,
 } from "./storage/identity.js";
 
-import { normalizeEmailKey } from "./storage/identity.js";
+import {
+	type AccountIdentityRef,
+	normalizeEmailKey,
+	toAccountIdentityRef,
+} from "./storage/identity.js";
 import {
 	type AccountMetadataV1,
 	type AccountMetadataV3,
@@ -228,41 +232,6 @@ type AccountLike = {
 	addedAt?: number;
 	lastUsed?: number;
 };
-
-type AccountIdentityRef = {
-	accountId?: string;
-	emailKey?: string;
-	refreshToken?: string;
-};
-
-function normalizeAccountIdKey(
-	accountId: string | undefined,
-): string | undefined {
-	if (!accountId) return undefined;
-	const trimmed = accountId.trim();
-	return trimmed || undefined;
-}
-
-function normalizeRefreshTokenKey(
-	refreshToken: string | undefined,
-): string | undefined {
-	if (!refreshToken) return undefined;
-	const trimmed = refreshToken.trim();
-	return trimmed || undefined;
-}
-
-function toAccountIdentityRef(
-	account:
-		| Pick<AccountLike, "accountId" | "email" | "refreshToken">
-		| null
-		| undefined,
-): AccountIdentityRef {
-	return {
-		accountId: normalizeAccountIdKey(account?.accountId),
-		emailKey: normalizeEmailKey(account?.email),
-		refreshToken: normalizeRefreshTokenKey(account?.refreshToken),
-	};
-}
 
 function looksLikeSyntheticFixtureAccount(account: AccountMetadataV3): boolean {
 	const email =
