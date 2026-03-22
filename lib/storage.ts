@@ -1,4 +1,3 @@
-import { AsyncLocalStorage } from "node:async_hooks";
 import { createHash } from "node:crypto";
 import { existsSync, promises as fs } from "node:fs";
 import { basename, dirname, join } from "node:path";
@@ -63,6 +62,10 @@ import {
 	collectNamedBackups,
 	type NamedBackupSummary,
 } from "./storage/named-backups.js";
+import {
+	getStoragePathState,
+	setStoragePathState,
+} from "./storage/path-state.js";
 import {
 	findProjectRoot,
 	getConfigDir,
@@ -218,31 +221,6 @@ async function ensureGitignore(storagePath: string): Promise<void> {
 	} catch (error) {
 		log.warn("Failed to update .gitignore", { error: String(error) });
 	}
-}
-
-type StoragePathState = {
-	currentStoragePath: string | null;
-	currentLegacyProjectStoragePath: string | null;
-	currentLegacyWorktreeStoragePath: string | null;
-	currentProjectRoot: string | null;
-};
-
-let currentStorageState: StoragePathState = {
-	currentStoragePath: null,
-	currentLegacyProjectStoragePath: null,
-	currentLegacyWorktreeStoragePath: null,
-	currentProjectRoot: null,
-};
-
-const storagePathStateContext = new AsyncLocalStorage<StoragePathState>();
-
-function getStoragePathState(): StoragePathState {
-	return storagePathStateContext.getStore() ?? currentStorageState;
-}
-
-function setStoragePathState(state: StoragePathState): void {
-	currentStorageState = state;
-	storagePathStateContext.enterWith(state);
 }
 
 export function setStorageBackupEnabled(enabled: boolean): void {
