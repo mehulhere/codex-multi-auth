@@ -349,6 +349,34 @@ function notifyResponseId(
 	}
 }
 
+function truncateDiagnosticText(value: unknown, maxLength = 400): string | undefined {
+	if (typeof value !== "string") return undefined;
+	const trimmed = value.trim();
+	if (trimmed.length === 0) return undefined;
+	return trimmed.length > maxLength ? `${trimmed.slice(0, maxLength)}...` : trimmed;
+}
+
+function logStreamDiagnostics(finalResponse: unknown): void {
+	if (!LOGGING_ENABLED || !isRecord(finalResponse)) {
+		return;
+	}
+
+	const responseId = extractResponseId(finalResponse);
+	const phase = getStringField(finalResponse, "phase");
+	const commentaryText = truncateDiagnosticText(finalResponse.commentary_text);
+	const finalAnswerText = truncateDiagnosticText(finalResponse.final_answer_text);
+	const reasoningSummaryText = truncateDiagnosticText(finalResponse.reasoning_summary_text);
+	if (phase || commentaryText || finalAnswerText || reasoningSummaryText) {
+		logRequest("stream-diagnostics", {
+			...(responseId ? { responseId } : {}),
+			...(phase ? { phase } : {}),
+			...(commentaryText ? { commentaryText } : {}),
+			...(finalAnswerText ? { finalAnswerText } : {}),
+			...(reasoningSummaryText ? { reasoningSummaryText } : {}),
+		});
+	}
+}
+
 function maybeCaptureResponseEvent(
 	state: ParsedResponseState,
 	data: SSEEventData,
@@ -538,6 +566,8 @@ export async function convertSseToJson(
 				headers: headers,
 			});
 		}
+
+		logStreamDiagnostics(finalResponse);
 
 		// Return as plain JSON (not SSE)
 		const jsonHeaders = new Headers(headers);
