@@ -32,18 +32,25 @@ function notifyResponseId(
 	}
 }
 
+type CapturedResponseEvent =
+	| { kind: "error" }
+	| { kind: "response"; response: unknown }
+	| null;
+
 function maybeCaptureResponseEvent(
 	data: SSEEventData,
 	onResponseId?: (responseId: string) => void,
-): unknown | null {
+): CapturedResponseEvent {
 	if (data.type === "error") {
 		log.error("SSE error event received", { error: data });
-		return null;
+		return { kind: "error" };
 	}
 
 	if (data.type === "response.done" || data.type === "response.completed") {
 		notifyResponseId(onResponseId, data.response);
-		return data.response ?? null;
+		if (data.response !== undefined && data.response !== null) {
+			return { kind: "response", response: data.response };
+		}
 	}
 
 	return null;
@@ -68,8 +75,9 @@ function parseSseStream(
 			if (!payload || payload === '[DONE]') continue;
 			try {
 				const data = JSON.parse(payload) as SSEEventData;
-				const finalResponse = maybeCaptureResponseEvent(data, onResponseId);
-				if (finalResponse) return finalResponse;
+				const capturedEvent = maybeCaptureResponseEvent(data, onResponseId);
+				if (capturedEvent?.kind === "error") return null;
+				if (capturedEvent?.kind === "response") return capturedEvent.response;
 			} catch {
 				// Skip malformed JSON
 			}
@@ -165,8 +173,10 @@ function createResponseIdCapturingStream(
 ): ReadableStream<Uint8Array> {
 	const decoder = new TextDecoder();
 	let bufferedText = "";
+	let sawErrorEvent = false;
 
 	const processBufferedLines = (flush = false): void => {
+		if (sawErrorEvent) return;
 		const lines = bufferedText.split(/\r?\n/);
 		if (!flush) {
 			bufferedText = lines.pop() ?? "";
@@ -181,7 +191,11 @@ function createResponseIdCapturingStream(
 			if (!payload || payload === "[DONE]") continue;
 			try {
 				const data = JSON.parse(payload) as SSEEventData;
-				maybeCaptureResponseEvent(data, onResponseId);
+				const capturedEvent = maybeCaptureResponseEvent(data, onResponseId);
+				if (capturedEvent?.kind === "error") {
+					sawErrorEvent = true;
+					break;
+				}
 			} catch {
 				// Ignore malformed SSE lines and keep forwarding the raw stream.
 			}

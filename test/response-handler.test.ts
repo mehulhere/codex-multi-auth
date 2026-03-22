@@ -129,6 +129,24 @@ data: {"type":"response.done","response":{"id":"resp_789"}}
 			expect(onResponseId).toHaveBeenCalledWith('resp_123');
 		});
 
+		it('should return the raw SSE text when an error event arrives before response.done', async () => {
+			const onResponseId = vi.fn();
+			const sseContent = [
+				'data: {"type":"error","message":"quota exceeded"}',
+				'',
+				'data: {"type":"response.done","response":{"id":"resp_bad_123","output":"bad"}}',
+				'',
+			].join('\n');
+			const response = new Response(sseContent);
+			const headers = new Headers();
+
+			const result = await convertSseToJson(response, headers, { onResponseId });
+			const text = await result.text();
+
+			expect(text).toBe(sseContent);
+			expect(onResponseId).not.toHaveBeenCalled();
+		});
+
 		it('should throw error if SSE stream exceeds size limit', async () => {
 			const largeContent = 'a'.repeat(20 * 1024 * 1024 + 1);
 			const response = new Response(largeContent);
@@ -201,6 +219,24 @@ data: {"type":"response.done","response":{"id":"resp_789"}}
 			expect(text).toBe(sseContent);
 			expect(onResponseId).toHaveBeenCalledWith('resp_stream_123');
 			expect(captured.headers.get('content-type')).toBe('text/event-stream');
+		});
+
+		it('should stop capturing response ids after an SSE error event', async () => {
+			const onResponseId = vi.fn();
+			const sseContent = [
+				'data: {"type":"error","message":"quota exceeded"}',
+				'',
+				'data: {"type":"response.done","response":{"id":"resp_bad_123","output":"done"}}',
+				'',
+			].join('\n');
+			const response = new Response(sseContent);
+			const headers = new Headers({ 'content-type': 'text/event-stream' });
+
+			const captured = attachResponseIdCapture(response, headers, onResponseId);
+			const text = await captured.text();
+
+			expect(text).toBe(sseContent);
+			expect(onResponseId).not.toHaveBeenCalled();
 		});
 	});
 
