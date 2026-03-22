@@ -49,13 +49,8 @@ import {
 	exchangeAuthorizationCode,
 	parseAuthorizationInput,
 	REDIRECT_URI,
-	redactOAuthUrlForLog,
 } from "./lib/auth/auth.js";
-import {
-	isBrowserLaunchSuppressed,
-	openBrowserUrl,
-} from "./lib/auth/browser.js";
-import { startLocalOAuthServer } from "./lib/auth/server.js";
+import { isBrowserLaunchSuppressed } from "./lib/auth/browser.js";
 import { checkAndNotify } from "./lib/auto-update-checker.js";
 import { CapabilityPolicyStore } from "./lib/capability-policy.js";
 import { promptAddAnotherAccount, promptLoginMode } from "./lib/cli.js";
@@ -380,17 +375,10 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 	): Promise<TokenResult> =>
 		runBrowserOAuthFlow({
 			forceNewLogin,
-			createAuthorizationFlow,
 			logInfo,
-			redactOAuthUrlForLog,
-			startLocalOAuthServer,
-			logDebug,
-			openBrowserUrl,
-			pluginName: PLUGIN_NAME,
-			authManualLabel: AUTH_LABELS.OAUTH_MANUAL,
-			logWarn,
-			exchangeAuthorizationCode,
-			redirectUri: REDIRECT_URI,
+			manualModeLabel: AUTH_LABELS.OAUTH_MANUAL,
+			logDebug: (message) => logDebug(`[${PLUGIN_NAME}] ${message}`),
+			logWarn: (message) => logWarn(`\n[${PLUGIN_NAME}] ${message}`),
 		});
 
 	const persistAccountPool = async (
