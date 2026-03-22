@@ -1357,7 +1357,7 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 								);
 										let requestInit = transformation?.updatedInit ?? baseInit;
 										let transformedBody: RequestBody | undefined = transformation?.body;
-										const deferredFastSessionInputTrim =
+										let pendingFastSessionInputTrim =
 											transformation?.deferredFastSessionInputTrim;
 										const promptCacheKey = transformedBody?.prompt_cache_key;
 										let model = transformedBody?.model;
@@ -1676,12 +1676,14 @@ accountAttemptLoop: while (attempted.size < Math.max(1, accountCount)) {
 										promptCacheKey: effectivePromptCacheKey,
 									},
 								);
-								if (transformedBody && deferredFastSessionInputTrim) {
+								if (transformedBody && pendingFastSessionInputTrim) {
+									const activeFastSessionInputTrim = pendingFastSessionInputTrim;
+									pendingFastSessionInputTrim = undefined;
 									const compactionResult = await applyResponseCompaction({
 										body: transformedBody,
 										requestUrl: url,
 										headers,
-										trim: deferredFastSessionInputTrim,
+										trim: activeFastSessionInputTrim,
 										fetchImpl: async (requestUrl, requestInit) => {
 											const normalizedCompactionUrl =
 												typeof requestUrl === "string"
