@@ -370,6 +370,24 @@ data: {"type":"response.done","response":{"id":"resp_789"}}
 			expect(onResponseId).not.toHaveBeenCalled();
 		});
 
+		it('should return the raw SSE text when a stream ends after response.created without a terminal event', async () => {
+			const onResponseId = vi.fn();
+			const sseContent = [
+				'data: {"type":"response.created","response":{"id":"resp_partial_123","object":"response"}}',
+				'',
+				'data: {"type":"response.output_text.delta","output_index":0,"content_index":0,"delta":"partial"}',
+				'',
+			].join('\n');
+			const response = new Response(sseContent);
+			const headers = new Headers();
+
+			const result = await convertSseToJson(response, headers, { onResponseId });
+			const text = await result.text();
+
+			expect(text).toBe(sseContent);
+			expect(onResponseId).not.toHaveBeenCalled();
+		});
+
 		it('should throw error if SSE stream exceeds size limit', async () => {
 			const largeContent = 'a'.repeat(20 * 1024 * 1024 + 1);
 			const response = new Response(largeContent);

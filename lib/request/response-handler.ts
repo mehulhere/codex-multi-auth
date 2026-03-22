@@ -433,11 +433,10 @@ function maybeCaptureResponseEvent(
 		return;
 	}
 
-	if (isRecord(data.response)) {
-		state.finalResponse = { ...data.response };
-	}
-
 	if (data.type === "response.done" || data.type === "response.completed") {
+		if (isRecord(data.response)) {
+			state.finalResponse = { ...data.response };
+		}
 		notifyResponseId(state, onResponseId, data.response);
 		return;
 	}
