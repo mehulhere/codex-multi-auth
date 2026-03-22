@@ -198,6 +198,18 @@ function resolveTextVerbosity(
 	);
 }
 
+function resolvePromptCacheRetention(
+	modelConfig: ConfigOptions,
+	body: RequestBody,
+): RequestBody["prompt_cache_retention"] {
+	const providerOpenAI = body.providerOptions?.openai;
+	return (
+		body.prompt_cache_retention ??
+		providerOpenAI?.promptCacheRetention ??
+		modelConfig.promptCacheRetention
+	);
+}
+
 function resolveInclude(modelConfig: ConfigOptions, body: RequestBody): string[] {
 	const providerOpenAI = body.providerOptions?.openai;
 	const base =
@@ -911,10 +923,16 @@ export async function transformRequestBody(
 
 	// Configure text verbosity (support user config)
 	// Default: "medium" (matches Codex CLI default for all GPT-5 models)
+	// Preserve any structured-output `text.format` contract from the host.
 	body.text = {
 		...body.text,
 		verbosity: resolveTextVerbosity(modelConfig, body),
 	};
+
+	const promptCacheRetention = resolvePromptCacheRetention(modelConfig, body);
+	if (promptCacheRetention !== undefined) {
+		body.prompt_cache_retention = promptCacheRetention;
+	}
 
 	if (shouldApplyFastSessionTuning) {
 		// In fast-session mode, prioritize speed by clamping to minimum reasoning + verbosity.

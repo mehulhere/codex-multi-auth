@@ -113,7 +113,6 @@ describe("response compaction", () => {
 			expect.any(Object),
 		);
 	});
-
 	it("falls back to local trimming when the compaction request fails", async () => {
 		const body: RequestBody = {
 			model: "gpt-5.4",

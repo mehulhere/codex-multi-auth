@@ -487,7 +487,6 @@ function finalizeParsedResponse(state: ParsedResponseState): MutableRecord | nul
 
 	return response;
 }
-
 function extractResponseId(response: unknown): string | null {
 	if (!response || typeof response !== "object") return null;
 	const candidate = (response as { id?: unknown }).id;

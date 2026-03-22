@@ -24,8 +24,16 @@ export interface ConfigOptions {
 	reasoningEffort?: "none" | "minimal" | "low" | "medium" | "high" | "xhigh";
 	reasoningSummary?: "auto" | "concise" | "detailed" | "off" | "on";
 	textVerbosity?: "low" | "medium" | "high";
+	promptCacheRetention?: PromptCacheRetention;
 	include?: string[];
 }
+
+export type PromptCacheRetention =
+	| "5m"
+	| "1h"
+	| "24h"
+	| "7d"
+	| (string & {});
 
 export interface ReasoningConfig {
 	effort: "none" | "minimal" | "low" | "medium" | "high" | "xhigh";
@@ -131,7 +139,7 @@ export interface RequestBody {
 	/** Stable key to enable prompt-token caching on Codex backend */
 	prompt_cache_key?: string;
 	/** Retention mode for server-side prompt cache entries */
-	prompt_cache_retention?: string;
+	prompt_cache_retention?: PromptCacheRetention;
 	/** Resume a prior Responses API turn without resending the full transcript */
 	previous_response_id?: string;
 	max_output_tokens?: number;

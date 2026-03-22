@@ -208,6 +208,7 @@ function addCodexAliases(): void {
 	addReasoningAliases("gpt-5.1-codex", "gpt-5-codex");
 	addAlias("gpt_5_codex", "gpt-5-codex");
 
+	addReasoningAliases("codex-max", "gpt-5.1-codex-max");
 	addReasoningAliases("gpt-5.1-codex-max", "gpt-5.1-codex-max");
 	addAlias("codex-max", "gpt-5.1-codex-max");
 

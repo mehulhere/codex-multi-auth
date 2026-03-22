@@ -231,6 +231,21 @@ describe("public api contract", () => {
 		const baseBody: RequestBody = {
 			model: "gpt-5-codex",
 			input: [{ type: "message", role: "user", content: "hi" }],
+			prompt_cache_retention: "24h",
+			text: {
+				format: {
+					type: "json_schema",
+					name: "compat_response",
+					schema: {
+						type: "object",
+						properties: {
+							answer: { type: "string" },
+						},
+						required: ["answer"],
+					},
+					strict: true,
+				},
+			},
 		};
 		const transformedPositional = await transformRequestBody(
 			JSON.parse(JSON.stringify(baseBody)) as RequestBody,
@@ -241,5 +256,9 @@ describe("public api contract", () => {
 			codexInstructions: "codex",
 		});
 		expect(transformedNamed).toEqual(transformedPositional);
+		expect(transformedPositional.prompt_cache_retention).toBe(baseBody.prompt_cache_retention);
+		expect(transformedNamed.prompt_cache_retention).toBe(baseBody.prompt_cache_retention);
+		expect(transformedPositional.text?.format).toEqual(baseBody.text?.format);
+		expect(transformedNamed.text?.format).toEqual(baseBody.text?.format);
 	});
 });

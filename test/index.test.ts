@@ -1660,7 +1660,6 @@ describe("OpenAIOAuthPlugin fetch handler", () => {
 		expect(thirdHeaders.get("x-test-account-id")).toBe("acc-1");
 		expect(thirdHeaders.get("x-test-access-token")).toBe("access-alpha");
 	});
-
 	it("compacts fast-session input before sending the upstream request when compaction succeeds", async () => {
 		const fetchHelpers = await import("../lib/request/fetch-helpers.js");
 		const longInput = Array.from({ length: 12 }, (_value, index) => ({
@@ -1803,7 +1802,6 @@ describe("OpenAIOAuthPlugin fetch handler", () => {
 				: {};
 		expect(finalUpstreamBody.input).toEqual(partiallyCompactedInput);
 	});
-
 	it("uses the refreshed token email when checking entitlement blocks", async () => {
 		const { AccountManager } = await import("../lib/accounts.js");
 		const manager = buildRoutingManager([

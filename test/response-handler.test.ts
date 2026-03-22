@@ -370,7 +370,6 @@ data: {"type":"response.completed","response":{"id":"resp_456","output":"done"}}
 			expect(body.output?.[1]?.summary).toBeUndefined();
 			expect(body.reasoning_summary_text).toBeUndefined();
 		});
-
 		it('tracks commentary and final_answer phase text separately when phase labels are present', async () => {
 			const sseContent = [
 				'data: {"type":"response.created","response":{"id":"resp_phase_123","object":"response"}}',
@@ -536,7 +535,6 @@ data: {"type":"response.completed","response":{"id":"resp_456","output":"done"}}
 			expect(body.output_text).toBeUndefined();
 			expect(body.phase_text).toBeUndefined();
 		});
-
 		it('should return original text if no final response found', async () => {
 			const sseContent = `data: {"type":"response.started"}
 data: {"type":"chunk","delta":"text"}
