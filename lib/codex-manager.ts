@@ -2456,7 +2456,6 @@ function matchesManageActionAccount(
 		&& sanitizeEmail(account.email) === sanitizeEmail(candidate.email)
 	);
 }
-
 async function handleManageAction(
 	storage: AccountStorageV3,
 	menuResult: Awaited<ReturnType<typeof promptLoginMode>>,
