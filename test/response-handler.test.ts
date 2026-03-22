@@ -115,6 +115,28 @@ data: {"type":"response.completed","response":{"id":"resp_456","output":"done"}}
 			});
 		});
 
+		it('preserves canonical terminal reasoning_summary_text over synthesized semantic text', async () => {
+			const sseContent = [
+				'data: {"type":"response.created","response":{"id":"resp_semantic_canonical","object":"response"}}',
+				'data: {"type":"response.output_item.added","output_index":1,"item":{"id":"rs_456","type":"reasoning"}}',
+				'data: {"type":"response.reasoning_summary_text.delta","output_index":1,"summary_index":0,"delta":"Draft summary"}',
+				'data: {"type":"response.reasoning_summary_text.done","output_index":1,"summary_index":0,"text":"Draft summary"}',
+				'data: {"type":"response.completed","response":{"id":"resp_semantic_canonical","object":"response","reasoning_summary_text":"Canonical summary"}}',
+				'',
+			].join('\n');
+			const response = new Response(sseContent);
+			const headers = new Headers();
+
+			const result = await convertSseToJson(response, headers);
+			const body = await result.json() as {
+				reasoning_summary_text?: string;
+				output?: Array<{ summary?: Array<{ text?: string }> }>;
+			};
+
+			expect(body.reasoning_summary_text).toBe('Canonical summary');
+			expect(body.output?.[0]?.summary?.[0]?.text).toBe('Draft summary');
+		});
+
 		it('preserves richer terminal output when semantic items arrive with empty content arrays', async () => {
 			const sseContent = [
 				'data: {"type":"response.created","response":{"id":"resp_rich_123","object":"response"}}',
@@ -180,6 +202,32 @@ data: {"type":"response.completed","response":{"id":"resp_456","output":"done"}}
 				'data: {"type":"response.output_text.delta","output_index":0,"content_index":0,"delta":"Hellp","phase":"final_answer"}',
 				'data: {"type":"response.output_text.done","output_index":0,"content_index":0,"text":"Hello","phase":"final_answer"}',
 				'data: {"type":"response.done","response":{"id":"resp_phase_fix","object":"response"}}',
+				'',
+			].join('\n');
+			const response = new Response(sseContent);
+			const headers = new Headers();
+
+			const result = await convertSseToJson(response, headers);
+			const body = await result.json() as {
+				output_text?: string;
+				final_answer_text?: string;
+				phase_text?: Record<string, string>;
+				output?: Array<{ content?: Array<{ text?: string }> }>;
+			};
+
+			expect(body.output?.[0]?.content?.[0]?.text).toBe('Hello');
+			expect(body.output_text).toBe('Hello');
+			expect(body.final_answer_text).toBe('Hello');
+			expect(body.phase_text).toEqual({ final_answer: 'Hello' });
+		});
+
+		it('replaces phase text when output_text.done omits phase after earlier deltas set it', async () => {
+			const sseContent = [
+				'data: {"type":"response.created","response":{"id":"resp_phase_fix_missing","object":"response"}}',
+				'data: {"type":"response.output_item.added","output_index":0,"item":{"id":"msg_fix_missing","type":"message","role":"assistant","phase":"final_answer"}}',
+				'data: {"type":"response.output_text.delta","output_index":0,"content_index":0,"delta":"Hellp","phase":"final_answer"}',
+				'data: {"type":"response.output_text.done","output_index":0,"content_index":0,"text":"Hello"}',
+				'data: {"type":"response.done","response":{"id":"resp_phase_fix_missing","object":"response"}}',
 				'',
 			].join('\n');
 			const response = new Response(sseContent);
@@ -270,6 +318,8 @@ data: {"type":"response.done","response":{"id":"resp_789"}}
 		it('should return the raw SSE text when an error event arrives before response.done', async () => {
 			const onResponseId = vi.fn();
 			const sseContent = [
+				'data: {"type":"response.created","response":{"id":"resp_bad_123","object":"response"}}',
+				'',
 				'data: {"type":"error","message":"quota exceeded"}',
 				'',
 				'data: {"type":"response.done","response":{"id":"resp_bad_123","output":"bad"}}',

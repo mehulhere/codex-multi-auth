@@ -16,10 +16,12 @@ interface ParsedResponseState {
 	lastPhase: string | null;
 	outputItems: Map<number, MutableRecord>;
 	outputText: Map<string, string>;
+	outputTextPhases: Map<string, string>;
 	phaseTextSegments: Map<string, string>;
 	phaseText: Map<string, string>;
 	reasoningSummaryText: Map<string, string>;
 	seenResponseIds: Set<string>;
+	encounteredError: boolean;
 }
 
 function createParsedResponseState(): ParsedResponseState {
@@ -28,10 +30,12 @@ function createParsedResponseState(): ParsedResponseState {
 		lastPhase: null,
 		outputItems: new Map<number, MutableRecord>(),
 		outputText: new Map<string, string>(),
+		outputTextPhases: new Map<string, string>(),
 		phaseTextSegments: new Map<string, string>(),
 		phaseText: new Map<string, string>(),
 		reasoningSummaryText: new Map<string, string>(),
 		seenResponseIds: new Set<string>(),
+		encounteredError: false,
 	};
 }
 
@@ -115,8 +119,12 @@ function setPhaseTextSegment(
 	outputTextKey: string,
 	text: string | null,
 ): void {
-	if (typeof phase !== "string" || phase.trim().length === 0) return;
-	const normalizedPhase = phase.trim();
+	const normalizedPhase =
+		typeof phase === "string" && phase.trim().length > 0
+			? phase.trim()
+			: state.outputTextPhases.get(outputTextKey) ?? null;
+	if (!normalizedPhase) return;
+	state.outputTextPhases.set(outputTextKey, normalizedPhase);
 	state.lastPhase = normalizedPhase;
 	const segmentKey = makePhaseTextSegmentKey(normalizedPhase, outputTextKey);
 	if (!text || text.length === 0) {
@@ -134,10 +142,15 @@ function appendPhaseTextSegment(
 	outputTextKey: string,
 	delta: string | null,
 ): void {
-	if (!delta || delta.length === 0 || typeof phase !== "string" || phase.trim().length === 0) {
+	if (!delta || delta.length === 0) {
 		return;
 	}
-	const normalizedPhase = phase.trim();
+	const normalizedPhase =
+		typeof phase === "string" && phase.trim().length > 0
+			? phase.trim()
+			: state.outputTextPhases.get(outputTextKey) ?? null;
+	if (!normalizedPhase) return;
+	state.outputTextPhases.set(outputTextKey, normalizedPhase);
 	state.lastPhase = normalizedPhase;
 	const segmentKey = makePhaseTextSegmentKey(normalizedPhase, outputTextKey);
 	const existing = state.phaseTextSegments.get(segmentKey) ?? "";
@@ -339,6 +352,7 @@ function applyReasoningSummaries(response: MutableRecord, state: ParsedResponseS
 function finalizeParsedResponse(state: ParsedResponseState): MutableRecord | null {
 	const response = state.finalResponse ? { ...state.finalResponse } : null;
 	if (!response) return null;
+	if (state.encounteredError) return null;
 
 	mergeOutputItemsIntoResponse(response, state);
 	applyAccumulatedOutputText(response, state);
@@ -353,7 +367,10 @@ function finalizeParsedResponse(state: ParsedResponseState): MutableRecord | nul
 	}
 
 	const reasoningSummaryText = collectReasoningSummaryText(output);
-	if (reasoningSummaryText.length > 0) {
+	if (
+		reasoningSummaryText.length > 0 &&
+		typeof response.reasoning_summary_text !== "string"
+	) {
 		response.reasoning_summary_text = reasoningSummaryText;
 	}
 
@@ -407,6 +424,7 @@ function maybeCaptureResponseEvent(
 ): void {
 	if (data.type === "error") {
 		log.error("SSE error event received", { error: data });
+		state.encounteredError = true;
 		return;
 	}
 
@@ -523,6 +541,7 @@ function parseSseStream(
 			try {
 				const data = JSON.parse(payload) as SSEEventData;
 				maybeCaptureResponseEvent(state, data, onResponseId);
+				if (state.encounteredError) return null;
 			} catch {
 				// Skip malformed JSON
 			}
@@ -623,6 +642,7 @@ function createResponseIdCapturingStream(
 	const state = createParsedResponseState();
 
 	const processBufferedLines = (flush = false): void => {
+		if (state.encounteredError) return;
 		const lines = bufferedText.split(/\r?\n/);
 		if (!flush) {
 			bufferedText = lines.pop() ?? "";
@@ -638,6 +658,7 @@ function createResponseIdCapturingStream(
 			try {
 				const data = JSON.parse(payload) as SSEEventData;
 				maybeCaptureResponseEvent(state, data, onResponseId);
+				if (state.encounteredError) break;
 			} catch {
 				// Ignore malformed SSE lines and keep forwarding the raw stream.
 			}
