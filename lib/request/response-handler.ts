@@ -198,9 +198,13 @@ function setOutputTextValue(
 	text: string | null,
 	phase: unknown = undefined,
 ): void {
-	if (!text) return;
 	const key = makeOutputTextKey(outputIndex, contentIndex);
 	if (!key) return;
+	if (!text) {
+		state.outputText.delete(key);
+		setPhaseTextSegment(state, phase, key, null);
+		return;
+	}
 	state.outputText.set(key, text);
 	setPhaseTextSegment(state, phase, key, text);
 }
@@ -291,6 +295,10 @@ function applyAccumulatedOutputText(response: MutableRecord, state: ParsedRespon
 		if (!part) continue;
 		if (!getStringField(part, "type")) {
 			part.type = "output_text";
+		}
+		if (typeof part.text === "string") {
+			setPhaseTextSegment(state, part.phase, key, part.text);
+			continue;
 		}
 		part.text = text;
 	}

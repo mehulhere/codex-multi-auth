@@ -222,6 +222,57 @@ data: {"type":"response.completed","response":{"id":"resp_456","output":"done"}}
 			]);
 		});
 
+		it('preserves canonical terminal content over accumulated deltas for the same slot', async () => {
+			const sseContent = [
+				'data: {"type":"response.created","response":{"id":"resp_canonical_slot","object":"response"}}',
+				'data: {"type":"response.output_item.added","output_index":0,"item":{"id":"msg_canonical","type":"message","role":"assistant","phase":"final_answer"}}',
+				'data: {"type":"response.output_text.delta","output_index":0,"content_index":0,"delta":"Draft answer","phase":"final_answer"}',
+				'data: {"type":"response.completed","response":{"id":"resp_canonical_slot","object":"response","output":[{"id":"msg_canonical","type":"message","role":"assistant","content":[{"type":"output_text","text":"Canonical answer"}]}]}}',
+				'',
+			].join('\n');
+			const response = new Response(sseContent);
+			const headers = new Headers();
+
+			const result = await convertSseToJson(response, headers);
+			const body = await result.json() as {
+				output_text?: string;
+				final_answer_text?: string;
+				phase_text?: Record<string, string>;
+				output?: Array<{ content?: Array<{ text?: string }> }>;
+			};
+
+			expect(body.output?.[0]?.content?.[0]?.text).toBe('Canonical answer');
+			expect(body.output_text).toBe('Canonical answer');
+			expect(body.final_answer_text).toBe('Canonical answer');
+			expect(body.phase_text).toEqual({ final_answer: 'Canonical answer' });
+		});
+
+		it('clears stale output_text deltas when done events omit canonical text', async () => {
+			const sseContent = [
+				'data: {"type":"response.created","response":{"id":"resp_stale_delta","object":"response"}}',
+				'data: {"type":"response.output_item.added","output_index":0,"item":{"id":"msg_stale","type":"message","role":"assistant","phase":"final_answer"}}',
+				'data: {"type":"response.output_text.delta","output_index":0,"content_index":0,"delta":"Hello ","phase":"final_answer"}',
+				'data: {"type":"response.output_text.done","output_index":0,"content_index":0,"text":" ","phase":"final_answer"}',
+				'data: {"type":"response.done","response":{"id":"resp_stale_delta","object":"response"}}',
+				'',
+			].join('\n');
+			const response = new Response(sseContent);
+			const headers = new Headers();
+
+			const result = await convertSseToJson(response, headers);
+			const body = await result.json() as {
+				output_text?: string;
+				final_answer_text?: string;
+				phase_text?: Record<string, string>;
+				output?: Array<{ content?: Array<{ text?: string }> }>;
+			};
+
+			expect(body.output?.[0]?.content).toBeUndefined();
+			expect(body.output_text).toBeUndefined();
+			expect(body.final_answer_text).toBeUndefined();
+			expect(body.phase_text).toBeUndefined();
+		});
+
 		it('tracks commentary and final_answer phase text separately when phase labels are present', async () => {
 			const sseContent = [
 				'data: {"type":"response.created","response":{"id":"resp_phase_123","object":"response"}}',
