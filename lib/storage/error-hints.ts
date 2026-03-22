@@ -1,8 +1,15 @@
-import { StorageError } from "../storage.js";
+import { StorageError } from "../errors.js";
 
-export function formatStorageErrorHint(error: unknown, path: string): string {
+function extractErrorCode(error: unknown): string {
 	const err = error as NodeJS.ErrnoException;
-	const code = err?.code || "UNKNOWN";
+	return err?.code || "UNKNOWN";
+}
+
+/**
+ * Format a user-facing hint for storage persistence failures based on errno code.
+ */
+export function formatStorageErrorHint(error: unknown, path: string): string {
+	const code = extractErrorCode(error);
 	const isWindows = process.platform === "win32";
 
 	switch (code) {
@@ -13,10 +20,10 @@ export function formatStorageErrorHint(error: unknown, path: string): string {
 				: `Permission denied writing to ${path}. Check folder permissions. Try: chmod 755 ~/.codex`;
 		case "EBUSY":
 			return `File is locked at ${path}. The file may be open in another program. Close any editors or processes accessing it.`;
+		case "ENOENT":
+			return `Path does not exist: ${path}. Create the parent folder and try again.`;
 		case "ENOSPC":
 			return `Disk is full. Free up space and try again. Path: ${path}`;
-		case "EEMPTY":
-			return `File written but is empty. This may indicate a disk or filesystem issue. Path: ${path}`;
 		default:
 			return isWindows
 				? `Failed to write to ${path}. Check folder permissions and ensure path contains no special characters.`
@@ -24,16 +31,17 @@ export function formatStorageErrorHint(error: unknown, path: string): string {
 	}
 }
 
+/**
+ * Wrap an arbitrary storage failure in a StorageError with a derived hint.
+ */
 export function toStorageError(
 	message: string,
 	error: unknown,
 	path: string,
 ): StorageError {
-	const err = error as NodeJS.ErrnoException;
-	const code = err?.code || "UNKNOWN";
 	return new StorageError(
 		message,
-		code,
+		extractErrorCode(error),
 		path,
 		formatStorageErrorHint(error, path),
 		error instanceof Error ? error : undefined,
