@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { existsSync, promises as fs } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -12,11 +13,13 @@ import {
 	exportNamedBackup,
 	findMatchingAccountIndex,
 	formatStorageErrorHint,
+	getAccountIdentityKey,
 	getFlaggedAccountsPath,
 	getStoragePath,
 	importAccounts,
 	loadAccounts,
 	loadFlaggedAccounts,
+	normalizeEmailKey,
 	normalizeAccountStorage,
 	resolveAccountSelectionIndex,
 	saveFlaggedAccounts,
@@ -25,16 +28,11 @@ import {
 	setStoragePath,
 	setStoragePathDirect,
 	clearFlaggedAccounts,
+	toStorageError,
 	withAccountAndFlaggedStorageTransaction,
 	withAccountStorageTransaction,
 	withFlaggedStorageTransaction,
 } from "../lib/storage.js";
-import { toStorageError } from "../lib/storage/error-hints.js";
-
-// Mocking the behavior we're about to implement for TDD
-// Since the functions aren't in lib/storage.ts yet, we'll need to mock them or
-// accept that this test won't even compile/run until we add them.
-// But Task 0 says: "Tests should fail initially (RED phase)"
 
 describe("storage", () => {
 	const _origCODEX_HOME = process.env.CODEX_HOME;
@@ -95,6 +93,62 @@ describe("storage", () => {
 			expect(error.path).toBe("/tmp/openai-codex-accounts.json");
 			expect(error.hint).toContain("File is locked");
 			expect(error.cause).toBe(cause);
+		});
+	});
+
+	describe("account identity keys", () => {
+		it("normalizes mixed-case emails directly", () => {
+			expect(normalizeEmailKey(" User@Example.com ")).toBe("user@example.com");
+		});
+
+		it("returns undefined for missing or blank emails", () => {
+			expect(normalizeEmailKey(undefined)).toBeUndefined();
+			expect(normalizeEmailKey("   ")).toBeUndefined();
+		});
+
+		it("prefers accountId and normalized email when both are present", () => {
+			expect(
+				getAccountIdentityKey({
+					accountId: " acct-123 ",
+					email: " User@Example.com ",
+					refreshToken: "secret-token",
+				}),
+			).toBe("account:acct-123::email:user@example.com");
+		});
+
+		it("falls back to accountId when email is missing", () => {
+			expect(
+				getAccountIdentityKey({
+					accountId: " acct-123 ",
+					email: " ",
+					refreshToken: "secret-token",
+				}),
+			).toBe("account:acct-123");
+		});
+
+		it("falls back to normalized email when accountId is missing", () => {
+			expect(
+				getAccountIdentityKey({
+					accountId: " ",
+					email: " User@Example.com ",
+					refreshToken: "secret-token",
+				}),
+			).toBe("email:user@example.com");
+		});
+
+		it("hashes refresh-token-only fallbacks", () => {
+			const refreshToken = " secret-token ";
+			const expectedHash = createHash("sha256")
+				.update(refreshToken.trim())
+				.digest("hex");
+			const identityKey = getAccountIdentityKey({
+				accountId: " ",
+				email: " ",
+				refreshToken,
+			});
+
+			expect(identityKey).toBe(`refresh:${expectedHash}`);
+			expect(identityKey).not.toContain(refreshToken.trim());
 		});
 	});
 	describe("deduplication", () => {
