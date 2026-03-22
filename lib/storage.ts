@@ -24,7 +24,6 @@ export {
 
 import {
 	type AccountIdentityRef,
-	normalizeEmailKey,
 	toAccountIdentityRef,
 } from "./storage/identity.js";
 import {
