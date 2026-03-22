@@ -70,6 +70,7 @@ import {
 	mapExperimentalStatusHotkey,
 } from "./experimental-settings-schema.js";
 import { loadExperimentalSyncTargetState } from "./experimental-sync-target.js";
+import { promptSettingsHubEntry } from "./settings-hub-entry.js";
 import {
 	buildSettingsHubItems,
 	findSettingsHubInitialCursor,
@@ -759,7 +760,9 @@ async function configureBackendSettings(
 async function promptSettingsHub(
 	initialFocus: SettingsHubAction["type"] = "account-list",
 ): Promise<SettingsHubAction | null> {
-	return promptSettingsHubMenu(initialFocus, {
+	return promptSettingsHubEntry({
+		initialFocus,
+		promptSettingsHubMenu,
 		isInteractive: () => input.isTTY && output.isTTY,
 		getUiRuntimeOptions,
 		buildItems: () => buildSettingsHubItems(UI_COPY.settings),
