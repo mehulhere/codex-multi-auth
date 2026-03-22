@@ -8,13 +8,64 @@ const log = createLogger("response-handler");
 const MAX_SSE_SIZE = 10 * 1024 * 1024; // 10MB limit to prevent memory exhaustion
 const DEFAULT_STREAM_STALL_TIMEOUT_MS = 45_000;
 
+function extractResponseId(response: unknown): string | null {
+	if (!response || typeof response !== "object") return null;
+	const candidate = (response as { id?: unknown }).id;
+	return typeof candidate === "string" && candidate.trim().length > 0
+		? candidate.trim()
+		: null;
+}
+
+function notifyResponseId(
+	onResponseId: ((responseId: string) => void) | undefined,
+	response: unknown,
+): void {
+	const responseId = extractResponseId(response);
+	if (!responseId || !onResponseId) return;
+	try {
+		onResponseId(responseId);
+	} catch (error) {
+		log.warn("Failed to persist response id from upstream event", {
+			error: String(error),
+			responseId,
+		});
+	}
+}
+
+type CapturedResponseEvent =
+	| { kind: "error" }
+	| { kind: "response"; response: unknown }
+	| null;
+
+function maybeCaptureResponseEvent(
+	data: SSEEventData,
+	onResponseId?: (responseId: string) => void,
+): CapturedResponseEvent {
+	if (data.type === "error") {
+		log.error("SSE error event received", { error: data });
+		return { kind: "error" };
+	}
+
+	if (data.type === "response.done" || data.type === "response.completed") {
+		notifyResponseId(onResponseId, data.response);
+		if (data.response !== undefined && data.response !== null) {
+			return { kind: "response", response: data.response };
+		}
+	}
+
+	return null;
+}
+
 /**
 
  * Parse SSE stream to extract final response
  * @param sseText - Complete SSE stream text
  * @returns Final response object or null if not found
  */
-function parseSseStream(sseText: string): unknown | null {
+function parseSseStream(
+	sseText: string,
+	onResponseId?: (responseId: string) => void,
+): unknown | null {
 	const lines = sseText.split(/\r?\n/);
 
 	for (const line of lines) {
@@ -24,15 +75,9 @@ function parseSseStream(sseText: string): unknown | null {
 			if (!payload || payload === '[DONE]') continue;
 			try {
 				const data = JSON.parse(payload) as SSEEventData;
-
-				if (data.type === 'error') {
-					log.error("SSE error event received", { error: data });
-					return null;
-				}
-
-				if (data.type === 'response.done' || data.type === 'response.completed') {
-					return data.response;
-				}
+				const capturedEvent = maybeCaptureResponseEvent(data, onResponseId);
+				if (capturedEvent?.kind === "error") return null;
+				if (capturedEvent?.kind === "response") return capturedEvent.response;
 			} catch {
 				// Skip malformed JSON
 			}
@@ -51,7 +96,10 @@ function parseSseStream(sseText: string): unknown | null {
 export async function convertSseToJson(
 	response: Response,
 	headers: Headers,
-	options?: { streamStallTimeoutMs?: number },
+	options?: {
+		onResponseId?: (responseId: string) => void;
+		streamStallTimeoutMs?: number;
+	},
 ): Promise<Response> {
 	if (!response.body) {
 		throw new Error(`[${PLUGIN_NAME}] Response has no body`);
@@ -80,7 +128,7 @@ export async function convertSseToJson(
 		}
 
 		// Parse SSE events to extract the final response
-		const finalResponse = parseSseStream(fullText);
+		const finalResponse = parseSseStream(fullText, options?.onResponseId);
 
 		if (!finalResponse) {
 			log.warn("Could not find final response in SSE stream");
@@ -117,6 +165,56 @@ export async function convertSseToJson(
 		reader.releaseLock();
 	}
 
+}
+
+function createResponseIdCapturingStream(
+	body: ReadableStream<Uint8Array>,
+	onResponseId: (responseId: string) => void,
+): ReadableStream<Uint8Array> {
+	const decoder = new TextDecoder();
+	let bufferedText = "";
+	let sawErrorEvent = false;
+
+	const processBufferedLines = (flush = false): void => {
+		if (sawErrorEvent) return;
+		const lines = bufferedText.split(/\r?\n/);
+		if (!flush) {
+			bufferedText = lines.pop() ?? "";
+		} else {
+			bufferedText = "";
+		}
+
+		for (const rawLine of lines) {
+			const trimmedLine = rawLine.trim();
+			if (!trimmedLine.startsWith("data: ")) continue;
+			const payload = trimmedLine.slice(6).trim();
+			if (!payload || payload === "[DONE]") continue;
+			try {
+				const data = JSON.parse(payload) as SSEEventData;
+				const capturedEvent = maybeCaptureResponseEvent(data, onResponseId);
+				if (capturedEvent?.kind === "error") {
+					sawErrorEvent = true;
+					break;
+				}
+			} catch {
+				// Ignore malformed SSE lines and keep forwarding the raw stream.
+			}
+		}
+	};
+
+	return body.pipeThrough(
+		new TransformStream<Uint8Array, Uint8Array>({
+			transform(chunk, controller) {
+				bufferedText += decoder.decode(chunk, { stream: true });
+				processBufferedLines();
+				controller.enqueue(chunk);
+			},
+			flush() {
+				bufferedText += decoder.decode();
+				processBufferedLines(true);
+			},
+		}),
+	);
 }
 
 /**
@@ -185,4 +283,24 @@ export function isEmptyResponse(body: unknown): boolean {
 	}
 
 	return false;
+}
+
+export function attachResponseIdCapture(
+	response: Response,
+	headers: Headers,
+	onResponseId?: (responseId: string) => void,
+): Response {
+	if (!response.body || !onResponseId) {
+		return new Response(response.body, {
+			status: response.status,
+			statusText: response.statusText,
+			headers,
+		});
+	}
+
+	return new Response(createResponseIdCapturingStream(response.body, onResponseId), {
+		status: response.status,
+		statusText: response.statusText,
+		headers,
+	});
 }

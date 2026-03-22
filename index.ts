@@ -48,9 +48,11 @@ import {
 	createAuthorizationFlow,
 	exchangeAuthorizationCode,
 	parseAuthorizationInput,
+	redactOAuthUrlForLog,
 	REDIRECT_URI,
 } from "./lib/auth/auth.js";
-import { isBrowserLaunchSuppressed } from "./lib/auth/browser.js";
+import { isBrowserLaunchSuppressed, openBrowserUrl } from "./lib/auth/browser.js";
+import { startLocalOAuthServer } from "./lib/auth/server.js";
 import { checkAndNotify } from "./lib/auto-update-checker.js";
 import { CapabilityPolicyStore } from "./lib/capability-policy.js";
 import { promptAddAnotherAccount, promptLoginMode } from "./lib/cli.js";
@@ -81,6 +83,7 @@ import {
 	getRetryAllAccountsMaxRetries,
 	getRetryAllAccountsMaxWaitMs,
 	getRetryAllAccountsRateLimited,
+	getResponseContinuation,
 	getServerErrorCooldownMs,
 	getSessionAffinity,
 	getSessionAffinityMaxEntries,
@@ -385,7 +388,18 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 		forceNewLogin: boolean = false,
 	): Promise<TokenResult> =>
 		runRuntimeOAuthFlow(forceNewLogin, {
-			runBrowserOAuthFlow,
+			runBrowserOAuthFlow: (input) =>
+				runBrowserOAuthFlow({
+					...input,
+					createAuthorizationFlow,
+					redactOAuthUrlForLog,
+					startLocalOAuthServer,
+					openBrowserUrl,
+					pluginName: PLUGIN_NAME,
+					authManualLabel: AUTH_LABELS.OAUTH_MANUAL,
+					exchangeAuthorizationCode,
+					redirectUri: REDIRECT_URI,
+				}),
 			manualModeLabel: AUTH_LABELS.OAUTH_MANUAL,
 			logInfo,
 			logDebug,
@@ -593,7 +607,9 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 		pluginConfig: ReturnType<typeof loadPluginConfig>,
 	): void => {
 		const next = ensureSessionAffinityState({
-			enabled: getSessionAffinity(pluginConfig),
+			enabled:
+				getSessionAffinity(pluginConfig) ||
+				getResponseContinuation(pluginConfig),
 			ttlMs: getSessionAffinityTtlMs(pluginConfig),
 			maxEntries: getSessionAffinityMaxEntries(pluginConfig),
 			currentStore: sessionAffinityStore,
@@ -888,9 +904,8 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 								const isStreaming = originalBody.stream === true;
 								const parsedBody =
 									Object.keys(originalBody).length > 0
-										? originalBody
+										? { ...originalBody }
 										: undefined;
-
 								const transformation = await transformRequestForCodex(
 									baseInit,
 									url,
@@ -910,6 +925,8 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 								let model = transformedBody?.model;
 								let modelFamily = model ? getModelFamily(model) : "gpt-5.1";
 								let quotaKey = model ? `${modelFamily}:${model}` : modelFamily;
+								const responseContinuationEnabled =
+									getResponseContinuation(pluginConfig);
 								const threadIdCandidate =
 									(process.env.CODEX_THREAD_ID ?? promptCacheKey ?? "")
 										.toString()
@@ -920,6 +937,26 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 									(sessionAffinityKey ?? promptCacheKey ?? "")
 										.toString()
 										.trim() || undefined;
+								const shouldUseResponseContinuation =
+									Boolean(transformedBody) &&
+									responseContinuationEnabled &&
+									!transformedBody?.previous_response_id;
+								if (shouldUseResponseContinuation && transformedBody) {
+									const lastResponseId =
+										sessionAffinityStore?.getLastResponseId(
+											sessionAffinityKey,
+										);
+									if (lastResponseId) {
+										transformedBody = {
+											...transformedBody,
+											previous_response_id: lastResponseId,
+										};
+										requestInit = {
+											...requestInit,
+											body: JSON.stringify(transformedBody),
+										};
+									}
+								}
 								const preferredSessionAccountIndex =
 									sessionAffinityStore?.getPreferredAccountIndex(
 										sessionAffinityKey,
@@ -2158,10 +2195,12 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 																if (fallbackAccount.index !== account.index) {
 																	runtimeMetrics.streamFailoverCrossAccountRecoveries += 1;
 																	runtimeMetrics.accountRotations += 1;
-																	sessionAffinityStore?.remember(
-																		sessionAffinityKey,
-																		fallbackAccount.index,
-																	);
+																	if (!responseContinuationEnabled) {
+																		sessionAffinityStore?.remember(
+																			sessionAffinityKey,
+																			fallbackAccount.index,
+																		);
+																	}
 																}
 
 																logInfo(
@@ -2216,10 +2255,23 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 													},
 												);
 											}
+											let storedResponseIdForSuccess = false;
 											const successResponse = await handleSuccessResponse(
 												responseForSuccess,
 												isStreaming,
 												{
+													onResponseId: (responseId) => {
+														if (!responseContinuationEnabled) return;
+														sessionAffinityStore?.remember(
+															sessionAffinityKey,
+															successAccountForResponse.index,
+														);
+														sessionAffinityStore?.updateLastResponseId(
+															sessionAffinityKey,
+															responseId,
+														);
+														storedResponseIdForSuccess = true;
+													},
 													streamStallTimeoutMs,
 												},
 											);
@@ -2319,10 +2371,15 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 												successAccountKey,
 												capabilityModelKey,
 											);
-											sessionAffinityStore?.remember(
-												sessionAffinityKey,
-												successAccountForResponse.index,
-											);
+											if (
+												!responseContinuationEnabled ||
+												(!isStreaming && !storedResponseIdForSuccess)
+											) {
+												sessionAffinityStore?.remember(
+													sessionAffinityKey,
+													successAccountForResponse.index,
+												);
+											}
 											runtimeMetrics.successfulRequests++;
 											runtimeMetrics.lastError = null;
 											if (

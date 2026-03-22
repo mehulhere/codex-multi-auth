@@ -612,6 +612,52 @@ describe('Request Transformer Module', () => {
 				expect(result.prompt_cache_key).toBeUndefined();
 			});
 
+			it('preserves host-provided previous_response_id', async () => {
+				const body: RequestBody = {
+					model: 'gpt-5.4',
+					input: [],
+					previous_response_id: 'resp_prior_123',
+				};
+				const result = await transformRequestBody(body, codexInstructions);
+				expect(result.previous_response_id).toBe('resp_prior_123');
+			});
+
+			it('preserves prompt_cache_retention settings', async () => {
+				const body: RequestBody = {
+					model: 'gpt-5.4',
+					input: [],
+					prompt_cache_key: 'ses_cache_key_123',
+					prompt_cache_retention: '24h',
+				};
+				const result = await transformRequestBody(body, codexInstructions);
+				expect(result.prompt_cache_key).toBe('ses_cache_key_123');
+				expect(result.prompt_cache_retention).toBe('24h');
+			});
+
+			it('preserves text.format when applying text verbosity defaults', async () => {
+				const body: RequestBody = {
+					model: 'gpt-5.4',
+					input: [],
+					text: {
+						format: {
+							type: 'json_schema',
+							name: 'contract_response',
+							schema: {
+								type: 'object',
+								properties: {
+									answer: { type: 'string' },
+								},
+								required: ['answer'],
+							},
+							strict: true,
+						},
+					},
+				};
+				const result = await transformRequestBody(body, codexInstructions);
+				expect(result.text?.verbosity).toBe('medium');
+				expect(result.text?.format).toEqual(body.text?.format);
+			});
+
 		it('should set required Codex fields', async () => {
 			const body: RequestBody = {
 				model: 'gpt-5',

@@ -40,7 +40,6 @@ export async function runBrowserOAuthFlow(params: {
 		);
 		serverInfo = null;
 	}
-	params.openBrowserUrl(url);
 
 	if (!serverInfo || !serverInfo.ready) {
 		serverInfo?.close();
@@ -50,6 +49,7 @@ export async function runBrowserOAuthFlow(params: {
 		return { type: "failed" as const };
 	}
 
+	params.openBrowserUrl(url);
 	const result = await serverInfo.waitForCode(state);
 	serverInfo.close();
 
