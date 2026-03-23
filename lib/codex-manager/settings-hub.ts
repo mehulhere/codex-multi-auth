@@ -99,9 +99,6 @@ import {
 	normalizeStatuslineFields,
 } from "./settings-preview.js";
 import { withQueuedRetry } from "./settings-write-queue.js";
-import { reorderStatuslineField } from "./statusline-order.js";
-
-const reorderField = reorderStatuslineField;
 
 import { promptStatuslineSettingsPanel } from "./statusline-settings-panel.js";
 import { promptThemeSettingsPanel } from "./theme-settings-panel.js";
@@ -464,7 +461,8 @@ async function promptDashboardDisplaySettings(
 		buildAccountListPreview,
 		formatDashboardSettingState,
 		formatMenuSortMode,
-		resolveMenuLayoutMode,
+		resolveMenuLayoutMode: (settings = DEFAULT_DASHBOARD_DISPLAY_SETTINGS) =>
+			resolveMenuLayoutMode(settings),
 		formatMenuLayoutMode,
 		applyDashboardDefaultsForKeys,
 		DASHBOARD_DISPLAY_OPTIONS,

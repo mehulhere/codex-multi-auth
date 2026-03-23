@@ -52,6 +52,7 @@ export async function loadExperimentalSyncTargetEntry(params: {
 						"EBUSY",
 						"EPERM",
 						"EAGAIN",
+						"ENOTEMPTY",
 						"EACCES",
 					]),
 					maxAttempts: 4,

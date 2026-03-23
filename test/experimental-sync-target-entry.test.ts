@@ -67,7 +67,7 @@ describe("experimental sync target entry", () => {
 
 		expect(capturedReadJson).toBeDefined();
 		expect(readFileWithRetry).toHaveBeenCalledWith("C:\\state.json", {
-			retryableCodes: new Set(["EBUSY", "EPERM", "EAGAIN", "EACCES"]),
+			retryableCodes: new Set(["EBUSY", "EPERM", "EAGAIN", "ENOTEMPTY", "EACCES"]),
 			maxAttempts: 4,
 			sleep,
 		});
