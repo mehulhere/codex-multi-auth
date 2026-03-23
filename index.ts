@@ -505,24 +505,6 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 			},
 		});
 
-	const applyAccountStorageScope = (
-		pluginConfig: ReturnType<typeof loadPluginConfig>,
-	): void =>
-		applyAccountStorageScopeFromConfig(pluginConfig, {
-			getPerProjectAccounts,
-			getStorageBackupEnabled,
-			setStorageBackupEnabled,
-			isCodexCliSyncEnabled,
-			getWarningShown: () => perProjectStorageWarningShown,
-			setWarningShown: (shown) => {
-				perProjectStorageWarningShown = shown;
-			},
-			logWarn,
-			pluginName: PLUGIN_NAME,
-			setStoragePath,
-			cwd: () => process.cwd(),
-		});
-
 	const ensureLiveAccountSync = async (
 		pluginConfig: ReturnType<typeof loadPluginConfig>,
 		authFallback?: OAuthAuthDetails,
@@ -661,7 +643,20 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 				const auth = await getAuth();
 				const pluginConfig = loadPluginConfig();
 				applyUiRuntimeFromConfig(pluginConfig, setUiRuntimeOptions);
-				applyAccountStorageScope(pluginConfig);
+				applyAccountStorageScopeFromConfig(pluginConfig, {
+					getPerProjectAccounts,
+					getStorageBackupEnabled,
+					setStorageBackupEnabled,
+					isCodexCliSyncEnabled,
+					getWarningShown: () => perProjectStorageWarningShown,
+					setWarningShown: (shown) => {
+						perProjectStorageWarningShown = shown;
+					},
+					logWarn,
+					pluginName: PLUGIN_NAME,
+					setStoragePath,
+					cwd: () => process.cwd(),
+				});
 				ensureSessionAffinity(pluginConfig);
 				ensureRefreshGuardian(pluginConfig);
 				applyPreemptiveQuotaSettings(pluginConfig);
@@ -2480,7 +2475,20 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 					authorize: async (inputs?: Record<string, string>) => {
 						const authPluginConfig = loadPluginConfig();
 						applyUiRuntimeFromConfig(authPluginConfig, setUiRuntimeOptions);
-						applyAccountStorageScope(authPluginConfig);
+						applyAccountStorageScopeFromConfig(authPluginConfig, {
+							getPerProjectAccounts,
+							getStorageBackupEnabled,
+							setStorageBackupEnabled,
+							isCodexCliSyncEnabled,
+							getWarningShown: () => perProjectStorageWarningShown,
+							setWarningShown: (shown) => {
+								perProjectStorageWarningShown = shown;
+							},
+							logWarn,
+							pluginName: PLUGIN_NAME,
+							setStoragePath,
+							cwd: () => process.cwd(),
+						});
 
 						const accounts: TokenSuccessWithAccount[] = [];
 						const noBrowser =
@@ -2932,7 +2940,20 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 						// Must happen BEFORE persistAccountPool to ensure correct storage location
 						const manualPluginConfig = loadPluginConfig();
 						applyUiRuntimeFromConfig(manualPluginConfig, setUiRuntimeOptions);
-						applyAccountStorageScope(manualPluginConfig);
+						applyAccountStorageScopeFromConfig(manualPluginConfig, {
+							getPerProjectAccounts,
+							getStorageBackupEnabled,
+							setStorageBackupEnabled,
+							isCodexCliSyncEnabled,
+							getWarningShown: () => perProjectStorageWarningShown,
+							setWarningShown: (shown) => {
+								perProjectStorageWarningShown = shown;
+							},
+							logWarn,
+							pluginName: PLUGIN_NAME,
+							setStoragePath,
+							cwd: () => process.cwd(),
+						});
 
 						const { pkce, state, url } = await createAuthorizationFlow();
 						return buildManualOAuthFlow({
