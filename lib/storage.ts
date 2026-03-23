@@ -1,4 +1,3 @@
-import { createHash } from "node:crypto";
 import { existsSync, promises as fs } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import { ACCOUNT_LIMITS } from "./constants.js";
@@ -11,7 +10,16 @@ import {
 } from "./named-backup-export.js";
 import { MODEL_FAMILIES, type ModelFamily } from "./prompts/codex.js";
 import { clearAccountStorageArtifacts } from "./storage/account-clear.js";
+import {
+	collectDistinctIdentityValues,
+	findNewestMatchingIndex as findNewestMatchingIndexByRef,
+	selectNewestAccount,
+} from "./storage/account-match-utils.js";
 import { cloneAccountStorageForPersistence } from "./storage/account-persistence.js";
+import {
+	describeAccountSnapshot as describeAccountSnapshotWithDeps,
+	statSnapshot as statSnapshotWithDeps,
+} from "./storage/account-snapshot.js";
 import { buildBackupMetadata } from "./storage/backup-metadata-builder.js";
 import {
 	type BackupMetadataSection,
@@ -19,6 +27,7 @@ import {
 	type BackupSnapshotMetadata,
 	buildMetadataSection,
 } from "./storage/backup-metadata.js";
+import { isCacheLikeBackupArtifactName } from "./storage/cache-artifacts.js";
 import {
 	ACCOUNTS_BACKUP_SUFFIX,
 	ACCOUNTS_WAL_SUFFIX,
@@ -30,12 +39,14 @@ import {
 } from "./storage/backup-paths.js";
 import { restoreAccountsFromBackupPath } from "./storage/backup-restore.js";
 import { looksLikeSyntheticFixtureStorage } from "./storage/fixture-guards.js";
+import { loadFlaggedAccountsFromFile } from "./storage/flagged-storage-file.js";
 import { normalizeFlaggedStorage } from "./storage/flagged-storage.js";
 import {
 	clearFlaggedAccountsOnDisk,
 	loadFlaggedAccountsState,
 	saveFlaggedAccountsUnlockedToDisk,
 } from "./storage/flagged-storage-io.js";
+import { computeSha256 } from "./storage/hash.js";
 import {
 	exportAccountsToFile,
 	mergeImportedAccounts,
@@ -85,7 +96,12 @@ import {
 	loadNormalizedStorageFromPath,
 	mergeStorageForMigration,
 } from "./storage/project-migration.js";
+import { clampIndex, isRecord } from "./storage/record-utils.js";
 import { buildRestoreAssessment } from "./storage/restore-assessment.js";
+import {
+	createEmptyStorageWithRestoreMetadata as createEmptyStorageWithMetadata,
+	withRestoreMetadata,
+} from "./storage/restore-metadata.js";
 import {
 	loadAccountsFromPath,
 	parseAndNormalizeStorage,
@@ -129,11 +145,6 @@ export interface FlaggedAccountStorageV1 {
 }
 
 type RestoreReason = "empty-storage" | "intentional-reset" | "missing-storage";
-
-type AccountStorageWithMetadata = AccountStorageV3 & {
-	restoreEligible?: boolean;
-	restoreReason?: RestoreReason;
-};
 
 export type BackupMetadata = {
 	accounts: BackupMetadataSection;
@@ -418,58 +429,15 @@ async function cleanupStaleRotatingBackupArtifacts(
 	}
 }
 
-function computeSha256(value: string): string {
-	return createHash("sha256").update(value).digest("hex");
-}
-
-function createEmptyStorageWithMetadata(
-	restoreEligible: boolean,
-	restoreReason: RestoreReason,
-): AccountStorageWithMetadata {
-	return {
-		version: 3,
-		accounts: [],
-		activeIndex: 0,
-		activeIndexByFamily: {},
-		restoreEligible,
-		restoreReason,
-	};
-}
-
-function withRestoreMetadata(
-	storage: AccountStorageV3,
-	restoreEligible: boolean,
-	restoreReason: RestoreReason,
-): AccountStorageWithMetadata {
-	return {
-		...storage,
-		restoreEligible,
-		restoreReason,
-	};
-}
-
-function isCacheLikeBackupArtifactName(entryName: string): boolean {
-	return entryName.toLowerCase().includes(".cache");
-}
-
 async function statSnapshot(path: string): Promise<{
 	exists: boolean;
 	bytes?: number;
 	mtimeMs?: number;
 }> {
-	try {
-		const stats = await fs.stat(path);
-		return { exists: true, bytes: stats.size, mtimeMs: stats.mtimeMs };
-	} catch (error) {
-		const code = (error as NodeJS.ErrnoException).code;
-		if (code !== "ENOENT") {
-			log.warn("Failed to stat backup candidate", {
-				path,
-				error: String(error),
-			});
-		}
-		return { exists: false };
-	}
+	return statSnapshotWithDeps(path, {
+		stat: fs.stat,
+		logWarn: (message, meta) => log.warn(message, meta),
+	});
 }
 
 async function describeAccountSnapshot(
@@ -477,46 +445,16 @@ async function describeAccountSnapshot(
 	kind: BackupSnapshotKind,
 	index?: number,
 ): Promise<BackupSnapshotMetadata> {
-	const stats = await statSnapshot(path);
-	if (!stats.exists) {
-		return { kind, path, index, exists: false, valid: false };
-	}
-	try {
-		const { normalized, schemaErrors, storedVersion } =
-			await loadAccountsFromPath(path, {
+	return describeAccountSnapshotWithDeps(path, kind, {
+		index,
+		statSnapshot,
+		loadAccountsFromPath: (targetPath) =>
+			loadAccountsFromPath(targetPath, {
 				normalizeAccountStorage,
 				isRecord,
-			});
-		return {
-			kind,
-			path,
-			index,
-			exists: true,
-			valid: !!normalized,
-			bytes: stats.bytes,
-			mtimeMs: stats.mtimeMs,
-			version: typeof storedVersion === "number" ? storedVersion : undefined,
-			accountCount: normalized?.accounts.length,
-			schemaErrors: schemaErrors.length > 0 ? schemaErrors : undefined,
-		};
-	} catch (error) {
-		const code = (error as NodeJS.ErrnoException).code;
-		if (code !== "ENOENT") {
-			log.warn("Failed to inspect account snapshot", {
-				path,
-				error: String(error),
-			});
-		}
-		return {
-			kind,
-			path,
-			index,
-			exists: true,
-			valid: false,
-			bytes: stats.bytes,
-			mtimeMs: stats.mtimeMs,
-		};
-	}
+			}),
+		logWarn: (message, meta) => log.warn(message, meta),
+	});
 }
 
 async function describeAccountsWalSnapshot(
@@ -587,11 +525,13 @@ async function describeAccountsWalSnapshot(
 async function loadFlaggedAccountsFromPath(
 	path: string,
 ): Promise<FlaggedAccountStorageV1> {
-	const content = await fs.readFile(path, "utf-8");
-	const data = JSON.parse(content) as unknown;
-	return normalizeFlaggedStorage(data, {
-		isRecord,
-		now: () => Date.now(),
+	return loadFlaggedAccountsFromFile(path, {
+		readFile: fs.readFile,
+		normalizeFlaggedStorage: (data) =>
+			normalizeFlaggedStorage(data, {
+				isRecord,
+				now: () => Date.now(),
+			}),
 	});
 }
 
@@ -896,57 +836,20 @@ async function migrateLegacyProjectStorageIfNeeded(
 	return null;
 }
 
-function selectNewestAccount<T extends AccountLike>(
-	current: T | undefined,
-	candidate: T,
-): T {
-	if (!current) return candidate;
-	const currentLastUsed = current.lastUsed || 0;
-	const candidateLastUsed = candidate.lastUsed || 0;
-	if (candidateLastUsed > currentLastUsed) return candidate;
-	if (candidateLastUsed < currentLastUsed) return current;
-	const currentAddedAt = current.addedAt || 0;
-	const candidateAddedAt = candidate.addedAt || 0;
-	return candidateAddedAt >= currentAddedAt ? candidate : current;
-}
-
 type AccountMatchOptions = {
 	allowUniqueAccountIdFallbackWithoutEmail?: boolean;
 };
-
-function collectDistinctIdentityValues(
-	values: Array<string | undefined>,
-): Set<string> {
-	const distinct = new Set<string>();
-	for (const value of values) {
-		if (value) distinct.add(value);
-	}
-	return distinct;
-}
 
 function findNewestMatchingIndex<T extends AccountLike>(
 	accounts: readonly T[],
 	predicate: (ref: AccountIdentityRef) => boolean,
 ): number | undefined {
-	let matchIndex: number | undefined;
-	let match: T | undefined;
-	for (let i = 0; i < accounts.length; i += 1) {
-		const account = accounts[i];
-		if (!account) continue;
-		const ref = toAccountIdentityRef(account);
-		if (!predicate(ref)) continue;
-		if (matchIndex === undefined) {
-			matchIndex = i;
-			match = account;
-			continue;
-		}
-		const newest = selectNewestAccount(match, account);
-		if (newest === account) {
-			matchIndex = i;
-			match = account;
-		}
-	}
-	return matchIndex;
+	return findNewestMatchingIndexByRef(
+		accounts,
+		(account) => toAccountIdentityRef(account),
+		predicate,
+		selectNewestAccount,
+	);
 }
 
 function findCompositeAccountMatchIndex<T extends AccountLike>(
@@ -1163,15 +1066,6 @@ export function deduplicateAccountsByEmail<
 	},
 >(accounts: T[]): T[] {
 	return deduplicateAccountsByIdentity(accounts);
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-	return !!value && typeof value === "object" && !Array.isArray(value);
-}
-
-function clampIndex(index: number, length: number): number {
-	if (length <= 0) return 0;
-	return Math.max(0, Math.min(index, length - 1));
 }
 
 function extractActiveAccountRef(
