@@ -10,6 +10,7 @@ import {
 } from "./named-backup-export.js";
 import { MODEL_FAMILIES, type ModelFamily } from "./prompts/codex.js";
 import { clearAccountStorageArtifacts } from "./storage/account-clear.js";
+import { clearAccountsEntry } from "./storage/account-clear-entry.js";
 import {
 	collectDistinctIdentityValues,
 	findNewestMatchingIndex as findNewestMatchingIndexByRef,
@@ -20,6 +21,12 @@ import {
 	describeAccountSnapshot as describeAccountSnapshotWithDeps,
 	statSnapshot as statSnapshotWithDeps,
 } from "./storage/account-snapshot.js";
+import {
+	exportAccountsSnapshot,
+	importAccountsSnapshot,
+} from "./storage/account-port.js";
+import { saveAccountsToDisk } from "./storage/account-save.js";
+import { saveAccountsEntry } from "./storage/account-save-entry.js";
 import { buildBackupMetadata } from "./storage/backup-metadata-builder.js";
 import {
 	type BackupMetadataSection,
@@ -40,6 +47,9 @@ import {
 import { restoreAccountsFromBackupPath } from "./storage/backup-restore.js";
 import { looksLikeSyntheticFixtureStorage } from "./storage/fixture-guards.js";
 import { loadFlaggedAccountsFromFile } from "./storage/flagged-storage-file.js";
+import { clearFlaggedAccountsEntry } from "./storage/flagged-entry.js";
+import { loadFlaggedAccountsEntry } from "./storage/flagged-load-entry.js";
+import { saveFlaggedAccountsEntry } from "./storage/flagged-save-entry.js";
 import { normalizeFlaggedStorage } from "./storage/flagged-storage.js";
 import {
 	clearFlaggedAccountsOnDisk,
@@ -47,12 +57,13 @@ import {
 	saveFlaggedAccountsUnlockedToDisk,
 } from "./storage/flagged-storage-io.js";
 import { computeSha256 } from "./storage/hash.js";
+import { ensureCodexGitignoreEntry } from "./storage/gitignore.js";
 import {
 	exportAccountsToFile,
 	mergeImportedAccounts,
 	readImportFile,
 } from "./storage/import-export.js";
-import { toStorageError } from "./storage/error-hints.js";
+import { formatStorageErrorHint } from "./storage/error-hints.js";
 export { StorageError } from "./errors.js";
 export { formatStorageErrorHint, toStorageError } from "./storage/error-hints.js";
 export {
@@ -76,10 +87,12 @@ import {
 	migrateV1ToV3,
 	type RateLimitStateV3,
 } from "./storage/migrations.js";
+import { exportNamedBackupEntry } from "./storage/named-backup-entry.js";
 import {
 	collectNamedBackups,
 	type NamedBackupSummary,
 } from "./storage/named-backups.js";
+import { getNamedBackupsEntry } from "./storage/named-backups-entry.js";
 import {
 	getStoragePathState,
 	setStoragePathState,
@@ -98,6 +111,7 @@ import {
 } from "./storage/project-migration.js";
 import { clampIndex, isRecord } from "./storage/record-utils.js";
 import { buildRestoreAssessment } from "./storage/restore-assessment.js";
+import { restoreAccountsFromBackupEntry } from "./storage/restore-backup-entry.js";
 import {
 	createEmptyStorageWithRestoreMetadata as createEmptyStorageWithMetadata,
 	withRestoreMetadata,
@@ -172,40 +186,16 @@ type AccountLike = {
 async function ensureGitignore(storagePath: string): Promise<void> {
 	const state = getStoragePathState();
 	if (!state.currentStoragePath) return;
-
-	const configDir = dirname(storagePath);
-	const inferredProjectRoot = dirname(configDir);
-	const candidateRoots = [state.currentProjectRoot, inferredProjectRoot].filter(
-		(root): root is string => typeof root === "string" && root.length > 0,
-	);
-	const projectRoot = candidateRoots.find((root) =>
-		existsSync(join(root, ".git")),
-	);
-	if (!projectRoot) return;
-	const gitignorePath = join(projectRoot, ".gitignore");
-
-	try {
-		let content = "";
-		if (existsSync(gitignorePath)) {
-			content = await fs.readFile(gitignorePath, "utf-8");
-			const lines = content.split("\n").map((l) => l.trim());
-			if (
-				lines.includes(".codex") ||
-				lines.includes(".codex/") ||
-				lines.includes("/.codex") ||
-				lines.includes("/.codex/")
-			) {
-				return;
-			}
-		}
-
-		const newContent =
-			content.endsWith("\n") || content === "" ? content : content + "\n";
-		await fs.writeFile(gitignorePath, newContent + ".codex/\n", "utf-8");
-		log.debug("Added .codex to .gitignore", { path: gitignorePath });
-	} catch (error) {
-		log.warn("Failed to update .gitignore", { error: String(error) });
-	}
+	await ensureCodexGitignoreEntry({
+		storagePath,
+		currentProjectRoot: state.currentProjectRoot,
+		logDebug: (message, details) => {
+			log.debug(message, details);
+		},
+		logWarn: (message, details) => {
+			log.warn(message, details);
+		},
+	});
 }
 
 export function setStorageBackupEnabled(enabled: boolean): void {
@@ -661,7 +651,9 @@ export function buildNamedBackupPath(name: string): string {
 }
 
 export async function getNamedBackups(): Promise<NamedBackupSummary[]> {
-	return collectNamedBackups(getStoragePath(), {
+	return getNamedBackupsEntry({
+		getStoragePath,
+		collectNamedBackups,
 		loadAccountsFromPath: (path) =>
 			loadAccountsFromPath(path, {
 				normalizeAccountStorage,
@@ -677,9 +669,12 @@ export async function restoreAccountsFromBackup(
 	path: string,
 	options?: { persist?: boolean },
 ): Promise<AccountStorageV3> {
-	return restoreAccountsFromBackupPath(path, {
-		persist: options?.persist,
-		backupRoot: getNamedBackupRoot(getStoragePath()),
+	return restoreAccountsFromBackupEntry({
+		path,
+		options,
+		restoreAccountsFromBackupPath,
+		getNamedBackupRoot,
+		getStoragePath,
 		realpath: fs.realpath,
 		loadAccountsFromPath: (path) =>
 			loadAccountsFromPath(path, {
@@ -694,14 +689,13 @@ export async function exportNamedBackup(
 	name: string,
 	options?: { force?: boolean },
 ): Promise<string> {
-	return exportNamedBackupFile(
+	return exportNamedBackupEntry({
 		name,
-		{
-			getStoragePath,
-			exportAccounts,
-		},
 		options,
-	);
+		exportNamedBackupFile,
+		getStoragePath,
+		exportAccounts,
+	});
 }
 
 export function getFlaggedAccountsPath(): string {
@@ -1441,136 +1435,117 @@ async function loadAccountsInternal(
 async function saveAccountsUnlocked(storage: AccountStorageV3): Promise<void> {
 	const path = getStoragePath();
 	const resetMarkerPath = getIntentionalResetMarkerPath(path);
-	const uniqueSuffix = `${Date.now()}.${Math.random().toString(36).slice(2, 8)}`;
-	const tempPath = `${path}.${uniqueSuffix}.tmp`;
 	const walPath = getAccountsWalPath(path);
-
-	try {
-		await fs.mkdir(dirname(path), { recursive: true });
-		await ensureGitignore(path);
-
-		if (looksLikeSyntheticFixtureStorage(storage)) {
-			try {
-				const existing = await loadNormalizedStorageFromPath(
-					path,
-					"existing account storage",
-					{
-						loadAccountsFromPath: (path) =>
-							loadAccountsFromPath(path, {
-								normalizeAccountStorage,
-								isRecord,
-							}),
-						logWarn: (message, details) => {
-							log.warn(message, details);
-						},
-					},
-				);
-				if (
-					existing &&
-					existing.accounts.length > 0 &&
-					!looksLikeSyntheticFixtureStorage(existing)
-				) {
-					throw new StorageError(
-						"Refusing to overwrite non-synthetic account storage with synthetic fixture payload",
-						"EINVALID",
-						path,
-						"Detected synthetic fixture-like account payload. Use explicit account import/login commands instead.",
-					);
+	return saveAccountsToDisk(storage, {
+		path,
+		resetMarkerPath,
+		walPath,
+		storageBackupEnabled: storageBackupEnabled && existsSync(path),
+		ensureDirectory: async () => {
+			await fs.mkdir(dirname(path), { recursive: true });
+		},
+		ensureGitignore: () => ensureGitignore(path),
+		looksLikeSyntheticFixtureStorage,
+		loadExistingStorage: () =>
+			loadNormalizedStorageFromPath(path, "existing account storage", {
+				loadAccountsFromPath: (candidatePath) =>
+					loadAccountsFromPath(candidatePath, {
+						normalizeAccountStorage,
+						isRecord,
+					}),
+				logWarn: (message, details) => {
+					log.warn(message, details);
+				},
+			}),
+		createSyntheticFixtureError: () =>
+			new StorageError(
+				"Refusing to overwrite non-synthetic account storage with synthetic fixture payload",
+				"EINVALID",
+				path,
+				"Detected synthetic fixture-like account payload. Use explicit account import/login commands instead.",
+			),
+		createRotatingAccountsBackup,
+		computeSha256,
+		writeJournal: async (content: string, journalPath: string) => {
+			const journalEntry: AccountsJournalEntry = {
+				version: 1,
+				createdAt: Date.now(),
+				path: journalPath,
+				checksum: computeSha256(content),
+				content,
+			};
+			await fs.writeFile(walPath, JSON.stringify(journalEntry), {
+				encoding: "utf-8",
+				mode: 0o600,
+			});
+		},
+		writeTemp: (tempPath: string, content: string) =>
+			fs.writeFile(tempPath, content, { encoding: "utf-8", mode: 0o600 }),
+		statTemp: (tempPath: string) => fs.stat(tempPath),
+		renameTempToPath: async (tempPath: string) => {
+			let lastError: NodeJS.ErrnoException | null = null;
+			for (let attempt = 0; attempt < 5; attempt++) {
+				try {
+					await fs.rename(tempPath, path);
+					return;
+				} catch (renameError) {
+					const code = (renameError as NodeJS.ErrnoException).code;
+					if (code === "EPERM" || code === "EBUSY") {
+						lastError = renameError as NodeJS.ErrnoException;
+						await new Promise((r) => setTimeout(r, 10 * 2 ** attempt));
+						continue;
+					}
+					throw renameError;
 				}
-			} catch (error) {
-				if (error instanceof StorageError) {
-					throw error;
-				}
-				// Ignore existing-file probe failures and continue with normal save flow.
 			}
-		}
-
-		if (storageBackupEnabled && existsSync(path)) {
+			if (lastError) throw lastError;
+		},
+		cleanupResetMarker: async () => {
 			try {
-				await createRotatingAccountsBackup(path);
-			} catch (backupError) {
-				log.warn("Failed to create account storage backup", {
-					path,
-					backupPath: getAccountsBackupPath(path),
-					error: String(backupError),
-				});
+				await fs.unlink(resetMarkerPath);
+			} catch {
+				// Best effort cleanup.
 			}
-		}
-
-		const content = JSON.stringify(storage, null, 2);
-		const journalEntry: AccountsJournalEntry = {
-			version: 1,
-			createdAt: Date.now(),
-			path,
-			checksum: computeSha256(content),
-			content,
-		};
-		await fs.writeFile(walPath, JSON.stringify(journalEntry), {
-			encoding: "utf-8",
-			mode: 0o600,
-		});
-		await fs.writeFile(tempPath, content, { encoding: "utf-8", mode: 0o600 });
-
-		const stats = await fs.stat(tempPath);
-		if (stats.size === 0) {
-			const emptyError = Object.assign(
-				new Error("File written but size is 0"),
-				{ code: "EEMPTY" },
+		},
+		cleanupWal: async () => {
+			try {
+				await fs.unlink(walPath);
+			} catch {
+				// Best effort cleanup.
+			}
+		},
+		cleanupTemp: async (tempPath: string) => {
+			try {
+				await fs.unlink(tempPath);
+			} catch {
+				// Ignore cleanup failure.
+			}
+		},
+		onSaved: () => {
+			lastAccountsSaveTimestamp = Date.now();
+		},
+		logWarn: (message: string, details: Record<string, unknown>) => {
+			log.warn(message, details);
+		},
+		logError: (message: string, details: Record<string, unknown>) => {
+			log.error(message, details);
+		},
+		createStorageError: (error: unknown) => {
+			const err = error as NodeJS.ErrnoException;
+			const code = err?.code || "UNKNOWN";
+			const hint = formatStorageErrorHint(error, path);
+			return new StorageError(
+				`Failed to save accounts: ${err?.message || "Unknown error"}`,
+				code,
+				path,
+				hint,
+				err instanceof Error ? err : undefined,
 			);
-			throw emptyError;
-		}
-
-		// Retry rename with exponential backoff for Windows EPERM/EBUSY
-		let lastError: NodeJS.ErrnoException | null = null;
-		for (let attempt = 0; attempt < 5; attempt++) {
-			try {
-				await fs.rename(tempPath, path);
-				try {
-					await fs.unlink(resetMarkerPath);
-				} catch {
-					// Best effort cleanup.
-				}
-				lastAccountsSaveTimestamp = Date.now();
-				try {
-					await fs.unlink(walPath);
-				} catch {
-					// Best effort cleanup.
-				}
-				return;
-			} catch (renameError) {
-				const code = (renameError as NodeJS.ErrnoException).code;
-				if (code === "EPERM" || code === "EBUSY") {
-					lastError = renameError as NodeJS.ErrnoException;
-					await new Promise((r) => setTimeout(r, 10 * 2 ** attempt));
-					continue;
-				}
-				throw renameError;
-			}
-		}
-		if (lastError) throw lastError;
-	} catch (error) {
-		try {
-			await fs.unlink(tempPath);
-		} catch {
-			// Ignore cleanup failure.
-		}
-
-		const err = error as NodeJS.ErrnoException;
-		const storageError = toStorageError(
-			`Failed to save accounts: ${err?.message || "Unknown error"}`,
-			error,
-			path,
-		);
-
-		log.error("Failed to save accounts", {
-			path,
-			code: storageError.code,
-			message: err?.message,
-			hint: storageError.hint,
-		});
-
-		throw storageError;
-	}
+		},
+		backupPath: getAccountsBackupPath(path),
+		createTempPath: () =>
+			`${path}.${Date.now()}.${Math.random().toString(36).slice(2, 8)}.tmp`,
+	});
 }
 
 function cloneFlaggedStorageForPersistence(
@@ -1699,8 +1674,10 @@ export async function withFlaggedStorageTransaction<T>(
  * @throws StorageError with platform-aware hints on failure
  */
 export async function saveAccounts(storage: AccountStorageV3): Promise<void> {
-	return withStorageLock(async () => {
-		await saveAccountsUnlocked(storage);
+	return saveAccountsEntry({
+		storage,
+		withStorageLock,
+		saveUnlocked: saveAccountsUnlocked,
 	});
 }
 
@@ -1709,32 +1686,33 @@ export async function saveAccounts(storage: AccountStorageV3): Promise<void> {
  * Silently ignores if file doesn't exist.
  */
 export async function clearAccounts(): Promise<void> {
-	return withStorageLock(async () => {
-		const path = getStoragePath();
-		await clearAccountStorageArtifacts({
-			path,
-			resetMarkerPath: getIntentionalResetMarkerPath(path),
-			walPath: getAccountsWalPath(path),
-			backupPaths: await getAccountsBackupRecoveryCandidatesWithDiscovery(path),
-			logError: (message, details) => {
-				log.error(message, details);
-			},
-		});
+	const path = getStoragePath();
+	return clearAccountsEntry({
+		path,
+		withStorageLock,
+		resetMarkerPath: getIntentionalResetMarkerPath(path),
+		walPath: getAccountsWalPath(path),
+		getBackupPaths: () =>
+			getAccountsBackupRecoveryCandidatesWithDiscovery(path),
+		clearAccountStorageArtifacts,
+		logError: (message: string, details: Record<string, unknown>) => {
+			log.error(message, details);
+		},
 	});
 }
 
 export async function loadFlaggedAccounts(): Promise<FlaggedAccountStorageV1> {
-	const path = getFlaggedAccountsPath();
-	return loadFlaggedAccountsState({
-		path,
-		legacyPath: getLegacyFlaggedAccountsPath(),
-		resetMarkerPath: getIntentionalResetMarkerPath(path),
+	return loadFlaggedAccountsEntry({
+		getFlaggedAccountsPath,
+		getLegacyFlaggedAccountsPath,
+		getIntentionalResetMarkerPath,
 		normalizeFlaggedStorage: (data) =>
 			normalizeFlaggedStorage(data, {
 				isRecord,
 				now: () => Date.now(),
 			}),
 		saveFlaggedAccounts,
+		loadFlaggedAccountsState,
 		logError: (message, details) => {
 			log.error(message, details);
 		},
@@ -1770,22 +1748,25 @@ async function saveFlaggedAccountsUnlocked(
 export async function saveFlaggedAccounts(
 	storage: FlaggedAccountStorageV1,
 ): Promise<void> {
-	return withStorageLock(async () => {
-		await saveFlaggedAccountsUnlocked(storage);
+	return saveFlaggedAccountsEntry({
+		storage,
+		withStorageLock,
+		saveUnlocked: saveFlaggedAccountsUnlocked,
 	});
 }
 
 export async function clearFlaggedAccounts(): Promise<void> {
-	return withStorageLock(async () => {
-		const path = getFlaggedAccountsPath();
-		await clearFlaggedAccountsOnDisk({
-			path,
-			markerPath: getIntentionalResetMarkerPath(path),
-			backupPaths: await getAccountsBackupRecoveryCandidatesWithDiscovery(path),
-			logError: (message, details) => {
-				log.error(message, details);
-			},
-		});
+	const path = getFlaggedAccountsPath();
+	return clearFlaggedAccountsEntry({
+		path,
+		withStorageLock,
+		markerPath: getIntentionalResetMarkerPath(path),
+		getBackupPaths: () =>
+			getAccountsBackupRecoveryCandidatesWithDiscovery(path),
+		clearFlaggedAccountsOnDisk,
+		logError: (message, details) => {
+			log.error(message, details);
+		},
 	});
 }
 
@@ -1802,21 +1783,15 @@ export async function exportAccounts(
 ): Promise<void> {
 	const resolvedPath = resolvePath(filePath);
 	const currentStoragePath = getStoragePath();
-
-	const transactionState = getTransactionSnapshotState();
-	const storage =
-		transactionState?.active &&
-		transactionState.storagePath === currentStoragePath
-			? transactionState.snapshot
-			: transactionState?.active
-				? await loadAccountsInternal(saveAccountsUnlocked)
-				: await withAccountStorageTransaction((current) =>
-						Promise.resolve(current),
-					);
-	await exportAccountsToFile({
+	await exportAccountsSnapshot({
 		resolvedPath,
 		force,
-		storage,
+		currentStoragePath,
+		transactionState: getTransactionSnapshotState(),
+		loadAccountsInternal: () => loadAccountsInternal(saveAccountsUnlocked),
+		readCurrentStorage: () =>
+			withAccountStorageTransaction((current) => Promise.resolve(current)),
+		exportAccountsToFile,
 		beforeCommit,
 		logInfo: (message, details) => {
 			log.info(message, details);
@@ -1834,37 +1809,16 @@ export async function importAccounts(
 	filePath: string,
 ): Promise<{ imported: number; total: number; skipped: number }> {
 	const resolvedPath = resolvePath(filePath);
-	const normalized = await readImportFile({
+	return importAccountsSnapshot({
 		resolvedPath,
+		readImportFile,
 		normalizeAccountStorage,
+		withAccountStorageTransaction,
+		mergeImportedAccounts,
+		maxAccounts: ACCOUNT_LIMITS.MAX_ACCOUNTS,
+		deduplicateAccounts,
+		logInfo: (message, details) => {
+			log.info(message, details);
+		},
 	});
-
-	const {
-		imported: importedCount,
-		total,
-		skipped: skippedCount,
-	} = await withAccountStorageTransaction(async (existing, persist) => {
-		const merged = mergeImportedAccounts({
-			existing,
-			imported: normalized,
-			maxAccounts: ACCOUNT_LIMITS.MAX_ACCOUNTS,
-			deduplicateAccounts,
-		});
-
-		await persist(merged.newStorage);
-		return {
-			imported: merged.imported,
-			total: merged.total,
-			skipped: merged.skipped,
-		};
-	});
-
-	log.info("Imported accounts", {
-		path: resolvedPath,
-		imported: importedCount,
-		skipped: skippedCount,
-		total,
-	});
-
-	return { imported: importedCount, total, skipped: skippedCount };
 }
