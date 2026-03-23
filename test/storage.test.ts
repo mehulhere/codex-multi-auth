@@ -1752,6 +1752,93 @@ describe("storage", () => {
 			}
 		});
 
+		it.each(["EBUSY", "EPERM", "EAGAIN"] as const)(
+			"rethrows %s when the current storage reappears locked during export fallback",
+			async (code) => {
+				const currentStoragePath = join(
+					testWorkDir,
+					`accounts-reappeared-locked-${code}.json`,
+				);
+				const legacyStoragePath = join(
+					testWorkDir,
+					`accounts-reappeared-legacy-${code}.json`,
+				);
+				await fs.writeFile(
+					legacyStoragePath,
+					JSON.stringify({
+						version: 3,
+						activeIndex: 0,
+						activeIndexByFamily: {},
+						accounts: [
+							{
+								accountId: "legacy",
+								refreshToken: "legacy-token",
+								addedAt: 1,
+								lastUsed: 1,
+							},
+						],
+					}),
+				);
+
+				const actualStorageParser = await vi.importActual<
+					typeof import("../lib/storage/storage-parser.js")
+				>("../lib/storage/storage-parser.js");
+				let currentReadCount = 0;
+				vi.resetModules();
+				vi.doMock("../lib/storage/storage-parser.js", () => ({
+					...actualStorageParser,
+					loadAccountsFromPath: vi.fn(async (path, deps) => {
+						if (path === currentStoragePath) {
+							currentReadCount += 1;
+							if (currentReadCount === 1) {
+								await fs.writeFile(
+									currentStoragePath,
+									JSON.stringify({
+										version: 3,
+										activeIndex: 0,
+										activeIndexByFamily: {},
+										accounts: [],
+									}),
+								);
+								throw Object.assign(
+									new Error("missing current storage"),
+									{ code: "ENOENT" },
+								);
+							}
+							throw Object.assign(new Error(`locked ${code}`), { code });
+						}
+						return actualStorageParser.loadAccountsFromPath(path, deps);
+					}),
+				}));
+
+				try {
+					const isolatedStorageModule = await import("../lib/storage.js");
+					const isolatedPathState = await import("../lib/storage/path-state.js");
+					isolatedPathState.setStoragePathState({
+						currentStoragePath,
+						currentLegacyProjectStoragePath: legacyStoragePath,
+						currentLegacyWorktreeStoragePath: null,
+						currentProjectRoot: null,
+					});
+
+					await expect(
+						isolatedStorageModule.exportAccounts(exportPath),
+					).rejects.toMatchObject({ code });
+
+					const currentStorage = JSON.parse(
+						await fs.readFile(currentStoragePath, "utf-8"),
+					);
+					expect(currentStorage.accounts).toEqual([]);
+					expect(existsSync(legacyStoragePath)).toBe(true);
+					expect(existsSync(exportPath)).toBe(false);
+				} finally {
+					vi.doUnmock("../lib/storage/storage-parser.js");
+					vi.resetModules();
+					setStoragePathDirect(testStoragePath);
+				}
+			},
+		);
+
 		it("does not revive legacy accounts when the current storage has an intentional reset marker", async () => {
 			const currentStoragePath = join(testWorkDir, "accounts-reset-current.json");
 			const legacyStoragePath = join(testWorkDir, "accounts-reset-legacy.json");

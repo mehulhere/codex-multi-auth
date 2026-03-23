@@ -755,24 +755,45 @@ async function migrateLegacyProjectStorageIfNeeded(options?: {
 				log.warn(message, details);
 			},
 		});
-	const readOnlyExportCurrentStorage = async (): Promise<{
+	const readLiveCurrentStorageIfExportMode = async (): Promise<{
 		exists: boolean;
 		storage: AccountStorageV3 | null;
 	}> => {
 		if (commit || !existsSync(currentStoragePath)) {
 			return { exists: false, storage: null };
 		}
-		return {
-			exists: true,
-			storage: await loadCurrentStorageForMigration(),
-		};
+		try {
+			const { normalized, schemaErrors } = await loadAccountsFromPath(
+				currentStoragePath,
+				{
+					normalizeAccountStorage,
+					isRecord,
+				},
+			);
+			if (schemaErrors.length > 0) {
+				log.warn("current account storage schema validation warnings", {
+					path: currentStoragePath,
+					errors: schemaErrors.slice(0, 5),
+				});
+			}
+			return {
+				exists: true,
+				storage: normalized,
+			};
+		} catch (error) {
+			if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+				return { exists: false, storage: null };
+			}
+			throw error;
+		}
 	};
 
 	let targetStorage = await loadCurrentStorageForMigration();
 	let migrated = false;
 
 	for (const legacyPath of existingCandidatePaths) {
-		const liveCurrentStorageBeforeMerge = await readOnlyExportCurrentStorage();
+		const liveCurrentStorageBeforeMerge =
+			await readLiveCurrentStorageIfExportMode();
 		if (liveCurrentStorageBeforeMerge.exists) {
 			return liveCurrentStorageBeforeMerge.storage;
 		}
@@ -796,7 +817,7 @@ async function migrateLegacyProjectStorageIfNeeded(options?: {
 		}
 
 		const liveCurrentStorageAfterLegacyRead =
-			await readOnlyExportCurrentStorage();
+			await readLiveCurrentStorageIfExportMode();
 		if (liveCurrentStorageAfterLegacyRead.exists) {
 			return liveCurrentStorageAfterLegacyRead.storage;
 		}
