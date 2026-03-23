@@ -209,7 +209,6 @@ import {
 	reloadRuntimeAccountManager,
 } from "./lib/runtime/account-manager-cache.js";
 import {
-	createAccountManagerReloader,
 	createPersistAccounts,
 	runRuntimeOAuthFlow,
 } from "./lib/runtime/auth-facade.js";
@@ -403,21 +402,21 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 		},
 	};
 
-	const reloadAccountManagerFromDisk =
-		createAccountManagerReloader<AccountManager>({
-			reloadRuntimeAccountManager,
-			getReloadInFlight: () => accountReloadInFlight,
-			loadFromDisk: (fallback) => AccountManager.loadFromDisk(fallback),
-			setCachedAccountManager: (value) => {
-				cachedAccountManager = value;
-			},
-			setAccountManagerPromise: (value) => {
-				accountManagerPromise = value;
-			},
-			setReloadInFlight: (value) => {
-				accountReloadInFlight = value;
-			},
-		});
+	const makeReloadAccountManagerDeps = (authFallback?: OAuthAuthDetails) => ({
+		currentReloadInFlight: accountReloadInFlight,
+		loadFromDisk: (fallback?: OAuthAuthDetails) =>
+			AccountManager.loadFromDisk(fallback),
+		setCachedAccountManager: (value: AccountManager) => {
+			cachedAccountManager = value;
+		},
+		setAccountManagerPromise: (value: Promise<AccountManager> | null) => {
+			accountManagerPromise = value;
+		},
+		setReloadInFlight: (value: Promise<AccountManager> | null) => {
+			accountReloadInFlight = value;
+		},
+		authFallback,
+	});
 
 	const ensureLiveAccountSync = async (
 		pluginConfig: ReturnType<typeof loadPluginConfig>,
@@ -432,7 +431,9 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 			createSync: (oauthFallback) =>
 				new LiveAccountSync(
 					async () => {
-						await reloadAccountManagerFromDisk(oauthFallback);
+						await reloadRuntimeAccountManager<AccountManager>(
+							makeReloadAccountManagerDeps(oauthFallback),
+						);
 					},
 					{
 						debounceMs: getLiveAccountSyncDebounceMs(pluginConfig),
@@ -483,7 +484,9 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 				modelFamilies: MODEL_FAMILIES,
 				getCachedAccountManager: () => cachedAccountManager,
 				reloadAccountManagerFromDisk: async () => {
-					await reloadAccountManagerFromDisk();
+					await reloadRuntimeAccountManager<AccountManager>(
+						makeReloadAccountManagerDeps(),
+					);
 				},
 				setLastCodexCliActiveSyncIndex: (index) => {
 					lastCodexCliActiveSyncIndex = index;
@@ -591,11 +594,15 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 				try {
 					await ensureLiveAccountSync(pluginConfig, auth);
 					if (!accountManagerPromise) {
-						await reloadAccountManagerFromDisk(auth as OAuthAuthDetails);
+						await reloadRuntimeAccountManager<AccountManager>(
+							makeReloadAccountManagerDeps(auth as OAuthAuthDetails),
+						);
 					}
 					const managerPromise =
 						accountManagerPromise ??
-						reloadAccountManagerFromDisk(auth as OAuthAuthDetails);
+						reloadRuntimeAccountManager<AccountManager>(
+							makeReloadAccountManagerDeps(auth as OAuthAuthDetails),
+						);
 					let accountManager = await managerPromise;
 					cachedAccountManager = accountManager;
 					const refreshToken = auth.type === "oauth" ? auth.refresh : "";
@@ -3167,7 +3174,9 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 					}
 
 					if (cachedAccountManager) {
-						await reloadAccountManagerFromDisk();
+						await reloadRuntimeAccountManager<AccountManager>(
+							makeReloadAccountManagerDeps(),
+						);
 					}
 
 					const label = formatAccountLabel(account, targetIndex);
@@ -3757,7 +3766,9 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 								}
 
 								if (cachedAccountManager) {
-									await reloadAccountManagerFromDisk();
+									await reloadRuntimeAccountManager<AccountManager>(
+										makeReloadAccountManagerDeps(),
+									);
 								}
 
 								const remaining = storage.accounts.length;
@@ -3857,7 +3868,9 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 
 								await saveAccounts(storage);
 								if (cachedAccountManager) {
-									await reloadAccountManagerFromDisk();
+									await reloadRuntimeAccountManager<AccountManager>(
+										makeReloadAccountManagerDeps(),
+									);
 								}
 								results.push("");
 								results.push(

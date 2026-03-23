@@ -1,12 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
 import {
-	applyRuntimeUiOptions,
-	resolveRuntimeUiOptions,
-} from "../lib/runtime/ui-runtime.js";
-import {
 	invalidateRuntimeAccountManagerCache,
 	reloadRuntimeAccountManager,
 } from "../lib/runtime/account-manager-cache.js";
+import { applyUiRuntimeFromConfig } from "../lib/runtime/ui-runtime.js";
 
 describe("runtime account manager cache", () => {
 	it("invalidates both cached manager setters", () => {
@@ -88,8 +85,8 @@ describe("runtime account manager cache", () => {
 	});
 });
 
-describe("runtime ui resolver", () => {
-	it("applies runtime UI options from config-derived getters", () => {
+describe("runtime ui helpers", () => {
+	it("applies runtime UI options from config getters", () => {
 		const setUiRuntimeOptions = vi.fn().mockReturnValue({
 			v2Enabled: false,
 			colorProfile: "ansi16",
@@ -97,14 +94,13 @@ describe("runtime ui resolver", () => {
 		});
 
 		expect(
-			applyRuntimeUiOptions(
-				{ name: "config" },
+			applyUiRuntimeFromConfig(
 				{
-					setUiRuntimeOptions,
-					getCodexTuiV2: vi.fn().mockReturnValue(false),
-					getCodexTuiColorProfile: vi.fn().mockReturnValue("ansi16"),
-					getCodexTuiGlyphMode: vi.fn().mockReturnValue("unicode"),
-				},
+					codexTuiV2: false,
+					codexTuiColorProfile: "ansi16",
+					codexTuiGlyphMode: "unicode",
+				} as never,
+				setUiRuntimeOptions,
 			),
 		).toEqual({
 			v2Enabled: false,
@@ -116,26 +112,5 @@ describe("runtime ui resolver", () => {
 			colorProfile: "ansi16",
 			glyphMode: "unicode",
 		});
-	});
-
-	it("loads plugin config and pipes it into the runtime UI resolver", () => {
-		const pluginConfig = { theme: "green" };
-		const applyUiRuntimeFromConfig = vi.fn().mockReturnValue({
-			v2Enabled: true,
-			colorProfile: "truecolor",
-			glyphMode: "ascii",
-		});
-
-		expect(
-			resolveRuntimeUiOptions({
-				loadPluginConfig: vi.fn().mockReturnValue(pluginConfig),
-				applyUiRuntimeFromConfig,
-			}),
-		).toEqual({
-			v2Enabled: true,
-			colorProfile: "truecolor",
-			glyphMode: "ascii",
-		});
-		expect(applyUiRuntimeFromConfig).toHaveBeenCalledWith(pluginConfig);
 	});
 });
