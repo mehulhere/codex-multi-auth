@@ -1234,7 +1234,6 @@ describe("storage", () => {
 		});
 
 		it("should fail export when no accounts exist", async () => {
-			const { exportAccounts } = await import("../lib/storage.js");
 			setStoragePathDirect(testStoragePath);
 			await clearAccounts();
 			await expect(exportAccounts(exportPath)).rejects.toThrow(
@@ -1303,6 +1302,22 @@ describe("storage", () => {
 			const currentStoragePath = join(testWorkDir, "accounts-current.json");
 			const legacyStoragePath = join(testWorkDir, "accounts-legacy.json");
 			await fs.writeFile(
+				transactionStoragePath,
+				JSON.stringify({
+					version: 3,
+					activeIndex: 0,
+					activeIndexByFamily: {},
+					accounts: [
+						{
+							accountId: "transaction",
+							refreshToken: "transaction-token",
+							addedAt: 1,
+							lastUsed: 1,
+						},
+					],
+				}),
+			);
+			await fs.writeFile(
 				legacyStoragePath,
 				JSON.stringify({
 					version: 3,
@@ -1332,8 +1347,14 @@ describe("storage", () => {
 				});
 
 				const exported = JSON.parse(await fs.readFile(exportPath, "utf-8"));
+				const transactionStorage = JSON.parse(
+					await fs.readFile(transactionStoragePath, "utf-8"),
+				);
 				expect(exported.accounts).toEqual([
 					expect.objectContaining({ refreshToken: "legacy-token" }),
+				]);
+				expect(transactionStorage.accounts).toEqual([
+					expect.objectContaining({ refreshToken: "transaction-token" }),
 				]);
 				expect(existsSync(currentStoragePath)).toBe(false);
 				expect(existsSync(legacyStoragePath)).toBe(true);
@@ -1434,6 +1455,101 @@ describe("storage", () => {
 				}
 			},
 		);
+
+		it("does not revive legacy accounts when the current storage exists but is empty", async () => {
+			const currentStoragePath = join(testWorkDir, "accounts-empty-current.json");
+			const legacyStoragePath = join(testWorkDir, "accounts-empty-legacy.json");
+			await fs.writeFile(
+				currentStoragePath,
+				JSON.stringify({
+					version: 3,
+					activeIndex: 0,
+					activeIndexByFamily: {},
+					accounts: [],
+				}),
+			);
+			await fs.writeFile(
+				legacyStoragePath,
+				JSON.stringify({
+					version: 3,
+					activeIndex: 0,
+					activeIndexByFamily: {},
+					accounts: [
+						{
+							accountId: "legacy",
+							refreshToken: "legacy-token",
+							addedAt: 1,
+							lastUsed: 1,
+						},
+					],
+				}),
+			);
+
+			setStoragePathDirect(currentStoragePath);
+			try {
+				setStoragePathState({
+					currentStoragePath,
+					currentLegacyProjectStoragePath: legacyStoragePath,
+					currentLegacyWorktreeStoragePath: null,
+					currentProjectRoot: null,
+				});
+
+				await expect(exportAccounts(exportPath)).rejects.toThrow(
+					/No accounts to export/,
+				);
+
+				const currentStorage = JSON.parse(
+					await fs.readFile(currentStoragePath, "utf-8"),
+				);
+				expect(currentStorage.accounts).toEqual([]);
+				expect(existsSync(legacyStoragePath)).toBe(true);
+				expect(existsSync(exportPath)).toBe(false);
+			} finally {
+				setStoragePathDirect(testStoragePath);
+			}
+		});
+
+		it("does not revive legacy accounts when the current storage has an intentional reset marker", async () => {
+			const currentStoragePath = join(testWorkDir, "accounts-reset-current.json");
+			const legacyStoragePath = join(testWorkDir, "accounts-reset-legacy.json");
+			await fs.writeFile(
+				legacyStoragePath,
+				JSON.stringify({
+					version: 3,
+					activeIndex: 0,
+					activeIndexByFamily: {},
+					accounts: [
+						{
+							accountId: "legacy",
+							refreshToken: "legacy-token",
+							addedAt: 1,
+							lastUsed: 1,
+						},
+					],
+				}),
+			);
+
+			setStoragePathDirect(currentStoragePath);
+			await clearAccounts();
+			try {
+				setStoragePathState({
+					currentStoragePath,
+					currentLegacyProjectStoragePath: legacyStoragePath,
+					currentLegacyWorktreeStoragePath: null,
+					currentProjectRoot: null,
+				});
+
+				await expect(exportAccounts(exportPath)).rejects.toThrow(
+					/No accounts to export/,
+				);
+
+				expect(existsSync(currentStoragePath)).toBe(false);
+				expect(existsSync(legacyStoragePath)).toBe(true);
+				expect(existsSync(exportPath)).toBe(false);
+			} finally {
+				setStoragePathDirect(testStoragePath);
+			}
+		});
 
 		it("should fail import when file does not exist", async () => {
 			const { importAccounts } = await import("../lib/storage.js");

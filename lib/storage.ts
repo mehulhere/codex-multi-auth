@@ -1450,11 +1450,9 @@ async function loadAccountsForExport(
 	const persistMigrations = mode === "locked";
 	const path = getStoragePath();
 	const resetMarkerPath = getIntentionalResetMarkerPath(path);
-	const migratedLegacyStorage = await migrateLegacyProjectStorageIfNeeded(
-		persistMigrations
-			? { persist: saveAccountsUnlocked }
-			: { commit: false },
-	);
+	const migrationOptions = persistMigrations
+		? { persist: saveAccountsUnlocked }
+		: { commit: false };
 
 	if (existsSync(resetMarkerPath)) {
 		return createEmptyStorageWithMetadata(false, "intentional-reset");
@@ -1496,6 +1494,11 @@ async function loadAccountsForExport(
 			return createEmptyStorageWithMetadata(false, "intentional-reset");
 		}
 		if (code === "ENOENT") {
+			const migratedLegacyStorage =
+				await migrateLegacyProjectStorageIfNeeded(migrationOptions);
+			if (existsSync(resetMarkerPath)) {
+				return createEmptyStorageWithMetadata(false, "intentional-reset");
+			}
 			return migratedLegacyStorage;
 		}
 		throw error;
