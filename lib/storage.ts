@@ -1441,48 +1441,26 @@ async function loadAccountsInternal(
 	}
 }
 
-async function loadAccountsForExport(
-	mode: "locked" | "unlocked" = "locked",
-): Promise<AccountStorageV3 | null> {
-	// Export reuses this helper from both paths in `exportAccounts()`. Only the
-	// locked path may persist migrations; unlocked reads must remain side-effect
-	// free while another storage transaction holds the mutex for a different file.
-	const persistMigrations = mode === "locked";
+async function loadAccountsForExport(): Promise<AccountStorageV3 | null> {
+	// Export reuses this helper from both paths in `exportAccounts()`. Keep the
+	// read side effect free so export never clears a reset marker or races with
+	// concurrent writers while normalizing legacy storage for the snapshot.
 	const path = getStoragePath();
 	const resetMarkerPath = getIntentionalResetMarkerPath(path);
-	const migrationOptions = persistMigrations
-		? { persist: saveAccountsUnlocked }
-		: { commit: false };
 
 	if (existsSync(resetMarkerPath)) {
 		return createEmptyStorageWithMetadata(false, "intentional-reset");
 	}
 
 	try {
-		const { normalized, storedVersion, schemaErrors } = await loadAccountsFromPath(
-			path,
-			{
-				normalizeAccountStorage,
-				isRecord,
-			},
-		);
+		const { normalized, schemaErrors } = await loadAccountsFromPath(path, {
+			normalizeAccountStorage,
+			isRecord,
+		});
 		if (schemaErrors.length > 0) {
 			log.warn("Account storage schema validation warnings", {
 				errors: schemaErrors.slice(0, 5),
 			});
-		}
-		if (persistMigrations && normalized && storedVersion !== normalized.version) {
-			log.info("Migrating account storage to v3", {
-				from: storedVersion,
-				to: normalized.version,
-			});
-			try {
-				await saveAccountsUnlocked(normalized);
-			} catch (saveError) {
-				log.warn("Failed to persist migrated storage", {
-					error: String(saveError),
-				});
-			}
 		}
 		if (existsSync(resetMarkerPath)) {
 			return createEmptyStorageWithMetadata(false, "intentional-reset");
@@ -1495,7 +1473,7 @@ async function loadAccountsForExport(
 		}
 		if (code === "ENOENT") {
 			const migratedLegacyStorage =
-				await migrateLegacyProjectStorageIfNeeded(migrationOptions);
+				await migrateLegacyProjectStorageIfNeeded({ commit: false });
 			if (existsSync(resetMarkerPath)) {
 				return createEmptyStorageWithMetadata(false, "intentional-reset");
 			}
@@ -1861,9 +1839,8 @@ export async function exportAccounts(
 		force,
 		currentStoragePath,
 		transactionState: getTransactionSnapshotState(),
-		readCurrentStorageUnlocked: () => loadAccountsForExport("unlocked"),
-		readCurrentStorage: () =>
-			withStorageLock(() => loadAccountsForExport("locked")),
+		readCurrentStorageUnlocked: () => loadAccountsForExport(),
+		readCurrentStorage: () => withStorageLock(() => loadAccountsForExport()),
 		exportAccountsToFile,
 		beforeCommit,
 		logInfo: (message, details) => {
