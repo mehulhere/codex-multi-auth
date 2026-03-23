@@ -719,6 +719,7 @@ async function migrateLegacyProjectStorageIfNeeded(options?: {
 	if (!state.currentStoragePath) {
 		return null;
 	}
+	const currentStoragePath = state.currentStoragePath;
 
 	const candidatePaths = [
 		state.currentLegacyWorktreeStoragePath,
@@ -743,10 +744,8 @@ async function migrateLegacyProjectStorageIfNeeded(options?: {
 		return null;
 	}
 
-	let targetStorage = await loadNormalizedStorageFromPath(
-		state.currentStoragePath,
-		"current account storage",
-		{
+	const loadCurrentStorageForMigration = async (): Promise<AccountStorageV3 | null> =>
+		loadNormalizedStorageFromPath(currentStoragePath, "current account storage", {
 			loadAccountsFromPath: (path) =>
 				loadAccountsFromPath(path, {
 					normalizeAccountStorage,
@@ -755,11 +754,29 @@ async function migrateLegacyProjectStorageIfNeeded(options?: {
 			logWarn: (message, details) => {
 				log.warn(message, details);
 			},
-		},
-	);
+		});
+	const readOnlyExportCurrentStorage = async (): Promise<{
+		exists: boolean;
+		storage: AccountStorageV3 | null;
+	}> => {
+		if (commit || !existsSync(currentStoragePath)) {
+			return { exists: false, storage: null };
+		}
+		return {
+			exists: true,
+			storage: await loadCurrentStorageForMigration(),
+		};
+	};
+
+	let targetStorage = await loadCurrentStorageForMigration();
 	let migrated = false;
 
 	for (const legacyPath of existingCandidatePaths) {
+		const liveCurrentStorageBeforeMerge = await readOnlyExportCurrentStorage();
+		if (liveCurrentStorageBeforeMerge.exists) {
+			return liveCurrentStorageBeforeMerge.storage;
+		}
+
 		const legacyStorage = await loadNormalizedStorageFromPath(
 			legacyPath,
 			"legacy account storage",
@@ -776,6 +793,12 @@ async function migrateLegacyProjectStorageIfNeeded(options?: {
 		);
 		if (!legacyStorage) {
 			continue;
+		}
+
+		const liveCurrentStorageAfterLegacyRead =
+			await readOnlyExportCurrentStorage();
+		if (liveCurrentStorageAfterLegacyRead.exists) {
+			return liveCurrentStorageAfterLegacyRead.storage;
 		}
 
 		const mergedStorage = mergeStorageForMigration(
