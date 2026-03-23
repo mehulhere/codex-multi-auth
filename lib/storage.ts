@@ -709,13 +709,17 @@ function getLegacyFlaggedAccountsPath(): string {
 	);
 }
 
-async function migrateLegacyProjectStorageIfNeeded(
-	persist: (storage: AccountStorageV3) => Promise<void> = saveAccounts,
-): Promise<AccountStorageV3 | null> {
+async function migrateLegacyProjectStorageIfNeeded(options?: {
+	persist?: (storage: AccountStorageV3) => Promise<void>;
+	commit?: boolean;
+}): Promise<AccountStorageV3 | null> {
+	const persist = options?.persist ?? saveAccounts;
+	const commit = options?.commit ?? true;
 	const state = getStoragePathState();
 	if (!state.currentStoragePath) {
 		return null;
 	}
+	const currentStoragePath = state.currentStoragePath;
 
 	const candidatePaths = [
 		state.currentLegacyWorktreeStoragePath,
@@ -740,10 +744,8 @@ async function migrateLegacyProjectStorageIfNeeded(
 		return null;
 	}
 
-	let targetStorage = await loadNormalizedStorageFromPath(
-		state.currentStoragePath,
-		"current account storage",
-		{
+	const loadCurrentStorageForMigration = async (): Promise<AccountStorageV3 | null> =>
+		loadNormalizedStorageFromPath(currentStoragePath, "current account storage", {
 			loadAccountsFromPath: (path) =>
 				loadAccountsFromPath(path, {
 					normalizeAccountStorage,
@@ -752,11 +754,50 @@ async function migrateLegacyProjectStorageIfNeeded(
 			logWarn: (message, details) => {
 				log.warn(message, details);
 			},
-		},
-	);
+		});
+	const readLiveCurrentStorageIfExportMode = async (): Promise<{
+		exists: boolean;
+		storage: AccountStorageV3 | null;
+	}> => {
+		if (commit || !existsSync(currentStoragePath)) {
+			return { exists: false, storage: null };
+		}
+		try {
+			const { normalized, schemaErrors } = await loadAccountsFromPath(
+				currentStoragePath,
+				{
+					normalizeAccountStorage,
+					isRecord,
+				},
+			);
+			if (schemaErrors.length > 0) {
+				log.warn("current account storage schema validation warnings", {
+					path: currentStoragePath,
+					errors: schemaErrors.slice(0, 5),
+				});
+			}
+			return {
+				exists: true,
+				storage: normalized,
+			};
+		} catch (error) {
+			if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+				return { exists: false, storage: null };
+			}
+			throw error;
+		}
+	};
+
+	let targetStorage = await loadCurrentStorageForMigration();
 	let migrated = false;
 
 	for (const legacyPath of existingCandidatePaths) {
+		const liveCurrentStorageBeforeMerge =
+			await readLiveCurrentStorageIfExportMode();
+		if (liveCurrentStorageBeforeMerge.exists) {
+			return liveCurrentStorageBeforeMerge.storage;
+		}
+
 		const legacyStorage = await loadNormalizedStorageFromPath(
 			legacyPath,
 			"legacy account storage",
@@ -775,6 +816,12 @@ async function migrateLegacyProjectStorageIfNeeded(
 			continue;
 		}
 
+		const liveCurrentStorageAfterLegacyRead =
+			await readLiveCurrentStorageIfExportMode();
+		if (liveCurrentStorageAfterLegacyRead.exists) {
+			return liveCurrentStorageAfterLegacyRead.storage;
+		}
+
 		const mergedStorage = mergeStorageForMigration(
 			targetStorage,
 			legacyStorage,
@@ -782,49 +829,55 @@ async function migrateLegacyProjectStorageIfNeeded(
 		);
 		const fallbackStorage = targetStorage ?? legacyStorage;
 
-		try {
-			await persist(mergedStorage);
-			targetStorage = mergedStorage;
-			migrated = true;
-		} catch (error) {
-			targetStorage = fallbackStorage;
-			log.warn("Failed to persist migrated account storage", {
+		if (commit) {
+			try {
+				await persist(mergedStorage);
+				targetStorage = mergedStorage;
+				migrated = true;
+			} catch (error) {
+				targetStorage = fallbackStorage;
+				log.warn("Failed to persist migrated account storage", {
+					from: legacyPath,
+					to: currentStoragePath,
+					error: String(error),
+				});
+				continue;
+			}
+
+			try {
+				await fs.unlink(legacyPath);
+				log.info("Removed legacy account storage file after migration", {
+					path: legacyPath,
+				});
+			} catch (unlinkError) {
+				const code = (unlinkError as NodeJS.ErrnoException).code;
+				if (code !== "ENOENT") {
+					log.warn(
+						"Failed to remove legacy account storage file after migration",
+						{
+							path: legacyPath,
+							error: String(unlinkError),
+						},
+					);
+				}
+			}
+
+			log.info("Migrated legacy project account storage", {
 				from: legacyPath,
-				to: state.currentStoragePath,
-				error: String(error),
+				to: currentStoragePath,
+				accounts: mergedStorage.accounts.length,
 			});
 			continue;
 		}
 
-		try {
-			await fs.unlink(legacyPath);
-			log.info("Removed legacy account storage file after migration", {
-				path: legacyPath,
-			});
-		} catch (unlinkError) {
-			const code = (unlinkError as NodeJS.ErrnoException).code;
-			if (code !== "ENOENT") {
-				log.warn(
-					"Failed to remove legacy account storage file after migration",
-					{
-						path: legacyPath,
-						error: String(unlinkError),
-					},
-				);
-			}
-		}
-
-		log.info("Migrated legacy project account storage", {
-			from: legacyPath,
-			to: state.currentStoragePath,
-			accounts: mergedStorage.accounts.length,
-		});
+		targetStorage = mergedStorage;
+		migrated = true;
 	}
 
 	if (migrated) {
 		return targetStorage;
 	}
-	if (targetStorage && !existsSync(state.currentStoragePath)) {
+	if (targetStorage && !existsSync(currentStoragePath)) {
 		return targetStorage;
 	}
 	return null;
@@ -1263,7 +1316,7 @@ async function loadAccountsInternal(
 	const resetMarkerPath = getIntentionalResetMarkerPath(path);
 	await cleanupStaleRotatingBackupArtifacts(path);
 	const migratedLegacyStorage = persistMigration
-		? await migrateLegacyProjectStorageIfNeeded(persistMigration)
+		? await migrateLegacyProjectStorageIfNeeded({ persist: persistMigration })
 		: null;
 
 	try {
@@ -1429,6 +1482,48 @@ async function loadAccountsInternal(
 			return createEmptyStorageWithMetadata(true, "missing-storage");
 		}
 		return null;
+	}
+}
+
+async function loadAccountsForExport(): Promise<AccountStorageV3 | null> {
+	// Export reuses this helper from both paths in `exportAccounts()`. Keep the
+	// read side effect free so export never clears a reset marker or races with
+	// concurrent writers while normalizing legacy storage for the snapshot.
+	const path = getStoragePath();
+	const resetMarkerPath = getIntentionalResetMarkerPath(path);
+
+	if (existsSync(resetMarkerPath)) {
+		return createEmptyStorageWithMetadata(false, "intentional-reset");
+	}
+
+	try {
+		const { normalized, schemaErrors } = await loadAccountsFromPath(path, {
+			normalizeAccountStorage,
+			isRecord,
+		});
+		if (schemaErrors.length > 0) {
+			log.warn("Account storage schema validation warnings", {
+				errors: schemaErrors.slice(0, 5),
+			});
+		}
+		if (existsSync(resetMarkerPath)) {
+			return createEmptyStorageWithMetadata(false, "intentional-reset");
+		}
+		return normalized;
+	} catch (error) {
+		const code = (error as NodeJS.ErrnoException).code;
+		if (existsSync(resetMarkerPath)) {
+			return createEmptyStorageWithMetadata(false, "intentional-reset");
+		}
+		if (code === "ENOENT") {
+			const migratedLegacyStorage =
+				await migrateLegacyProjectStorageIfNeeded({ commit: false });
+			if (existsSync(resetMarkerPath)) {
+				return createEmptyStorageWithMetadata(false, "intentional-reset");
+			}
+			return migratedLegacyStorage;
+		}
+		throw error;
 	}
 }
 
@@ -1788,9 +1883,8 @@ export async function exportAccounts(
 		force,
 		currentStoragePath,
 		transactionState: getTransactionSnapshotState(),
-		loadAccountsInternal: () => loadAccountsInternal(saveAccountsUnlocked),
-		readCurrentStorage: () =>
-			withAccountStorageTransaction((current) => Promise.resolve(current)),
+		readCurrentStorageUnlocked: () => loadAccountsForExport(),
+		readCurrentStorage: () => withStorageLock(() => loadAccountsForExport()),
 		exportAccountsToFile,
 		beforeCommit,
 		logInfo: (message, details) => {

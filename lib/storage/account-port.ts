@@ -11,7 +11,7 @@ export async function exportAccountsSnapshot(params: {
 				snapshot: AccountStorageV3 | null;
 		  }
 		| undefined;
-	loadAccountsInternal: () => Promise<AccountStorageV3 | null>;
+	readCurrentStorageUnlocked: () => Promise<AccountStorageV3 | null>;
 	readCurrentStorage: () => Promise<AccountStorageV3 | null>;
 	exportAccountsToFile: (args: {
 		resolvedPath: string;
@@ -28,7 +28,7 @@ export async function exportAccountsSnapshot(params: {
 		params.transactionState.storagePath === params.currentStoragePath
 			? params.transactionState.snapshot
 			: params.transactionState?.active
-				? await params.loadAccountsInternal()
+				? await params.readCurrentStorageUnlocked()
 				: await params.readCurrentStorage();
 
 	await params.exportAccountsToFile({
