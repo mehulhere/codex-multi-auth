@@ -80,6 +80,38 @@ describe("account port helpers", () => {
 		);
 	});
 
+	it("reads current storage via the locked reader when no transaction is active", async () => {
+		const exportAccountsToFile = vi.fn(async () => undefined);
+		const readCurrentStorageUnlocked = vi.fn();
+		const readCurrentStorage = vi.fn(async () => ({
+			version: 3 as const,
+			accounts: [{ refreshToken: "locked-read-token" }],
+			activeIndex: 0,
+			activeIndexByFamily: {},
+		}));
+
+		await exportAccountsSnapshot({
+			resolvedPath: "/tmp/out.json",
+			force: true,
+			currentStoragePath: "/tmp/accounts.json",
+			transactionState: undefined,
+			readCurrentStorageUnlocked,
+			readCurrentStorage,
+			exportAccountsToFile,
+			logInfo: vi.fn(),
+		});
+
+		expect(readCurrentStorageUnlocked).not.toHaveBeenCalled();
+		expect(readCurrentStorage).toHaveBeenCalledTimes(1);
+		expect(exportAccountsToFile).toHaveBeenCalledWith(
+			expect.objectContaining({
+				storage: expect.objectContaining({
+					accounts: [{ refreshToken: "locked-read-token" }],
+				}),
+			}),
+		);
+	});
+
 	it("imports through transaction helper and logs result", async () => {
 		const result = await importAccountsSnapshot({
 			resolvedPath: "/tmp/in.json",

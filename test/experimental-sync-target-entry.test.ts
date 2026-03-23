@@ -40,9 +40,27 @@ describe("experimental sync target entry", () => {
 		});
 	});
 
-	it("wires windows-safe retry options through readJson", async () => {
+	it("provides windows lock retry policy to the injected reader", async () => {
 		const sleep = vi.fn(async () => undefined);
-		const readFileWithRetry = vi.fn(async () => '{"hello":"world"}');
+		const retryAttempts: string[] = [];
+		const readFileWithRetry = vi.fn(async (_path, options) => {
+			expect(options.retryableCodes.has("EBUSY")).toBe(true);
+			expect(options.retryableCodes.has("EPERM")).toBe(true);
+			expect(options.retryableCodes.has("EAGAIN")).toBe(true);
+			expect(options.retryableCodes.has("EACCES")).toBe(false);
+			expect(options.retryableCodes.has("ENOTEMPTY")).toBe(false);
+			expect(options.maxAttempts).toBe(4);
+
+			while (retryAttempts.length < 2) {
+				retryAttempts.push("EBUSY");
+				if (!options.retryableCodes.has("EBUSY")) {
+					throw Object.assign(new Error("busy"), { code: "EBUSY" });
+				}
+				await options.sleep(25 * retryAttempts.length);
+			}
+
+			return '{"hello":"world"}';
+		});
 		const normalizeAccountStorage = vi.fn(() => null);
 		let capturedReadJson: ((path: string) => Promise<unknown>) | undefined;
 
@@ -66,12 +84,43 @@ describe("experimental sync target entry", () => {
 		});
 
 		expect(capturedReadJson).toBeDefined();
-		expect(readFileWithRetry).toHaveBeenCalledWith("C:\\state.json", {
-			retryableCodes: new Set(["EBUSY", "EPERM", "EAGAIN"]),
-			maxAttempts: 4,
-			sleep,
-		});
+		expect(readFileWithRetry).toHaveBeenCalledTimes(1);
+		expect(sleep).toHaveBeenNthCalledWith(1, 25);
+		expect(sleep).toHaveBeenNthCalledWith(2, 50);
 		expect(normalizeAccountStorage).toHaveBeenCalledWith({ hello: "world" });
+	});
+
+	it("propagates fail-fast lock errors that are outside the retryable set", async () => {
+		const sleep = vi.fn(async () => undefined);
+		const readFileWithRetry = vi.fn(async (_path, options) => {
+			expect(options.retryableCodes.has("EACCES")).toBe(false);
+			expect(options.retryableCodes.has("ENOTEMPTY")).toBe(false);
+			throw Object.assign(new Error("denied"), { code: "EACCES" });
+		});
+		const normalizeAccountStorage = vi.fn(() => null);
+
+		const loadExperimentalSyncTargetState = vi.fn(async (args) => {
+			await args.readJson("C:\\state.json");
+			return {
+				kind: "target" as const,
+				detection: { kind: "target" as const },
+				destination: null,
+			};
+		});
+
+		await expect(
+			loadExperimentalSyncTargetEntry({
+				loadExperimentalSyncTargetState,
+				detectTarget: createDetectedTarget,
+				readFileWithRetry,
+				normalizeAccountStorage,
+				sleep,
+			}),
+		).rejects.toMatchObject({ code: "EACCES" });
+
+		expect(readFileWithRetry).toHaveBeenCalledTimes(1);
+		expect(sleep).not.toHaveBeenCalled();
+		expect(normalizeAccountStorage).not.toHaveBeenCalled();
 	});
 
 	it("propagates malformed json parse failures to the caller", async () => {
