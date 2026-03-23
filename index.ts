@@ -557,24 +557,6 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 			next.refreshGuardianCleanupRegistered;
 	};
 
-	const ensureSessionAffinity = (
-		pluginConfig: ReturnType<typeof loadPluginConfig>,
-	): void => {
-		const next = ensureSessionAffinityState({
-			enabled:
-				getSessionAffinity(pluginConfig) ||
-				getResponseContinuation(pluginConfig),
-			ttlMs: getSessionAffinityTtlMs(pluginConfig),
-			maxEntries: getSessionAffinityMaxEntries(pluginConfig),
-			currentStore: sessionAffinityStore,
-			currentConfigKey: sessionAffinityConfigKey,
-			createStore: ({ ttlMs, maxEntries }) =>
-				new SessionAffinityStore({ ttlMs, maxEntries }),
-		});
-		sessionAffinityStore = next.sessionAffinityStore;
-		sessionAffinityConfigKey = next.sessionAffinityConfigKey;
-	};
-
 	const applyPreemptiveQuotaSettings = (
 		pluginConfig: ReturnType<typeof loadPluginConfig>,
 	): void => {
@@ -657,7 +639,21 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 					setStoragePath,
 					cwd: () => process.cwd(),
 				});
-				ensureSessionAffinity(pluginConfig);
+				{
+					const next = ensureSessionAffinityState({
+						enabled:
+							getSessionAffinity(pluginConfig) ||
+							getResponseContinuation(pluginConfig),
+						ttlMs: getSessionAffinityTtlMs(pluginConfig),
+						maxEntries: getSessionAffinityMaxEntries(pluginConfig),
+						currentStore: sessionAffinityStore,
+						currentConfigKey: sessionAffinityConfigKey,
+						createStore: ({ ttlMs, maxEntries }) =>
+							new SessionAffinityStore({ ttlMs, maxEntries }),
+					});
+					sessionAffinityStore = next.sessionAffinityStore;
+					sessionAffinityConfigKey = next.sessionAffinityConfigKey;
+				}
 				ensureRefreshGuardian(pluginConfig);
 				applyPreemptiveQuotaSettings(pluginConfig);
 
