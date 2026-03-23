@@ -2,6 +2,10 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
 process.env.CODEX_MULTI_AUTH_EXPOSE_ADMIN_TOOLS = "1";
 
+const { showRuntimeToastMock } = vi.hoisted(() => ({
+	showRuntimeToastMock: vi.fn(),
+}));
+
 vi.mock("@codex-ai/plugin/tool", () => {
 	const makeSchema = () => ({
 		optional: () => makeSchema(),
@@ -199,10 +203,21 @@ vi.mock("../lib/recovery.js", () => ({
 }));
 
 vi.mock("../lib/request/rate-limit-backoff.js", () => ({
-	getRateLimitBackoff: () => ({ attempt: 1, delayMs: 1000 }),
+	getRateLimitBackoff: vi.fn(() => ({ attempt: 1, delayMs: 1000 })),
 	RATE_LIMIT_SHORT_RETRY_THRESHOLD_MS: 5000,
 	resetRateLimitBackoff: vi.fn(),
 }));
+
+vi.mock("../lib/runtime/toast.js", async () => {
+	const actual = await vi.importActual<typeof import("../lib/runtime/toast.js")>(
+		"../lib/runtime/toast.js",
+	);
+	showRuntimeToastMock.mockImplementation(actual.showRuntimeToast);
+	return {
+		...actual,
+		showRuntimeToast: showRuntimeToastMock,
+	};
+});
 
 	vi.mock("../lib/request/fetch-helpers.js", () => ({
 		extractRequestUrl: (input: unknown) => (typeof input === "string" ? input : String(input)),
@@ -3922,6 +3937,249 @@ describe("OpenAIOAuthPlugin event handler edge cases", () => {
 		await plugin.event({
 			event: { type: "account.select", properties: { index: "invalid" } },
 		});
+	});
+});
+
+describe("OpenAIOAuthPlugin runtime toast forwarding", () => {
+	const getOAuthAuth = async () => ({
+		type: "oauth" as const,
+		access: "access-token",
+		refresh: "refresh-token",
+		expires: Date.now() + 60_000,
+		multiAccount: true,
+	});
+
+	beforeEach(() => {
+		vi.clearAllMocks();
+		mockStorage.accounts = [];
+		mockStorage.activeIndex = 0;
+		mockStorage.activeIndexByFamily = {};
+	});
+
+	afterEach(() => {
+		vi.useRealTimers();
+		vi.restoreAllMocks();
+	});
+
+	it("forwards account selection toast arguments through showRuntimeToast", async () => {
+		mockStorage.accounts = [
+			{ accountId: "acc-1", email: "user1@example.com", refreshToken: "refresh-1" },
+			{ accountId: "acc-2", email: "user2@example.com", refreshToken: "refresh-2" },
+		];
+		const mockClient = createMockClient();
+		const { OpenAIOAuthPlugin } = await import("../index.js");
+		const plugin = await OpenAIOAuthPlugin({ client: mockClient } as never) as unknown as PluginType;
+
+		await plugin.auth.loader(getOAuthAuth, { options: {}, models: {} });
+		showRuntimeToastMock.mockClear();
+
+		await plugin.event({
+			event: { type: "account.select", properties: { index: 1 } },
+		});
+
+		expect(showRuntimeToastMock).toHaveBeenCalledWith(
+			mockClient,
+			"Switched to account 2",
+			"info",
+		);
+	});
+
+	it("forwards update notification toast arguments through showRuntimeToast", async () => {
+		const updateCheckerModule = await import("../lib/auto-update-checker.js");
+		vi.mocked(updateCheckerModule.checkAndNotify).mockImplementationOnce(
+			async (notify: (message: string, variant: "info" | "success" | "warning" | "error") => Promise<void>) => {
+				await notify("Update available", "warning");
+			},
+		);
+
+		const mockClient = createMockClient();
+		const { OpenAIOAuthPlugin } = await import("../index.js");
+		const plugin = await OpenAIOAuthPlugin({ client: mockClient } as never) as unknown as PluginType;
+
+		await plugin.auth.loader(getOAuthAuth, { options: {}, models: {} });
+
+		expect(showRuntimeToastMock).toHaveBeenCalledWith(
+			mockClient,
+			"Update available",
+			"warning",
+		);
+	});
+
+	it("forwards short retry rate-limit toast arguments through showRuntimeToast", async () => {
+		const { AccountManager } = await import("../lib/accounts.js");
+		const fetchHelpersModule = await import("../lib/request/fetch-helpers.js");
+		const rateLimitBackoffModule = await import("../lib/request/rate-limit-backoff.js");
+
+		const markToastShown = vi.fn();
+		const manager = {
+			getAccountCount: () => 1,
+			getCurrentOrNextForFamilyHybrid: () => ({
+				index: 0,
+				accountId: "acc-1",
+				email: "alpha@example.com",
+				refreshToken: "refresh-1",
+			}),
+			getCurrentOrNextForFamily: () => ({
+				index: 0,
+				accountId: "acc-1",
+				email: "alpha@example.com",
+				refreshToken: "refresh-1",
+			}),
+			getCurrentWorkspace: () => null,
+			getAccountByIndex: () => null,
+			getAccountsSnapshot: () => [],
+			isAccountAvailableForFamily: () => true,
+			toAuthDetails: () => ({
+				type: "oauth" as const,
+				access: "access-token",
+				refresh: "refresh-1",
+				expires: Date.now() + 60_000,
+			}),
+			hasRefreshToken: () => true,
+			saveToDiskDebounced: () => {},
+			updateFromAuth: () => {},
+			clearAuthFailures: () => {},
+			incrementAuthFailures: () => 1,
+			saveToDisk: async () => {},
+			markAccountCoolingDown: () => {},
+			markRateLimited: () => {},
+			markRateLimitedWithReason: () => {},
+			consumeToken: () => true,
+			refundToken: () => {},
+			syncCodexCliActiveSelectionForIndex: async () => {},
+			markSwitched: () => {},
+			removeAccount: () => {},
+			recordFailure: () => {},
+			recordSuccess: () => {},
+			recordRateLimit: () => {},
+			getMinWaitTimeForFamily: () => 0,
+			shouldShowAccountToast: () => true,
+			markToastShown,
+			setActiveIndex: () => null,
+		};
+		vi.spyOn(AccountManager, "loadFromDisk").mockResolvedValue(manager as never);
+		vi.mocked(fetchHelpersModule.handleErrorResponse).mockResolvedValueOnce({
+			response: new Response("rate limited", { status: 429 }),
+			rateLimit: true,
+			errorBody: "rate limited",
+		} as never);
+		vi.mocked(rateLimitBackoffModule.getRateLimitBackoff).mockReturnValueOnce({
+			attempt: 2,
+			delayMs: 1000,
+		});
+		globalThis.fetch = vi
+			.fn()
+			.mockResolvedValueOnce(new Response("rate limited", { status: 429 }))
+			.mockResolvedValueOnce(new Response(JSON.stringify({ content: "ok" }), { status: 200 }));
+
+		const mockClient = createMockClient();
+		const { OpenAIOAuthPlugin } = await import("../index.js");
+		const plugin = await OpenAIOAuthPlugin({ client: mockClient } as never) as unknown as PluginType;
+		const sdk = await plugin.auth.loader(getOAuthAuth, { options: {}, models: {} });
+		showRuntimeToastMock.mockClear();
+
+		vi.useFakeTimers();
+		const responsePromise = sdk.fetch!("https://api.openai.com/v1/chat/completions", {
+			method: "POST",
+			body: JSON.stringify({ model: "gpt-5.1" }),
+		});
+		await vi.advanceTimersByTimeAsync(1000);
+		const response = await responsePromise;
+
+		expect(response.status).toBe(200);
+		expect(showRuntimeToastMock).toHaveBeenCalledWith(
+			mockClient,
+			expect.stringContaining("Rate limited. Retrying in"),
+			"warning",
+			{ duration: 5000 },
+		);
+		expect(markToastShown).toHaveBeenCalledWith(0);
+	});
+
+	it("forwards persistence error toast arguments through manual OAuth flow", async () => {
+		const authModule = await import("../lib/auth/auth.js");
+		const storageModule = await import("../lib/storage.js");
+		vi.mocked(authModule.createAuthorizationFlow).mockResolvedValueOnce({
+			pkce: { verifier: "toast-persist-verifier", challenge: "toast-persist-challenge" },
+			state: "toast-persist-state",
+			url: "https://auth.openai.com/test?state=toast-persist-state",
+		});
+		vi.mocked(authModule.exchangeAuthorizationCode).mockResolvedValueOnce({
+			type: "success",
+			access: "access-token",
+			refresh: "refresh-toast",
+			expires: Date.now() + 3600_000,
+			idToken: "id-token",
+		});
+		vi.mocked(storageModule.saveAccounts).mockRejectedValueOnce(
+			new storageModule.StorageError(
+				"Write failed",
+				"Persist hint",
+			),
+		);
+
+		const mockClient = createMockClient();
+		const { OpenAIOAuthPlugin } = await import("../index.js");
+		const plugin = await OpenAIOAuthPlugin({ client: mockClient } as never) as unknown as PluginType;
+		const manualMethod = plugin.auth.methods[1] as unknown as {
+			authorize: () => Promise<{
+				callback: (input: string) => Promise<{ type: string }>;
+			}>;
+		};
+
+		showRuntimeToastMock.mockClear();
+		const flow = await manualMethod.authorize();
+		const result = await flow.callback(
+			"http://127.0.0.1:1455/auth/callback?code=abc123&state=toast-persist-state",
+		);
+
+		expect(result.type).toBe("success");
+		expect(showRuntimeToastMock).toHaveBeenCalledWith(
+			mockClient,
+			"Persist hint",
+			"error",
+			{ title: "Account Persistence Failed", duration: 10000 },
+		);
+	});
+
+	it("forwards OAuth success toast arguments through browser auth flow", async () => {
+		const authModule = await import("../lib/auth/auth.js");
+		const browserModule = await import("../lib/auth/browser.js");
+		const serverModule = await import("../lib/auth/server.js");
+		vi.mocked(authModule.createAuthorizationFlow).mockResolvedValueOnce({
+			pkce: { verifier: "toast-success-verifier", challenge: "toast-success-challenge" },
+			state: "toast-success-state",
+			url: "https://auth.openai.com/test?state=toast-success-state",
+		});
+		vi.mocked(authModule.exchangeAuthorizationCode).mockResolvedValueOnce({
+			type: "success",
+			access: "access-token",
+			refresh: "refresh-success",
+			expires: Date.now() + 3600_000,
+			idToken: "id-token",
+		});
+		vi.mocked(browserModule.openBrowserUrl).mockReturnValue(true);
+		vi.mocked(serverModule.startLocalOAuthServer).mockResolvedValue({
+			ready: true,
+			close: vi.fn(),
+			waitForCode: vi.fn(async () => ({ code: "auth-code" })),
+		});
+
+		const mockClient = createMockClient();
+		const { OpenAIOAuthPlugin } = await import("../index.js");
+		const plugin = await OpenAIOAuthPlugin({ client: mockClient } as never) as unknown as PluginType;
+		const autoMethod = plugin.auth.methods[0] as unknown as {
+			authorize: (inputs?: Record<string, string>) => Promise<unknown>;
+		};
+
+		showRuntimeToastMock.mockClear();
+		await autoMethod.authorize({ loginMode: "fresh", accountCount: "1" });
+
+		expect(showRuntimeToastMock).toHaveBeenCalledWith(
+			mockClient,
+			"Account 1 authenticated",
+			"success",
+		);
 	});
 });
 
