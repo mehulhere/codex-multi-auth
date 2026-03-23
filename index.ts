@@ -194,10 +194,13 @@ import {
 import { runRuntimeAccountCheck } from "./lib/runtime/account-check.js";
 import { createAccountCheckWorkingState } from "./lib/runtime/account-check-types.js";
 import {
+	invalidateRuntimeAccountManagerCache,
+	reloadRuntimeAccountManager,
+} from "./lib/runtime/account-manager-cache.js";
+import {
 	type TokenSuccessWithAccount as AccountPoolTokenSuccessWithAccount,
 	persistAccountPoolResults,
 } from "./lib/runtime/account-pool.js";
-import { handleAccountSelectEvent } from "./lib/runtime/account-select-event.js";
 import { resolveAccountSelection } from "./lib/runtime/account-selection.js";
 import {
 	formatRateLimitEntry,
@@ -205,18 +208,20 @@ import {
 	resolveActiveIndex,
 } from "./lib/runtime/account-status.js";
 import {
-	invalidateRuntimeAccountManagerCache,
-	reloadRuntimeAccountManager,
-} from "./lib/runtime/account-manager-cache.js";
-import {
 	createPersistAccounts,
 	runRuntimeOAuthFlow,
 } from "./lib/runtime/auth-facade.js";
+import { applyAccountStorageScopeEntry } from "./lib/runtime/account-storage-scope-entry.js";
 import { runBrowserOAuthFlow } from "./lib/runtime/browser-oauth-flow.js";
+import { handleRuntimeEvent } from "./lib/runtime/event-handler.js";
 import { hydrateRuntimeEmails } from "./lib/runtime/hydrate-emails.js";
 import { buildLoginMenuAccounts } from "./lib/runtime/login-menu-accounts.js";
+import { ensureLiveAccountSyncEntry } from "./lib/runtime/live-sync-entry.js";
+import { applyLoaderRuntimeSetup } from "./lib/runtime/loader-setup.js";
 import { buildManualOAuthFlow } from "./lib/runtime/manual-oauth-flow.js";
-import { applyRuntimePreemptiveQuotaSettings } from "./lib/runtime/preemptive-quota.js";
+import {
+	applyPreemptiveQuotaSettingsFromConfig,
+} from "./lib/runtime/quota-settings.js";
 import {
 	ensureLiveAccountSyncState,
 	ensureRefreshGuardianState,
@@ -418,16 +423,44 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 		authFallback,
 	});
 
+	const reloadAccountManagerFromDisk = async (
+		authFallback?: OAuthAuthDetails,
+	): Promise<AccountManager> =>
+		reloadRuntimeAccountManager<AccountManager>(
+			makeReloadAccountManagerDeps(authFallback),
+		);
+
+	const applyAccountStorageScope = (
+		pluginConfig: ReturnType<typeof loadPluginConfig>,
+	): void =>
+		applyAccountStorageScopeEntry({
+			pluginConfig,
+			getPerProjectAccounts,
+			getStorageBackupEnabled,
+			setStorageBackupEnabled,
+			isCodexCliSyncEnabled,
+			getWarningShown: () => perProjectStorageWarningShown,
+			setWarningShown: (shown) => {
+				perProjectStorageWarningShown = shown;
+			},
+			logWarn,
+			pluginName: PLUGIN_NAME,
+			setStoragePath,
+			cwd: () => process.cwd(),
+			applyAccountStorageScopeFromConfig,
+		});
+
 	const ensureLiveAccountSync = async (
 		pluginConfig: ReturnType<typeof loadPluginConfig>,
 		authFallback?: OAuthAuthDetails,
 	): Promise<void> => {
-		const next = await ensureLiveAccountSyncState({
-			enabled: getLiveAccountSync(pluginConfig),
-			targetPath: getStoragePath(),
+		const next = await ensureLiveAccountSyncEntry({
+			pluginConfig,
+			authFallback,
 			currentSync: liveAccountSync,
 			currentPath: liveAccountSyncPath,
-			authFallback,
+			getLiveAccountSync,
+			getStoragePath,
 			createSync: (oauthFallback) =>
 				new LiveAccountSync(
 					async () => {
@@ -443,6 +476,7 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 			registerCleanup,
 			logWarn,
 			pluginName: PLUGIN_NAME,
+			ensureLiveAccountSyncState,
 		});
 		liveAccountSync = next.liveAccountSync;
 		liveAccountSyncPath = next.liveAccountSyncPath;
@@ -471,38 +505,59 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 			next.refreshGuardianCleanupRegistered;
 	};
 
+	const ensureSessionAffinity = (
+		pluginConfig: ReturnType<typeof loadPluginConfig>,
+	): void => {
+		const next = ensureSessionAffinityState({
+			enabled:
+				getSessionAffinity(pluginConfig) ||
+				getResponseContinuation(pluginConfig),
+			ttlMs: getSessionAffinityTtlMs(pluginConfig),
+			maxEntries: getSessionAffinityMaxEntries(pluginConfig),
+			currentStore: sessionAffinityStore,
+			currentConfigKey: sessionAffinityConfigKey,
+			createStore: ({ ttlMs, maxEntries }) =>
+				new SessionAffinityStore({ ttlMs, maxEntries }),
+		});
+		sessionAffinityStore = next.sessionAffinityStore;
+		sessionAffinityConfigKey = next.sessionAffinityConfigKey;
+	};
+
+	const applyPreemptiveQuotaSettings = (
+		pluginConfig: ReturnType<typeof loadPluginConfig>,
+	): void =>
+		applyPreemptiveQuotaSettingsFromConfig(pluginConfig, {
+			configure: (options) => preemptiveQuotaScheduler.configure(options),
+			getPreemptiveQuotaEnabled,
+			getPreemptiveQuotaRemainingPercent5h,
+			getPreemptiveQuotaRemainingPercent7d,
+			getPreemptiveQuotaMaxDeferralMs,
+		});
+
 	// Event handler for session recovery and account selection
 	const eventHandler = async (input: {
 		event: { type: string; properties?: unknown };
-	}) => {
-		try {
-			const handled = await handleAccountSelectEvent({
-				event: input.event,
-				providerId: PROVIDER_ID,
-				loadAccounts,
-				saveAccounts,
-				modelFamilies: MODEL_FAMILIES,
-				getCachedAccountManager: () => cachedAccountManager,
-				reloadAccountManagerFromDisk: async () => {
-					await reloadRuntimeAccountManager<AccountManager>(
-						makeReloadAccountManagerDeps(),
-					);
-				},
-				setLastCodexCliActiveSyncIndex: (index) => {
-					lastCodexCliActiveSyncIndex = index;
-				},
-				showToast: (message, variant) =>
-					showRuntimeToast(client, message, variant),
-			});
-			if (handled) {
-				return;
-			}
-		} catch (error) {
-			logDebug(
-				`[${PLUGIN_NAME}] Event handler error: ${error instanceof Error ? error.message : String(error)}`,
-			);
-		}
-	};
+	}) =>
+		handleRuntimeEvent({
+			input,
+			providerId: PROVIDER_ID,
+			modelFamilies: MODEL_FAMILIES,
+			loadAccounts,
+			saveAccounts,
+			hasCachedAccountManager: () => !!cachedAccountManager,
+			syncCodexCliActiveSelectionForIndex: async (index) => {
+				if (!cachedAccountManager) return;
+				await cachedAccountManager.syncCodexCliActiveSelectionForIndex(index);
+			},
+			setLastCodexCliActiveSyncIndex: (index) => {
+				lastCodexCliActiveSyncIndex = index;
+			},
+			reloadAccountManagerFromDisk: () => reloadAccountManagerFromDisk(),
+			showToast: (message, variant) =>
+				showRuntimeToast(client, message, variant),
+			logDebug,
+			pluginName: PLUGIN_NAME,
+		});
 
 	// Initialize runtime UI settings once on plugin load; auth/tools refresh this dynamically.
 	applyUiRuntimeFromConfig(loadPluginConfig(), setUiRuntimeOptions);
@@ -528,43 +583,14 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 			async loader(getAuth: () => Promise<Auth>, provider: unknown) {
 				const auth = await getAuth();
 				const pluginConfig = loadPluginConfig();
-				applyUiRuntimeFromConfig(pluginConfig, setUiRuntimeOptions);
-				applyAccountStorageScopeFromConfig(pluginConfig, {
-					getPerProjectAccounts,
-					getStorageBackupEnabled,
-					setStorageBackupEnabled,
-					isCodexCliSyncEnabled,
-					getWarningShown: () => perProjectStorageWarningShown,
-					setWarningShown: (shown) => {
-						perProjectStorageWarningShown = shown;
-					},
-					logWarn,
-					pluginName: PLUGIN_NAME,
-					setStoragePath,
-					cwd: () => process.cwd(),
-				});
-				{
-					const next = ensureSessionAffinityState({
-						enabled:
-							getSessionAffinity(pluginConfig) ||
-							getResponseContinuation(pluginConfig),
-						ttlMs: getSessionAffinityTtlMs(pluginConfig),
-						maxEntries: getSessionAffinityMaxEntries(pluginConfig),
-						currentStore: sessionAffinityStore,
-						currentConfigKey: sessionAffinityConfigKey,
-						createStore: ({ ttlMs, maxEntries }) =>
-							new SessionAffinityStore({ ttlMs, maxEntries }),
-					});
-					sessionAffinityStore = next.sessionAffinityStore;
-					sessionAffinityConfigKey = next.sessionAffinityConfigKey;
-				}
-				ensureRefreshGuardian(pluginConfig);
-				applyRuntimePreemptiveQuotaSettings(pluginConfig, {
-					configure: (options) => preemptiveQuotaScheduler.configure(options),
-					getPreemptiveQuotaEnabled,
-					getPreemptiveQuotaRemainingPercent5h,
-					getPreemptiveQuotaRemainingPercent7d,
-					getPreemptiveQuotaMaxDeferralMs,
+				applyLoaderRuntimeSetup({
+					pluginConfig,
+					applyUiRuntimeFromConfig: (config) =>
+						applyUiRuntimeFromConfig(config, setUiRuntimeOptions),
+					applyAccountStorageScope,
+					ensureSessionAffinity,
+					ensureRefreshGuardian,
+					applyPreemptiveQuotaSettings,
 				});
 
 				// Only handle OAuth auth type, skip API key auth
