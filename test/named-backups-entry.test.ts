@@ -2,9 +2,18 @@ import { describe, expect, it, vi } from "vitest";
 import { getNamedBackupsEntry } from "../lib/storage/named-backups-entry.js";
 
 describe("named backups entry", () => {
-	it("passes storage path and dependencies through to named backup collection", async () => {
-		const collectNamedBackups = vi.fn(async () => []);
-		const loadAccountsFromPath = vi.fn(async () => ({ normalized: null }));
+	it("delegates to collectNamedBackups with resolved storage path and deps", async () => {
+		const collectNamedBackups = vi.fn(async () => [
+			{
+				path: "/tmp/backup.json",
+				fileName: "backup.json",
+				accountCount: 1,
+				mtimeMs: 1,
+			},
+		]);
+		const loadAccountsFromPath = vi.fn(async () => ({
+				normalized: { accounts: [] },
+			}));
 		const logDebug = vi.fn();
 
 		const result = await getNamedBackupsEntry({
@@ -18,6 +27,34 @@ describe("named backups entry", () => {
 			loadAccountsFromPath,
 			logDebug,
 		});
-		expect(result).toEqual([]);
+		expect(result).toEqual([
+			{
+				path: "/tmp/backup.json",
+				fileName: "backup.json",
+				accountCount: 1,
+				mtimeMs: 1,
+			},
+		]);
+	});
+
+	it("passes through windows-style storage paths unchanged", async () => {
+		const windowsStoragePath = "C:\\Users\\dev\\.codex\\accounts.json";
+		const collectNamedBackups = vi.fn(async () => []);
+		const loadAccountsFromPath = vi.fn(async () => ({
+			normalized: { accounts: [] },
+		}));
+		const logDebug = vi.fn();
+
+		await getNamedBackupsEntry({
+			getStoragePath: () => windowsStoragePath,
+			collectNamedBackups,
+			loadAccountsFromPath,
+			logDebug,
+		});
+
+		expect(collectNamedBackups).toHaveBeenCalledWith(windowsStoragePath, {
+			loadAccountsFromPath,
+			logDebug,
+		});
 	});
 });
