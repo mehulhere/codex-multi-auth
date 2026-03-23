@@ -81,6 +81,13 @@ import {
 } from "./settings-hub-menu.js";
 import { promptSettingsHubMenu } from "./settings-hub-prompt.js";
 import {
+	promptBehaviorSettingsPanelEntry,
+	promptDashboardDisplaySettingsPanelEntry,
+	promptStatuslineSettingsPanelEntry,
+	promptThemeSettingsPanelEntry,
+	reorderStatuslineField,
+} from "./settings-panels.js";
+import {
 	readFileWithRetry,
 	resolvePluginConfigSavePathKey,
 	warnPersistFailure,
@@ -438,7 +445,7 @@ const __testOnly = {
 	buildAccountListPreview,
 	buildSummaryPreviewText,
 	normalizeStatuslineFields,
-	reorderField,
+	reorderField: reorderStatuslineField,
 	promptDashboardDisplaySettings,
 	promptStatuslineSettings,
 	promptBehaviorSettings,
@@ -450,7 +457,9 @@ const __testOnly = {
 async function promptDashboardDisplaySettings(
 	initial: DashboardDisplaySettings,
 ): Promise<DashboardDisplaySettings | null> {
-	return promptDashboardDisplayPanel(initial, {
+	return promptDashboardDisplaySettingsPanelEntry({
+		initial,
+		promptDashboardDisplayPanel,
 		cloneDashboardSettings,
 		buildAccountListPreview,
 		formatDashboardSettingState,
@@ -490,12 +499,13 @@ async function configureDashboardDisplaySettings(
 async function promptStatuslineSettings(
 	initial: DashboardDisplaySettings,
 ): Promise<DashboardDisplaySettings | null> {
-	return promptStatuslineSettingsPanel(initial, {
+	return promptStatuslineSettingsPanelEntry({
+		initial,
+		promptStatuslineSettingsPanel,
 		cloneDashboardSettings,
 		buildAccountListPreview,
 		normalizeStatuslineFields,
 		formatDashboardSettingState,
-		reorderField,
 		applyDashboardDefaultsForKeys,
 		STATUSLINE_FIELD_OPTIONS,
 		STATUSLINE_PANEL_KEYS,
@@ -526,19 +536,14 @@ async function configureStatuslineSettings(
 	});
 }
 
-function formatDelayLabel(delayMs: number): string {
-	return delayMs <= 0
-		? "Instant return"
-		: `${Math.round(delayMs / 1000)}s auto-return`;
-}
-
 async function promptBehaviorSettings(
 	initial: DashboardDisplaySettings,
 ): Promise<DashboardDisplaySettings | null> {
-	return promptBehaviorSettingsPanel(initial, {
+	return promptBehaviorSettingsPanelEntry({
+		initial,
+		promptBehaviorSettingsPanel,
 		cloneDashboardSettings,
 		applyDashboardDefaultsForKeys,
-		formatDelayLabel,
 		formatMenuQuotaTtl,
 		AUTO_RETURN_OPTIONS_MS,
 		MENU_QUOTA_TTL_OPTIONS_MS,
@@ -550,7 +555,9 @@ async function promptBehaviorSettings(
 async function promptThemeSettings(
 	initial: DashboardDisplaySettings,
 ): Promise<DashboardDisplaySettings | null> {
-	return promptThemeSettingsPanel(initial, {
+	return promptThemeSettingsPanelEntry({
+		initial,
+		promptThemeSettingsPanel,
 		cloneDashboardSettings,
 		applyDashboardDefaultsForKeys,
 		applyUiThemeFromDashboardSettings,
