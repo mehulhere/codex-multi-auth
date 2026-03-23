@@ -1432,6 +1432,58 @@ async function loadAccountsInternal(
 	}
 }
 
+async function loadAccountsForExport(): Promise<AccountStorageV3 | null> {
+	const path = getStoragePath();
+	const resetMarkerPath = getIntentionalResetMarkerPath(path);
+	const migratedLegacyStorage =
+		await migrateLegacyProjectStorageIfNeeded(saveAccountsUnlocked);
+
+	if (existsSync(resetMarkerPath)) {
+		return createEmptyStorageWithMetadata(false, "intentional-reset");
+	}
+
+	try {
+		const { normalized, storedVersion, schemaErrors } = await loadAccountsFromPath(
+			path,
+			{
+				normalizeAccountStorage,
+				isRecord,
+			},
+		);
+		if (schemaErrors.length > 0) {
+			log.warn("Account storage schema validation warnings", {
+				errors: schemaErrors.slice(0, 5),
+			});
+		}
+		if (normalized && storedVersion !== normalized.version) {
+			log.info("Migrating account storage to v3", {
+				from: storedVersion,
+				to: normalized.version,
+			});
+			try {
+				await saveAccountsUnlocked(normalized);
+			} catch (saveError) {
+				log.warn("Failed to persist migrated storage", {
+					error: String(saveError),
+				});
+			}
+		}
+		if (existsSync(resetMarkerPath)) {
+			return createEmptyStorageWithMetadata(false, "intentional-reset");
+		}
+		return normalized;
+	} catch (error) {
+		const code = (error as NodeJS.ErrnoException).code;
+		if (existsSync(resetMarkerPath)) {
+			return createEmptyStorageWithMetadata(false, "intentional-reset");
+		}
+		if (code === "ENOENT") {
+			return migratedLegacyStorage;
+		}
+		throw error;
+	}
+}
+
 async function saveAccountsUnlocked(storage: AccountStorageV3): Promise<void> {
 	const path = getStoragePath();
 	const resetMarkerPath = getIntentionalResetMarkerPath(path);
@@ -1788,9 +1840,8 @@ export async function exportAccounts(
 		force,
 		currentStoragePath,
 		transactionState: getTransactionSnapshotState(),
-		loadAccountsInternal: () => loadAccountsInternal(saveAccountsUnlocked),
-		readCurrentStorage: () =>
-			withAccountStorageTransaction((current) => Promise.resolve(current)),
+		readCurrentStorageUnlocked: loadAccountsForExport,
+		readCurrentStorage: () => withStorageLock(loadAccountsForExport),
 		exportAccountsToFile,
 		beforeCommit,
 		logInfo: (message, details) => {
