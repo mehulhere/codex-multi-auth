@@ -95,6 +95,70 @@ export class RefreshGuardian {
 		return "network-error";
 	}
 
+	private async applyRefreshOutcome(
+		manager: AccountManager,
+		sourceAccount: ReturnType<AccountManager["getAccountsSnapshot"]>[number],
+		result: Awaited<ReturnType<typeof refreshExpiringAccounts>> extends Map<
+			number,
+			infer TValue
+		>
+			? TValue
+			: never,
+	): Promise<boolean> {
+		switch (result.reason) {
+			case "success": {
+				if (result.tokenResult?.type !== "success") {
+					const account = manager.getAccountByIdentity(sourceAccount);
+					if (!account) return false;
+					manager.markAccountCoolingDown(account, this.bufferMs, "network-error");
+					this.stats.failed += 1;
+					this.stats.networkFailed += 1;
+					return true;
+				}
+
+				const refreshedAuth = {
+					type: "oauth" as const,
+					access: result.tokenResult.access,
+					refresh: result.tokenResult.refresh,
+					expires: result.tokenResult.expires,
+					multiAccount: true,
+				};
+				const account = manager.getAccountByIdentity(sourceAccount, refreshedAuth);
+				if (account) {
+					applyRefreshResult(account, result.tokenResult);
+					manager.clearAuthFailures(account);
+				}
+				await manager.commitRefreshedAuth(sourceAccount, refreshedAuth);
+				this.stats.refreshed += 1;
+				return false;
+			}
+			case "failed": {
+				const account = manager.getAccountByIdentity(sourceAccount);
+				if (!account) return false;
+				const cooldownReason = this.classifyFailureReason(result.tokenResult);
+				manager.markAccountCoolingDown(account, this.bufferMs, cooldownReason);
+				this.stats.failed += 1;
+				if (cooldownReason === "rate-limit") this.stats.rateLimited += 1;
+				else if (cooldownReason === "auth-failure") this.stats.authFailed += 1;
+				else this.stats.networkFailed += 1;
+				return true;
+			}
+			case "not_needed":
+				this.stats.notNeeded += 1;
+				return false;
+			case "no_refresh_token": {
+				const account = manager.getAccountByIdentity(sourceAccount);
+				if (!account) return false;
+				manager.markAccountCoolingDown(account, this.bufferMs, "auth-failure");
+				manager.setAccountEnabled(account.index, false);
+				this.stats.noRefreshToken += 1;
+				this.stats.failed += 1;
+				this.stats.authFailed += 1;
+				return true;
+			}
+		}
+	}
+
 	async tick(): Promise<void> {
 		if (this.running) return;
 		const manager = this.getAccountManager();
@@ -106,7 +170,30 @@ export class RefreshGuardian {
 				return;
 			}
 
-			const refreshResults = await refreshExpiringAccounts(snapshot, this.bufferMs);
+			const eligibleSnapshot = snapshot.filter((account) => !manager.isAccountCoolingDown(account));
+			if (eligibleSnapshot.length === 0) {
+				this.stats.runs += 1;
+				this.stats.lastRunAt = Date.now();
+				return;
+			}
+
+			let requiresSave = false;
+			const processed = new Set<number>();
+			const refreshResults = await refreshExpiringAccounts(
+				eligibleSnapshot,
+				this.bufferMs,
+				async (sourceAccount, result) => {
+					const saveNeeded = await this.applyRefreshOutcome(
+						manager,
+						sourceAccount,
+						result,
+					);
+					if (saveNeeded) {
+						requiresSave = true;
+					}
+					processed.add(sourceAccount.index);
+				},
+			);
 			if (refreshResults.size === 0) {
 				this.stats.runs += 1;
 				this.stats.lastRunAt = Date.now();
@@ -114,55 +201,29 @@ export class RefreshGuardian {
 			}
 
 			const snapshotByIndex = new Map<number, (typeof snapshot)[number]>();
-			for (const candidate of snapshot) {
+			for (const candidate of eligibleSnapshot) {
 				snapshotByIndex.set(candidate.index, candidate);
 			}
 
 			for (const [accountIndex, result] of refreshResults.entries()) {
+				if (processed.has(accountIndex)) {
+					continue;
+				}
 				const sourceAccount = snapshotByIndex.get(accountIndex);
 				if (!sourceAccount) continue;
-				const liveAccounts = manager.getAccountsSnapshot();
-				const resolvedIndex = liveAccounts.findIndex(
-					(candidate) => candidate.refreshToken === sourceAccount.refreshToken,
+				const saveNeeded = await this.applyRefreshOutcome(
+					manager,
+					sourceAccount,
+					result,
 				);
-				const account = resolvedIndex >= 0 ? manager.getAccountByIndex(resolvedIndex) : null;
-				if (!account) continue;
-
-				switch (result.reason) {
-					case "success":
-						if (result.tokenResult?.type === "success") {
-							applyRefreshResult(account, result.tokenResult);
-							manager.clearAuthFailures(account);
-							this.stats.refreshed += 1;
-						} else {
-							manager.markAccountCoolingDown(account, this.bufferMs, "network-error");
-							this.stats.failed += 1;
-							this.stats.networkFailed += 1;
-						}
-						break;
-					case "failed": {
-						const cooldownReason = this.classifyFailureReason(result.tokenResult);
-						manager.markAccountCoolingDown(account, this.bufferMs, cooldownReason);
-						this.stats.failed += 1;
-						if (cooldownReason === "rate-limit") this.stats.rateLimited += 1;
-						else if (cooldownReason === "auth-failure") this.stats.authFailed += 1;
-						else this.stats.networkFailed += 1;
-						break;
-					}
-					case "not_needed":
-						this.stats.notNeeded += 1;
-						break;
-					case "no_refresh_token":
-						manager.markAccountCoolingDown(account, this.bufferMs, "auth-failure");
-						manager.setAccountEnabled(account.index, false);
-						this.stats.noRefreshToken += 1;
-						this.stats.failed += 1;
-						this.stats.authFailed += 1;
-						break;
+				if (saveNeeded) {
+					requiresSave = true;
 				}
 			}
 
-			manager.saveToDiskDebounced();
+			if (requiresSave) {
+				manager.saveToDiskDebounced();
+			}
 			this.stats.runs += 1;
 			this.stats.lastRunAt = Date.now();
 		} catch (error) {

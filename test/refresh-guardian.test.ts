@@ -20,12 +20,52 @@ function createManagedAccount(index: number): ManagedAccount {
   };
 }
 
+function findAccountByIdentity(
+  accounts: ManagedAccount[],
+  candidate: Partial<ManagedAccount>,
+): ManagedAccount | null {
+  return (
+    accounts.find((account) => {
+      if (
+        typeof candidate.index === "number" &&
+        account.index === candidate.index
+      ) {
+        return true;
+      }
+      if (
+        candidate.refreshToken &&
+        account.refreshToken === candidate.refreshToken
+      ) {
+        return true;
+      }
+      if (candidate.accountId && account.accountId === candidate.accountId) {
+        return true;
+      }
+      if (candidate.email && account.email === candidate.email) {
+        return true;
+      }
+      return false;
+    }) ?? null
+  );
+}
+
 function createManagerMock(accounts: ManagedAccount[]): AccountManager {
   return {
     getAccountsSnapshot: vi.fn(() => accounts),
     getAccountByIndex: vi.fn(
       (index: number) =>
         accounts.find((account) => account.index === index) ?? null,
+    ),
+    isAccountCoolingDown: vi.fn(
+      (account: ManagedAccount) =>
+        typeof account.coolingDownUntil === "number" &&
+        account.coolingDownUntil > Date.now(),
+    ),
+    getAccountByIdentity: vi.fn((candidate: Partial<ManagedAccount>) =>
+      findAccountByIdentity(accounts, candidate),
+    ),
+    commitRefreshedAuth: vi.fn(async (candidate: Partial<ManagedAccount>) =>
+      findAccountByIdentity(accounts, candidate),
     ),
     clearAuthFailures: vi.fn(),
     markAccountCoolingDown: vi.fn(),
@@ -108,6 +148,33 @@ describe("refresh-guardian", () => {
     expect(stats.lastRunAt).not.toBeNull();
   });
 
+  it("skips accounts that are already cooling down", async () => {
+    const coolingAccount = {
+      ...createManagedAccount(0),
+      coolingDownUntil: Date.now() + 60_000,
+      cooldownReason: "auth-failure" as const,
+    };
+    const readyAccount = createManagedAccount(1);
+    const manager = createManagerMock([coolingAccount, readyAccount]);
+    const { RefreshGuardian } = await import("../lib/refresh-guardian.js");
+    const guardian = new RefreshGuardian(() => manager, {
+      intervalMs: 5_000,
+      bufferMs: 60_000,
+    });
+
+    refreshExpiringAccountsMock.mockResolvedValue(new Map());
+
+    await guardian.tick();
+
+    expect(refreshExpiringAccountsMock).toHaveBeenCalledWith(
+      [readyAccount],
+      60_000,
+      expect.any(Function),
+    );
+    expect(manager.markAccountCoolingDown as ReturnType<typeof vi.fn>).not.toHaveBeenCalled();
+    expect(guardian.getStats().runs).toBe(1);
+  });
+
   it("applies refresh outcomes and updates stats", async () => {
     const accountA = createManagedAccount(0);
     const accountB = createManagedAccount(1);
@@ -159,6 +226,16 @@ describe("refresh-guardian", () => {
     expect(
       manager.clearAuthFailures as ReturnType<typeof vi.fn>,
     ).toHaveBeenCalledWith(accountA);
+    expect(
+      manager.commitRefreshedAuth as ReturnType<typeof vi.fn>,
+    ).toHaveBeenCalledWith(
+      accountA,
+      expect.objectContaining({
+        type: "oauth",
+        access: "access-0",
+        refresh: "refresh-0-new",
+      }),
+    );
     expect(
       manager.markAccountCoolingDown as ReturnType<typeof vi.fn>,
     ).toHaveBeenCalledWith(accountB, 60_000, "auth-failure");
@@ -231,6 +308,13 @@ describe("refresh-guardian", () => {
       getAccountByIndex: vi.fn(
         (index: number) =>
           [liveB, liveA].find((account) => account.index === index) ?? null,
+      ),
+      isAccountCoolingDown: vi.fn(() => false),
+      getAccountByIdentity: vi.fn((candidate: Partial<ManagedAccount>) =>
+        findAccountByIdentity([liveB, liveA], candidate),
+      ),
+      commitRefreshedAuth: vi.fn(async (candidate: Partial<ManagedAccount>) =>
+        findAccountByIdentity([liveB, liveA], candidate),
       ),
       clearAuthFailures: vi.fn(),
       markAccountCoolingDown: vi.fn(),
@@ -394,6 +478,13 @@ describe("refresh-guardian", () => {
       getAccountByIndex: vi.fn(
         (index: number) =>
           liveSnapshot.find((account) => account.index === index) ?? null,
+      ),
+      isAccountCoolingDown: vi.fn(() => false),
+      getAccountByIdentity: vi.fn((candidate: Partial<ManagedAccount>) =>
+        findAccountByIdentity(liveSnapshot, candidate),
+      ),
+      commitRefreshedAuth: vi.fn(async (candidate: Partial<ManagedAccount>) =>
+        findAccountByIdentity(liveSnapshot, candidate),
       ),
       clearAuthFailures: vi.fn(),
       markAccountCoolingDown: vi.fn(),
@@ -559,6 +650,13 @@ describe("refresh-guardian", () => {
       }),
       getAccountByIndex: vi.fn(
         (index: number) => liveAfterRemoval[index] ?? null,
+      ),
+      isAccountCoolingDown: vi.fn(() => false),
+      getAccountByIdentity: vi.fn((candidate: Partial<ManagedAccount>) =>
+        findAccountByIdentity(liveAfterRemoval, candidate),
+      ),
+      commitRefreshedAuth: vi.fn(async (candidate: Partial<ManagedAccount>) =>
+        findAccountByIdentity(liveAfterRemoval, candidate),
       ),
       clearAuthFailures: vi.fn(),
       markAccountCoolingDown: vi.fn(),

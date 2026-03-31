@@ -7,6 +7,7 @@ import {
 	type CooldownReason,
 	type RateLimitStateV3,
 	findMatchingAccountIndex,
+	withAccountStorageTransaction,
 } from "./storage.js";
 import type { AccountIdSource, OAuthAuthDetails } from "./types.js";
 import { MODEL_FAMILIES, type ModelFamily } from "./prompts/codex.js";
@@ -79,6 +80,81 @@ function initFamilyState(defaultValue: number): Record<ModelFamily, number> {
 	return Object.fromEntries(
 		MODEL_FAMILIES.map((family) => [family, defaultValue]),
 	) as Record<ModelFamily, number>;
+}
+
+type AccountIdentityCandidate = Pick<
+	ManagedAccount,
+	"accountId" | "email" | "refreshToken"
+> & {
+	index?: number;
+};
+
+function getAuthIdentityCandidate(
+	auth: OAuthAuthDetails | undefined,
+): AccountIdentityCandidate {
+	const accountId = extractAccountId(auth?.access)?.trim() || undefined;
+	const email = sanitizeEmail(extractAccountEmail(auth?.access));
+	return {
+		accountId,
+		email,
+		refreshToken: auth?.refresh,
+	};
+}
+
+function buildAccountIdentityCandidates(
+	source: AccountIdentityCandidate,
+	auth?: OAuthAuthDetails,
+): AccountIdentityCandidate[] {
+	const derived = getAuthIdentityCandidate(auth);
+	const candidates: AccountIdentityCandidate[] = [];
+	const seen = new Set<string>();
+
+	const pushCandidate = (candidate: AccountIdentityCandidate): void => {
+		const key = `${candidate.accountId ?? ""}|${candidate.email ?? ""}|${candidate.refreshToken ?? ""}`;
+		if (seen.has(key)) return;
+		seen.add(key);
+		candidates.push(candidate);
+	};
+
+	pushCandidate(source);
+	pushCandidate({
+		accountId: source.accountId ?? derived.accountId,
+		email: source.email ?? derived.email,
+		refreshToken: source.refreshToken,
+		index: source.index,
+	});
+	pushCandidate({
+		accountId: derived.accountId ?? source.accountId,
+		email: derived.email ?? source.email,
+		refreshToken: source.refreshToken,
+		index: source.index,
+	});
+	pushCandidate({
+		accountId: derived.accountId ?? source.accountId,
+		email: derived.email ?? source.email,
+		refreshToken: derived.refreshToken ?? source.refreshToken,
+		index: source.index,
+	});
+
+	return candidates;
+}
+
+function findAccountIndexByIdentity<
+	T extends Pick<AccountIdentityCandidate, "accountId" | "email" | "refreshToken">,
+>(
+	accounts: readonly T[],
+	source: AccountIdentityCandidate,
+	auth?: OAuthAuthDetails,
+): number | undefined {
+	for (const candidate of buildAccountIdentityCandidates(source, auth)) {
+		const matchIndex = findMatchingAccountIndex(accounts, candidate, {
+			allowUniqueAccountIdFallbackWithoutEmail: true,
+		});
+		if (matchIndex !== undefined) {
+			return matchIndex;
+		}
+	}
+	return undefined;
 }
 
 export interface Workspace {
@@ -642,6 +718,17 @@ export class AccountManager {
 		account.consecutiveAuthFailures = 0;
 	}
 
+	getAccountByIdentity(
+		candidate: AccountIdentityCandidate,
+		auth?: OAuthAuthDetails,
+	): ManagedAccount | null {
+		const index = findAccountIndexByIdentity(this.accounts, candidate, auth);
+		if (index === undefined) {
+			return null;
+		}
+		return this.accounts[index] ?? null;
+	}
+
 	shouldShowAccountToast(accountIndex: number, debounceMs = 30000): boolean {
 		const now = nowMs();
 		if (accountIndex === this.lastToastAccountIndex && now - this.lastToastTime < debounceMs) {
@@ -668,6 +755,112 @@ export class AccountManager {
 			account.accountIdSource = "token";
 		}
 		account.email = sanitizeEmail(extractAccountEmail(auth.access)) ?? account.email;
+	}
+
+	private buildStorageSnapshot(): AccountStorageV3 {
+		const activeIndexByFamily: Partial<Record<ModelFamily, number>> = {};
+		for (const family of MODEL_FAMILIES) {
+			const raw = this.currentAccountIndexByFamily[family];
+			activeIndexByFamily[family] = clampNonNegativeInt(raw, 0);
+		}
+
+		const activeIndex = clampNonNegativeInt(activeIndexByFamily.codex, 0);
+
+		return {
+			version: 3,
+			accounts: this.accounts.map((account) => ({
+				accountId: account.accountId,
+				accountIdSource: account.accountIdSource,
+				accountLabel: account.accountLabel,
+				email: account.email,
+				refreshToken: account.refreshToken,
+				accessToken: account.access,
+				expiresAt: account.expires,
+				enabled: account.enabled === false ? false : undefined,
+				addedAt: account.addedAt,
+				lastUsed: account.lastUsed,
+				lastSwitchReason: account.lastSwitchReason,
+				rateLimitResetTimes:
+					Object.keys(account.rateLimitResetTimes).length > 0 ? account.rateLimitResetTimes : undefined,
+				coolingDownUntil: account.coolingDownUntil,
+				cooldownReason: account.cooldownReason,
+				workspaces: account.workspaces,
+				currentWorkspaceIndex: account.currentWorkspaceIndex,
+			})),
+			activeIndex,
+			activeIndexByFamily,
+		};
+	}
+
+	async commitRefreshedAuth(
+		source: Pick<
+			ManagedAccount,
+			"index" | "accountId" | "email" | "refreshToken"
+		>,
+		auth: OAuthAuthDetails,
+	): Promise<ManagedAccount | null> {
+		const nextAccountId = extractAccountId(auth.access)?.trim() || undefined;
+		const nextEmail = sanitizeEmail(extractAccountEmail(auth.access));
+
+		await withAccountStorageTransaction(async (current, persist) => {
+			const nextStorage = structuredClone(
+				current ?? this.buildStorageSnapshot(),
+			) as AccountStorageV3;
+			const storageIndex = findAccountIndexByIdentity(
+				nextStorage.accounts,
+				source,
+				auth,
+			);
+			if (storageIndex === undefined) {
+				log.warn("Unable to resolve refreshed account for persistence", {
+					sourceIndex: source.index,
+					email: source.email,
+				});
+				return;
+			}
+
+			const storedAccount = nextStorage.accounts[storageIndex];
+			if (!storedAccount) {
+				return;
+			}
+
+			storedAccount.refreshToken = auth.refresh;
+			storedAccount.accessToken = auth.access;
+			storedAccount.expiresAt = auth.expires;
+			if (
+				nextAccountId &&
+				shouldUpdateAccountIdFromToken(
+					storedAccount.accountIdSource,
+					storedAccount.accountId,
+				)
+			) {
+				storedAccount.accountId = nextAccountId;
+				storedAccount.accountIdSource = "token";
+			}
+			if (nextEmail) {
+				storedAccount.email = nextEmail;
+			}
+			storedAccount.enabled = undefined;
+			delete storedAccount.coolingDownUntil;
+			delete storedAccount.cooldownReason;
+
+			await persist(nextStorage);
+		});
+
+		const liveAccount = this.getAccountByIdentity(source, auth);
+		if (!liveAccount) {
+			log.warn("Unable to resolve refreshed live account after persistence", {
+				sourceIndex: source.index,
+				email: source.email,
+			});
+			return null;
+		}
+
+		this.updateFromAuth(liveAccount, auth);
+		liveAccount.enabled = true;
+		this.clearAccountCooldown(liveAccount);
+		this.clearAuthFailures(liveAccount);
+		return liveAccount;
 	}
 
 	toAuthDetails(account: ManagedAccount): Auth {
@@ -780,40 +973,7 @@ export class AccountManager {
 	}
 
 	async saveToDisk(): Promise<void> {
-		const activeIndexByFamily: Partial<Record<ModelFamily, number>> = {};
-		for (const family of MODEL_FAMILIES) {
-			const raw = this.currentAccountIndexByFamily[family];
-			activeIndexByFamily[family] = clampNonNegativeInt(raw, 0);
-		}
-
-		const activeIndex = clampNonNegativeInt(activeIndexByFamily.codex, 0);
-
-		const storage: AccountStorageV3 = {
-			version: 3,
-			accounts: this.accounts.map((account) => ({
-				accountId: account.accountId,
-				accountIdSource: account.accountIdSource,
-				accountLabel: account.accountLabel,
-				email: account.email,
-				refreshToken: account.refreshToken,
-				accessToken: account.access,
-				expiresAt: account.expires,
-				enabled: account.enabled === false ? false : undefined,
-				addedAt: account.addedAt,
-				lastUsed: account.lastUsed,
-				lastSwitchReason: account.lastSwitchReason,
-				rateLimitResetTimes:
-					Object.keys(account.rateLimitResetTimes).length > 0 ? account.rateLimitResetTimes : undefined,
-				coolingDownUntil: account.coolingDownUntil,
-				cooldownReason: account.cooldownReason,
-				workspaces: account.workspaces,
-				currentWorkspaceIndex: account.currentWorkspaceIndex,
-			})),
-			activeIndex,
-			activeIndexByFamily,
-		};
-
-		await saveAccounts(storage);
+		await saveAccounts(this.buildStorageSnapshot());
 	}
 
 	saveToDiskDebounced(delayMs = 500): void {
