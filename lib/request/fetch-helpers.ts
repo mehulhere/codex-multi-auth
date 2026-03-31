@@ -19,7 +19,7 @@ import {
 	convertSseToJson,
 	ensureContentType,
 } from "./response-handler.js";
-import type { UserConfig, RequestBody } from "../types.js";
+import type { UserConfig, RequestBody, TokenResult } from "../types.js";
 import { registerCleanup } from "../shutdown.js";
 import { CodexAuthError } from "../errors.js";
 import { isRecord } from "../utils.js";
@@ -428,6 +428,26 @@ export function shouldRefreshToken(auth: Auth, skewMs = 0): boolean {
 	return auth.expires <= Date.now() + safeSkewMs;
 }
 
+function isRetryableRefreshFailure(
+	result: Extract<TokenResult, { type: "failed" }>,
+): boolean {
+	switch (result.reason) {
+		case "network_error":
+		case "unknown":
+		case "invalid_response":
+		case "missing_refresh":
+			return true;
+		case "http_error":
+			return !(
+				result.statusCode === HTTP_STATUS.BAD_REQUEST ||
+				result.statusCode === HTTP_STATUS.UNAUTHORIZED ||
+				result.statusCode === HTTP_STATUS.FORBIDDEN
+			);
+		default:
+			return false;
+	}
+}
+
 /**
  * Refreshes the OAuth token and updates stored credentials
  * @param currentAuth - Current auth state
@@ -440,26 +460,39 @@ export async function refreshAndUpdateToken(
 ): Promise<Auth> {
 	const authSetter = (client as Partial<CodexAuthSetter>).auth;
 	if (!authSetter || typeof authSetter.set !== "function") {
-		throw new CodexAuthError(ERROR_MESSAGES.TOKEN_REFRESH_FAILED, { retryable: false });
+		throw new CodexAuthError(ERROR_MESSAGES.TOKEN_REFRESH_FAILED, { retryable: true });
 	}
 
 	const refreshToken = currentAuth.type === "oauth" ? currentAuth.refresh : "";
 	const refreshResult = await queuedRefresh(refreshToken);
 
 	if (refreshResult.type === "failed") {
-		throw new CodexAuthError(ERROR_MESSAGES.TOKEN_REFRESH_FAILED, { retryable: false });
+		throw new CodexAuthError(ERROR_MESSAGES.TOKEN_REFRESH_FAILED, {
+			retryable: isRetryableRefreshFailure(refreshResult),
+			context: {
+				refreshFailureReason: refreshResult.reason,
+				statusCode: refreshResult.statusCode,
+			},
+		});
 	}
 
-	await authSetter.set({
-		path: { id: "openai" },
-		body: {
-			type: "oauth",
-			access: refreshResult.access,
-			refresh: refreshResult.refresh,
-			expires: refreshResult.expires,
-			multiAccount: true,
-		},
-	});
+	try {
+		await authSetter.set({
+			path: { id: "openai" },
+			body: {
+				type: "oauth",
+				access: refreshResult.access,
+				refresh: refreshResult.refresh,
+				expires: refreshResult.expires,
+				multiAccount: true,
+			},
+		});
+	} catch (error) {
+		throw new CodexAuthError(ERROR_MESSAGES.TOKEN_REFRESH_FAILED, {
+			retryable: true,
+			cause: error,
+		});
+	}
 
 	// Update current auth reference if it's OAuth type
 	if (currentAuth.type === "oauth") {

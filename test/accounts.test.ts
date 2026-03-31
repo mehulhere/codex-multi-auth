@@ -18,6 +18,7 @@ vi.mock("../lib/storage.js", async (importOriginal) => {
   return {
     ...actual,
     saveAccounts: vi.fn().mockResolvedValue(undefined),
+    withAccountStorageTransaction: vi.fn(),
   };
 });
 
@@ -1046,6 +1047,92 @@ describe("AccountManager", () => {
       
       expect(account.accountId).toBe("org-selected-id");
       expect(account.accountIdSource).toBe("org");
+    });
+  });
+
+  describe("commitRefreshedAuth", () => {
+    it("persists refreshed auth transactionally and updates the live account", async () => {
+      const { withAccountStorageTransaction } = await import("../lib/storage.js");
+      const mockWithAccountStorageTransaction = vi.mocked(
+        withAccountStorageTransaction,
+      );
+      const now = Date.now();
+      const stored = {
+        version: 3 as const,
+        activeIndex: 0,
+        accounts: [
+          {
+            refreshToken: "old-refresh",
+            accessToken: "old-access",
+            expiresAt: now,
+            addedAt: now,
+            lastUsed: now,
+            email: "old@example.com",
+            accountId: "old-account-id",
+            accountIdSource: "token" as const,
+            enabled: false,
+            coolingDownUntil: now + 30_000,
+            cooldownReason: "auth-failure" as const,
+          },
+        ],
+      };
+      const manager = new AccountManager(undefined, stored as any);
+      const account = manager.getAccountByIndex(0)!;
+      account.enabled = false;
+      manager.markAccountCoolingDown(account, 30_000, "auth-failure");
+      manager.incrementAuthFailures(account);
+
+      const payload = Buffer.from(
+        JSON.stringify({
+          email: "new@example.com",
+          "https://api.openai.com/auth": {
+            chatgpt_account_id: "new-account-id",
+          },
+        }),
+      ).toString("base64url");
+      const refreshedAuth: OAuthAuthDetails = {
+        type: "oauth",
+        access: `header.${payload}.signature`,
+        refresh: "new-refresh",
+        expires: now + 3_600_000,
+      };
+
+      mockWithAccountStorageTransaction.mockImplementationOnce(async (handler) => {
+        const persist = vi.fn().mockResolvedValue(undefined);
+        const result = await handler(stored as any, persist);
+
+        expect(persist).toHaveBeenCalledTimes(1);
+        const persistedStorage = persist.mock.calls[0]?.[0];
+        expect(persistedStorage?.accounts[0]?.refreshToken).toBe("new-refresh");
+        expect(persistedStorage?.accounts[0]?.accessToken).toBe(
+          refreshedAuth.access,
+        );
+        expect(persistedStorage?.accounts[0]?.expiresAt).toBe(
+          refreshedAuth.expires,
+        );
+        expect(persistedStorage?.accounts[0]?.accountId).toBe("new-account-id");
+        expect(persistedStorage?.accounts[0]?.accountIdSource).toBe("token");
+        expect(persistedStorage?.accounts[0]?.email).toBe("new@example.com");
+        expect(persistedStorage?.accounts[0]?.enabled).toBeUndefined();
+        expect(persistedStorage?.accounts[0]?.coolingDownUntil).toBeUndefined();
+        expect(persistedStorage?.accounts[0]?.cooldownReason).toBeUndefined();
+
+        return result;
+      });
+
+      const updated = await manager.commitRefreshedAuth(account, refreshedAuth);
+
+      expect(updated).toBe(account);
+      expect(account.refreshToken).toBe("new-refresh");
+      expect(account.access).toBe(refreshedAuth.access);
+      expect(account.expires).toBe(refreshedAuth.expires);
+      expect(account.accountId).toBe("new-account-id");
+      expect(account.accountIdSource).toBe("token");
+      expect(account.email).toBe("new@example.com");
+      expect(account.enabled).toBe(true);
+      expect(account.coolingDownUntil).toBeUndefined();
+      expect(account.cooldownReason).toBeUndefined();
+      expect(account.consecutiveAuthFailures).toBe(0);
     });
   });
 
