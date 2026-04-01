@@ -268,4 +268,59 @@ describe("AccountManager loadFromDisk", () => {
 
     expect(manager.getNextForFamily("codex")).toBeNull();
   });
+
+  it("getNextForFamily falls back to stale accounts when no fresh option exists", () => {
+    const now = Date.now();
+    const manager = new AccountManager(undefined, {
+      version: 3 as const,
+      activeIndex: 0,
+      accounts: [
+        {
+          refreshToken: "stale-1",
+          accessToken: "access-1",
+          expiresAt: now + 60_000,
+          addedAt: now,
+          lastUsed: now,
+        },
+        {
+          refreshToken: "stale-2",
+          accessToken: "access-2",
+          expiresAt: now + 120_000,
+          addedAt: now,
+          lastUsed: now - 5_000,
+        },
+      ],
+    } as never);
+
+    const selected = manager.getNextForFamily("codex");
+    expect(selected?.refreshToken).toBe("stale-1");
+  });
+
+  it("getNextForFamily prefers a fresh account when one is available", () => {
+    const now = Date.now();
+    const manager = new AccountManager(undefined, {
+      version: 3 as const,
+      activeIndex: 0,
+      activeIndexByFamily: { codex: 0 },
+      accounts: [
+        {
+          refreshToken: "stale-1",
+          accessToken: "access-1",
+          expiresAt: now + 60_000,
+          addedAt: now,
+          lastUsed: now,
+        },
+        {
+          refreshToken: "token-fresh",
+          accessToken: "access-fresh",
+          expiresAt: now + 10 * 60_000,
+          addedAt: now,
+          lastUsed: now - 5_000,
+        },
+      ],
+    } as never);
+
+    const selected = manager.getNextForFamily("codex");
+    expect(selected?.refreshToken).toBe("token-fresh");
+  });
 });
