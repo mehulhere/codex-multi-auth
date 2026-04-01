@@ -254,6 +254,7 @@ import {
 	saveFlaggedAccounts,
 	setStorageBackupEnabled,
 	setStoragePath,
+	withAccountAndFlaggedStorageTransaction,
 	withAccountStorageTransaction,
 } from "./lib/storage.js";
 import {
@@ -398,6 +399,26 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 		findMatchingAccountIndex,
 		modelFamilies: MODEL_FAMILIES,
 	});
+	const persistAccountPoolAndFlagged = async (
+		results: TokenSuccessWithAccount[],
+		flaggedStorage: Parameters<typeof saveFlaggedAccounts>[0],
+		replaceAll: boolean = false,
+	): Promise<void> =>
+		withAccountAndFlaggedStorageTransaction(async (loadedStorage, persist) => {
+			await persistAccountPoolResults({
+				results,
+				replaceAll,
+				modelFamilies: MODEL_FAMILIES,
+				withAccountStorageTransaction: async (handler) =>
+					handler(loadedStorage, async (storage) => {
+						await persist(storage, flaggedStorage);
+					}),
+				findMatchingAccountIndex,
+				extractAccountId,
+				extractAccountEmail,
+				sanitizeEmail,
+			});
+		});
 
 	const accountManagerCacheInvalidationDeps = {
 		setCachedAccountManager: (value: unknown) => {
@@ -2598,6 +2619,8 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 										queuedRefresh,
 										resolveTokenSuccessAccount,
 										persistAccounts: persistAccountPool,
+										persistAccountsAndFlagged:
+											persistAccountPoolAndFlagged,
 										invalidateAccountManagerCache: () =>
 											invalidateRuntimeAccountManagerCache(
 												accountManagerCacheInvalidationDeps,

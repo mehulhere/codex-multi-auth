@@ -156,6 +156,7 @@ vi.mock("../lib/logger.js", () => ({
 	logInfo: vi.fn(),
 	logWarn: vi.fn(),
 	logError: vi.fn(),
+	maskEmail: vi.fn((email: string) => email),
 	setCorrelationId: vi.fn(() => "test-correlation-id"),
 	clearCorrelationId: vi.fn(),
 	createLogger: vi.fn(() => ({
@@ -333,6 +334,7 @@ const withAccountStorageTransactionMock = vi.fn(
 		return nextRun;
 	},
 );
+const withAccountAndFlaggedStorageTransactionMock = vi.fn();
 
 const syncCodexCliSelectionMock = vi.fn(async (_index: number) => {});
 
@@ -343,6 +345,8 @@ vi.mock("../lib/storage.js", async () => {
 		getStoragePath: () => "/mock/path/accounts.json",
 		loadAccounts: loadAccountsMock,
 		saveAccounts: saveAccountsMock,
+		withAccountAndFlaggedStorageTransaction:
+			withAccountAndFlaggedStorageTransactionMock,
 		withAccountStorageTransaction: withAccountStorageTransactionMock,
 		clearAccounts: clearAccountsMock,
 		setStoragePath: vi.fn(),
@@ -775,6 +779,82 @@ describe("OpenAIOAuthPlugin", () => {
 			expect(vi.mocked(loggerModule.logInfo)).not.toHaveBeenCalledWith(
 				expect.stringContaining("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
 			);
+		});
+
+		it("uses combined flagged persistence when verify-flagged restores from the login menu", async () => {
+			const cliModule = await import("../lib/cli.js");
+			const refreshQueueModule = await import("../lib/refresh-queue.js");
+			const storageModule = await import("../lib/storage.js");
+			const now = Date.now();
+			const flaggedStorage = {
+				version: 1 as const,
+				accounts: [
+					{
+						refreshToken: "flagged-refresh",
+						accountId: "flagged-account",
+						email: "flagged@example.com",
+						addedAt: now - 1_000,
+						lastUsed: now - 1_000,
+						flaggedAt: now - 5_000,
+					},
+				],
+			};
+			let loadFlaggedCallCount = 0;
+
+			vi.mocked(cliModule.promptLoginMode)
+				.mockResolvedValueOnce({ mode: "verify-flagged" } as never)
+				.mockResolvedValueOnce({ mode: "cancel" } as never);
+			vi.mocked(refreshQueueModule.queuedRefresh).mockResolvedValueOnce({
+				type: "success",
+				access: "restored-access",
+				refresh: "restored-refresh",
+				expires: now + 60_000,
+			});
+			vi.mocked(storageModule.loadFlaggedAccounts).mockImplementation(async () => {
+				loadFlaggedCallCount += 1;
+				return loadFlaggedCallCount <= 2
+					? flaggedStorage
+					: { version: 1, accounts: [] };
+			});
+			withAccountAndFlaggedStorageTransactionMock.mockImplementationOnce(
+				async (handler) =>
+					handler(
+						{
+							version: 3,
+							accounts: mockStorage.accounts.map((account) =>
+								cloneMockAccount(account),
+							),
+							activeIndex: mockStorage.activeIndex,
+							activeIndexByFamily: { ...mockStorage.activeIndexByFamily },
+						},
+						async (storage, nextFlaggedStorage) => {
+							await saveAccountsMock(storage);
+							await vi.mocked(storageModule.saveFlaggedAccounts)(
+								nextFlaggedStorage,
+							);
+						},
+						flaggedStorage,
+					),
+			);
+
+			const autoMethod = plugin.auth.methods[0] as unknown as {
+				authorize: () => Promise<unknown>;
+			};
+			await autoMethod.authorize();
+
+			expect(withAccountAndFlaggedStorageTransactionMock).toHaveBeenCalledTimes(1);
+			expect(mockStorage.accounts).toEqual(
+				expect.arrayContaining([
+					expect.objectContaining({
+						refreshToken: "restored-refresh",
+						accessToken: "restored-access",
+					}),
+				]),
+			);
+			expect(vi.mocked(storageModule.saveFlaggedAccounts)).toHaveBeenCalledWith({
+				version: 1,
+				accounts: [],
+			});
 		});
 	});
 
