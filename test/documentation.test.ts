@@ -14,6 +14,19 @@ import { UI_COPY } from "../lib/ui/copy.js";
 
 const projectRoot = resolve(process.cwd());
 
+function readPackageVersion(): string {
+	const parsed = JSON.parse(readFileSync(join(projectRoot, "package.json"), "utf-8")) as {
+		version?: unknown;
+	};
+	if (typeof parsed.version !== "string" || parsed.version.trim().length === 0) {
+		throw new Error("package.json must define a non-empty version string");
+	}
+	return parsed.version.trim();
+}
+
+const packageVersion = readPackageVersion();
+const currentStableReleaseDoc = `docs/releases/v${packageVersion}.md`;
+
 const userDocs = [
 	"docs/index.md",
 	"docs/README.md",
@@ -30,9 +43,9 @@ const userDocs = [
 	"docs/reference/error-contracts.md",
 	"docs/reference/settings.md",
 	"docs/reference/storage-paths.md",
-	"docs/releases/v1.1.10.md",
-	"docs/releases/v0.1.9.md",
-	"docs/releases/v0.1.8.md",
+	currentStableReleaseDoc,
+	"docs/releases/v1.2.1.md",
+	"docs/releases/v1.2.0.md",
 	"docs/releases/v0.1.7.md",
 	"docs/releases/v0.1.6.md",
 	"docs/releases/v0.1.5.md",
@@ -122,10 +135,14 @@ describe("Documentation Integrity", () => {
 		}
 	});
 
-	it("docs portal links to stable, beta, and archived release history", () => {
+	it("docs portal and root README link to stable, beta, and archived release history", () => {
 		const portal = read("docs/README.md");
+		const readme = read("README.md");
 		expect(portal).toContain("reference/public-api.md");
 		expect(portal).toContain("reference/error-contracts.md");
+		expect(portal).toContain(`releases/v${packageVersion}.md`);
+		expect(portal).toContain("releases/v1.2.1.md");
+		expect(portal).toContain("releases/v1.2.0.md");
 		expect(portal).toContain("releases/v0.1.7.md");
 		expect(portal).toContain("releases/v0.1.6.md");
 		expect(portal).toContain("releases/v0.1.5.md");
@@ -134,6 +151,9 @@ describe("Documentation Integrity", () => {
 		expect(portal).toContain(
 			"| [Daily Use release notes](#daily-use) | Stable, previous, and archived release notes |",
 		);
+		expect(readme).toContain(currentStableReleaseDoc);
+		expect(readme).toContain("docs/releases/v1.2.1.md");
+		expect(readme).toContain("docs/releases/v1.2.0.md");
 
 		const beta = read("docs/releases/v0.1.0-beta.0.md");
 		expect(beta).toContain("Archived");
