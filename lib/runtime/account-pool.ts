@@ -16,7 +16,6 @@ export type TokenSuccessWithAccount = Extract<
 export async function persistAccountPoolResults(params: {
 	results: TokenSuccessWithAccount[];
 	replaceAll?: boolean;
-	preserveLastUsedOnUpdate?: boolean;
 	modelFamilies: readonly ModelFamily[];
 	withAccountStorageTransaction: <T>(
 		handler: (
@@ -32,11 +31,7 @@ export async function persistAccountPoolResults(params: {
 	) => string | undefined;
 	sanitizeEmail: (email: string | undefined) => string | undefined;
 }): Promise<void> {
-	const {
-		results,
-		replaceAll = false,
-		preserveLastUsedOnUpdate = false,
-	} = params;
+	const { results, replaceAll = false } = params;
 	if (results.length === 0) return;
 
 	await params.withAccountStorageTransaction(async (loadedStorage, persist) => {
@@ -166,9 +161,7 @@ export async function persistAccountPoolResults(params: {
 				refreshToken: result.refresh,
 				accessToken: result.access,
 				expiresAt: result.expires,
-				lastUsed: preserveLastUsedOnUpdate
-					? (existing.lastUsed ?? now)
-					: now,
+				lastUsed: now,
 				workspaces: mergedWorkspaces,
 				currentWorkspaceIndex: nextCurrentWorkspaceIndex,
 			};
