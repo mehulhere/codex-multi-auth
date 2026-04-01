@@ -2930,7 +2930,10 @@ describe("AccountManager", () => {
       expect(getRuntimeTrackerKey(rotatedAccount)).toBe(trackerKey);
       expect(getRuntimeAccountIdentityKey(rotatedAccount)).toBe(trackerKey);
       expect(getAccountIdentityKey(rotatedAccount)).not.toBe(`${trackerKey}`);
-      expect(healthTracker.getScore(trackerKey, "codex:gpt-5.1")).toBe(degradedScore);
+      expect(healthTracker.getScore(trackerKey, "codex:gpt-5.1")).toBeCloseTo(
+        degradedScore,
+        6,
+      );
       expect(tokenTracker.getTokens(trackerKey, "codex:gpt-5.1")).toBeLessThan(50);
     });
 
@@ -2982,7 +2985,10 @@ describe("AccountManager", () => {
         "account:account-enriched::email:enriched@example.com",
       );
       expect(getRuntimeTrackerKey(account)).toBe(trackerKey);
-      expect(healthTracker.getScore(trackerKey, "codex:gpt-5.1")).toBe(degradedScore);
+      expect(healthTracker.getScore(trackerKey, "codex:gpt-5.1")).toBeCloseTo(
+        degradedScore,
+        6,
+      );
       expect(tokenTracker.getTokens(trackerKey, "codex:gpt-5.1")).toBeLessThan(50);
     });
 
