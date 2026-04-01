@@ -711,6 +711,52 @@ describe("refresh-guardian", () => {
     );
   });
 
+  it("treats null commit results as retryable network cooldowns", async () => {
+    const accountA = createManagedAccount(0);
+    const manager = createManagerMock([accountA]);
+    const commitRefreshedAuthMock = manager
+      .commitRefreshedAuth as ReturnType<typeof vi.fn>;
+    commitRefreshedAuthMock.mockResolvedValueOnce(null);
+
+    const { RefreshGuardian } = await import("../lib/refresh-guardian.js");
+    const guardian = new RefreshGuardian(() => manager, {
+      bufferMs: 60_000,
+      intervalMs: 5_000,
+    });
+
+    refreshExpiringAccountsMock.mockResolvedValue(
+      new Map([
+        [
+          0,
+          {
+            refreshed: true,
+            reason: "success",
+            tokenResult: {
+              type: "success",
+              access: "access-0",
+              refresh: "refresh-0-new",
+              expires: Date.now() + 3_600_000,
+            },
+          },
+        ],
+      ]),
+    );
+
+    await guardian.tick();
+
+    expect(applyRefreshResultMock).not.toHaveBeenCalled();
+    expect(commitRefreshedAuthMock).toHaveBeenCalledTimes(1);
+    expect(
+      manager.markAccountCoolingDown as ReturnType<typeof vi.fn>,
+    ).toHaveBeenCalledWith(accountA, 60_000, "network-error");
+
+    const stats = guardian.getStats();
+    expect(stats.runs).toBe(1);
+    expect(stats.refreshed).toBe(0);
+    expect(stats.failed).toBe(1);
+    expect(stats.networkFailed).toBe(1);
+  });
+
   it("treats commit failures as retryable network cooldowns and continues the batch", async () => {
     const accountA = createManagedAccount(0);
     const accountB = createManagedAccount(1);

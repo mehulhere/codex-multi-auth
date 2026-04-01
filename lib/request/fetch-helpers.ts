@@ -461,7 +461,9 @@ export async function refreshAndUpdateToken(
 ): Promise<Auth> {
 	const authSetter = (client as Partial<CodexAuthSetter>).auth;
 	if (!authSetter || typeof authSetter.set !== "function") {
-		throw new CodexAuthError(ERROR_MESSAGES.TOKEN_REFRESH_FAILED, { retryable: true });
+		throw new CodexAuthError(ERROR_MESSAGES.TOKEN_REFRESH_FAILED, {
+			retryable: false,
+		});
 	}
 
 	const refreshToken = currentAuth.type === "oauth" ? currentAuth.refresh : "";

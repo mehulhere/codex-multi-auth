@@ -124,7 +124,25 @@ export class RefreshGuardian {
 					multiAccount: true,
 				};
 				try {
-					await manager.commitRefreshedAuth(sourceAccount, refreshedAuth);
+					const committedAccount = await manager.commitRefreshedAuth(
+						sourceAccount,
+						refreshedAuth,
+					);
+					if (!committedAccount) {
+						const account =
+							manager.getAccountByIdentity(sourceAccount, refreshedAuth) ??
+							manager.getAccountByIdentity(sourceAccount);
+						if (account) {
+							manager.markAccountCoolingDown(
+								account,
+								this.bufferMs,
+								"network-error",
+							);
+						}
+						this.stats.failed += 1;
+						this.stats.networkFailed += 1;
+						return !!account;
+					}
 				} catch (error) {
 					log.warn("Refresh guardian commit failed", {
 						sourceIndex: sourceAccount.index,

@@ -1159,6 +1159,76 @@ describe("AccountManager", () => {
       expect(account.consecutiveAuthFailures).toBe(0);
     });
 
+    it("preserves unsaved live pool state when persisting refreshed auth", async () => {
+      const { withAccountStorageTransaction } = await import("../lib/storage.js");
+      const mockWithAccountStorageTransaction = vi.mocked(
+        withAccountStorageTransaction,
+      );
+      const now = Date.now();
+      const stored = {
+        version: 3 as const,
+        activeIndex: 0,
+        activeIndexByFamily: {
+          codex: 0,
+        },
+        accounts: [
+          {
+            refreshToken: "old-refresh-a",
+            accessToken: "old-access-a",
+            expiresAt: now,
+            addedAt: now,
+            lastUsed: now,
+            email: "a@example.com",
+          },
+          {
+            refreshToken: "old-refresh-b",
+            accessToken: "old-access-b",
+            expiresAt: now,
+            addedAt: now,
+            lastUsed: now,
+            email: "b@example.com",
+          },
+        ],
+      };
+      const manager = new AccountManager(undefined, stored as any);
+      const accountA = manager.getAccountByIndex(0)!;
+      const accountB = manager.getAccountByIndex(1)!;
+      manager.markSwitched(accountB, "rotation", "codex");
+      manager.markRateLimited(accountB, 45_000, "codex");
+      manager.markAccountCoolingDown(accountB, 30_000, "network-error");
+
+      const refreshedAuth: OAuthAuthDetails = {
+        type: "oauth",
+        access: "header.payload.signature",
+        refresh: "new-refresh-a",
+        expires: now + 3_600_000,
+      };
+
+      mockWithAccountStorageTransaction.mockImplementationOnce(async (handler) => {
+        const persist = vi.fn().mockResolvedValue(undefined);
+        const result = await handler(stored as any, persist);
+
+        expect(persist).toHaveBeenCalledTimes(1);
+        const persistedStorage = persist.mock.calls[0]?.[0];
+        expect(persistedStorage?.activeIndex).toBe(1);
+        expect(persistedStorage?.activeIndexByFamily?.codex).toBe(1);
+        expect(persistedStorage?.accounts[0]?.refreshToken).toBe("new-refresh-a");
+        expect(persistedStorage?.accounts[1]?.rateLimitResetTimes?.codex).toBeGreaterThan(
+          now,
+        );
+        expect(persistedStorage?.accounts[1]?.cooldownReason).toBe(
+          "network-error",
+        );
+        expect(persistedStorage?.accounts[1]?.coolingDownUntil).toBeGreaterThan(
+          now,
+        );
+
+        return result;
+      });
+
+      await manager.commitRefreshedAuth(accountA, refreshedAuth);
+    });
+
     it("propagates storage write failure as retryable CodexAuthError", async () => {
       const { withAccountStorageTransaction } = await import("../lib/storage.js");
       const mockWithAccountStorageTransaction = vi.mocked(

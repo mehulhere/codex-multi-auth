@@ -804,9 +804,9 @@ export class AccountManager {
 		const nextAccountId = extractAccountId(auth.access)?.trim() || undefined;
 		const nextEmail = sanitizeEmail(extractAccountEmail(auth.access));
 		try {
-			return await withAccountStorageTransaction(async (current, persist) => {
+			return await withAccountStorageTransaction(async (_current, persist) => {
 				const nextStorage = structuredClone(
-					current ?? this.buildStorageSnapshot(),
+					this.buildStorageSnapshot(),
 				) as AccountStorageV3;
 				const storageIndex = findAccountIndexByIdentity(
 					nextStorage.accounts,

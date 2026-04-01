@@ -86,7 +86,7 @@ describe('Fetch Helpers Module', () => {
 				(err) => err as CodexAuthError,
 			);
 			expect(error).toBeInstanceOf(CodexAuthError);
-			expect(error.retryable).toBe(true);
+			expect(error.retryable).toBe(false);
 			expect(refreshSpy).not.toHaveBeenCalled();
 		});
 
@@ -99,7 +99,7 @@ describe('Fetch Helpers Module', () => {
 				(err) => err as CodexAuthError,
 			);
 			expect(error).toBeInstanceOf(CodexAuthError);
-			expect(error.retryable).toBe(true);
+			expect(error.retryable).toBe(false);
 			expect(refreshSpy).not.toHaveBeenCalled();
 		});
 
