@@ -296,6 +296,7 @@ describe("codex bin wrapper", () => {
 			const result = runWrapper(fixtureRoot, ["--version"], {
 				CODEX_MULTI_AUTH_REAL_CODEX_BIN: fakeBin,
 				CODEX_MULTI_AUTH_WINDOWS_BATCH_SHIM_GUARD: "1",
+				CODEX_MULTI_AUTH_PWSH_PROFILE_GUARD: "1",
 				PATH: `${shimDir}${delimiter}${process.env.PATH ?? ""}`,
 				USERPROFILE: fixtureRoot,
 				HOME: fixtureRoot,
@@ -332,6 +333,59 @@ describe("codex bin wrapper", () => {
 			expect(readFileSync(pwshProfilePath, "utf8")).toContain(
 				"CodexMultiAuthShim",
 			);
+		},
+	);
+
+	it.skipIf(process.platform !== "win32")(
+		"does not install Windows shell guards unless explicitly enabled",
+		() => {
+			const fixtureRoot = createWrapperFixture();
+			const fakeBin = createFakeCodexBin(fixtureRoot);
+			const shimDir = join(fixtureRoot, "shim-bin");
+			mkdirSync(shimDir, { recursive: true });
+			writeFileSync(
+				join(shimDir, "codex-multi-auth.cmd"),
+				"@ECHO OFF\r\nREM fixture codex-multi-auth shim\r\n",
+				"utf8",
+			);
+			writeFileSync(
+				join(shimDir, "codex.cmd"),
+				'@ECHO OFF\r\necho "%dp0%\\node_modules\\@openai\\codex\\bin\\codex.js"\r\n',
+				"utf8",
+			);
+			writeFileSync(
+				join(shimDir, "codex.ps1"),
+				'Write-Output "$basedir/node_modules/@openai/codex/bin/codex.js"' +
+					"\r\n",
+				"utf8",
+			);
+
+			const result = runWrapper(fixtureRoot, ["--version"], {
+				CODEX_MULTI_AUTH_REAL_CODEX_BIN: fakeBin,
+				PATH: `${shimDir}${delimiter}${process.env.PATH ?? ""}`,
+				USERPROFILE: fixtureRoot,
+				HOME: fixtureRoot,
+			});
+			expect(result.status).toBe(0);
+
+			expect(() => readFileSync(join(shimDir, "codex.bat"), "utf8")).toThrow();
+			expect(readFileSync(join(shimDir, "codex.cmd"), "utf8")).toContain(
+				"node_modules\\@openai\\codex\\bin\\codex.js",
+			);
+			expect(readFileSync(join(shimDir, "codex.ps1"), "utf8")).toContain(
+				"node_modules/@openai/codex/bin/codex.js",
+			);
+			expect(() =>
+				readFileSync(
+					join(
+						fixtureRoot,
+						"Documents",
+						"PowerShell",
+						"Microsoft.PowerShell_profile.ps1",
+					),
+					"utf8",
+				),
+			).toThrow();
 		},
 	);
 
@@ -374,6 +428,7 @@ describe("codex bin wrapper", () => {
 			const scriptPath = join(scriptDir, "codex.js");
 			const result = runWrapperScript(scriptPath, ["--version"], {
 				CODEX_MULTI_AUTH_REAL_CODEX_BIN: fakeBin,
+				CODEX_MULTI_AUTH_WINDOWS_BATCH_SHIM_GUARD: "1",
 				PATH: `${decoyShimDir}${delimiter}${globalShimDir}${delimiter}${process.env.PATH ?? ""}`,
 				USERPROFILE: fixtureRoot,
 				HOME: fixtureRoot,

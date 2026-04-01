@@ -197,7 +197,7 @@ const POWERSHELL_PROFILE_MARKER_END = "# <<< codex-multi-auth shell guard <<<";
 
 function shouldInstallWindowsBatchShimGuard() {
 	if (process.platform !== "win32") return false;
-	const override = (process.env.CODEX_MULTI_AUTH_WINDOWS_BATCH_SHIM_GUARD ?? "1").trim();
+	const override = (process.env.CODEX_MULTI_AUTH_WINDOWS_BATCH_SHIM_GUARD ?? "0").trim();
 	return override !== "0";
 }
 
@@ -370,7 +370,7 @@ function ensureWindowsShellShim(filePath, desiredContent, options = {}) {
 
 function shouldInstallPowerShellProfileGuard() {
 	if (process.platform !== "win32") return false;
-	const override = (process.env.CODEX_MULTI_AUTH_PWSH_PROFILE_GUARD ?? "1").trim();
+	const override = (process.env.CODEX_MULTI_AUTH_PWSH_PROFILE_GUARD ?? "0").trim();
 	return override !== "0";
 }
 
