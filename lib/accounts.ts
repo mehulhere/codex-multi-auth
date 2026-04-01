@@ -7,6 +7,7 @@ import {
 	type CooldownReason,
 	type RateLimitStateV3,
 	findMatchingAccountIndex,
+	withAccountStorageTransaction,
 } from "./storage.js";
 import type { AccountIdSource, OAuthAuthDetails } from "./types.js";
 import { MODEL_FAMILIES, type ModelFamily } from "./prompts/codex.js";
@@ -18,12 +19,19 @@ import {
 	type HybridSelectionOptions,
 } from "./rotation.js";
 import { nowMs } from "./utils.js";
+import { ERROR_MESSAGES, HTTP_STATUS } from "./constants.js";
+import { CodexAuthError } from "./errors.js";
 import {
 	loadCodexCliState,
 	type CodexCliTokenCacheEntry,
 } from "./codex-cli/state.js";
 import { syncAccountStorageFromCodexCli } from "./codex-cli/sync.js";
 import { setCodexCliActiveSelection } from "./codex-cli/writer.js";
+import {
+	getAccountIdentityKey,
+	getRuntimeAccountIdentityKey,
+} from "./storage/identity.js";
+import { getCircuitBreaker } from "./circuit-breaker.js";
 
 export {
 	extractAccountId,
@@ -74,11 +82,138 @@ import {
 } from "./accounts/rate-limits.js";
 
 const log = createLogger("accounts");
+let nextRuntimeCircuitKeyId = 0;
+
+function getAccountCircuitKey(account: ManagedAccount): string {
+	if (!account.circuitKeyId) {
+		account.circuitKeyId =
+			getAccountIdentityKey(account) ?? `circuit:${nextRuntimeCircuitKeyId++}`;
+	}
+	return account.circuitKeyId;
+}
+
+export function getRuntimeTrackerKey(
+	account: ManagedAccount,
+): string | number {
+	if (account._runtimeTrackerKey !== undefined) {
+		return account._runtimeTrackerKey;
+	}
+
+	const trackerKey = getRuntimeAccountIdentityKey(account) ?? account.index;
+	account._runtimeTrackerKey = trackerKey;
+	return trackerKey;
+}
 
 function initFamilyState(defaultValue: number): Record<ModelFamily, number> {
 	return Object.fromEntries(
 		MODEL_FAMILIES.map((family) => [family, defaultValue]),
 	) as Record<ModelFamily, number>;
+}
+
+type AccountIdentityCandidate = Pick<
+	ManagedAccount,
+	"accountId" | "email" | "refreshToken"
+> & {
+	index?: number;
+};
+
+function getAuthIdentityCandidate(
+	auth: OAuthAuthDetails | undefined,
+): AccountIdentityCandidate {
+	const accountId = extractAccountId(auth?.access)?.trim() || undefined;
+	const email = sanitizeEmail(extractAccountEmail(auth?.access));
+	return {
+		accountId,
+		email,
+		refreshToken: auth?.refresh,
+	};
+}
+
+function buildAccountIdentityCandidates(
+	source: AccountIdentityCandidate,
+	auth?: OAuthAuthDetails,
+): AccountIdentityCandidate[] {
+	const derived = getAuthIdentityCandidate(auth);
+	const candidates: AccountIdentityCandidate[] = [];
+	const seen = new Set<string>();
+
+	const pushCandidate = (candidate: AccountIdentityCandidate): void => {
+		const key = `${candidate.accountId ?? ""}|${candidate.email ?? ""}|${candidate.refreshToken ?? ""}`;
+		if (seen.has(key)) return;
+		seen.add(key);
+		candidates.push(candidate);
+	};
+
+	pushCandidate(source);
+	pushCandidate({
+		accountId: source.accountId ?? derived.accountId,
+		email: source.email ?? derived.email,
+		refreshToken: source.refreshToken,
+		index: source.index,
+	});
+	pushCandidate({
+		accountId: derived.accountId ?? source.accountId,
+		email: derived.email ?? source.email,
+		refreshToken: source.refreshToken,
+		index: source.index,
+	});
+	pushCandidate({
+		accountId: derived.accountId ?? source.accountId,
+		email: derived.email ?? source.email,
+		refreshToken: derived.refreshToken ?? source.refreshToken,
+		index: source.index,
+	});
+
+	return candidates;
+}
+
+function findAccountIndexByIdentity<
+	T extends Pick<AccountIdentityCandidate, "accountId" | "email" | "refreshToken">,
+>(
+	accounts: readonly T[],
+	source: AccountIdentityCandidate,
+	auth?: OAuthAuthDetails,
+): number | undefined {
+	for (const candidate of buildAccountIdentityCandidates(source, auth)) {
+		const matchIndex = findMatchingAccountIndex(accounts, candidate, {
+			allowUniqueAccountIdFallbackWithoutEmail: true,
+		});
+		if (matchIndex !== undefined) {
+			return matchIndex;
+		}
+	}
+	return undefined;
+}
+
+const RETRYABLE_AUTH_PERSISTENCE_CODES = new Set(["EAGAIN", "EBUSY", "EPERM"]);
+
+function isRetryableAuthPersistenceError(error: unknown): boolean {
+	if (!error || typeof error !== "object") {
+		return false;
+	}
+
+	const candidate = error as {
+		code?: unknown;
+		status?: unknown;
+		cause?: unknown;
+	};
+	const code =
+		typeof candidate.code === "string"
+			? candidate.code.toUpperCase()
+			: undefined;
+	if (code && RETRYABLE_AUTH_PERSISTENCE_CODES.has(code)) {
+		return true;
+	}
+
+	if (candidate.status === HTTP_STATUS.TOO_MANY_REQUESTS) {
+		return true;
+	}
+
+	if (candidate.cause && candidate.cause !== error) {
+		return isRetryableAuthPersistenceError(candidate.cause);
+	}
+
+	return false;
 }
 
 export interface Workspace {
@@ -91,6 +226,8 @@ export interface Workspace {
 
 export interface ManagedAccount {
 	index: number;
+	_runtimeTrackerKey?: string | number;
+	circuitKeyId?: string;
 	accountId?: string;
 	accountIdSource?: AccountIdSource;
 	accountLabel?: string;
@@ -368,10 +505,16 @@ export class AccountManager {
 	}
 
 	getAccountsSnapshot(): ManagedAccount[] {
-		return this.accounts.map((account) => ({
-			...account,
-			rateLimitResetTimes: { ...account.rateLimitResetTimes },
-		}));
+		return this.accounts.map((account) => {
+			const trackerKey = getRuntimeTrackerKey(account);
+			const circuitKeyId = getAccountCircuitKey(account);
+			return {
+				...account,
+				_runtimeTrackerKey: trackerKey,
+				circuitKeyId,
+				rateLimitResetTimes: { ...account.rateLimitResetTimes },
+			};
+		});
 	}
 
 	getAccountByIndex(index: number): ManagedAccount | null {
@@ -386,7 +529,11 @@ export class AccountManager {
 		if (!account) return false;
 		if (account.enabled === false) return false;
 		clearExpiredRateLimits(account);
-		return !isRateLimitedForFamily(account, family, model) && !this.isAccountCoolingDown(account);
+		return (
+			!isRateLimitedForFamily(account, family, model) &&
+			!this.isAccountCoolingDown(account) &&
+			this.isCircuitAvailable(account)
+		);
 	}
 
 	setActiveIndex(index: number): ManagedAccount | null {
@@ -452,9 +599,13 @@ export class AccountManager {
 			const account = this.accounts[idx];
 			if (!account) continue;
 			if (account.enabled === false) continue;
-			
+
 			clearExpiredRateLimits(account);
-			if (isRateLimitedForFamily(account, family, model) || this.isAccountCoolingDown(account)) {
+			if (
+				isRateLimitedForFamily(account, family, model) ||
+				this.isAccountCoolingDown(account) ||
+				!this.isCircuitAvailable(account)
+			) {
 				continue;
 			}
 			
@@ -478,9 +629,13 @@ export class AccountManager {
 			const account = this.accounts[idx];
 			if (!account) continue;
 			if (account.enabled === false) continue;
-			
+
 			clearExpiredRateLimits(account);
-			if (isRateLimitedForFamily(account, family, model) || this.isAccountCoolingDown(account)) {
+			if (
+				isRateLimitedForFamily(account, family, model) ||
+				this.isAccountCoolingDown(account) ||
+				!this.isCircuitAvailable(account)
+			) {
 				continue;
 			}
 			
@@ -496,25 +651,6 @@ export class AccountManager {
 		const count = this.accounts.length;
 		if (count === 0) return null;
 
-		const currentIndex = this.currentAccountIndexByFamily[family];
-		if (currentIndex >= 0 && currentIndex < count) {
-			const currentAccount = this.accounts[currentIndex];
-			if (currentAccount) {
-				if (currentAccount.enabled === false) {
-					// Fall through to hybrid selection.
-				} else {
-				clearExpiredRateLimits(currentAccount);
-				if (
-					!isRateLimitedForFamily(currentAccount, family, model) &&
-					!this.isAccountCoolingDown(currentAccount)
-				) {
-					currentAccount.lastUsed = nowMs();
-					return currentAccount;
-				}
-				}
-			}
-		}
-
 		const quotaKey = model ? `${family}:${model}` : family;
 		const healthTracker = getHealthTracker();
 		const tokenTracker = getTokenTracker();
@@ -525,9 +661,12 @@ export class AccountManager {
 				if (account.enabled === false) return null;
 				clearExpiredRateLimits(account);
 				const isAvailable =
-					!isRateLimitedForFamily(account, family, model) && !this.isAccountCoolingDown(account);
+					!isRateLimitedForFamily(account, family, model) &&
+					!this.isAccountCoolingDown(account) &&
+					this.isCircuitAvailable(account);
 				return {
 					index: account.index,
+					trackerKey: getRuntimeTrackerKey(account),
 					isAvailable,
 					lastUsed: account.lastUsed,
 				};
@@ -549,27 +688,60 @@ export class AccountManager {
 	recordSuccess(account: ManagedAccount, family: ModelFamily, model?: string | null): void {
 		const quotaKey = model ? `${family}:${model}` : family;
 		const healthTracker = getHealthTracker();
-		healthTracker.recordSuccess(account.index, quotaKey);
+		healthTracker.recordSuccess(getRuntimeTrackerKey(account), quotaKey);
+		const hadCooldownMetadata =
+			account.coolingDownUntil !== undefined || account.cooldownReason !== undefined;
+		const hadAuthFailures = (account.consecutiveAuthFailures ?? 0) > 0;
+		const isCoolingDown = this.isAccountCoolingDown(account);
+		let healed = false;
+
+		if (!isCoolingDown && hadCooldownMetadata) {
+			this.clearAccountCooldown(account);
+			healed = true;
+		}
+
+		if (!isCoolingDown && hadAuthFailures) {
+			this.clearAuthFailures(account);
+			healed = true;
+		}
+
+		if (healed) {
+			this.saveToDiskDebounced();
+		}
+		getCircuitBreaker(getAccountCircuitKey(account)).recordSuccess();
 	}
 
 	recordRateLimit(account: ManagedAccount, family: ModelFamily, model?: string | null): void {
 		const quotaKey = model ? `${family}:${model}` : family;
 		const healthTracker = getHealthTracker();
 		const tokenTracker = getTokenTracker();
-		healthTracker.recordRateLimit(account.index, quotaKey);
-		tokenTracker.drain(account.index, quotaKey);
+		const trackerKey = getRuntimeTrackerKey(account);
+		healthTracker.recordRateLimit(trackerKey, quotaKey);
+		tokenTracker.drain(trackerKey, quotaKey);
 	}
 
 	recordFailure(account: ManagedAccount, family: ModelFamily, model?: string | null): void {
 		const quotaKey = model ? `${family}:${model}` : family;
 		const healthTracker = getHealthTracker();
-		healthTracker.recordFailure(account.index, quotaKey);
+		healthTracker.recordFailure(getRuntimeTrackerKey(account), quotaKey);
+		getCircuitBreaker(getAccountCircuitKey(account)).recordFailure();
 	}
 
 	consumeToken(account: ManagedAccount, family: ModelFamily, model?: string | null): boolean {
 		const quotaKey = model ? `${family}:${model}` : family;
 		const tokenTracker = getTokenTracker();
-		return tokenTracker.tryConsume(account.index, quotaKey);
+		const trackerKey = getRuntimeTrackerKey(account);
+		if (!tokenTracker.tryConsume(trackerKey, quotaKey)) {
+			return false;
+		}
+
+		try {
+			getCircuitBreaker(getAccountCircuitKey(account)).canExecute();
+			return true;
+		} catch {
+			tokenTracker.refundToken(trackerKey, quotaKey);
+			return false;
+		}
 	}
 
 	/**
@@ -580,7 +752,7 @@ export class AccountManager {
 	refundToken(account: ManagedAccount, family: ModelFamily, model?: string | null): boolean {
 		const quotaKey = model ? `${family}:${model}` : family;
 		const tokenTracker = getTokenTracker();
-		return tokenTracker.refundToken(account.index, quotaKey);
+		return tokenTracker.refundToken(getRuntimeTrackerKey(account), quotaKey);
 	}
 
 	markSwitched(account: ManagedAccount, reason: "rate-limit" | "initial" | "rotation", family: ModelFamily): void {
@@ -603,9 +775,14 @@ export class AccountManager {
 		const resetAt = nowMs() + retryMs;
 
 		const baseKey = getQuotaKey(family);
-		account.rateLimitResetTimes[baseKey] = resetAt;
+		if (!model || reason === "quota" || reason === "unknown") {
+			account.rateLimitResetTimes[baseKey] = resetAt;
+		}
 
-		if (model) {
+		if (
+			model &&
+			(reason === "tokens" || reason === "concurrent" || reason === "unknown")
+		) {
 			const modelKey = getQuotaKey(family, model);
 			account.rateLimitResetTimes[modelKey] = resetAt;
 		}
@@ -633,6 +810,10 @@ export class AccountManager {
 		delete account.cooldownReason;
 	}
 
+	private isCircuitAvailable(account: ManagedAccount): boolean {
+		return getCircuitBreaker(getAccountCircuitKey(account)).isAvailable();
+	}
+
 	incrementAuthFailures(account: ManagedAccount): number {
 		account.consecutiveAuthFailures = (account.consecutiveAuthFailures ?? 0) + 1;
 		return account.consecutiveAuthFailures;
@@ -640,6 +821,17 @@ export class AccountManager {
 
 	clearAuthFailures(account: ManagedAccount): void {
 		account.consecutiveAuthFailures = 0;
+	}
+
+	getAccountByIdentity(
+		candidate: AccountIdentityCandidate,
+		auth?: OAuthAuthDetails,
+	): ManagedAccount | null {
+		const index = findAccountIndexByIdentity(this.accounts, candidate, auth);
+		if (index === undefined) {
+			return null;
+		}
+		return this.accounts[index] ?? null;
 	}
 
 	shouldShowAccountToast(accountIndex: number, debounceMs = 30000): boolean {
@@ -659,7 +851,7 @@ export class AccountManager {
 		account.refreshToken = auth.refresh;
 		account.access = auth.access;
 		account.expires = auth.expires;
-		const tokenAccountId = extractAccountId(auth.access);
+		const tokenAccountId = extractAccountId(auth.access)?.trim() || undefined;
 		if (
 			tokenAccountId &&
 			(shouldUpdateAccountIdFromToken(account.accountIdSource, account.accountId))
@@ -668,6 +860,161 @@ export class AccountManager {
 			account.accountIdSource = "token";
 		}
 		account.email = sanitizeEmail(extractAccountEmail(auth.access)) ?? account.email;
+	}
+
+	private buildStorageSnapshot(): AccountStorageV3 {
+		const activeIndexByFamily: Partial<Record<ModelFamily, number>> = {};
+		for (const family of MODEL_FAMILIES) {
+			const raw = this.currentAccountIndexByFamily[family];
+			activeIndexByFamily[family] = clampNonNegativeInt(raw, 0);
+		}
+
+		const activeIndex = clampNonNegativeInt(activeIndexByFamily.codex, 0);
+
+		return {
+			version: 3,
+			accounts: this.accounts.map((account) => ({
+				accountId: account.accountId,
+				accountIdSource: account.accountIdSource,
+				accountLabel: account.accountLabel,
+				email: account.email,
+				refreshToken: account.refreshToken,
+				accessToken: account.access,
+				expiresAt: account.expires,
+				enabled: account.enabled === false ? false : undefined,
+				addedAt: account.addedAt,
+				lastUsed: account.lastUsed,
+				lastSwitchReason: account.lastSwitchReason,
+				rateLimitResetTimes:
+					Object.keys(account.rateLimitResetTimes).length > 0 ? account.rateLimitResetTimes : undefined,
+				coolingDownUntil: account.coolingDownUntil,
+				cooldownReason: account.cooldownReason,
+				workspaces: account.workspaces,
+				currentWorkspaceIndex: account.currentWorkspaceIndex,
+			})),
+			activeIndex,
+			activeIndexByFamily,
+		};
+	}
+
+	async commitRefreshedAuth(
+		source: Pick<
+			ManagedAccount,
+			"index" | "accountId" | "email" | "refreshToken"
+		>,
+		auth: OAuthAuthDetails,
+	): Promise<ManagedAccount | null> {
+		const nextAccountId = extractAccountId(auth.access)?.trim() || undefined;
+		const nextEmail = sanitizeEmail(extractAccountEmail(auth.access));
+		try {
+			return await withAccountStorageTransaction(async (_current, persist) => {
+				// Snapshot the live in-memory pool under the storage lock so refresh
+				// persistence merges against the latest account state.
+				const nextStorage = structuredClone(
+					this.buildStorageSnapshot(),
+				) as AccountStorageV3;
+				const storageIndex = findAccountIndexByIdentity(
+					nextStorage.accounts,
+					source,
+					auth,
+				);
+				if (storageIndex === undefined) {
+					log.warn("Unable to resolve refreshed account for persistence", {
+						sourceIndex: source.index,
+					});
+					return null;
+				}
+
+				const storedAccount = nextStorage.accounts[storageIndex];
+				if (!storedAccount) {
+					return null;
+				}
+
+				storedAccount.refreshToken = auth.refresh;
+				storedAccount.accessToken = auth.access;
+				storedAccount.expiresAt = auth.expires;
+				if (
+					nextAccountId &&
+					shouldUpdateAccountIdFromToken(
+						storedAccount.accountIdSource,
+						storedAccount.accountId,
+					)
+				) {
+					storedAccount.accountId = nextAccountId;
+					storedAccount.accountIdSource = "token";
+				}
+				if (nextEmail) {
+					storedAccount.email = nextEmail;
+				}
+				storedAccount.enabled = undefined;
+				delete storedAccount.coolingDownUntil;
+				delete storedAccount.cooldownReason;
+
+				const liveAccount = this.getAccountByIdentity(source, auth);
+				if (liveAccount) {
+					const previousLiveAccountState = {
+						access: liveAccount.access,
+						refreshToken: liveAccount.refreshToken,
+						expires: liveAccount.expires,
+						accountId: liveAccount.accountId,
+						accountIdSource: liveAccount.accountIdSource,
+						email: liveAccount.email,
+						enabled: liveAccount.enabled,
+						coolingDownUntil: liveAccount.coolingDownUntil,
+						cooldownReason: liveAccount.cooldownReason,
+						consecutiveAuthFailures: liveAccount.consecutiveAuthFailures,
+					};
+
+					this.updateFromAuth(liveAccount, auth);
+					liveAccount.enabled = true;
+					this.clearAccountCooldown(liveAccount);
+					this.clearAuthFailures(liveAccount);
+
+					try {
+						await persist(nextStorage);
+					} catch (error) {
+						liveAccount.access = previousLiveAccountState.access;
+						liveAccount.refreshToken = previousLiveAccountState.refreshToken;
+						liveAccount.expires = previousLiveAccountState.expires;
+						liveAccount.accountId = previousLiveAccountState.accountId;
+						liveAccount.accountIdSource =
+							previousLiveAccountState.accountIdSource;
+						liveAccount.email = previousLiveAccountState.email;
+						liveAccount.enabled = previousLiveAccountState.enabled;
+						liveAccount.consecutiveAuthFailures =
+							previousLiveAccountState.consecutiveAuthFailures;
+						if (
+							previousLiveAccountState.coolingDownUntil === undefined
+						) {
+							delete liveAccount.coolingDownUntil;
+						} else {
+							liveAccount.coolingDownUntil =
+								previousLiveAccountState.coolingDownUntil;
+						}
+						if (previousLiveAccountState.cooldownReason === undefined) {
+							delete liveAccount.cooldownReason;
+						} else {
+							liveAccount.cooldownReason =
+								previousLiveAccountState.cooldownReason;
+						}
+						throw error;
+					}
+
+					return liveAccount;
+				}
+
+				await persist(nextStorage);
+				log.warn("Unable to resolve refreshed live account after persistence", {
+					sourceIndex: source.index,
+				});
+				return null;
+			});
+		} catch (error) {
+			throw new CodexAuthError(ERROR_MESSAGES.TOKEN_REFRESH_FAILED, {
+				retryable: isRetryableAuthPersistenceError(error),
+				cause: error,
+			});
+		}
 	}
 
 	toAuthDetails(account: ManagedAccount): Auth {
@@ -688,7 +1035,11 @@ export class AccountManager {
 		const enabledAccounts = this.accounts.filter((account) => account.enabled !== false);
 		const available = enabledAccounts.filter((account) => {
 			clearExpiredRateLimits(account);
-			return !isRateLimitedForFamily(account, family, model) && !this.isAccountCoolingDown(account);
+			return (
+				!isRateLimitedForFamily(account, family, model) &&
+				!this.isAccountCoolingDown(account) &&
+				this.isCircuitAvailable(account)
+			);
 		});
 		if (available.length > 0) return 0;
 		if (enabledAccounts.length === 0) return 0;
@@ -698,20 +1049,32 @@ export class AccountManager {
 		const modelKey = model ? getQuotaKey(family, model) : null;
 
 		for (const account of enabledAccounts) {
+			const perAccountWaitTimes: number[] = [];
 			const baseResetAt = account.rateLimitResetTimes[baseKey];
 			if (typeof baseResetAt === "number") {
-				waitTimes.push(Math.max(0, baseResetAt - now));
+				perAccountWaitTimes.push(Math.max(0, baseResetAt - now));
 			}
 
 			if (modelKey) {
 				const modelResetAt = account.rateLimitResetTimes[modelKey];
 				if (typeof modelResetAt === "number") {
-					waitTimes.push(Math.max(0, modelResetAt - now));
+					perAccountWaitTimes.push(Math.max(0, modelResetAt - now));
 				}
 			}
 
 			if (typeof account.coolingDownUntil === "number") {
-				waitTimes.push(Math.max(0, account.coolingDownUntil - now));
+				perAccountWaitTimes.push(Math.max(0, account.coolingDownUntil - now));
+			}
+
+			const breakerWait = getCircuitBreaker(
+				getAccountCircuitKey(account),
+			).getTimeUntilAvailable();
+			if (breakerWait > 0) {
+				perAccountWaitTimes.push(breakerWait);
+			}
+
+			if (perAccountWaitTimes.length > 0) {
+				waitTimes.push(Math.max(...perAccountWaitTimes));
 			}
 		}
 
@@ -780,40 +1143,9 @@ export class AccountManager {
 	}
 
 	async saveToDisk(): Promise<void> {
-		const activeIndexByFamily: Partial<Record<ModelFamily, number>> = {};
-		for (const family of MODEL_FAMILIES) {
-			const raw = this.currentAccountIndexByFamily[family];
-			activeIndexByFamily[family] = clampNonNegativeInt(raw, 0);
-		}
-
-		const activeIndex = clampNonNegativeInt(activeIndexByFamily.codex, 0);
-
-		const storage: AccountStorageV3 = {
-			version: 3,
-			accounts: this.accounts.map((account) => ({
-				accountId: account.accountId,
-				accountIdSource: account.accountIdSource,
-				accountLabel: account.accountLabel,
-				email: account.email,
-				refreshToken: account.refreshToken,
-				accessToken: account.access,
-				expiresAt: account.expires,
-				enabled: account.enabled === false ? false : undefined,
-				addedAt: account.addedAt,
-				lastUsed: account.lastUsed,
-				lastSwitchReason: account.lastSwitchReason,
-				rateLimitResetTimes:
-					Object.keys(account.rateLimitResetTimes).length > 0 ? account.rateLimitResetTimes : undefined,
-				coolingDownUntil: account.coolingDownUntil,
-				cooldownReason: account.cooldownReason,
-				workspaces: account.workspaces,
-				currentWorkspaceIndex: account.currentWorkspaceIndex,
-			})),
-			activeIndex,
-			activeIndexByFamily,
-		};
-
-		await saveAccounts(storage);
+		await withAccountStorageTransaction(async (_current, persist) => {
+			await persist(this.buildStorageSnapshot());
+		});
 	}
 
 	saveToDiskDebounced(delayMs = 500): void {
