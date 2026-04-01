@@ -197,7 +197,7 @@ const POWERSHELL_PROFILE_MARKER_END = "# <<< codex-multi-auth shell guard <<<";
 
 function shouldInstallWindowsBatchShimGuard() {
 	if (process.platform !== "win32") return false;
-	const override = (process.env.CODEX_MULTI_AUTH_WINDOWS_BATCH_SHIM_GUARD ?? "1").trim();
+	const override = (process.env.CODEX_MULTI_AUTH_WINDOWS_BATCH_SHIM_GUARD ?? "0").trim();
 	return override !== "0";
 }
 
@@ -370,7 +370,7 @@ function ensureWindowsShellShim(filePath, desiredContent, options = {}) {
 
 function shouldInstallPowerShellProfileGuard() {
 	if (process.platform !== "win32") return false;
-	const override = (process.env.CODEX_MULTI_AUTH_PWSH_PROFILE_GUARD ?? "1").trim();
+	const override = (process.env.CODEX_MULTI_AUTH_PWSH_PROFILE_GUARD ?? "0").trim();
 	return override !== "0";
 }
 
@@ -455,7 +455,9 @@ function ensurePowerShellProfileGuard(shimDirectory) {
 }
 
 function ensureWindowsShellShimGuards() {
-	if (!shouldInstallWindowsBatchShimGuard()) return;
+	const shouldInstallBatchGuard = shouldInstallWindowsBatchShimGuard();
+	const shouldInstallProfileGuard = shouldInstallPowerShellProfileGuard();
+	if (!shouldInstallBatchGuard && !shouldInstallProfileGuard) return;
 	const shimDirectory = resolveWindowsShimDirectoryFromPath();
 	if (!shimDirectory) return;
 
@@ -464,23 +466,31 @@ function ensureWindowsShellShimGuards() {
 
 	const overwriteCustomShim =
 		(process.env.CODEX_MULTI_AUTH_OVERWRITE_CUSTOM_BATCH_SHIM ?? "0").trim() === "1";
-	const installedBatch = ensureWindowsShellShim(
-		join(shimDirectory, "codex.bat"),
-		buildWindowsBatchShimContent(),
-		{ overwriteCustomShim },
-	);
-	const installedCmd = ensureWindowsShellShim(
-		join(shimDirectory, "codex.cmd"),
-		buildWindowsCmdShimContent(),
-		{ overwriteCustomShim },
-	);
-	const installedPs1 = ensureWindowsShellShim(
-		join(shimDirectory, "codex.ps1"),
-		buildWindowsPowerShellShimContent(),
-		{ overwriteCustomShim },
-	);
+	const installedBatch = shouldInstallBatchGuard
+		? ensureWindowsShellShim(
+				join(shimDirectory, "codex.bat"),
+				buildWindowsBatchShimContent(),
+				{ overwriteCustomShim },
+			)
+		: false;
+	const installedCmd = shouldInstallBatchGuard
+		? ensureWindowsShellShim(
+				join(shimDirectory, "codex.cmd"),
+				buildWindowsCmdShimContent(),
+				{ overwriteCustomShim },
+			)
+		: false;
+	const installedPs1 = shouldInstallBatchGuard
+		? ensureWindowsShellShim(
+				join(shimDirectory, "codex.ps1"),
+				buildWindowsPowerShellShimContent(),
+				{ overwriteCustomShim },
+			)
+		: false;
 	const installedAny = installedBatch || installedCmd || installedPs1;
-	const installedProfileGuard = ensurePowerShellProfileGuard(shimDirectory);
+	const installedProfileGuard = shouldInstallProfileGuard
+		? ensurePowerShellProfileGuard(shimDirectory)
+		: false;
 	if (installedAny || installedProfileGuard) {
 		console.error(
 			"codex-multi-auth: installed Windows shell guards to keep multi-auth routing after codex npm updates.",
