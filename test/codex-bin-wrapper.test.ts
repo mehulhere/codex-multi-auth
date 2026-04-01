@@ -390,6 +390,61 @@ describe("codex bin wrapper", () => {
 	);
 
 	it.skipIf(process.platform !== "win32")(
+		"installs the PowerShell profile guard without requiring batch shim guards",
+		() => {
+			const fixtureRoot = createWrapperFixture();
+			const fakeBin = createFakeCodexBin(fixtureRoot);
+			const shimDir = join(fixtureRoot, "shim-bin");
+			mkdirSync(shimDir, { recursive: true });
+			writeFileSync(
+				join(shimDir, "codex-multi-auth.cmd"),
+				"@ECHO OFF\r\nREM fixture codex-multi-auth shim\r\n",
+				"utf8",
+			);
+			writeFileSync(
+				join(shimDir, "codex.cmd"),
+				'@ECHO OFF\r\necho "%dp0%\\node_modules\\@openai\\codex\\bin\\codex.js"\r\n',
+				"utf8",
+			);
+			writeFileSync(
+				join(shimDir, "codex.ps1"),
+				'Write-Output "$basedir/node_modules/@openai/codex/bin/codex.js"' +
+					"\r\n",
+				"utf8",
+			);
+
+			const result = runWrapper(fixtureRoot, ["--version"], {
+				CODEX_MULTI_AUTH_REAL_CODEX_BIN: fakeBin,
+				CODEX_MULTI_AUTH_PWSH_PROFILE_GUARD: "1",
+				PATH: `${shimDir}${delimiter}${process.env.PATH ?? ""}`,
+				USERPROFILE: fixtureRoot,
+				HOME: fixtureRoot,
+			});
+			expect(result.status).toBe(0);
+
+			expect(() => readFileSync(join(shimDir, "codex.bat"), "utf8")).toThrow();
+			expect(readFileSync(join(shimDir, "codex.cmd"), "utf8")).toContain(
+				"node_modules\\@openai\\codex\\bin\\codex.js",
+			);
+			expect(readFileSync(join(shimDir, "codex.ps1"), "utf8")).toContain(
+				"node_modules/@openai/codex/bin/codex.js",
+			);
+			const pwshProfilePath = join(
+				fixtureRoot,
+				"Documents",
+				"PowerShell",
+				"Microsoft.PowerShell_profile.ps1",
+			);
+			expect(readFileSync(pwshProfilePath, "utf8")).toContain(
+				"# >>> codex-multi-auth shell guard >>>",
+			);
+			expect(readFileSync(pwshProfilePath, "utf8")).toContain(
+				"CodexMultiAuthShim",
+			);
+		},
+	);
+
+	it.skipIf(process.platform !== "win32")(
 		"prefers invocation-derived shim directory over PATH-decoy shim entries",
 		() => {
 			const fixtureRoot = mkdtempSync(
