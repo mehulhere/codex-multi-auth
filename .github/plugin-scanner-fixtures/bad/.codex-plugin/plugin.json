@@ -1,0 +1,4 @@
+{
+  "name": "Fixture Bad Plugin",
+  "description": "Fixture plugin used to validate failing scanner behavior."
+}
