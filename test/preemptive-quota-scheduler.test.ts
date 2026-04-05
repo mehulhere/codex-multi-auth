@@ -70,6 +70,43 @@ describe("preemptive quota scheduler", () => {
 		expect(decision.waitMs).toBeGreaterThan(0);
 	});
 
+	it("preserves the longest known rate-limit reset across overlapping updates", () => {
+		const scheduler = new PreemptiveQuotaScheduler();
+		scheduler.markRateLimited("acc:model", 30_000, 1_000);
+		scheduler.update("acc:model", {
+			status: 429,
+			primary: {},
+			secondary: { resetAtMs: 31_000 },
+			updatedAt: 1_000,
+		});
+		scheduler.markRateLimited("acc:model", 10_000, 5_000);
+
+		const decision = scheduler.getDeferral("acc:model", 6_000);
+		expect(decision.defer).toBe(true);
+		expect(decision.reason).toBe("rate-limit");
+		expect(decision.waitMs).toBe(25_000);
+	});
+
+	it("preserves secondary near-exhaustion state when marking a quota key rate-limited", () => {
+		const scheduler = new PreemptiveQuotaScheduler({
+			remainingPercentThresholdSecondary: 5,
+		});
+		scheduler.update("acc:model", {
+			status: 200,
+			primary: { usedPercent: 10, resetAtMs: 0 },
+			secondary: { usedPercent: 97, resetAtMs: 61_000 },
+			updatedAt: 1_000,
+		});
+		scheduler.markRateLimited("acc:model", 30_000, 1_000);
+		const internalSnapshots = (
+			scheduler as unknown as {
+				snapshots: Map<string, { secondary: { usedPercent?: number; resetAtMs?: number } }>;
+			}
+		).snapshots;
+		expect(internalSnapshots.get("acc:model")?.secondary.usedPercent).toBe(97);
+		expect(internalSnapshots.get("acc:model")?.secondary.resetAtMs).toBe(61_000);
+	});
+
 	it("sanitizes non-finite retry-after values", () => {
 		const scheduler = new PreemptiveQuotaScheduler();
 		scheduler.markRateLimited("acc:model", Number.NaN, 1_000);

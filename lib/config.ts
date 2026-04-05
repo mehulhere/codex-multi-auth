@@ -41,6 +41,13 @@ const UNSUPPORTED_CODEX_POLICIES = new Set(["strict", "fallback"]);
 const emittedConfigWarnings = new Set<string>();
 const configSaveQueues = new Map<string, Promise<void>>();
 const RETRYABLE_FS_CODES = new Set(["EBUSY", "EPERM"]);
+const RETRYABLE_CONFIG_READ_CODES = new Set(["EBUSY", "EPERM", "EAGAIN"]);
+
+type ConfigReadState =
+	| { status: "missing" }
+	| { status: "ok"; record: Record<string, unknown> }
+	| { status: "invalid"; errorMessage: string }
+	| { status: "unreadable"; errorMessage: string };
 
 export type UnsupportedCodexPolicy = "strict" | "fallback";
 
@@ -199,6 +206,11 @@ export const DEFAULT_PLUGIN_CONFIG: PluginConfig = {
 	preemptiveQuotaMaxDeferralMs: 2 * 60 * 60_000,
 };
 
+const PLUGIN_CONFIG_FIELD_SCHEMAS = PluginConfigSchema.shape;
+const PLUGIN_CONFIG_KEYS = Object.keys(DEFAULT_PLUGIN_CONFIG) as Array<
+	keyof PluginConfig
+>;
+
 /**
  * Return a shallow copy of the default plugin configuration.
  *
@@ -238,6 +250,10 @@ export function loadPluginConfig(): PluginConfig {
 			sourceKind = "file";
 		}
 
+		const normalizedUserConfig = sanitizePluginConfigRecord(userConfig, {
+			warnOnInvalid: true,
+		});
+
 		const hasFallbackEnvOverride =
 			process.env.CODEX_AUTH_FALLBACK_UNSUPPORTED_MODEL !== undefined ||
 			process.env.CODEX_AUTH_FALLBACK_GPT53_TO_GPT52 !== undefined;
@@ -255,16 +271,9 @@ export function loadPluginConfig(): PluginConfig {
 			}
 		}
 
-		const schemaErrors = getValidationErrors(PluginConfigSchema, userConfig);
-		if (schemaErrors.length > 0) {
-			logConfigWarnOnce(
-				`Plugin config validation warnings: ${schemaErrors.slice(0, 3).join(", ")}`,
-			);
-		}
-
 		if (
 			sourceKind === "file" &&
-			isRecord(userConfig) &&
+			normalizedUserConfig !== null &&
 			(process.env.CODEX_MULTI_AUTH_CONFIG_PATH ?? "").trim().length === 0
 		) {
 			logConfigWarnOnce(
@@ -274,7 +283,7 @@ export function loadPluginConfig(): PluginConfig {
 
 		return {
 			...DEFAULT_PLUGIN_CONFIG,
-			...(userConfig as Partial<PluginConfig>),
+			...(normalizedUserConfig ?? {}),
 		};
 	} catch (error) {
 		const configPath = resolvePluginConfigPath() ?? CONFIG_PATH;
@@ -283,6 +292,69 @@ export function loadPluginConfig(): PluginConfig {
 		);
 		return { ...DEFAULT_PLUGIN_CONFIG };
 	}
+}
+
+function sanitizePluginConfigRecord(
+	data: unknown,
+	options?: { warnOnInvalid?: boolean },
+): Partial<PluginConfig> | null {
+	if (!isRecord(data)) {
+		return null;
+	}
+
+	if (options?.warnOnInvalid) {
+		const schemaErrors = getValidationErrors(PluginConfigSchema, data);
+		if (schemaErrors.length > 0) {
+			logConfigWarnOnce(
+				`Plugin config validation warnings: ${schemaErrors.slice(0, 3).join(", ")}`,
+			);
+		}
+	}
+
+	const sanitized: Record<string, unknown> = {};
+	for (const key of PLUGIN_CONFIG_KEYS) {
+		const value = data[key];
+		if (value === undefined) {
+			continue;
+		}
+		const schema = PLUGIN_CONFIG_FIELD_SCHEMAS[key];
+		const result = schema.safeParse(value);
+		if (result.success) {
+			sanitized[String(key)] = result.data;
+		}
+	}
+
+	return sanitized as Partial<PluginConfig>;
+}
+
+/**
+ * Sanitize a stored plugin-config record while preserving unknown keys.
+ *
+ * Known plugin-config keys are schema-validated before they are merged back
+ * into runtime state. Unknown keys are kept so legacy and forward-compatible
+ * settings survive env-path saves.
+ */
+function sanitizeStoredPluginConfigRecord(
+	data: unknown,
+): Record<string, unknown> | null {
+	if (!isRecord(data)) {
+		return null;
+	}
+
+	const sanitized: Record<string, unknown> = {};
+	for (const [key, value] of Object.entries(data)) {
+		if (!PLUGIN_CONFIG_KEYS.includes(key as keyof PluginConfig)) {
+			sanitized[key] = value;
+			continue;
+		}
+		const schema = PLUGIN_CONFIG_FIELD_SCHEMAS[key as keyof PluginConfig];
+		const result = schema.safeParse(value);
+		if (result.success) {
+			sanitized[key] = result.data;
+		}
+	}
+
+	return sanitized;
 }
 
 /**
@@ -391,6 +463,56 @@ function readConfigRecordFromPath(
 	}
 }
 
+async function readConfigRecordForSave(
+	configPath: string,
+): Promise<ConfigReadState> {
+	if (!existsSync(configPath)) {
+		return { status: "missing" };
+	}
+
+	for (let attempt = 0; attempt < 5; attempt += 1) {
+		try {
+			const fileContent = await fs.readFile(configPath, "utf-8");
+			const normalizedFileContent = stripUtf8Bom(fileContent);
+			const parsed = JSON.parse(normalizedFileContent) as unknown;
+			if (!isRecord(parsed)) {
+				const errorMessage = `Config at ${configPath} must contain a JSON object at the root.`;
+				logConfigWarnOnce(errorMessage);
+				return { status: "invalid", errorMessage };
+			}
+			return { status: "ok", record: parsed };
+	} catch (error) {
+			const code = (error as NodeJS.ErrnoException | undefined)?.code;
+			if (code === "ENOENT") {
+				return { status: "missing" };
+			}
+			if (
+				typeof code === "string" &&
+				RETRYABLE_CONFIG_READ_CODES.has(code) &&
+				attempt < 4
+			) {
+				await sleep(10 * 2 ** attempt);
+				continue;
+			}
+			const errorMessage = `Failed to read config from ${configPath}: ${
+				error instanceof Error ? error.message : String(error)
+			}`;
+			logConfigWarnOnce(errorMessage);
+			if (error instanceof SyntaxError) {
+				return { status: "invalid", errorMessage };
+			}
+			if (typeof code === "string") {
+				return { status: "unreadable", errorMessage };
+			}
+			return { status: "invalid", errorMessage };
+		}
+	}
+
+	const errorMessage = `Failed to read config from ${configPath}.`;
+	logConfigWarnOnce(errorMessage);
+	return { status: "unreadable", errorMessage };
+}
+
 function resolveStoredPluginConfigRecord(): {
 	configPath: string | null;
 	storageKind: ConfigExplainStorageKind;
@@ -442,9 +564,17 @@ function resolveStoredPluginConfigRecord(): {
  */
 function sanitizePluginConfigForSave(
 	config: Partial<PluginConfig>,
-): Record<string, unknown> {
-	const entries = Object.entries(config as Record<string, unknown>);
+	): { sanitized: Record<string, unknown>; droppedKeys: string[] } {
+	const normalized = sanitizePluginConfigRecord(config as Record<string, unknown>);
+	const entries = Object.entries((normalized ?? {}) as Record<string, unknown>);
 	const sanitized: Record<string, unknown> = {};
+	const inputRecord = isRecord(config) ? config : {};
+	const droppedKeys = PLUGIN_CONFIG_KEYS.filter((key) => {
+		if (!(key in inputRecord) || inputRecord[key] === undefined) {
+			return false;
+		}
+		return !(key in (normalized ?? {}));
+	});
 	for (const [key, value] of entries) {
 		if (value === undefined) continue;
 		if (typeof value === "number" && !Number.isFinite(value)) continue;
@@ -454,7 +584,7 @@ function sanitizePluginConfigForSave(
 		}
 		sanitized[key] = value;
 	}
-	return sanitized;
+	return { sanitized, droppedKeys };
 }
 
 /**
@@ -473,13 +603,29 @@ function sanitizePluginConfigForSave(
 export async function savePluginConfig(
 	configPatch: Partial<PluginConfig>,
 ): Promise<void> {
-	const sanitizedPatch = sanitizePluginConfigForSave(configPatch);
+	const { sanitized: sanitizedPatch, droppedKeys } =
+		sanitizePluginConfigForSave(configPatch);
+	if (droppedKeys.length > 0) {
+		logConfigWarnOnce(
+			`Ignoring invalid plugin config field(s): ${droppedKeys.join(", ")}.`,
+		);
+	}
 	const envPath = (process.env.CODEX_MULTI_AUTH_CONFIG_PATH ?? "").trim();
 
 	if (envPath.length > 0) {
 		await withConfigSaveLock(envPath, async () => {
+			const envConfigState = await readConfigRecordForSave(envPath);
+			if (envConfigState.status === "unreadable") {
+				throw new Error(
+					`Aborting config save because ${envPath} is unreadable.`,
+				);
+			}
+			const existingConfig =
+				envConfigState.status === "ok"
+					? sanitizeStoredPluginConfigRecord(envConfigState.record)
+					: null;
 			const merged = {
-				...(readConfigRecordFromPath(envPath) ?? {}),
+				...(existingConfig ?? {}),
 				...sanitizedPatch,
 			};
 			await writeJsonFileAtomicWithRetry(envPath, merged);
@@ -489,11 +635,37 @@ export async function savePluginConfig(
 
 	const unifiedPath = getUnifiedSettingsPath();
 	await withConfigSaveLock(unifiedPath, async () => {
-		const unifiedConfig = loadUnifiedPluginConfigSync();
-		const legacyPath = unifiedConfig ? null : resolvePluginConfigPath();
+		const unifiedConfigState = await readConfigRecordForSave(unifiedPath);
+		if (unifiedConfigState.status === "unreadable") {
+			throw new Error(
+				`Aborting config save because ${unifiedPath} is unreadable.`,
+			);
+		}
+		const unifiedConfigRecord =
+			unifiedConfigState.status === "ok"
+				? unifiedConfigState.record.pluginConfig
+				: loadUnifiedPluginConfigSync();
+		const unifiedConfig = sanitizeStoredPluginConfigRecord(unifiedConfigRecord);
+		const legacyPath =
+			unifiedConfigState.status === "missing" ||
+			(unifiedConfigState.status === "ok" && !unifiedConfig)
+				? resolvePluginConfigPath()
+				: null;
+		const legacyConfigState = legacyPath
+			? await readConfigRecordForSave(legacyPath)
+			: null;
+		if (legacyConfigState?.status === "unreadable") {
+			throw new Error(
+				`Aborting config save because ${legacyPath} is unreadable.`,
+			);
+		}
+		const legacyConfig =
+			legacyConfigState?.status === "ok"
+				? sanitizeStoredPluginConfigRecord(legacyConfigState.record)
+				: null;
 		const merged = {
 			...(unifiedConfig ??
-				(legacyPath ? readConfigRecordFromPath(legacyPath) : null) ??
+				legacyConfig ??
 				{}),
 			...sanitizedPatch,
 		};
@@ -510,12 +682,30 @@ export async function savePluginConfig(
  */
 function parseBooleanEnv(value: string | undefined): boolean | undefined {
 	if (value === undefined) return undefined;
-	return value === "1";
+	const normalized = value.trim().toLowerCase();
+	if (normalized.length === 0) return undefined;
+	if (
+		normalized === "1" ||
+		normalized === "true" ||
+		normalized === "yes"
+	) {
+		return true;
+	}
+	if (
+		normalized === "0" ||
+		normalized === "false" ||
+		normalized === "no"
+	) {
+		return false;
+	}
+	return undefined;
 }
 
 function parseNumberEnv(value: string | undefined): number | undefined {
 	if (value === undefined) return undefined;
-	const parsed = Number(value);
+	const trimmed = value.trim();
+	if (trimmed.length === 0) return undefined;
+	const parsed = Number(trimmed);
 	if (!Number.isFinite(parsed)) return undefined;
 	return parsed;
 }
@@ -544,7 +734,17 @@ function resolveBooleanSetting(
 	configValue: boolean | undefined,
 	defaultValue: boolean,
 ): boolean {
-	const envValue = parseBooleanEnv(process.env[envName]);
+	const rawEnvValue = process.env[envName];
+	const envValue = parseBooleanEnv(rawEnvValue);
+	if (
+		rawEnvValue !== undefined &&
+		rawEnvValue.trim().length > 0 &&
+		envValue === undefined
+	) {
+		logConfigWarnOnce(
+			`Ignoring invalid boolean env ${envName}. Expected 0/1, true/false, or yes/no.`,
+		);
+	}
 	if (envValue !== undefined) return envValue;
 	return configValue ?? defaultValue;
 }
@@ -566,7 +766,17 @@ function resolveNumberSetting(
 	defaultValue: number,
 	options?: { min?: number; max?: number },
 ): number {
-	const envValue = parseNumberEnv(process.env[envName]);
+	const rawEnvValue = process.env[envName];
+	const envValue = parseNumberEnv(rawEnvValue);
+	if (
+		rawEnvValue !== undefined &&
+		rawEnvValue.trim().length > 0 &&
+		envValue === undefined
+	) {
+		logConfigWarnOnce(
+			`Ignoring invalid numeric env ${envName}. Expected a finite number.`,
+		);
+	}
 	const candidate = envValue ?? configValue ?? defaultValue;
 	const min = options?.min ?? Number.NEGATIVE_INFINITY;
 	const max = options?.max ?? Number.POSITIVE_INFINITY;

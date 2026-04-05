@@ -71,6 +71,229 @@ describe("unified settings", () => {
 		expect(await loadUnifiedDashboardSettings()).toBeNull();
 	});
 
+	it("returns null sections when both primary and backup settings files are invalid", async () => {
+		const {
+			getUnifiedSettingsPath,
+			loadUnifiedPluginConfigSync,
+			loadUnifiedDashboardSettings,
+		} = await import("../lib/unified-settings.js");
+
+		await fs.writeFile(getUnifiedSettingsPath(), "{ invalid json", "utf8");
+		await fs.writeFile(`${getUnifiedSettingsPath()}.bak`, "{ invalid backup", "utf8");
+
+		expect(loadUnifiedPluginConfigSync()).toBeNull();
+		expect(await loadUnifiedDashboardSettings()).toBeNull();
+	});
+
+	it("does not load backup settings when the primary file is missing", async () => {
+		const {
+			getUnifiedSettingsPath,
+			loadUnifiedPluginConfigSync,
+			loadUnifiedDashboardSettings,
+		} = await import("../lib/unified-settings.js");
+
+		await fs.writeFile(
+			`${getUnifiedSettingsPath()}.bak`,
+			JSON.stringify({
+				version: 1,
+				pluginConfig: { codexMode: true },
+				dashboardDisplaySettings: { uiThemePreset: "green" },
+			}),
+			"utf8",
+		);
+
+		expect(loadUnifiedPluginConfigSync()).toBeNull();
+		expect(await loadUnifiedDashboardSettings()).toBeNull();
+	});
+
+	it("recovers plugin config from backup when primary settings file is invalid", async () => {
+		const {
+			getUnifiedSettingsPath,
+			saveUnifiedPluginConfig,
+			loadUnifiedPluginConfigSync,
+		} = await import("../lib/unified-settings.js");
+
+		await saveUnifiedPluginConfig({ codexMode: true, fetchTimeoutMs: 45_000 });
+		await saveUnifiedPluginConfig({ codexMode: false, fetchTimeoutMs: 90_000 });
+		await fs.writeFile(getUnifiedSettingsPath(), "{ invalid json", "utf8");
+
+		expect(loadUnifiedPluginConfigSync()).toEqual({
+			codexMode: true,
+			fetchTimeoutMs: 45_000,
+		});
+	});
+
+	it("recovers dashboard settings from backup when primary settings file is invalid", async () => {
+		const {
+			getUnifiedSettingsPath,
+			saveUnifiedDashboardSettings,
+			loadUnifiedDashboardSettings,
+		} = await import("../lib/unified-settings.js");
+
+		await saveUnifiedDashboardSettings({
+			menuShowLastUsed: true,
+			uiThemePreset: "green",
+		});
+		await saveUnifiedDashboardSettings({
+			menuShowLastUsed: false,
+			uiThemePreset: "blue",
+		});
+		await fs.writeFile(getUnifiedSettingsPath(), "{ invalid json", "utf8");
+
+		expect(await loadUnifiedDashboardSettings()).toEqual({
+			menuShowLastUsed: true,
+			uiThemePreset: "green",
+		});
+	});
+
+	it("preserves the last good backup when a write fails after a backup-derived read", async () => {
+		const {
+			getUnifiedSettingsPath,
+			loadUnifiedPluginConfigSync,
+			saveUnifiedPluginConfig,
+		} = await import("../lib/unified-settings.js");
+
+		await saveUnifiedPluginConfig({ codexMode: true, fetchTimeoutMs: 45_000 });
+		await saveUnifiedPluginConfig({ codexMode: false, fetchTimeoutMs: 90_000 });
+		await fs.writeFile(getUnifiedSettingsPath(), "{ invalid json", "utf8");
+
+		expect(loadUnifiedPluginConfigSync()).toEqual({
+			codexMode: true,
+			fetchTimeoutMs: 45_000,
+		});
+
+		const backupPath = `${getUnifiedSettingsPath()}.bak`;
+		const copySpy = vi.spyOn(fs, "copyFile");
+		const renameSpy = vi.spyOn(fs, "rename");
+		renameSpy.mockImplementation(async () => {
+			const error = new Error("busy") as NodeJS.ErrnoException;
+			error.code = "EBUSY";
+			throw error;
+		});
+
+		try {
+			await expect(
+				saveUnifiedPluginConfig({ codexMode: true, fetchTimeoutMs: 120_000 }),
+			).rejects.toThrow();
+		} finally {
+			copySpy.mockRestore();
+			renameSpy.mockRestore();
+		}
+
+		expect(copySpy).not.toHaveBeenCalledWith(
+			getUnifiedSettingsPath(),
+			backupPath,
+		);
+		const backupRecord = JSON.parse(
+			await fs.readFile(backupPath, "utf8"),
+		) as { pluginConfig?: Record<string, unknown> };
+		expect(backupRecord.pluginConfig).toEqual({
+			codexMode: true,
+			fetchTimeoutMs: 45_000,
+		});
+	});
+
+	it("keeps the last good backup when a concurrent writer updates the primary after a backup-derived read", async () => {
+		const {
+			getUnifiedSettingsPath,
+			loadUnifiedPluginConfigSync,
+			saveUnifiedPluginConfig,
+		} = await import("../lib/unified-settings.js");
+
+		await saveUnifiedPluginConfig({ codexMode: true, fetchTimeoutMs: 45_000 });
+		await saveUnifiedPluginConfig({ codexMode: false, fetchTimeoutMs: 90_000 });
+		await fs.writeFile(getUnifiedSettingsPath(), "{ invalid json", "utf8");
+
+		expect(loadUnifiedPluginConfigSync()).toEqual({
+			codexMode: true,
+			fetchTimeoutMs: 45_000,
+		});
+
+		const concurrentPrimary = {
+			version: 1,
+			pluginConfig: {
+				codexMode: false,
+				fetchTimeoutMs: 150_000,
+				retries: 4,
+			},
+		};
+		const copySpy = vi.spyOn(fs, "copyFile");
+		const renameSpy = vi.spyOn(fs, "rename");
+		let injectedConcurrentWrite = false;
+		renameSpy.mockImplementationOnce(async () => {
+			injectedConcurrentWrite = true;
+			await fs.writeFile(
+				getUnifiedSettingsPath(),
+				`${JSON.stringify(concurrentPrimary, null, 2)}\n`,
+				"utf8",
+			);
+			const error = new Error("denied") as NodeJS.ErrnoException;
+			error.code = "EACCES";
+			throw error;
+		});
+
+		try {
+			await expect(
+				saveUnifiedPluginConfig({ codexMode: true, fetchTimeoutMs: 120_000 }),
+			).rejects.toThrow();
+		} finally {
+			copySpy.mockRestore();
+			renameSpy.mockRestore();
+		}
+
+		expect(injectedConcurrentWrite).toBe(true);
+		expect(copySpy).not.toHaveBeenCalledWith(
+			getUnifiedSettingsPath(),
+			`${getUnifiedSettingsPath()}.bak`,
+		);
+		const backupRecord = JSON.parse(
+			await fs.readFile(`${getUnifiedSettingsPath()}.bak`, "utf8"),
+		) as { pluginConfig?: Record<string, unknown> };
+		expect(backupRecord.pluginConfig).toEqual({
+			codexMode: true,
+			fetchTimeoutMs: 45_000,
+		});
+		const primaryRecord = JSON.parse(
+			await fs.readFile(getUnifiedSettingsPath(), "utf8"),
+		) as { pluginConfig?: Record<string, unknown> };
+		expect(primaryRecord.pluginConfig).toEqual(concurrentPrimary.pluginConfig);
+	});
+
+	it("resumes snapshotting after a backup-derived write succeeds", async () => {
+		const {
+			getUnifiedSettingsPath,
+			loadUnifiedPluginConfigSync,
+			saveUnifiedPluginConfig,
+		} = await import("../lib/unified-settings.js");
+
+		await saveUnifiedPluginConfig({ codexMode: true, fetchTimeoutMs: 45_000 });
+		await saveUnifiedPluginConfig({ codexMode: false, fetchTimeoutMs: 90_000 });
+		await fs.writeFile(getUnifiedSettingsPath(), "{ invalid json", "utf8");
+
+		expect(loadUnifiedPluginConfigSync()).toEqual({
+			codexMode: true,
+			fetchTimeoutMs: 45_000,
+		});
+
+		await saveUnifiedPluginConfig({ codexMode: true, fetchTimeoutMs: 120_000 });
+		let backupRecord = JSON.parse(
+			await fs.readFile(`${getUnifiedSettingsPath()}.bak`, "utf8"),
+		) as { pluginConfig?: Record<string, unknown> };
+		expect(backupRecord.pluginConfig).toEqual({
+			codexMode: true,
+			fetchTimeoutMs: 45_000,
+		});
+
+		await saveUnifiedPluginConfig({ codexMode: false, fetchTimeoutMs: 150_000 });
+		backupRecord = JSON.parse(
+			await fs.readFile(`${getUnifiedSettingsPath()}.bak`, "utf8"),
+		) as { pluginConfig?: Record<string, unknown> };
+		expect(backupRecord.pluginConfig).toEqual({
+			codexMode: true,
+			fetchTimeoutMs: 120_000,
+		});
+	});
+
 	it("returns null when dashboard settings file is missing", async () => {
 		const { loadUnifiedDashboardSettings } = await import(
 			"../lib/unified-settings.js"
@@ -379,7 +602,51 @@ describe("unified settings", () => {
 		});
 	});
 
-	it("refuses overwriting settings sections when a read fails", async () => {
+	it("falls back to backup when the primary settings file is unreadable", async () => {
+		const {
+			saveUnifiedPluginConfig,
+			saveUnifiedDashboardSettings,
+			getUnifiedSettingsPath,
+		} = await import("../lib/unified-settings.js");
+
+		await saveUnifiedPluginConfig({ codexMode: true, fetchTimeoutMs: 70_000 });
+		await saveUnifiedDashboardSettings({
+			menuShowLastUsed: false,
+			uiThemePreset: "blue",
+		});
+
+		const readSpy = vi.spyOn(fs, "readFile");
+		readSpy.mockImplementationOnce(async () => {
+			const error = new Error("permission denied") as NodeJS.ErrnoException;
+			error.code = "EACCES";
+			throw error;
+		});
+
+		try {
+			await saveUnifiedDashboardSettings({
+				menuShowLastUsed: true,
+				uiThemePreset: "yellow",
+			});
+		} finally {
+			readSpy.mockRestore();
+		}
+
+		const raw = await fs.readFile(getUnifiedSettingsPath(), "utf8");
+		const parsed = JSON.parse(raw) as {
+			pluginConfig?: Record<string, unknown>;
+			dashboardDisplaySettings?: Record<string, unknown>;
+		};
+		expect(parsed.pluginConfig).toEqual({
+			codexMode: true,
+			fetchTimeoutMs: 70_000,
+		});
+		expect(parsed.dashboardDisplaySettings).toEqual({
+			menuShowLastUsed: true,
+			uiThemePreset: "yellow",
+		});
+	});
+
+	it("rethrows transient primary read errors instead of falling back to backup", async () => {
 		const {
 			saveUnifiedPluginConfig,
 			saveUnifiedDashboardSettings,
@@ -405,7 +672,7 @@ describe("unified settings", () => {
 					menuShowLastUsed: true,
 					uiThemePreset: "yellow",
 				}),
-			).rejects.toThrow();
+			).rejects.toThrow("file locked");
 		} finally {
 			readSpy.mockRestore();
 		}

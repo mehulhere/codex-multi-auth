@@ -1,4 +1,4 @@
-import { describe, expect, it, beforeEach, afterEach } from "vitest";
+import { describe, expect, it, beforeEach, afterEach, vi } from "vitest";
 import { promises as fs, existsSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { join } from "node:path";
@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { removeWithRetry } from "./helpers/remove-with-retry.js";
 import {
 	loadAccounts,
+	loadFlaggedAccounts,
 	getBackupMetadata,
 	saveAccounts,
 	setStorageBackupEnabled,
@@ -107,6 +108,105 @@ describe("storage recovery paths", () => {
 			accounts?: Array<{ accountId?: string }>;
 		};
 		expect(persisted.accounts?.[0]?.accountId).toBe("from-backup");
+	});
+
+	it("recovers flagged accounts from backup file when primary storage is missing", async () => {
+		const flaggedPath = join(workDir, "openai-codex-flagged-accounts.json");
+		await fs.writeFile(
+			`${flaggedPath}.bak`,
+			JSON.stringify({
+				version: 1,
+				accounts: [
+					{
+						refreshToken: "flagged-refresh",
+						email: "flagged@example.com",
+						addedAt: 7,
+						lastUsed: 7,
+						flaggedAt: 7,
+					},
+				],
+			}),
+			"utf-8",
+		);
+
+		const recovered = await loadFlaggedAccounts();
+		expect(recovered.accounts).toHaveLength(1);
+		expect(recovered.accounts[0]?.email).toBe("flagged@example.com");
+
+		const persisted = JSON.parse(await fs.readFile(flaggedPath, "utf-8")) as {
+			accounts?: Array<{ email?: string }>;
+		};
+		expect(persisted.accounts?.[0]?.email).toBe("flagged@example.com");
+	});
+
+	it("recovers flagged accounts from backup file when primary storage is unreadable", async () => {
+		const flaggedPath = join(workDir, "openai-codex-flagged-accounts.json");
+		await fs.writeFile(flaggedPath, "{broken-primary", "utf-8");
+		await fs.writeFile(
+			`${flaggedPath}.bak`,
+			JSON.stringify({
+				version: 1,
+				accounts: [
+					{
+						refreshToken: "flagged-refresh-2",
+						email: "flagged2@example.com",
+						addedAt: 8,
+						lastUsed: 8,
+						flaggedAt: 8,
+					},
+				],
+			}),
+			"utf-8",
+		);
+
+		const recovered = await loadFlaggedAccounts();
+		expect(recovered.accounts).toHaveLength(1);
+		expect(recovered.accounts[0]?.email).toBe("flagged2@example.com");
+
+		const persisted = JSON.parse(await fs.readFile(flaggedPath, "utf-8")) as {
+			accounts?: Array<{ email?: string }>;
+		};
+		expect(persisted.accounts?.[0]?.email).toBe("flagged2@example.com");
+	});
+
+	it("suppresses flagged backup recovery when the reset marker appears mid-read", async () => {
+		const flaggedPath = join(workDir, "openai-codex-flagged-accounts.json");
+		const backupPath = `${flaggedPath}.bak`;
+		const resetMarkerPath = `${flaggedPath}.reset-intent`;
+		await fs.writeFile(
+			backupPath,
+			JSON.stringify({
+				version: 1,
+				accounts: [
+					{
+						refreshToken: "flagged-race-refresh",
+						email: "race@example.com",
+						addedAt: 9,
+						lastUsed: 9,
+						flaggedAt: 9,
+					},
+				],
+			}),
+			"utf-8",
+		);
+
+		const originalReadFile = fs.readFile.bind(fs);
+		const originalWriteFile = fs.writeFile.bind(fs);
+		const readSpy = vi.spyOn(fs, "readFile").mockImplementation(async (...args) => {
+			const [targetPath] = args;
+			const result = await originalReadFile(...args);
+			if (targetPath === backupPath) {
+				await originalWriteFile(resetMarkerPath, "reset", "utf-8");
+			}
+			return result;
+		});
+
+		try {
+			const recovered = await loadFlaggedAccounts();
+			expect(recovered.accounts).toHaveLength(0);
+		} finally {
+			readSpy.mockRestore();
+		}
 	});
 
 	it("falls back to historical backup snapshots when the latest backup is unreadable", async () => {

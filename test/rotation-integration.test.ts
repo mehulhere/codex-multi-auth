@@ -1,7 +1,7 @@
 import { promises as fs } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, it, expect, beforeAll, beforeEach, afterAll } from "vitest";
+import { describe, it, expect, beforeAll, beforeEach, afterAll, vi } from "vitest";
 import { AccountManager } from "../lib/accounts.js";
 import {
   deduplicateAccounts,
@@ -286,15 +286,46 @@ describe("Multi-Account Rotation Integration", () => {
     });
   });
 
-  describe("Storage mutex (file locking)", () => {
-    it("concurrent saves complete without corruption", async () => {
-      const storage = createStorageFromTestAccounts(TEST_ACCOUNTS.slice(0, 3));
-      const manager = new AccountManager(undefined, storage);
+		describe("Storage mutex (file locking)", () => {
+			it("concurrent saves complete without corruption", async () => {
+				const storage = createStorageFromTestAccounts(TEST_ACCOUNTS.slice(0, 3));
+				const manager = new AccountManager(undefined, storage);
 
-      const saves = Array.from({ length: 10 }, () => manager.saveToDisk());
-      await Promise.all(saves);
-    });
-  });
+				const saves = Array.from({ length: 10 }, () => manager.saveToDisk());
+				await Promise.all(saves);
+
+				const parsed = JSON.parse(
+					await fs.readFile(testStoragePath, "utf8"),
+				) as AccountStorageV3;
+				expect(parsed.version).toBe(3);
+				expect(parsed.accounts).toHaveLength(3);
+				expect(parsed.accounts.map((account) => account.email)).toEqual(
+					TEST_ACCOUNTS.slice(0, 3).map((account) => account.email),
+				);
+			}, 15_000);
+
+			it("removeWithRetry retries transient windows fs.rm errors", async () => {
+				const rmSpy = vi.spyOn(fs, "rm");
+				const retryCodes = ["EBUSY", "EPERM", "ENOTEMPTY"];
+				for (const code of retryCodes) {
+					rmSpy.mockImplementationOnce(async () => {
+						const error = new Error(code) as NodeJS.ErrnoException;
+						error.code = code;
+						throw error;
+					});
+				}
+
+				let callCount = 0;
+				try {
+					await removeWithRetry(testStoragePath, { force: true });
+					callCount = rmSpy.mock.calls.length;
+				} finally {
+					rmSpy.mockRestore();
+				}
+
+				expect(callCount).toBe(retryCodes.length + 1);
+			});
+		});
 
   describe("Debounced save", () => {
     it("saveToDiskDebounced does not throw", () => {
