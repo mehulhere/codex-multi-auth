@@ -143,6 +143,16 @@ function shouldFallbackToSettingsBackup(
 	return true;
 }
 
+function isInvalidSettingsRecordError(error: unknown): boolean {
+	if (error instanceof SyntaxError) {
+		return true;
+	}
+	return (
+		error instanceof Error &&
+		error.message === "Unified settings must contain a JSON object at the root."
+	);
+}
+
 /**
  * Snapshot the primary settings file into `settings.json.bak` for sync writes.
  *
@@ -221,6 +231,9 @@ function readSettingsRecordSyncInternal(): SettingsReadResult {
 		if (backupRecord) {
 			return { record: backupRecord, usedBackup: true };
 		}
+		if (isInvalidSettingsRecordError(error)) {
+			return { record: null, usedBackup: false };
+		}
 		throw error;
 	}
 
@@ -254,6 +267,9 @@ async function readSettingsRecordAsyncInternal(): Promise<SettingsReadResult> {
 		const backupRecord = await readSettingsBackupAsync();
 		if (backupRecord) {
 			return { record: backupRecord, usedBackup: true };
+		}
+		if (isInvalidSettingsRecordError(error)) {
+			return { record: null, usedBackup: false };
 		}
 		throw error;
 	}

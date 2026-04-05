@@ -44,12 +44,7 @@ function sleepSync(ms) {
 function removeDirectoryWithRetry(targetPath) {
 	for (let attempt = 0; attempt <= SHADOW_HOME_CLEANUP_BACKOFF_MS.length; attempt += 1) {
 		try {
-			if (shadowHomeCleanupBusyFailuresRemaining > 0) {
-				shadowHomeCleanupBusyFailuresRemaining -= 1;
-				const error = new Error("simulated busy cleanup");
-				error.code = "EBUSY";
-				throw error;
-			}
+			maybeThrowSimulatedShadowHomeBusyError();
 			rmSync(targetPath, { recursive: true, force: true });
 			return;
 		} catch (error) {
@@ -226,6 +221,33 @@ function addRequestedModelReasoningAliases(alias, normalizedModel) {
 	addRequestedModelAlias(alias, normalizedModel);
 	for (const effort of KNOWN_REASONING_EFFORTS) {
 		addRequestedModelAlias(`${alias}-${effort}`, normalizedModel);
+	}
+}
+
+function maybeThrowSimulatedShadowHomeBusyError() {
+	if (shadowHomeCleanupBusyFailuresRemaining > 0) {
+		shadowHomeCleanupBusyFailuresRemaining -= 1;
+		const error = new Error("simulated busy shadow-home operation");
+		error.code = "EBUSY";
+		throw error;
+	}
+}
+
+function renameFileWithRetry(sourcePath, destinationPath) {
+	for (let attempt = 0; attempt <= SHADOW_HOME_CLEANUP_BACKOFF_MS.length; attempt += 1) {
+		try {
+			maybeThrowSimulatedShadowHomeBusyError();
+			renameSync(sourcePath, destinationPath);
+			return;
+		} catch (error) {
+			if (
+				!isRetryableShadowHomeCleanupError(error) ||
+				attempt === SHADOW_HOME_CLEANUP_BACKOFF_MS.length
+			) {
+				throw error;
+			}
+			sleepSync(SHADOW_HOME_CLEANUP_BACKOFF_MS[attempt]);
+		}
 	}
 }
 
@@ -518,7 +540,7 @@ function syncShadowHomeStateFile(sourcePath, destinationPath) {
 	try {
 		mkdirSync(dirname(destinationPath), { recursive: true });
 		copyFileSync(sourcePath, tempPath);
-		renameSync(tempPath, destinationPath);
+		renameFileWithRetry(tempPath, destinationPath);
 	} catch (error) {
 		try {
 			rmSync(tempPath, { force: true });

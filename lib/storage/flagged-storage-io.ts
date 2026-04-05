@@ -1,6 +1,7 @@
 import { existsSync, promises as fs } from "node:fs";
 import { dirname } from "node:path";
 import type { FlaggedAccountStorageV1 } from "../storage.js";
+import { readFileWithRetry } from "./flagged-storage-file.js";
 
 const RETRYABLE_UNLINK_CODES = new Set(["EBUSY", "EAGAIN", "EPERM"]);
 
@@ -75,7 +76,9 @@ export async function loadFlaggedAccountsState(params: {
 				continue;
 			}
 			try {
-				const backupContent = await fs.readFile(backupPath, "utf-8");
+				const backupContent = await readFileWithRetry(backupPath, {
+					readFile: fs.readFile,
+				});
 				const backupData = JSON.parse(backupContent) as unknown;
 				const recovered = params.normalizeFlaggedStorage(backupData);
 				if (!isValidFlaggedStorageCandidate(backupData, recovered)) {
@@ -123,7 +126,9 @@ export async function loadFlaggedAccountsState(params: {
 	};
 
 	try {
-		const content = await fs.readFile(params.path, "utf-8");
+		const content = await readFileWithRetry(params.path, {
+			readFile: fs.readFile,
+		});
 		const data = JSON.parse(content) as unknown;
 		const loaded = params.normalizeFlaggedStorage(data);
 		if (!isValidFlaggedStorageCandidate(data, loaded)) {
@@ -154,7 +159,9 @@ export async function loadFlaggedAccountsState(params: {
 	}
 
 	try {
-		const legacyContent = await fs.readFile(params.legacyPath, "utf-8");
+		const legacyContent = await readFileWithRetry(params.legacyPath, {
+			readFile: fs.readFile,
+		});
 		const legacyData = JSON.parse(legacyContent) as unknown;
 		const migrated = params.normalizeFlaggedStorage(legacyData);
 		if (migrated.accounts.length > 0) {
