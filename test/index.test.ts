@@ -4500,6 +4500,7 @@ describe("OpenAIOAuthPlugin runtime toast forwarding", () => {
 
 	it("uses the floored cooldown for stream failover 429s", async () => {
 		const { AccountManager } = await import("../lib/accounts.js");
+		const { CapabilityPolicyStore } = await import("../lib/capability-policy.js");
 		const fetchHelpersModule = await import("../lib/request/fetch-helpers.js");
 		const rateLimitBackoffModule = await import("../lib/request/rate-limit-backoff.js");
 		const streamFailoverModule = await import("../lib/request/stream-failover.js");
@@ -4519,7 +4520,12 @@ describe("OpenAIOAuthPlugin runtime toast forwarding", () => {
 		};
 		const markRateLimitedWithReason = vi.fn();
 		const recordRateLimit = vi.fn();
+		const recordFailure = vi.fn();
 		const saveToDiskDebounced = vi.fn();
+		const capabilityFailureSpy = vi.spyOn(
+			CapabilityPolicyStore.prototype,
+			"recordFailure",
+		);
 		const pendingFailovers: Array<Promise<unknown>> = [];
 		const fallback429Response = new Response(
 			new ReadableStream({
@@ -4560,7 +4566,7 @@ describe("OpenAIOAuthPlugin runtime toast forwarding", () => {
 			syncCodexCliActiveSelectionForIndex: async () => {},
 			markSwitched: () => {},
 			removeAccount: () => {},
-			recordFailure: () => {},
+			recordFailure,
 			recordSuccess: () => {},
 			recordRateLimit,
 			getMinWaitTimeForFamily: () => 0,
@@ -4631,6 +4637,8 @@ describe("OpenAIOAuthPlugin runtime toast forwarding", () => {
 			"gpt-5.1",
 			"gpt-5.1",
 		);
+		expect(recordFailure).not.toHaveBeenCalled();
+		expect(capabilityFailureSpy).not.toHaveBeenCalled();
 		expect(saveToDiskDebounced).toHaveBeenCalledTimes(1);
 		expect(fallbackCancelSpy).toHaveBeenCalledTimes(1);
 	});

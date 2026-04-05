@@ -341,6 +341,64 @@ describe("flagged account storage", () => {
 	readSpy.mockRestore();
 	});
 
+	it("retries transient flagged primary read errors before falling back to backup", async () => {
+		await saveFlaggedAccounts({
+			version: 1,
+			accounts: [
+				{
+					refreshToken: "older-flagged",
+					flaggedAt: 1,
+					addedAt: 1,
+					lastUsed: 1,
+				},
+			],
+		});
+
+		await saveFlaggedAccounts({
+			version: 1,
+			accounts: [
+				{
+					refreshToken: "latest-flagged",
+					flaggedAt: 2,
+					addedAt: 2,
+					lastUsed: 2,
+				},
+			],
+		});
+
+		const flaggedPath = getFlaggedAccountsPath();
+		const originalReadFile = fs.readFile.bind(fs);
+		let primaryReadAttempts = 0;
+		const readSpy = vi
+			.spyOn(fs, "readFile")
+			.mockImplementation(async (...args) => {
+				const [targetPath] = args;
+				if (targetPath === flaggedPath) {
+					primaryReadAttempts += 1;
+					if (primaryReadAttempts === 1) {
+						const error = new Error("EBUSY flagged read") as NodeJS.ErrnoException;
+						error.code = "EBUSY";
+						throw error;
+					}
+				}
+				return originalReadFile(...args);
+			});
+
+		try {
+			const flagged = await loadFlaggedAccounts();
+			expect(flagged.accounts).toHaveLength(1);
+			expect(flagged.accounts[0]?.refreshToken).toBe("latest-flagged");
+			expect(primaryReadAttempts).toBe(2);
+			expect(
+				readSpy.mock.calls.some(
+					([targetPath]) => targetPath === `${flaggedPath}.bak`,
+				),
+			).toBe(false);
+		} finally {
+			readSpy.mockRestore();
+		}
+	});
+
 	it("skips invalid latest flagged backups and falls back to older valid snapshots", async () => {
 		const flaggedPath = getFlaggedAccountsPath();
 		await fs.mkdir(dirname(flaggedPath), { recursive: true });

@@ -526,6 +526,7 @@ describe("codex bin wrapper", () => {
 				TMP: controlledTmp,
 				TEMP: controlledTmp,
 				TMPDIR: controlledTmp,
+				...injectShadowCleanupBusyFailures(),
 			},
 		);
 

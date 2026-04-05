@@ -318,6 +318,37 @@ describe("unified settings", () => {
 		expect(fileContent).toContain('"version": 1');
 	});
 
+	it("overwrites invalid primary settings when saving without a usable backup", async () => {
+		const {
+			getUnifiedSettingsPath,
+			saveUnifiedPluginConfig,
+			saveUnifiedDashboardSettings,
+		} = await import("../lib/unified-settings.js");
+
+		await fs.writeFile(getUnifiedSettingsPath(), "{ invalid json", "utf8");
+
+		await saveUnifiedPluginConfig({ codexMode: true, fetchTimeoutMs: 45_000 });
+		await saveUnifiedDashboardSettings({
+			menuShowLastUsed: false,
+			uiThemePreset: "blue",
+		});
+
+		const parsed = JSON.parse(
+			await fs.readFile(getUnifiedSettingsPath(), "utf8"),
+		) as {
+			pluginConfig?: Record<string, unknown>;
+			dashboardDisplaySettings?: Record<string, unknown>;
+		};
+		expect(parsed.pluginConfig).toEqual({
+			codexMode: true,
+			fetchTimeoutMs: 45_000,
+		});
+		expect(parsed.dashboardDisplaySettings).toEqual({
+			menuShowLastUsed: false,
+			uiThemePreset: "blue",
+		});
+	});
+
 	it("returns null for missing pluginConfig section", async () => {
 		const { getUnifiedSettingsPath, loadUnifiedPluginConfigSync } =
 			await import("../lib/unified-settings.js");
