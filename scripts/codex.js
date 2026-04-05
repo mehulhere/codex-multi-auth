@@ -9,6 +9,7 @@ import {
 	mkdtempSync,
 	readFileSync,
 	rmSync,
+	statSync,
 	writeFileSync,
 } from "node:fs";
 import { createRequire } from "node:module";
@@ -21,6 +22,11 @@ import { normalizeAuthAlias, shouldHandleMultiAuthAuth } from "./codex-routing.j
 
 const RETRYABLE_SHADOW_HOME_CLEANUP_CODES = new Set(["EBUSY", "EPERM", "ENOTEMPTY"]);
 const SHADOW_HOME_CLEANUP_BACKOFF_MS = [20, 60, 120];
+const SHADOW_HOME_STATE_FILES = ["auth.json", "accounts.json", ".codex-global-state.json"];
+let shadowHomeCleanupBusyFailuresRemaining = Number.parseInt(
+	process.env.CODEX_MULTI_AUTH_TEST_SHADOW_CLEANUP_BUSY_FAILURES ?? "0",
+	10,
+);
 
 function isRetryableShadowHomeCleanupError(error) {
 	const code = error && typeof error === "object" && "code" in error ? error.code : undefined;
@@ -37,6 +43,12 @@ function sleepSync(ms) {
 function removeDirectoryWithRetry(targetPath) {
 	for (let attempt = 0; attempt <= SHADOW_HOME_CLEANUP_BACKOFF_MS.length; attempt += 1) {
 		try {
+			if (shadowHomeCleanupBusyFailuresRemaining > 0) {
+				shadowHomeCleanupBusyFailuresRemaining -= 1;
+				const error = new Error("simulated busy cleanup");
+				error.code = "EBUSY";
+				throw error;
+			}
 			rmSync(targetPath, { recursive: true, force: true });
 			return;
 		} catch (error) {
@@ -477,21 +489,19 @@ function resolveOriginalMultiAuthDir(env) {
 	return undefined;
 }
 
-function createCompatibilityCodexHome(rawArgs, baseEnv = process.env) {
-	const { args: nextArgs, requestedModel } = rewriteReasoningConfigArgs(rawArgs);
+function createCompatibilityCodexHome(
+	processedArgs,
+	requestedModel,
+	baseEnv = process.env,
+) {
 	if (!requestedModel) {
-		return { args: nextArgs, env: baseEnv, cleanup: undefined };
-	}
-
-	const xhighCompatEffort = coerceReasoningEffortForModel(requestedModel, "xhigh");
-	if (xhighCompatEffort === "xhigh") {
-		return { args: nextArgs, env: baseEnv, cleanup: undefined };
+		return { args: processedArgs, env: baseEnv, cleanup: undefined };
 	}
 
 	const originalCodexHome = resolveCodexHomeDir(baseEnv);
 	const configPath = join(originalCodexHome, "config.toml");
 	if (!existsSync(configPath)) {
-		return { args: nextArgs, env: baseEnv, cleanup: undefined };
+		return { args: processedArgs, env: baseEnv, cleanup: undefined };
 	}
 
 	const rawConfig = readFileSync(configPath, "utf8");
@@ -500,7 +510,7 @@ function createCompatibilityCodexHome(rawArgs, baseEnv = process.env) {
 		requestedModel,
 	);
 	if (compatConfig === rawConfig) {
-		return { args: nextArgs, env: baseEnv, cleanup: undefined };
+		return { args: processedArgs, env: baseEnv, cleanup: undefined };
 	}
 
 	const shadowCodexHome = mkdtempSync(join(tmpdir(), "codex-multi-auth-home-"));
@@ -518,11 +528,34 @@ function createCompatibilityCodexHome(rawArgs, baseEnv = process.env) {
 			// Best-effort only; permission semantics vary by platform.
 		}
 	};
+	const syncShadowHomeStateBack = () => {
+		for (const name of SHADOW_HOME_STATE_FILES) {
+			const shadowPath = join(shadowCodexHome, name);
+			if (!existsSync(shadowPath)) {
+				continue;
+			}
+
+			try {
+				const shadowStats = statSync(shadowPath);
+				const originalPath = join(originalCodexHome, name);
+				if (existsSync(originalPath)) {
+					const originalStats = statSync(originalPath);
+					if (originalStats.isFile() && originalStats.mtimeMs > shadowStats.mtimeMs) {
+						continue;
+					}
+				}
+				copyFileSync(shadowPath, originalPath);
+				tightenShadowHomePermissions(originalPath);
+			} catch {
+				// Best-effort only; runtime auth refreshes should not fail cleanup.
+			}
+		}
+	};
 	try {
 		const compatConfigPath = join(shadowCodexHome, "config.toml");
 		writeFileSync(compatConfigPath, compatConfig, "utf8");
 		tightenShadowHomePermissions(compatConfigPath);
-		for (const name of ["auth.json", "accounts.json", ".codex-global-state.json"]) {
+		for (const name of SHADOW_HOME_STATE_FILES) {
 			const sourcePath = join(originalCodexHome, name);
 			if (existsSync(sourcePath)) {
 				const destinationPath = join(shadowCodexHome, name);
@@ -534,6 +567,10 @@ function createCompatibilityCodexHome(rawArgs, baseEnv = process.env) {
 		cleanup();
 		throw error;
 	}
+	const cleanupWithSync = () => {
+		syncShadowHomeStateBack();
+		cleanup();
+	};
 
 	const forwardedEnv = {
 		...baseEnv,
@@ -545,23 +582,30 @@ function createCompatibilityCodexHome(rawArgs, baseEnv = process.env) {
 	}
 
 	return {
-		args: nextArgs,
+		args: processedArgs,
 		env: forwardedEnv,
-		cleanup,
+		cleanup: cleanupWithSync,
 	};
 }
 
 function buildForwardArgs(rawArgs) {
-	const { args: compatibilityArgs } = rewriteReasoningConfigArgs(rawArgs);
+	const { args: compatibilityArgs, requestedModel } = rewriteReasoningConfigArgs(rawArgs);
 	const forceFileAuthStore = (process.env.CODEX_MULTI_AUTH_FORCE_FILE_AUTH_STORE ?? "1").trim() !== "0";
-	if (!forceFileAuthStore) return compatibilityArgs;
-	if (hasCliAuthCredentialsStoreOverride(compatibilityArgs)) return compatibilityArgs;
+	if (!forceFileAuthStore) {
+		return { args: compatibilityArgs, requestedModel };
+	}
+	if (hasCliAuthCredentialsStoreOverride(compatibilityArgs)) {
+		return { args: compatibilityArgs, requestedModel };
+	}
 
-	return [
-		...compatibilityArgs,
-		"-c",
-		'cli_auth_credentials_store="file"',
-	];
+	return {
+		args: [
+			...compatibilityArgs,
+			"-c",
+			'cli_auth_credentials_store="file"',
+		],
+		requestedModel,
+	};
 }
 
 function normalizeExitCode(value) {
@@ -919,8 +963,11 @@ async function main() {
 	}
 
 	await autoSyncManagerActiveSelectionIfEnabled();
-	const forwardArgs = buildForwardArgs(rawArgs);
-	const compatibility = createCompatibilityCodexHome(forwardArgs);
+	const { args: forwardArgs, requestedModel } = buildForwardArgs(rawArgs);
+	const compatibility = createCompatibilityCodexHome(
+		forwardArgs,
+		requestedModel,
+	);
 	return forwardToRealCodex(
 		realCodexBin,
 		compatibility.args,

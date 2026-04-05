@@ -224,7 +224,7 @@ export class PreemptiveQuotaScheduler {
 				usedPercent: 100,
 				resetAtMs: nextResetAtMs,
 			},
-			secondary: {},
+			secondary: existing?.secondary ? { ...existing.secondary } : {},
 			updatedAt: Math.max(existing?.updatedAt ?? 0, now),
 		});
 	}

@@ -87,32 +87,11 @@ function createCustomFakeCodexBin(rootDir: string, lines: string[]): string {
 }
 
 function injectShadowCleanupBusyFailures(
-	fixtureRoot: string,
 	failuresBeforeSuccess = 2,
-): void {
-	const wrapperPath = join(fixtureRoot, "scripts", "codex.js");
-	const originalSource = readFileSync(wrapperPath, "utf8");
-	const instrumentedSource = originalSource
-		.replace(
-			'const SHADOW_HOME_CLEANUP_BACKOFF_MS = [20, 60, 120];',
-			[
-				'const SHADOW_HOME_CLEANUP_BACKOFF_MS = [20, 60, 120];',
-				`globalThis.__cleanupBusyFailuresRemaining = ${failuresBeforeSuccess};`,
-			].join("\n"),
-		)
-		.replace(
-			"rmSync(targetPath, { recursive: true, force: true });",
-			[
-				"if (globalThis.__cleanupBusyFailuresRemaining > 0) {",
-				"\tglobalThis.__cleanupBusyFailuresRemaining -= 1;",
-				'\tconst error = new Error("simulated busy cleanup");',
-				'\terror.code = "EBUSY";',
-				"\tthrow error;",
-				"}",
-				"rmSync(targetPath, { recursive: true, force: true });",
-			].join("\n"),
-		);
-	writeFileSync(wrapperPath, instrumentedSource, "utf8");
+): NodeJS.ProcessEnv {
+	return {
+		CODEX_MULTI_AUTH_TEST_SHADOW_CLEANUP_BUSY_FAILURES: String(failuresBeforeSuccess),
+	};
 }
 
 function createFakeGlobalCodexInstall(rootDir: string): string {
@@ -398,7 +377,7 @@ describe("codex bin wrapper", () => {
 
 	it("cleans up compatibility shadow homes when staging fails", () => {
 		const fixtureRoot = createWrapperFixture();
-		injectShadowCleanupBusyFailures(fixtureRoot);
+		const cleanupFailureEnv = injectShadowCleanupBusyFailures();
 		const fakeBin = createFakeCodexBin(fixtureRoot);
 		const originalHome = join(fixtureRoot, "codex-home");
 		const controlledTmp = join(fixtureRoot, "tmp");
@@ -421,10 +400,56 @@ describe("codex bin wrapper", () => {
 				TMP: controlledTmp,
 				TEMP: controlledTmp,
 				TMPDIR: controlledTmp,
+				...cleanupFailureEnv,
 			},
 		);
 
 		expect(result.status).toBe(1);
+		expect(
+			readdirSync(controlledTmp).filter((entry) =>
+				entry.startsWith("codex-multi-auth-home-"),
+			),
+		).toEqual([]);
+	});
+
+	it("syncs refreshed auth state back from compatibility shadow homes before cleanup", () => {
+		const fixtureRoot = createWrapperFixture();
+		const fakeBin = createCustomFakeCodexBin(fixtureRoot, [
+			"#!/usr/bin/env node",
+			'const fs = require("node:fs");',
+			'const path = require("node:path");',
+			'const home = process.env.CODEX_HOME ?? "";',
+			'fs.writeFileSync(path.join(home, "auth.json"), \'{"token":"shadow"}\\n\', "utf8");',
+			'fs.writeFileSync(path.join(home, "accounts.json"), \'{"accounts":["shadow"]}\\n\', "utf8");',
+			'fs.writeFileSync(path.join(home, ".codex-global-state.json"), \'{"last":"shadow"}\\n\', "utf8");',
+			'console.log(`CODEX_HOME:${home}`);',
+			"process.exit(0);",
+		]);
+		const originalHome = join(fixtureRoot, "codex-home");
+		const controlledTmp = join(fixtureRoot, "tmp");
+		mkdirSync(originalHome, { recursive: true });
+		mkdirSync(controlledTmp, { recursive: true });
+		writeFileSync(join(originalHome, "auth.json"), '{"token":"original"}\n', "utf8");
+		writeFileSync(join(originalHome, "accounts.json"), '{"accounts":["original"]}\n', "utf8");
+		writeFileSync(join(originalHome, ".codex-global-state.json"), '{"last":"original"}\n', "utf8");
+		writeFileSync(join(originalHome, "config.toml"), 'model_reasoning_effort = "xhigh"\n', "utf8");
+
+		const result = runWrapper(
+			fixtureRoot,
+			["exec", "status", "--model", "gpt-5.1"],
+			{
+				CODEX_MULTI_AUTH_REAL_CODEX_BIN: fakeBin,
+				CODEX_HOME: originalHome,
+				TMP: controlledTmp,
+				TEMP: controlledTmp,
+				TMPDIR: controlledTmp,
+			},
+		);
+
+		expect(result.status).toBe(0);
+		expect(readFileSync(join(originalHome, "auth.json"), "utf8").trim()).toBe('{"token":"shadow"}');
+		expect(readFileSync(join(originalHome, "accounts.json"), "utf8").trim()).toBe('{"accounts":["shadow"]}');
+		expect(readFileSync(join(originalHome, ".codex-global-state.json"), "utf8").trim()).toBe('{"last":"shadow"}');
 		expect(
 			readdirSync(controlledTmp).filter((entry) =>
 				entry.startsWith("codex-multi-auth-home-"),
@@ -570,6 +595,48 @@ describe("codex bin wrapper", () => {
 		expect(result.stdout).toContain(
 			'FORWARDED:exec status --model gpt-5.4 -c model_reasoning_effort="xhigh" -c cli_auth_credentials_store="file"',
 		);
+	});
+
+	it("rewrites config reasoning effort when the model supports xhigh but rejects none", () => {
+		const fixtureRoot = createWrapperFixture();
+		const fakeBin = createCustomFakeCodexBin(fixtureRoot, [
+			"#!/usr/bin/env node",
+			'const fs = require("node:fs");',
+			'const path = require("node:path");',
+			'console.log(`CODEX_HOME:${process.env.CODEX_HOME ?? ""}`);',
+			'const configPath = path.join(process.env.CODEX_HOME ?? "", "config.toml");',
+			'console.log(fs.readFileSync(configPath, "utf8").trim());',
+			"process.exit(0);",
+		]);
+		const originalHome = join(fixtureRoot, "codex-home");
+		mkdirSync(originalHome, { recursive: true });
+		writeFileSync(join(originalHome, "auth.json"), "{}\n", "utf8");
+		writeFileSync(
+			join(originalHome, "config.toml"),
+			[
+				'model_reasoning_effort = "none"',
+				'profile = "legacy-pro"',
+				"",
+				'[profiles."legacy-pro"]',
+				'model_reasoning_effort = "none"',
+				"",
+			].join("\n"),
+			"utf8",
+		);
+
+		const result = runWrapper(
+			fixtureRoot,
+			["exec", "status", "--model", "gpt-5.4-pro"],
+			{
+				CODEX_MULTI_AUTH_REAL_CODEX_BIN: fakeBin,
+				CODEX_HOME: originalHome,
+			},
+		);
+
+		expect(result.status).toBe(0);
+		expect(result.stdout).not.toContain(`CODEX_HOME:${originalHome}`);
+		expect(result.stdout).toContain('model_reasoning_effort = "medium"');
+		expect(result.stdout).not.toContain('model_reasoning_effort = "none"');
 	});
 
 	it.skipIf(process.platform !== "win32")(

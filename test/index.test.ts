@@ -4445,6 +4445,16 @@ describe("OpenAIOAuthPlugin runtime toast forwarding", () => {
 		const markRateLimitedWithReason = vi.fn();
 		const recordRateLimit = vi.fn();
 		const pendingFailovers: Array<Promise<unknown>> = [];
+		const fallback429Response = new Response(
+			new ReadableStream({
+				start(controller) {
+					controller.enqueue(new TextEncoder().encode("rate limited"));
+					controller.close();
+				},
+			}),
+			{ status: 429 },
+		);
+		const fallbackCancelSpy = vi.spyOn(fallback429Response.body!, "cancel");
 		const manager = {
 			getAccountCount: () => 2,
 			getCurrentOrNextForFamilyHybrid: () => currentAccount,
@@ -4525,7 +4535,7 @@ describe("OpenAIOAuthPlugin runtime toast forwarding", () => {
 			if (fetchCount === 1) {
 				return new Response("data: ok\n\n", { status: 200 });
 			}
-			return new Response("rate limited", { status: 429 });
+			return fallback429Response;
 		});
 
 		const mockClient = createMockClient();
@@ -4545,6 +4555,7 @@ describe("OpenAIOAuthPlugin runtime toast forwarding", () => {
 			"gpt-5.1",
 			"gpt-5.1",
 		);
+		expect(fallbackCancelSpy).toHaveBeenCalledTimes(1);
 	});
 
 	it("forwards persistence error toast arguments through manual OAuth flow", async () => {
