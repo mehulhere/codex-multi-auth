@@ -1,12 +1,68 @@
 #!/usr/bin/env node
 
-import { spawn, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { spawn } from "node:child_process";
+import {
+	chmodSync,
+	copyFileSync,
+	existsSync,
+	mkdirSync,
+	mkdtempSync,
+	renameSync,
+	readFileSync,
+	rmSync,
+	statSync,
+	writeFileSync,
+} from "node:fs";
 import { createRequire } from "node:module";
+import { homedir, tmpdir } from "node:os";
 import { basename, delimiter, dirname, join, resolve as resolvePath } from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
+import { resolveRealCodexBin as resolveRealCodexBinFromEnvironment } from "./codex-bin-resolver.js";
 import { normalizeAuthAlias, shouldHandleMultiAuthAuth } from "./codex-routing.js";
+
+const RETRYABLE_SHADOW_HOME_CLEANUP_CODES = new Set(["EBUSY", "EPERM", "ENOTEMPTY"]);
+const SHADOW_HOME_CLEANUP_BACKOFF_MS = [20, 60, 120];
+const SHADOW_HOME_STATE_FILES = ["auth.json", "accounts.json", ".codex-global-state.json"];
+let shadowHomeCleanupBusyFailuresRemaining = Number.parseInt(
+	process.env.CODEX_MULTI_AUTH_TEST_SHADOW_CLEANUP_BUSY_FAILURES ?? "0",
+	10,
+);
+
+function isRetryableShadowHomeCleanupError(error) {
+	const code = error && typeof error === "object" && "code" in error ? error.code : undefined;
+	return typeof code === "string" && RETRYABLE_SHADOW_HOME_CLEANUP_CODES.has(code);
+}
+
+function sleepSync(ms) {
+	if (!Number.isFinite(ms) || ms <= 0) {
+		return;
+	}
+	Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
+function removeDirectoryWithRetry(targetPath) {
+	for (let attempt = 0; attempt <= SHADOW_HOME_CLEANUP_BACKOFF_MS.length; attempt += 1) {
+		try {
+			if (shadowHomeCleanupBusyFailuresRemaining > 0) {
+				shadowHomeCleanupBusyFailuresRemaining -= 1;
+				const error = new Error("simulated busy cleanup");
+				error.code = "EBUSY";
+				throw error;
+			}
+			rmSync(targetPath, { recursive: true, force: true });
+			return;
+		} catch (error) {
+			if (
+				!isRetryableShadowHomeCleanupError(error) ||
+				attempt === SHADOW_HOME_CLEANUP_BACKOFF_MS.length
+			) {
+				throw error;
+			}
+			sleepSync(SHADOW_HOME_CLEANUP_BACKOFF_MS[attempt]);
+		}
+	}
+}
 
 function hydrateCliVersionEnv() {
 	try {
@@ -74,73 +130,37 @@ function resolveRealCodexBin() {
 		return null;
 	}
 
-	try {
-		const require = createRequire(import.meta.url);
-		const resolved = require.resolve("@openai/codex/bin/codex.js");
-		if (existsSync(resolved)) return resolved;
-	} catch {
-		// Fall through to sibling lookup.
-	}
-
-	const searchRoots = [];
-	const scriptDir = dirname(fileURLToPath(import.meta.url));
-	searchRoots.push(join(scriptDir, "..", ".."));
-
-	const invokedScript = process.argv[1];
-	if (typeof invokedScript === "string" && invokedScript.length > 0) {
-		searchRoots.push(join(dirname(invokedScript), "..", ".."));
-	}
-
-	const npmPrefix = (process.env.npm_config_prefix ?? process.env.PREFIX ?? "").trim();
-	if (npmPrefix.length > 0) {
-		searchRoots.push(join(npmPrefix, "node_modules"));
-		searchRoots.push(join(npmPrefix, "lib", "node_modules"));
-	}
-
-	for (const root of searchRoots) {
-		const candidate = join(root, "@openai", "codex", "bin", "codex.js");
-		if (existsSync(candidate)) return candidate;
-	}
-
-	const npmCmd = process.platform === "win32" ? "npm.cmd" : "npm";
-	try {
-		const rootResult = spawnSync(npmCmd, ["root", "-g"], {
-			encoding: "utf8",
-			stdio: ["ignore", "pipe", "ignore"],
-		});
-		if (rootResult.status === 0) {
-			const globalRoot = rootResult.stdout.trim();
-			if (globalRoot.length > 0) {
-				const globalBin = join(globalRoot, "@openai", "codex", "bin", "codex.js");
-				if (existsSync(globalBin)) return globalBin;
-			}
-		}
-	} catch {
-		// Ignore and fall through to null.
-	}
-
-	return null;
+	return resolveRealCodexBinFromEnvironment({ moduleUrl: import.meta.url });
 }
 
-function forwardToRealCodex(codexBin, args) {
+function forwardToRealCodex(codexBin, args, env = process.env, cleanup) {
 	return new Promise((resolve) => {
+		const finalize = (exitCode) => {
+			try {
+				cleanup?.();
+			} catch {
+				// Best-effort cleanup only.
+			}
+			resolve(exitCode);
+		};
+
 		const child = spawn(process.execPath, [codexBin, ...args], {
 			stdio: "inherit",
-			env: process.env,
+			env,
 		});
 
 		child.once("error", (error) => {
 			console.error(`Failed to launch real Codex CLI: ${String(error)}`);
-			resolve(1);
+			finalize(1);
 		});
 
 		child.once("exit", (code, signal) => {
 			if (signal) {
 				const signalNumber = signal === "SIGINT" ? 130 : 1;
-				resolve(signalNumber);
+				finalize(signalNumber);
 				return;
 			}
-			resolve(typeof code === "number" ? code : 1);
+			finalize(typeof code === "number" ? code : 1);
 		});
 	});
 }
@@ -168,16 +188,520 @@ function hasCliAuthCredentialsStoreOverride(args) {
 	return false;
 }
 
-function buildForwardArgs(rawArgs) {
-	const forceFileAuthStore = (process.env.CODEX_MULTI_AUTH_FORCE_FILE_AUTH_STORE ?? "1").trim() !== "0";
-	if (!forceFileAuthStore) return [...rawArgs];
-	if (hasCliAuthCredentialsStoreOverride(rawArgs)) return [...rawArgs];
+// IMPORTANT: Keep this mapping in sync with
+// `lib/request/helpers/model-map.ts` `MODEL_PROFILES`.
+// This wrapper runs before the TypeScript build, so it cannot import that source.
+const SUPPORTED_REASONING_EFFORTS_BY_MODEL = {
+	"gpt-5-codex": ["low", "medium", "high", "xhigh"],
+	"gpt-5.1-codex-max": ["medium", "high", "xhigh"],
+	"gpt-5.1-codex-mini": ["medium", "high"],
+	"gpt-5.4": ["none", "low", "medium", "high", "xhigh"],
+	"gpt-5.4-pro": ["medium", "high", "xhigh"],
+	"gpt-5.2-pro": ["medium", "high", "xhigh"],
+	"gpt-5-pro": ["high"],
+	"gpt-5.2": ["none", "low", "medium", "high", "xhigh"],
+	"gpt-5.1": ["none", "low", "medium", "high"],
+	"gpt-5": ["minimal", "low", "medium", "high"],
+	"gpt-5-mini": ["medium"],
+	"gpt-5-nano": ["medium"],
+};
 
-	return [
-		...rawArgs,
-		"-c",
-		'cli_auth_credentials_store="file"',
-	];
+const REASONING_FALLBACKS = {
+	none: ["none", "low", "minimal", "medium", "high", "xhigh"],
+	minimal: ["minimal", "low", "none", "medium", "high", "xhigh"],
+	low: ["low", "minimal", "none", "medium", "high", "xhigh"],
+	medium: ["medium", "low", "high", "minimal", "none", "xhigh"],
+	high: ["high", "medium", "xhigh", "low", "minimal", "none"],
+	xhigh: ["xhigh", "high", "medium", "low", "minimal", "none"],
+};
+
+const KNOWN_REASONING_EFFORTS = new Set(Object.keys(REASONING_FALLBACKS));
+const REQUESTED_MODEL_ALIASES = new Map();
+
+function addRequestedModelAlias(alias, normalizedModel) {
+	REQUESTED_MODEL_ALIASES.set(alias, normalizedModel);
+}
+
+function addRequestedModelReasoningAliases(alias, normalizedModel) {
+	addRequestedModelAlias(alias, normalizedModel);
+	for (const effort of KNOWN_REASONING_EFFORTS) {
+		addRequestedModelAlias(`${alias}-${effort}`, normalizedModel);
+	}
+}
+
+function seedRequestedModelAliases() {
+	addRequestedModelReasoningAliases("gpt-5.4", "gpt-5.4");
+	addRequestedModelReasoningAliases("gpt-5.4-pro", "gpt-5.4-pro");
+	addRequestedModelReasoningAliases("gpt-5.2-pro", "gpt-5.2-pro");
+	addRequestedModelReasoningAliases("gpt-5-pro", "gpt-5-pro");
+	addRequestedModelReasoningAliases("gpt-5.2", "gpt-5.2");
+	addRequestedModelReasoningAliases("gpt-5.1", "gpt-5.1");
+	addRequestedModelReasoningAliases("gpt-5", "gpt-5");
+	addRequestedModelReasoningAliases("gpt-5-mini", "gpt-5-mini");
+	addRequestedModelReasoningAliases("gpt-5-nano", "gpt-5-nano");
+	addRequestedModelReasoningAliases("gpt-5.1-chat-latest", "gpt-5.1");
+	addRequestedModelReasoningAliases("gpt-5-chat-latest", "gpt-5");
+	addRequestedModelReasoningAliases("gpt-5.4-mini", "gpt-5-mini");
+	addRequestedModelReasoningAliases("gpt-5.4-nano", "gpt-5-nano");
+	addRequestedModelReasoningAliases("gpt-5-codex", "gpt-5-codex");
+	addRequestedModelReasoningAliases("gpt-5.3-codex-spark", "gpt-5-codex");
+	addRequestedModelReasoningAliases("gpt-5.3-codex", "gpt-5-codex");
+	addRequestedModelReasoningAliases("gpt-5.2-codex", "gpt-5-codex");
+	addRequestedModelReasoningAliases("gpt-5.1-codex", "gpt-5-codex");
+	addRequestedModelAlias("gpt_5_codex", "gpt-5-codex");
+	addRequestedModelReasoningAliases("codex-max", "gpt-5.1-codex-max");
+	addRequestedModelReasoningAliases("gpt-5.1-codex-max", "gpt-5.1-codex-max");
+	addRequestedModelAlias("codex-mini-latest", "gpt-5.1-codex-mini");
+	addRequestedModelReasoningAliases("gpt-5-codex-mini", "gpt-5.1-codex-mini");
+	addRequestedModelReasoningAliases("gpt-5.1-codex-mini", "gpt-5.1-codex-mini");
+}
+
+seedRequestedModelAliases();
+
+function stripProviderPrefix(model) {
+	return typeof model === "string" && model.includes("/")
+		? model.split("/").pop() ?? model
+		: model;
+}
+
+function normalizeRequestedModel(model) {
+	const stripped = stripProviderPrefix(model ?? "");
+	const normalized = stripped.trim().toLowerCase();
+	if (normalized.length === 0) return "";
+	const exactMatch = REQUESTED_MODEL_ALIASES.get(normalized);
+	if (exactMatch) {
+		return exactMatch;
+	}
+
+	if (
+		normalized.includes("gpt-5.1-codex-max") ||
+		normalized.includes("gpt 5.1 codex max") ||
+		normalized.includes("codex-max")
+	) {
+		return "gpt-5.1-codex-max";
+	}
+	if (
+		normalized.includes("gpt-5.1-codex-mini") ||
+		normalized.includes("gpt 5.1 codex mini") ||
+		normalized.includes("gpt-5-codex-mini") ||
+		normalized.includes("gpt 5 codex mini") ||
+		normalized.includes("codex-mini-latest")
+	) {
+		return "gpt-5.1-codex-mini";
+	}
+	if (
+		normalized.includes("gpt-5.3-codex-spark") ||
+		normalized.includes("gpt 5.3 codex spark") ||
+		normalized.includes("gpt-5.3-codex") ||
+		normalized.includes("gpt 5.3 codex") ||
+		normalized.includes("gpt-5.2-codex") ||
+		normalized.includes("gpt 5.2 codex") ||
+		normalized.includes("gpt-5.1-codex") ||
+		normalized.includes("gpt 5.1 codex") ||
+		normalized.includes("gpt-5-codex") ||
+		normalized.includes("gpt 5 codex") ||
+		normalized === "codex"
+	) {
+		return "gpt-5-codex";
+	}
+	if (normalized.includes("gpt-5.4-pro") || normalized.includes("gpt 5.4 pro")) {
+		return "gpt-5.4-pro";
+	}
+	if (normalized.includes("gpt-5.2-pro") || normalized.includes("gpt 5.2 pro")) {
+		return "gpt-5.2-pro";
+	}
+	if (normalized.includes("gpt-5-pro") || normalized.includes("gpt 5 pro")) {
+		return "gpt-5-pro";
+	}
+	if (
+		normalized.includes("gpt-5.4-mini") ||
+		normalized.includes("gpt 5.4 mini") ||
+		normalized.includes("gpt-5-mini") ||
+		normalized.includes("gpt 5 mini")
+	) {
+		return "gpt-5-mini";
+	}
+	if (
+		normalized.includes("gpt-5.4-nano") ||
+		normalized.includes("gpt 5.4 nano") ||
+		normalized.includes("gpt-5-nano") ||
+		normalized.includes("gpt 5 nano")
+	) {
+		return "gpt-5-nano";
+	}
+	if (normalized.includes("gpt-5.4") || normalized.includes("gpt 5.4")) {
+		return "gpt-5.4";
+	}
+	if (normalized.includes("gpt-5.2") || normalized.includes("gpt 5.2")) {
+		return "gpt-5.2";
+	}
+	if (
+		normalized.includes("gpt-5.1-chat-latest") ||
+		normalized.includes("gpt-5.1") ||
+		normalized.includes("gpt 5.1")
+	) {
+		return "gpt-5.1";
+	}
+	if (
+		normalized === "gpt-5-chat-latest" ||
+		normalized === "gpt-5" ||
+		normalized.includes("gpt 5")
+	) {
+		return "gpt-5";
+	}
+	return "";
+}
+
+function coerceReasoningEffortForModel(model, effort) {
+	if (typeof effort !== "string") return effort;
+	const normalizedEffort = effort.trim().toLowerCase();
+	if (!KNOWN_REASONING_EFFORTS.has(normalizedEffort)) {
+		return effort;
+	}
+
+	const normalizedModel = normalizeRequestedModel(model);
+	const supportedEfforts =
+		SUPPORTED_REASONING_EFFORTS_BY_MODEL[normalizedModel] ?? null;
+	if (!supportedEfforts || supportedEfforts.includes(normalizedEffort)) {
+		return normalizedEffort;
+	}
+
+	const fallbackOrder = REASONING_FALLBACKS[normalizedEffort] ?? [normalizedEffort];
+	for (const candidate of fallbackOrder) {
+		if (supportedEfforts.includes(candidate)) {
+			return candidate;
+		}
+	}
+
+	return normalizedEffort;
+}
+
+function extractRequestedModel(args) {
+	for (let i = 0; i < args.length; i += 1) {
+		const arg = args[i];
+		if (arg === "--model") {
+			const next = args[i + 1];
+			if (typeof next === "string" && next.trim().length > 0) {
+				return next.trim();
+			}
+			continue;
+		}
+		if (typeof arg === "string" && arg.startsWith("--model=")) {
+			const value = arg.slice("--model=".length).trim();
+			if (value.length > 0) {
+				return value;
+			}
+		}
+	}
+	return null;
+}
+
+function parseConfigAssignment(value) {
+	if (typeof value !== "string") return null;
+	const separatorIndex = value.indexOf("=");
+	if (separatorIndex < 0) return null;
+	return {
+		key: value.slice(0, separatorIndex).trim(),
+		value: value.slice(separatorIndex + 1).trim(),
+	};
+}
+
+function parseQuotedValue(value) {
+	if (typeof value !== "string") {
+		return { quote: '"', inner: "" };
+	}
+	const trimmed = value.trim();
+	const first = trimmed[0];
+	const last = trimmed.at(-1);
+	if ((first === '"' || first === "'") && last === first) {
+		return {
+			quote: first,
+			inner: trimmed.slice(1, -1),
+		};
+	}
+	return { quote: '"', inner: trimmed };
+}
+
+function rewriteReasoningConfigAssignment(assignment, requestedModel) {
+	const parsed = parseConfigAssignment(assignment);
+	if (!parsed || parsed.key !== "model_reasoning_effort") {
+		return assignment;
+	}
+
+	const { quote, inner } = parseQuotedValue(parsed.value);
+	const coercedEffort = coerceReasoningEffortForModel(requestedModel, inner);
+	if (coercedEffort === inner) {
+		return assignment;
+	}
+
+	return `${parsed.key}=${quote}${coercedEffort}${quote}`;
+}
+
+function rewriteReasoningConfigArgs(rawArgs) {
+	const requestedModel = extractRequestedModel(rawArgs);
+	if (!requestedModel) {
+		return {
+			args: [...rawArgs],
+			requestedModel: null,
+		};
+	}
+
+	const nextArgs = [...rawArgs];
+	for (let i = 0; i < nextArgs.length; i += 1) {
+		const arg = nextArgs[i];
+		if ((arg === "-c" || arg === "--config") && typeof nextArgs[i + 1] === "string") {
+			nextArgs[i + 1] = rewriteReasoningConfigAssignment(
+				nextArgs[i + 1],
+				requestedModel,
+			);
+			i += 1;
+			continue;
+		}
+		if (typeof arg === "string" && arg.startsWith("--config=")) {
+			const assignment = arg.slice("--config=".length);
+			nextArgs[i] = `--config=${rewriteReasoningConfigAssignment(
+				assignment,
+				requestedModel,
+			)}`;
+		}
+	}
+
+	return {
+		args: nextArgs,
+		requestedModel,
+	};
+}
+
+function resolveCodexHomeDir(env = process.env) {
+	const override = (env.CODEX_HOME ?? "").trim();
+	if (override.length > 0) return override;
+	if (process.platform === "win32") {
+		const homeDir = resolveWindowsUserHomeDir();
+		if (homeDir) {
+			return join(homeDir, ".codex");
+		}
+	}
+	return join(env.HOME ?? homedir(), ".codex");
+}
+
+function ensureTrailingNewline(value) {
+	return value.endsWith("\n") ? value : `${value}\n`;
+}
+
+function captureShadowHomeState(filePath) {
+	try {
+		if (!existsSync(filePath)) {
+			return { exists: false, content: null };
+		}
+		return {
+			exists: true,
+			content: readFileSync(filePath, "utf8"),
+		};
+	} catch {
+		return { exists: true, content: null, unreadable: true };
+	}
+}
+
+function shadowHomeStateMatches(left, right) {
+	return (
+		left.exists === right.exists &&
+		left.content === right.content &&
+		Boolean(left.unreadable) === Boolean(right.unreadable)
+	);
+}
+
+function syncShadowHomeStateFile(sourcePath, destinationPath) {
+	const tempPath = join(
+		dirname(destinationPath),
+		`.${basename(destinationPath)}.codex-multi-auth-sync-${process.pid}.tmp`,
+	);
+	try {
+		mkdirSync(dirname(destinationPath), { recursive: true });
+		copyFileSync(sourcePath, tempPath);
+		renameSync(tempPath, destinationPath);
+	} catch (error) {
+		try {
+			rmSync(tempPath, { force: true });
+		} catch {
+			// Best-effort cleanup only.
+		}
+		throw error;
+	}
+}
+
+function rewriteConfigTomlReasoningEffort(rawConfig, requestedModel) {
+	const lineEnding = rawConfig.includes("\r\n") ? "\r\n" : "\n";
+	let changed = false;
+	const nextLines = rawConfig.split(/\r?\n/).map((line) => {
+		const quotedMatch = line.match(
+			/^(\s*model_reasoning_effort\s*=\s*)(["'])([^"']+)(\2.*)$/,
+		);
+		const bareMatch = quotedMatch
+			? null
+			: line.match(
+					/^(\s*model_reasoning_effort\s*=\s*)([^\s#]+)(\s*(?:#.*)?)$/,
+				);
+		if (!quotedMatch && !bareMatch) return line;
+
+		const prefix = quotedMatch?.[1] ?? bareMatch?.[1] ?? "";
+		const openingQuote = quotedMatch?.[2] ?? "";
+		const currentEffort = quotedMatch?.[3] ?? bareMatch?.[2] ?? "";
+		const suffix = quotedMatch?.[4] ?? bareMatch?.[3] ?? "";
+		const coercedEffort = coerceReasoningEffortForModel(
+			requestedModel,
+			currentEffort,
+		);
+		if (coercedEffort === currentEffort) {
+			return line;
+		}
+
+		changed = true;
+		return quotedMatch
+			? `${prefix}${openingQuote}${coercedEffort}${suffix}`
+			: `${prefix}${coercedEffort}${suffix}`;
+	});
+
+	if (!changed) {
+		return rawConfig;
+	}
+
+	return ensureTrailingNewline(nextLines.join(lineEnding));
+}
+
+function resolveOriginalMultiAuthDir(env) {
+	const explicit = (env.CODEX_MULTI_AUTH_DIR ?? "").trim();
+	if (explicit.length > 0) {
+		return explicit;
+	}
+	return undefined;
+}
+
+function createCompatibilityCodexHome(
+	processedArgs,
+	requestedModel,
+	baseEnv = process.env,
+) {
+	if (!requestedModel) {
+		return { args: processedArgs, env: baseEnv, cleanup: undefined };
+	}
+
+	const originalCodexHome = resolveCodexHomeDir(baseEnv);
+	const configPath = join(originalCodexHome, "config.toml");
+	if (!existsSync(configPath)) {
+		return { args: processedArgs, env: baseEnv, cleanup: undefined };
+	}
+	const originalShadowHomeState = new Map(
+		SHADOW_HOME_STATE_FILES.map((name) => [
+			name,
+			captureShadowHomeState(join(originalCodexHome, name)),
+		]),
+	);
+
+	const rawConfig = readFileSync(configPath, "utf8");
+	const compatConfig = rewriteConfigTomlReasoningEffort(
+		rawConfig,
+		requestedModel,
+	);
+	if (compatConfig === rawConfig) {
+		return { args: processedArgs, env: baseEnv, cleanup: undefined };
+	}
+
+	const shadowCodexHome = mkdtempSync(join(tmpdir(), "codex-multi-auth-home-"));
+	const cleanup = () => {
+		try {
+			removeDirectoryWithRetry(shadowCodexHome);
+		} catch {
+			// Best-effort cleanup only.
+		}
+	};
+	const tightenShadowHomePermissions = (path) => {
+		try {
+			chmodSync(path, 0o600);
+		} catch {
+			// Best-effort only; permission semantics vary by platform.
+		}
+	};
+	const syncShadowHomeStateBack = () => {
+		for (const name of SHADOW_HOME_STATE_FILES) {
+			const shadowPath = join(shadowCodexHome, name);
+			const shadowState = captureShadowHomeState(shadowPath);
+			if (!shadowState.exists || shadowState.unreadable) {
+				continue;
+			}
+
+			try {
+				const originalPath = join(originalCodexHome, name);
+				const originalSnapshot =
+					originalShadowHomeState.get(name) ?? { exists: false, content: null };
+				const currentOriginalState = captureShadowHomeState(originalPath);
+				if (!shadowHomeStateMatches(currentOriginalState, originalSnapshot)) {
+					continue;
+				}
+				if (shadowHomeStateMatches(shadowState, originalSnapshot)) {
+					continue;
+				}
+				syncShadowHomeStateFile(shadowPath, originalPath);
+				tightenShadowHomePermissions(originalPath);
+			} catch {
+				// Best-effort only; runtime auth refreshes should not fail cleanup.
+			}
+		}
+	};
+	try {
+		const compatConfigPath = join(shadowCodexHome, "config.toml");
+		writeFileSync(compatConfigPath, compatConfig, "utf8");
+		tightenShadowHomePermissions(compatConfigPath);
+		for (const name of SHADOW_HOME_STATE_FILES) {
+			const sourcePath = join(originalCodexHome, name);
+			if (existsSync(sourcePath)) {
+				const destinationPath = join(shadowCodexHome, name);
+				copyFileSync(sourcePath, destinationPath);
+				tightenShadowHomePermissions(destinationPath);
+			}
+		}
+	} catch (error) {
+		cleanup();
+		throw error;
+	}
+	const cleanupWithSync = () => {
+		syncShadowHomeStateBack();
+		cleanup();
+	};
+
+	const forwardedEnv = {
+		...baseEnv,
+		CODEX_HOME: shadowCodexHome,
+	};
+	const originalMultiAuthDir = resolveOriginalMultiAuthDir(baseEnv);
+	if (originalMultiAuthDir) {
+		forwardedEnv.CODEX_MULTI_AUTH_DIR = originalMultiAuthDir;
+	}
+
+	return {
+		args: processedArgs,
+		env: forwardedEnv,
+		cleanup: cleanupWithSync,
+	};
+}
+
+function buildForwardArgs(rawArgs) {
+	const { args: compatibilityArgs, requestedModel } = rewriteReasoningConfigArgs(rawArgs);
+	const forceFileAuthStore = (process.env.CODEX_MULTI_AUTH_FORCE_FILE_AUTH_STORE ?? "1").trim() !== "0";
+	if (!forceFileAuthStore) {
+		return { args: compatibilityArgs, requestedModel };
+	}
+	if (hasCliAuthCredentialsStoreOverride(compatibilityArgs)) {
+		return { args: compatibilityArgs, requestedModel };
+	}
+
+	return {
+		args: [
+			...compatibilityArgs,
+			"-c",
+			'cli_auth_credentials_store="file"',
+		],
+		requestedModel,
+	};
 }
 
 function normalizeExitCode(value) {
@@ -535,8 +1059,17 @@ async function main() {
 	}
 
 	await autoSyncManagerActiveSelectionIfEnabled();
-	const forwardArgs = buildForwardArgs(rawArgs);
-	return forwardToRealCodex(realCodexBin, forwardArgs);
+	const { args: forwardArgs, requestedModel } = buildForwardArgs(rawArgs);
+	const compatibility = createCompatibilityCodexHome(
+		forwardArgs,
+		requestedModel,
+	);
+	return forwardToRealCodex(
+		realCodexBin,
+		compatibility.args,
+		compatibility.env,
+		compatibility.cleanup,
+	);
 }
 
 const exitCode = await main();

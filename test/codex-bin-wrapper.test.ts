@@ -3,6 +3,7 @@ import {
 	copyFileSync,
 	mkdirSync,
 	mkdtempSync,
+	readdirSync,
 	readFileSync,
 	rmSync,
 	writeFileSync,
@@ -10,9 +11,10 @@ import {
 import { tmpdir } from "node:os";
 import { delimiter, dirname, join } from "node:path";
 import process from "node:process";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
 import { sleep } from "../lib/utils.js";
+import { resolveRealCodexBin } from "../scripts/codex-bin-resolver.js";
 
 const createdDirs: string[] = [];
 const testFileDir = dirname(fileURLToPath(import.meta.url));
@@ -57,6 +59,10 @@ function createWrapperFixture(): string {
 		join(repoRootDir, "scripts", "codex-routing.js"),
 		join(scriptDir, "codex-routing.js"),
 	);
+	copyFileSync(
+		join(repoRootDir, "scripts", "codex-bin-resolver.js"),
+		join(scriptDir, "codex-bin-resolver.js"),
+	);
 	return fixtureRoot;
 }
 
@@ -80,6 +86,88 @@ function createCustomFakeCodexBin(rootDir: string, lines: string[]): string {
 	return fakeBin;
 }
 
+function injectShadowCleanupBusyFailures(
+	failuresBeforeSuccess = 2,
+): NodeJS.ProcessEnv {
+	return {
+		CODEX_MULTI_AUTH_TEST_SHADOW_CLEANUP_BUSY_FAILURES: String(failuresBeforeSuccess),
+	};
+}
+
+function createFakeGlobalCodexInstall(rootDir: string): string {
+	const fakeBin = join(rootDir, "@openai", "codex", "bin", "codex.js");
+	mkdirSync(dirname(fakeBin), { recursive: true });
+	writeFileSync(
+		fakeBin,
+		[
+			"#!/usr/bin/env node",
+			'console.log(`FORWARDED:${process.argv.slice(2).join(" ")}`);',
+			"process.exit(0);",
+		].join("\n"),
+		"utf8",
+	);
+	return fakeBin;
+}
+
+function createSpawnSyncSuccess(stdout: string): SpawnSyncReturns<string> {
+	return {
+		output: ["", stdout, ""],
+		pid: 1,
+		signal: null,
+		status: 0,
+		stderr: "",
+		stdout,
+	};
+}
+
+const WRAPPER_ENV_ALLOWLIST = [
+	"APPDATA",
+	"CI",
+	"COLORTERM",
+	"COMSPEC",
+	"ComSpec",
+	"HOME",
+	"HOMEDRIVE",
+	"HOMEPATH",
+	"LANG",
+	"LOCALAPPDATA",
+	"NODE_OPTIONS",
+	"OS",
+	"PATH",
+	"Path",
+	"PATHEXT",
+	"PROCESSOR_ARCHITECTURE",
+	"PROGRAMDATA",
+	"ProgramData",
+	"SYSTEMROOT",
+	"SystemRoot",
+	"TEMP",
+	"TERM",
+	"TERM_PROGRAM",
+	"TMP",
+	"TMPDIR",
+	"USERPROFILE",
+	"WINDIR",
+] as const;
+
+function buildWrapperEnv(extraEnv: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
+	const env: NodeJS.ProcessEnv = {};
+	for (const key of WRAPPER_ENV_ALLOWLIST) {
+		const value = process.env[key];
+		if (value !== undefined) {
+			env[key] = value;
+		}
+	}
+	env.CODEX_MULTI_AUTH_FORCE_FILE_AUTH_STORE = "1";
+	Object.assign(env, extraEnv);
+	for (const [key, value] of Object.entries(env)) {
+		if (value === undefined) {
+			delete env[key];
+		}
+	}
+	return env;
+}
+
 function runWrapper(
 	fixtureRoot: string,
 	args: string[],
@@ -90,10 +178,7 @@ function runWrapper(
 		[join(fixtureRoot, "scripts", "codex.js"), ...args],
 		{
 			encoding: "utf8",
-			env: {
-				...process.env,
-				...extraEnv,
-			},
+			env: buildWrapperEnv(extraEnv),
 		},
 	);
 }
@@ -105,10 +190,7 @@ function runWrapperScript(
 ): SpawnSyncReturns<string> {
 	return spawnSync(process.execPath, [scriptPath, ...args], {
 		encoding: "utf8",
-		env: {
-			...process.env,
-			...extraEnv,
-		},
+		env: buildWrapperEnv(extraEnv),
 	});
 }
 
@@ -129,10 +211,7 @@ function runWrapperAsync(
 			process.execPath,
 			[join(fixtureRoot, "scripts", "codex.js"), ...args],
 			{
-				env: {
-					...process.env,
-					...extraEnv,
-				},
+				env: buildWrapperEnv(extraEnv),
 				stdio: ["ignore", "pipe", "pipe"],
 			},
 		);
@@ -267,6 +346,408 @@ describe("codex bin wrapper", () => {
 
 		expect(result.status).toBe(13);
 		expect(combinedOutput(result)).toContain("EPERM: locked auth store");
+	});
+
+	it("creates a compatibility CODEX_HOME shadow when the requested model cannot accept xhigh defaults", () => {
+		const fixtureRoot = createWrapperFixture();
+		const fakeBin = createCustomFakeCodexBin(fixtureRoot, [
+			"#!/usr/bin/env node",
+			'const fs = require("node:fs");',
+			'const path = require("node:path");',
+			'console.log(`FORWARDED:${process.argv.slice(2).join(" ")}`);',
+			'console.log(`CODEX_HOME:${process.env.CODEX_HOME ?? ""}`);',
+			'console.log(`CODEX_MULTI_AUTH_DIR_JSON:${JSON.stringify(process.env.CODEX_MULTI_AUTH_DIR ?? null)}`);',
+			'const configPath = path.join(process.env.CODEX_HOME ?? "", "config.toml");',
+			'const authPath = path.join(process.env.CODEX_HOME ?? "", "auth.json");',
+			'console.log(`AUTH_EXISTS:${fs.existsSync(authPath)}`);',
+			'if (fs.existsSync(authPath)) {',
+			'  console.log(`AUTH_JSON:${fs.readFileSync(authPath, "utf8").trim()}`);',
+			'  console.log(`AUTH_MODE:${(fs.statSync(authPath).mode & 0o777).toString(8)}`);',
+			'}',
+			'console.log("CONFIG_START");',
+			'console.log(fs.readFileSync(configPath, "utf8").trim());',
+			'console.log(`CONFIG_MODE:${(fs.statSync(configPath).mode & 0o777).toString(8)}`);',
+			'console.log("CONFIG_END");',
+			"process.exit(0);",
+		]);
+		const originalHome = join(fixtureRoot, "codex-home");
+		mkdirSync(originalHome, { recursive: true });
+		writeFileSync(join(originalHome, "auth.json"), "{}\n", "utf8");
+		writeFileSync(
+			join(originalHome, "config.toml"),
+			[
+				'model_reasoning_effort = "xhigh"',
+				'profile = "legacy-full-access"',
+				"",
+				'[profiles."legacy-full-access"]',
+				'model_reasoning_effort = "xhigh"',
+				"",
+			].join("\n"),
+			"utf8",
+		);
+
+		const result = runWrapper(fixtureRoot, ["exec", "status", "--model", "gpt-5.1"], {
+			CODEX_MULTI_AUTH_REAL_CODEX_BIN: fakeBin,
+			CODEX_HOME: originalHome,
+			CODEX_MULTI_AUTH_DIR: undefined,
+		});
+
+		expect(result.status).toBe(0);
+		const output = combinedOutput(result);
+		expect(output).toContain('FORWARDED:exec status --model gpt-5.1 -c cli_auth_credentials_store="file"');
+		expect(output).not.toContain(`CODEX_HOME:${originalHome}`);
+		expect(output).toContain("CODEX_MULTI_AUTH_DIR_JSON:null");
+		expect(output).toContain("AUTH_EXISTS:true");
+		expect(output).toContain("AUTH_JSON:{}");
+		expect(output).toContain("AUTH_MODE:");
+		expect(output).toContain('model_reasoning_effort = "high"');
+		expect(output).toContain("CONFIG_MODE:");
+		expect(output).not.toContain('model_reasoning_effort = "xhigh"');
+		if (process.platform !== "win32") {
+			expect(output).toContain("AUTH_MODE:600");
+			expect(output).toContain("CONFIG_MODE:600");
+		}
+	});
+
+	it("cleans up compatibility shadow homes when staging fails", () => {
+		const fixtureRoot = createWrapperFixture();
+		const cleanupFailureEnv = injectShadowCleanupBusyFailures();
+		const fakeBin = createFakeCodexBin(fixtureRoot);
+		const originalHome = join(fixtureRoot, "codex-home");
+		const controlledTmp = join(fixtureRoot, "tmp");
+		mkdirSync(originalHome, { recursive: true });
+		mkdirSync(controlledTmp, { recursive: true });
+		writeFileSync(join(originalHome, "auth.json"), "{}\n", "utf8");
+		mkdirSync(join(originalHome, "accounts.json"), { recursive: true });
+		writeFileSync(
+			join(originalHome, "config.toml"),
+			'model_reasoning_effort = "xhigh"\n',
+			"utf8",
+		);
+
+		const result = runWrapper(
+			fixtureRoot,
+			["exec", "status", "--model", "gpt-5.1"],
+			{
+				CODEX_MULTI_AUTH_REAL_CODEX_BIN: fakeBin,
+				CODEX_HOME: originalHome,
+				TMP: controlledTmp,
+				TEMP: controlledTmp,
+				TMPDIR: controlledTmp,
+				...cleanupFailureEnv,
+			},
+		);
+
+		expect(result.status).toBe(1);
+	expect(
+		readdirSync(controlledTmp).filter((entry) =>
+			entry.startsWith("codex-multi-auth-home-"),
+			),
+		).toEqual([]);
+	});
+
+	it("syncs refreshed auth state back from compatibility shadow homes before cleanup", () => {
+		const fixtureRoot = createWrapperFixture();
+		const fakeBin = createCustomFakeCodexBin(fixtureRoot, [
+			"#!/usr/bin/env node",
+			'const fs = require("node:fs");',
+			'const path = require("node:path");',
+			'const home = process.env.CODEX_HOME ?? "";',
+			'fs.writeFileSync(path.join(home, "auth.json"), \'{"token":"shadow"}\\n\', "utf8");',
+			'fs.writeFileSync(path.join(home, "accounts.json"), \'{"accounts":["shadow"]}\\n\', "utf8");',
+			'fs.writeFileSync(path.join(home, ".codex-global-state.json"), \'{"last":"shadow"}\\n\', "utf8");',
+			'console.log(`CODEX_HOME:${home}`);',
+			"process.exit(0);",
+		]);
+		const originalHome = join(fixtureRoot, "codex-home");
+		const controlledTmp = join(fixtureRoot, "tmp");
+		mkdirSync(originalHome, { recursive: true });
+		mkdirSync(controlledTmp, { recursive: true });
+		writeFileSync(join(originalHome, "auth.json"), '{"token":"original"}\n', "utf8");
+		writeFileSync(join(originalHome, "accounts.json"), '{"accounts":["original"]}\n', "utf8");
+		writeFileSync(join(originalHome, ".codex-global-state.json"), '{"last":"original"}\n', "utf8");
+		writeFileSync(join(originalHome, "config.toml"), 'model_reasoning_effort = "xhigh"\n', "utf8");
+
+		const result = runWrapper(
+			fixtureRoot,
+			["exec", "status", "--model", "gpt-5.1"],
+			{
+				CODEX_MULTI_AUTH_REAL_CODEX_BIN: fakeBin,
+				CODEX_HOME: originalHome,
+				TMP: controlledTmp,
+				TEMP: controlledTmp,
+				TMPDIR: controlledTmp,
+			},
+		);
+
+		expect(result.status).toBe(0);
+		expect(readFileSync(join(originalHome, "auth.json"), "utf8").trim()).toBe('{"token":"shadow"}');
+		expect(readFileSync(join(originalHome, "accounts.json"), "utf8").trim()).toBe('{"accounts":["shadow"]}');
+	expect(readFileSync(join(originalHome, ".codex-global-state.json"), "utf8").trim()).toBe('{"last":"shadow"}');
+	expect(
+		readdirSync(controlledTmp).filter((entry) =>
+			entry.startsWith("codex-multi-auth-home-"),
+		),
+	).toEqual([]);
+	});
+
+	it("does not clobber original auth state that changed while the compatibility shadow was active", () => {
+		const fixtureRoot = createWrapperFixture();
+		const fakeBin = createCustomFakeCodexBin(fixtureRoot, [
+			"#!/usr/bin/env node",
+			'const fs = require("node:fs");',
+			'const path = require("node:path");',
+			'const home = process.env.CODEX_HOME ?? "";',
+			'const originalHome = process.env.CODEX_MULTI_AUTH_TEST_EXTERNAL_HOME ?? "";',
+			'fs.writeFileSync(path.join(home, "auth.json"), \'{"token":"shadow"}\\n\', "utf8");',
+			'fs.writeFileSync(path.join(home, "accounts.json"), \'{"accounts":["shadow"]}\\n\', "utf8");',
+			'fs.writeFileSync(path.join(home, ".codex-global-state.json"), \'{"last":"shadow"}\\n\', "utf8");',
+			'if (originalHome) {',
+			'  fs.writeFileSync(path.join(originalHome, "auth.json"), \'{"token":"external"}\\n\', "utf8");',
+			'}',
+			"process.exit(0);",
+		]);
+		const originalHome = join(fixtureRoot, "codex-home");
+		const controlledTmp = join(fixtureRoot, "tmp");
+		mkdirSync(originalHome, { recursive: true });
+		mkdirSync(controlledTmp, { recursive: true });
+		writeFileSync(join(originalHome, "auth.json"), '{"token":"original"}\n', "utf8");
+		writeFileSync(join(originalHome, "accounts.json"), '{"accounts":["original"]}\n', "utf8");
+		writeFileSync(join(originalHome, ".codex-global-state.json"), '{"last":"original"}\n', "utf8");
+		writeFileSync(join(originalHome, "config.toml"), 'model_reasoning_effort = "xhigh"\n', "utf8");
+
+		const result = runWrapper(
+			fixtureRoot,
+			["exec", "status", "--model", "gpt-5.1"],
+			{
+				CODEX_MULTI_AUTH_REAL_CODEX_BIN: fakeBin,
+				CODEX_HOME: originalHome,
+				CODEX_MULTI_AUTH_TEST_EXTERNAL_HOME: originalHome,
+				TMP: controlledTmp,
+				TEMP: controlledTmp,
+				TMPDIR: controlledTmp,
+			},
+		);
+
+		expect(result.status).toBe(0);
+		expect(readFileSync(join(originalHome, "auth.json"), "utf8").trim()).toBe('{"token":"external"}');
+		expect(readFileSync(join(originalHome, "accounts.json"), "utf8").trim()).toBe('{"accounts":["shadow"]}');
+		expect(readFileSync(join(originalHome, ".codex-global-state.json"), "utf8").trim()).toBe('{"last":"shadow"}');
+	});
+
+	it("rewrites unquoted config reasoning effort values for mini compatibility models", () => {
+		const fixtureRoot = createWrapperFixture();
+		const fakeBin = createCustomFakeCodexBin(fixtureRoot, [
+			"#!/usr/bin/env node",
+			'const fs = require("node:fs");',
+			'const path = require("node:path");',
+			'console.log(`FORWARDED:${process.argv.slice(2).join(" ")}`);',
+			'const configPath = path.join(process.env.CODEX_HOME ?? "", "config.toml");',
+			'console.log("CONFIG_START");',
+			'console.log(fs.readFileSync(configPath, "utf8").trim());',
+			'console.log("CONFIG_END");',
+			"process.exit(0);",
+		]);
+		const originalHome = join(fixtureRoot, "codex-home");
+		mkdirSync(originalHome, { recursive: true });
+		writeFileSync(join(originalHome, "auth.json"), "{}\n", "utf8");
+		writeFileSync(
+			join(originalHome, "config.toml"),
+			[
+				"model_reasoning_effort = xhigh",
+				'profile = "legacy-full-access"',
+				"",
+				'[profiles."legacy-full-access"]',
+				"model_reasoning_effort = xhigh # keep comment",
+				"",
+			].join("\n"),
+			"utf8",
+		);
+
+		const result = runWrapper(
+			fixtureRoot,
+			["exec", "status", "--model", "gpt-5.1-codex-mini"],
+			{
+				CODEX_MULTI_AUTH_REAL_CODEX_BIN: fakeBin,
+				CODEX_HOME: originalHome,
+			},
+		);
+
+		expect(result.status).toBe(0);
+		const output = combinedOutput(result);
+		expect(output).toContain(
+			'FORWARDED:exec status --model gpt-5.1-codex-mini -c cli_auth_credentials_store="file"',
+		);
+		expect(output).toContain("model_reasoning_effort = high");
+		expect(output).toContain("model_reasoning_effort = high # keep comment");
+		expect(output).not.toContain("model_reasoning_effort = xhigh");
+	});
+
+	it("downgrades explicit unsupported reasoning overrides before forwarding", () => {
+		const fixtureRoot = createWrapperFixture();
+		const fakeBin = createFakeCodexBin(fixtureRoot);
+		const originalHome = join(fixtureRoot, "codex-home");
+		mkdirSync(originalHome, { recursive: true });
+		writeFileSync(join(originalHome, "auth.json"), "{}\n", "utf8");
+		writeFileSync(join(originalHome, "config.toml"), "", "utf8");
+
+		const result = runWrapper(
+			fixtureRoot,
+			[
+				"exec",
+				"status",
+				"--model",
+				"gpt-5.1",
+				"-c",
+				'model_reasoning_effort="xhigh"',
+			],
+			{
+				CODEX_MULTI_AUTH_REAL_CODEX_BIN: fakeBin,
+				CODEX_HOME: originalHome,
+			},
+		);
+
+		expect(result.status).toBe(0);
+		expect(result.stdout).toContain(
+			'FORWARDED:exec status --model gpt-5.1 -c model_reasoning_effort="high" -c cli_auth_credentials_store="file"',
+		);
+		expect(result.stdout).not.toContain('model_reasoning_effort="xhigh"');
+	});
+
+	it("downgrades explicit unsupported reasoning overrides for codex mini variants", () => {
+		const fixtureRoot = createWrapperFixture();
+		const fakeBin = createFakeCodexBin(fixtureRoot);
+		const originalHome = join(fixtureRoot, "codex-home");
+		mkdirSync(originalHome, { recursive: true });
+		writeFileSync(join(originalHome, "auth.json"), "{}\n", "utf8");
+		writeFileSync(join(originalHome, "config.toml"), "", "utf8");
+
+		const result = runWrapper(
+			fixtureRoot,
+			[
+				"exec",
+				"status",
+				"--model",
+				"gpt-5.1-codex-mini",
+				"-c",
+				'model_reasoning_effort="xhigh"',
+			],
+			{
+				CODEX_MULTI_AUTH_REAL_CODEX_BIN: fakeBin,
+				CODEX_HOME: originalHome,
+			},
+		);
+
+		expect(result.status).toBe(0);
+	expect(result.stdout).toContain(
+		'FORWARDED:exec status --model gpt-5.1-codex-mini -c model_reasoning_effort="high" -c cli_auth_credentials_store="file"',
+	);
+	expect(result.stdout).not.toContain('model_reasoning_effort="xhigh"');
+	});
+
+	it("coerces reasoning overrides for reasoning-suffixed general-model aliases", () => {
+		const fixtureRoot = createWrapperFixture();
+		const fakeBin = createFakeCodexBin(fixtureRoot);
+		const originalHome = join(fixtureRoot, "codex-home");
+		mkdirSync(originalHome, { recursive: true });
+		writeFileSync(join(originalHome, "auth.json"), "{}\n", "utf8");
+		writeFileSync(join(originalHome, "config.toml"), "", "utf8");
+
+		for (const model of ["gpt-5-low", "gpt-5-chat-latest-low"]) {
+			const result = runWrapper(
+				fixtureRoot,
+				[
+					"exec",
+					"status",
+					"--model",
+					model,
+					"-c",
+					'model_reasoning_effort="xhigh"',
+				],
+				{
+					CODEX_MULTI_AUTH_REAL_CODEX_BIN: fakeBin,
+					CODEX_HOME: originalHome,
+				},
+			);
+
+			expect(result.status).toBe(0);
+			expect(result.stdout).toContain(
+				`FORWARDED:exec status --model ${model} -c model_reasoning_effort="high" -c cli_auth_credentials_store="file"`,
+			);
+			expect(result.stdout).not.toContain('model_reasoning_effort="xhigh"');
+		}
+	});
+
+	it("preserves explicit xhigh overrides for models that support them", () => {
+		const fixtureRoot = createWrapperFixture();
+		const fakeBin = createFakeCodexBin(fixtureRoot);
+		const originalHome = join(fixtureRoot, "codex-home");
+		mkdirSync(originalHome, { recursive: true });
+		writeFileSync(join(originalHome, "auth.json"), "{}\n", "utf8");
+		writeFileSync(join(originalHome, "config.toml"), "", "utf8");
+
+		const result = runWrapper(
+			fixtureRoot,
+			[
+				"exec",
+				"status",
+				"--model",
+				"gpt-5.4",
+				"-c",
+				'model_reasoning_effort="xhigh"',
+			],
+			{
+				CODEX_MULTI_AUTH_REAL_CODEX_BIN: fakeBin,
+				CODEX_HOME: originalHome,
+			},
+		);
+
+		expect(result.status).toBe(0);
+		expect(result.stdout).toContain(
+			'FORWARDED:exec status --model gpt-5.4 -c model_reasoning_effort="xhigh" -c cli_auth_credentials_store="file"',
+		);
+	});
+
+	it("rewrites config reasoning effort when the model supports xhigh but rejects none", () => {
+		const fixtureRoot = createWrapperFixture();
+		const fakeBin = createCustomFakeCodexBin(fixtureRoot, [
+			"#!/usr/bin/env node",
+			'const fs = require("node:fs");',
+			'const path = require("node:path");',
+			'console.log(`CODEX_HOME:${process.env.CODEX_HOME ?? ""}`);',
+			'const configPath = path.join(process.env.CODEX_HOME ?? "", "config.toml");',
+			'console.log(fs.readFileSync(configPath, "utf8").trim());',
+			"process.exit(0);",
+		]);
+		const originalHome = join(fixtureRoot, "codex-home");
+		mkdirSync(originalHome, { recursive: true });
+		writeFileSync(join(originalHome, "auth.json"), "{}\n", "utf8");
+		writeFileSync(
+			join(originalHome, "config.toml"),
+			[
+				'model_reasoning_effort = "none"',
+				'profile = "legacy-pro"',
+				"",
+				'[profiles."legacy-pro"]',
+				'model_reasoning_effort = "none"',
+				"",
+			].join("\n"),
+			"utf8",
+		);
+
+		const result = runWrapper(
+			fixtureRoot,
+			["exec", "status", "--model", "gpt-5.4-pro"],
+			{
+				CODEX_MULTI_AUTH_REAL_CODEX_BIN: fakeBin,
+				CODEX_HOME: originalHome,
+			},
+		);
+
+		expect(result.status).toBe(0);
+		expect(result.stdout).not.toContain(`CODEX_HOME:${originalHome}`);
+		expect(result.stdout).toContain('model_reasoning_effort = "medium"');
+		expect(result.stdout).not.toContain('model_reasoning_effort = "none"');
 	});
 
 	it.skipIf(process.platform !== "win32")(
@@ -467,6 +948,10 @@ describe("codex bin wrapper", () => {
 				join(repoRootDir, "scripts", "codex-routing.js"),
 				join(scriptDir, "codex-routing.js"),
 			);
+			copyFileSync(
+				join(repoRootDir, "scripts", "codex-bin-resolver.js"),
+				join(scriptDir, "codex-bin-resolver.js"),
+			);
 			writeFileSync(
 				join(globalShimDir, "codex-multi-auth.cmd"),
 				"@ECHO OFF\r\nREM real shim\r\n",
@@ -593,6 +1078,300 @@ describe("codex bin wrapper", () => {
 		expect(output).toContain(
 			"Install it globally: npm install -g @openai/codex",
 		);
+	});
+
+	it("discovers the real codex bin via npm root fallback for direct script runs on Windows", () => {
+		const fixtureRoot = createWrapperFixture();
+		const fakeGlobalRoot = join(fixtureRoot, "fake-global-node_modules");
+		const fakeGlobalBin = createFakeGlobalCodexInstall(fakeGlobalRoot);
+		const spawnCalls: Array<{
+			args: string[];
+			command: string;
+			options: Record<string, unknown>;
+		}> = [];
+		const resolvedBin = resolveRealCodexBin({
+			argv: ["node", join(fixtureRoot, "scripts", "codex.js")],
+			env: {
+				ComSpec: "C:\\Windows\\System32\\cmd.exe",
+				CODEX_MULTI_AUTH_REAL_CODEX_BIN: "",
+				PREFIX: "",
+				npm_config_prefix: "",
+			},
+			existsSyncImpl: (candidatePath) => candidatePath === fakeGlobalBin,
+			moduleUrl: pathToFileURL(join(fixtureRoot, "scripts", "codex.js")).href,
+			platform: "win32",
+			resolvePackageBin: () => null,
+			spawnSyncImpl: (command, args, options) => {
+				spawnCalls.push({
+					args,
+					command,
+					options: options as Record<string, unknown>,
+				});
+				return createSpawnSyncSuccess(`${fakeGlobalRoot}\r\n`);
+			},
+		});
+
+		expect(resolvedBin).toBe(fakeGlobalBin);
+		expect(spawnCalls).toHaveLength(1);
+		expect(spawnCalls[0]?.command).toBe("C:\\Windows\\System32\\cmd.exe");
+		expect(spawnCalls[0]?.args).toEqual(["/d", "/s", "/c", "npm root -g"]);
+		expect(spawnCalls[0]?.options).toMatchObject({
+			encoding: "utf8",
+			env: {
+				ComSpec: "C:\\Windows\\System32\\cmd.exe",
+				CODEX_MULTI_AUTH_REAL_CODEX_BIN: "",
+				PREFIX: "",
+				npm_config_prefix: "",
+			},
+			stdio: ["ignore", "pipe", "ignore"],
+			timeout: 5000,
+			windowsHide: true,
+		});
+	});
+
+	it("honors uppercase COMSPEC when resolving the Windows npm root fallback", () => {
+		const fixtureRoot = createWrapperFixture();
+		const fakeGlobalRoot = join(fixtureRoot, "fake-global-node_modules-uppercase");
+		const fakeGlobalBin = createFakeGlobalCodexInstall(fakeGlobalRoot);
+		const spawnCalls: Array<{
+			args: string[];
+			command: string;
+			options: Record<string, unknown>;
+		}> = [];
+		const resolvedBin = resolveRealCodexBin({
+			argv: ["node", join(fixtureRoot, "scripts", "codex.js")],
+			env: {
+				COMSPEC: "C:\\Windows\\System32\\cmd.exe",
+				CODEX_MULTI_AUTH_REAL_CODEX_BIN: "",
+				PREFIX: "",
+				npm_config_prefix: "",
+			},
+			existsSyncImpl: (candidatePath) => candidatePath === fakeGlobalBin,
+			moduleUrl: pathToFileURL(join(fixtureRoot, "scripts", "codex.js")).href,
+			platform: "win32",
+			resolvePackageBin: () => null,
+			spawnSyncImpl: (command, args, options) => {
+				spawnCalls.push({
+					args,
+					command,
+					options: options as Record<string, unknown>,
+				});
+				return createSpawnSyncSuccess(`${fakeGlobalRoot}\r\n`);
+			},
+		});
+
+		expect(resolvedBin).toBe(fakeGlobalBin);
+		expect(spawnCalls).toHaveLength(1);
+		expect(spawnCalls[0]?.command).toBe("C:\\Windows\\System32\\cmd.exe");
+		expect(spawnCalls[0]?.args).toEqual(["/d", "/s", "/c", "npm root -g"]);
+		expect(spawnCalls[0]?.options).toMatchObject({
+			encoding: "utf8",
+			env: {
+				COMSPEC: "C:\\Windows\\System32\\cmd.exe",
+				CODEX_MULTI_AUTH_REAL_CODEX_BIN: "",
+				PREFIX: "",
+				npm_config_prefix: "",
+			},
+			stdio: ["ignore", "pipe", "ignore"],
+			timeout: 5000,
+			windowsHide: true,
+		});
+	});
+
+	it("derives cmd.exe from SystemRoot when ComSpec is unavailable", () => {
+		const fixtureRoot = createWrapperFixture();
+		const fakeGlobalRoot = join(fixtureRoot, "fake-global-node_modules-systemroot");
+		const fakeGlobalBin = createFakeGlobalCodexInstall(fakeGlobalRoot);
+		const spawnCalls: Array<{
+			args: string[];
+			command: string;
+			options: Record<string, unknown>;
+		}> = [];
+		const resolvedBin = resolveRealCodexBin({
+			argv: ["node", join(fixtureRoot, "scripts", "codex.js")],
+			env: {
+				CODEX_MULTI_AUTH_REAL_CODEX_BIN: "",
+				PREFIX: "",
+				SystemRoot: "C:\\Windows\\",
+				npm_config_prefix: "",
+			},
+			existsSyncImpl: (candidatePath) => candidatePath === fakeGlobalBin,
+			moduleUrl: pathToFileURL(join(fixtureRoot, "scripts", "codex.js")).href,
+			platform: "win32",
+			resolvePackageBin: () => null,
+			spawnSyncImpl: (command, args, options) => {
+				spawnCalls.push({
+					args,
+					command,
+					options: options as Record<string, unknown>,
+				});
+				return createSpawnSyncSuccess(`${fakeGlobalRoot}\r\n`);
+			},
+		});
+
+		expect(resolvedBin).toBe(fakeGlobalBin);
+		expect(spawnCalls).toHaveLength(1);
+		expect(spawnCalls[0]?.command).toBe("C:\\Windows\\System32\\cmd.exe");
+		expect(spawnCalls[0]?.args).toEqual(["/d", "/s", "/c", "npm root -g"]);
+		expect(spawnCalls[0]?.options).toMatchObject({
+			timeout: 5000,
+		});
+	});
+
+	it("derives cmd.exe from uppercase SYSTEMROOT when ComSpec is unavailable", () => {
+		const fixtureRoot = createWrapperFixture();
+		const fakeGlobalRoot = join(
+			fixtureRoot,
+			"fake-global-node_modules-systemroot-uppercase",
+		);
+		const fakeGlobalBin = createFakeGlobalCodexInstall(fakeGlobalRoot);
+		const spawnCalls: Array<{
+			args: string[];
+			command: string;
+			options: Record<string, unknown>;
+		}> = [];
+		const resolvedBin = resolveRealCodexBin({
+			argv: ["node", join(fixtureRoot, "scripts", "codex.js")],
+			env: {
+				CODEX_MULTI_AUTH_REAL_CODEX_BIN: "",
+				PREFIX: "",
+				SYSTEMROOT: "C:\\Windows\\",
+				npm_config_prefix: "",
+			},
+			existsSyncImpl: (candidatePath) => candidatePath === fakeGlobalBin,
+			moduleUrl: pathToFileURL(join(fixtureRoot, "scripts", "codex.js")).href,
+			platform: "win32",
+			resolvePackageBin: () => null,
+			spawnSyncImpl: (command, args, options) => {
+				spawnCalls.push({
+					args,
+					command,
+					options: options as Record<string, unknown>,
+				});
+				return createSpawnSyncSuccess(`${fakeGlobalRoot}\r\n`);
+			},
+		});
+
+		expect(resolvedBin).toBe(fakeGlobalBin);
+		expect(spawnCalls).toHaveLength(1);
+		expect(spawnCalls[0]?.command).toBe("C:\\Windows\\System32\\cmd.exe");
+		expect(spawnCalls[0]?.args).toEqual(["/d", "/s", "/c", "npm root -g"]);
+		expect(spawnCalls[0]?.options).toMatchObject({
+			timeout: 5000,
+		});
+	});
+
+	it("falls back to bare cmd.exe when no Windows shell env vars are set", () => {
+		const fixtureRoot = createWrapperFixture();
+		const spawnCalls: Array<{
+			args: string[];
+			command: string;
+			options: Record<string, unknown>;
+		}> = [];
+
+		resolveRealCodexBin({
+			argv: ["node", join(fixtureRoot, "scripts", "codex.js")],
+			env: {
+				CODEX_MULTI_AUTH_REAL_CODEX_BIN: "",
+				PREFIX: "",
+				npm_config_prefix: "",
+			},
+			existsSyncImpl: () => false,
+			moduleUrl: pathToFileURL(join(fixtureRoot, "scripts", "codex.js")).href,
+			platform: "win32",
+			resolvePackageBin: () => null,
+			spawnSyncImpl: (command, args, options) => {
+				spawnCalls.push({
+					args,
+					command,
+					options: options as Record<string, unknown>,
+				});
+				return createSpawnSyncSuccess("");
+			},
+		});
+
+		expect(spawnCalls).toHaveLength(1);
+		expect(spawnCalls[0]?.command).toBe("cmd.exe");
+		expect(spawnCalls[0]?.args).toEqual(["/d", "/s", "/c", "npm root -g"]);
+		expect(spawnCalls[0]?.options).toMatchObject({
+			encoding: "utf8",
+			env: {
+				CODEX_MULTI_AUTH_REAL_CODEX_BIN: "",
+				PREFIX: "",
+				npm_config_prefix: "",
+			},
+			stdio: ["ignore", "pipe", "ignore"],
+			timeout: 5000,
+			windowsHide: true,
+		});
+	});
+
+	it("discovers the real codex bin via npm root fallback on POSIX", () => {
+		const fixtureRoot = createWrapperFixture();
+		const fakeGlobalRoot = join(fixtureRoot, "fake-global-node_modules-posix");
+		const fakeGlobalBin = createFakeGlobalCodexInstall(fakeGlobalRoot);
+		const spawnCalls: Array<{
+			args: string[];
+			command: string;
+			options: Record<string, unknown>;
+		}> = [];
+		const resolvedBin = resolveRealCodexBin({
+			argv: ["node", join(fixtureRoot, "scripts", "codex.js")],
+			env: {
+				CODEX_MULTI_AUTH_REAL_CODEX_BIN: "",
+				PREFIX: "",
+				npm_config_prefix: "",
+			},
+			existsSyncImpl: (candidatePath) => candidatePath === fakeGlobalBin,
+			moduleUrl: pathToFileURL(join(fixtureRoot, "scripts", "codex.js")).href,
+			platform: "linux",
+			resolvePackageBin: () => null,
+			spawnSyncImpl: (command, args, options) => {
+				spawnCalls.push({
+					args,
+					command,
+					options: options as Record<string, unknown>,
+				});
+				return createSpawnSyncSuccess(`${fakeGlobalRoot}\n`);
+			},
+		});
+
+		expect(resolvedBin).toBe(fakeGlobalBin);
+		expect(spawnCalls).toHaveLength(1);
+		expect(spawnCalls[0]?.command).toBe("npm");
+		expect(spawnCalls[0]?.args).toEqual(["root", "-g"]);
+		expect(spawnCalls[0]?.options).toMatchObject({
+			encoding: "utf8",
+			env: {
+				CODEX_MULTI_AUTH_REAL_CODEX_BIN: "",
+				PREFIX: "",
+				npm_config_prefix: "",
+			},
+			stdio: ["ignore", "pipe", "ignore"],
+			timeout: 5000,
+		});
+		expect(spawnCalls[0]?.options).not.toHaveProperty("windowsHide");
+	});
+
+	it("returns null when npm root lookup throws", () => {
+		const fixtureRoot = createWrapperFixture();
+		const resolvedBin = resolveRealCodexBin({
+			argv: ["node", join(fixtureRoot, "scripts", "codex.js")],
+			env: {
+				CODEX_MULTI_AUTH_REAL_CODEX_BIN: "",
+				PREFIX: "",
+				npm_config_prefix: "",
+			},
+			existsSyncImpl: () => false,
+			moduleUrl: pathToFileURL(join(fixtureRoot, "scripts", "codex.js")).href,
+			platform: "linux",
+			resolvePackageBin: () => null,
+			spawnSyncImpl: () => {
+				throw new Error("ENOENT: npm not found");
+			},
+		});
+
+		expect(resolvedBin).toBeNull();
 	});
 
 	it("handles concurrent wrapper invocations without module-load regressions", async () => {

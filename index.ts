@@ -1858,20 +1858,26 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 													break;
 												}
 
-												if (rateLimit) {
+												if (response.status === 429) {
 													runtimeMetrics.rateLimitedResponses++;
+													const retryAfterMs =
+														rateLimit?.retryAfterMs ?? 60_000;
 													const { attempt, delayMs } = getRateLimitBackoff(
 														account.index,
 														quotaKey,
-														rateLimit.retryAfterMs,
+														retryAfterMs,
+													);
+													const cooldownMs = Math.max(
+														delayMs,
+														retryAfterMs,
 													);
 													preemptiveQuotaScheduler.markRateLimited(
 														quotaScheduleKey,
-														delayMs,
+														cooldownMs,
 													);
-													const waitLabel = formatWaitTime(delayMs);
+													const waitLabel = formatWaitTime(cooldownMs);
 
-													if (delayMs <= RATE_LIMIT_SHORT_RETRY_THRESHOLD_MS) {
+													if (cooldownMs <= RATE_LIMIT_SHORT_RETRY_THRESHOLD_MS) {
 														if (
 															accountManager.shouldShowAccountToast(
 																account.index,
@@ -1887,16 +1893,16 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 														}
 
 														await sleep(
-															addJitter(Math.max(MIN_BACKOFF_MS, delayMs), 0.2),
+															addJitter(Math.max(MIN_BACKOFF_MS, cooldownMs), 0.2),
 														);
 														continue;
 													}
 
 													accountManager.markRateLimitedWithReason(
 														account,
-														delayMs,
+														cooldownMs,
 														modelFamily,
-														parseRateLimitReason(rateLimit.code),
+														parseRateLimitReason(rateLimit?.code),
 														model,
 													);
 													accountManager.recordRateLimit(
@@ -2142,19 +2148,34 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 																	);
 																}
 																if (!fallbackResponse.ok) {
+																	const { response: handledFallbackResponse, rateLimit: fallbackRateLimit } =
+																		await handleErrorResponse(fallbackResponse);
 																	try {
 																		await fallbackResponse.body?.cancel();
 																	} catch {
-																		// Best effort cleanup before trying next fallback account.
+																		// Best-effort only; the error body has already been read.
 																	}
-																	if (fallbackResponse.status === 429) {
+																	if (handledFallbackResponse.status === 429) {
 																		const retryAfterMs =
-																			parseRetryAfterHintMs(
-																				fallbackResponse.headers,
-																			) ?? 60_000;
+																			fallbackRateLimit?.retryAfterMs ?? 60_000;
+																		const fallbackQuotaKey =
+																			model ? `${modelFamily}:${model}` : modelFamily;
+																		const { delayMs } = getRateLimitBackoff(
+																			fallbackAccount.index,
+																			fallbackQuotaKey,
+																			retryAfterMs,
+																		);
+																		const cooldownMs = Math.max(
+																			delayMs,
+																			retryAfterMs,
+																		);
+																		preemptiveQuotaScheduler.markRateLimited(
+																			`${fallbackEntitlementAccountKey}:${model ?? modelFamily}`,
+																			cooldownMs,
+																		);
 																		accountManager.markRateLimitedWithReason(
 																			fallbackAccount,
-																			retryAfterMs,
+																			cooldownMs,
 																			modelFamily,
 																			"quota",
 																			model,
@@ -2164,6 +2185,7 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 																			modelFamily,
 																			model,
 																		);
+																		accountManager.saveToDiskDebounced();
 																	} else {
 																		accountManager.recordFailure(
 																			fallbackAccount,

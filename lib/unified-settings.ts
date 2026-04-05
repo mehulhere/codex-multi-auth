@@ -1,4 +1,5 @@
 import {
+	copyFileSync,
 	existsSync,
 	mkdirSync,
 	renameSync,
@@ -16,8 +17,15 @@ type JsonRecord = Record<string, unknown>;
 export const UNIFIED_SETTINGS_VERSION = 1 as const;
 
 const UNIFIED_SETTINGS_PATH = join(getCodexMultiAuthDir(), "settings.json");
+const UNIFIED_SETTINGS_BACKUP_PATH = `${UNIFIED_SETTINGS_PATH}.bak`;
 const RETRYABLE_FS_CODES = new Set(["EBUSY", "EPERM"]);
+const TRANSIENT_READ_FS_CODES = new Set(["EBUSY", "EAGAIN"]);
 let settingsWriteQueue: Promise<void> = Promise.resolve();
+
+type SettingsReadResult = {
+	record: JsonRecord | null;
+	usedBackup: boolean;
+};
 
 function isRetryableFsError(error: unknown): boolean {
 	const code = (error as NodeJS.ErrnoException | undefined)?.code;
@@ -45,6 +53,149 @@ function cloneRecord(value: unknown): JsonRecord | null {
 	return { ...value };
 }
 
+function parseSettingsRecord(content: string): JsonRecord {
+	const parsed = cloneRecord(JSON.parse(content));
+	if (!parsed) {
+		throw new Error("Unified settings must contain a JSON object at the root.");
+	}
+	return parsed;
+}
+
+/**
+ * Read a unified-settings record from a specific path.
+ *
+ * Returns `null` when the file is absent and throws when the file exists but
+ * cannot be parsed into the expected object shape.
+ */
+function readSettingsRecordSyncFromPath(filePath: string): JsonRecord | null {
+	try {
+		return parseSettingsRecord(readFileSync(filePath, "utf8"));
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException | undefined)?.code === "ENOENT") {
+			return null;
+		}
+		throw error;
+	}
+}
+
+/**
+ * Async variant of `readSettingsRecordSyncFromPath`.
+ */
+async function readSettingsRecordAsyncFromPath(
+	filePath: string,
+): Promise<JsonRecord | null> {
+	try {
+		return parseSettingsRecord(await fs.readFile(filePath, "utf8"));
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException | undefined)?.code === "ENOENT") {
+			return null;
+		}
+		throw error;
+	}
+}
+
+/**
+ * Best-effort backup reader for sync callers.
+ *
+ * Backup corruption is treated as an unavailable backup so callers can keep
+ * their legacy null-on-unavailable behavior.
+ */
+function readSettingsBackupSync(): JsonRecord | null {
+	try {
+		return readSettingsRecordSyncFromPath(UNIFIED_SETTINGS_BACKUP_PATH);
+	} catch {
+		return null;
+	}
+}
+
+/**
+ * Best-effort backup reader for async callers.
+ */
+async function readSettingsBackupAsync(): Promise<JsonRecord | null> {
+	try {
+		return await readSettingsRecordAsyncFromPath(UNIFIED_SETTINGS_BACKUP_PATH);
+	} catch {
+		return null;
+	}
+}
+
+/**
+ * Decide whether a primary settings read should fall back to the backup file.
+ *
+ * Missing primaries stay missing so callers do not merge stale backup state.
+ * Corrupt or unreadable primaries may fall back, while transient lock errors
+ * are rethrown so callers can retry.
+ */
+function shouldFallbackToSettingsBackup(
+	primaryExists: boolean,
+	error: unknown,
+): boolean {
+	if (!primaryExists) {
+		return false;
+	}
+	const code = (error as NodeJS.ErrnoException | undefined)?.code;
+	if (code === "ENOENT") {
+		return false;
+	}
+	if (typeof code === "string" && TRANSIENT_READ_FS_CODES.has(code)) {
+		return false;
+	}
+	return true;
+}
+
+/**
+ * Snapshot the primary settings file into `settings.json.bak` for sync writes.
+ *
+ * When the current in-memory state was recovered from backup, snapshotting is
+ * skipped so a corrupt primary cannot overwrite the only known-good backup.
+ */
+function trySnapshotUnifiedSettingsBackupSync(options?: {
+	skipBecauseBackupRead?: boolean;
+}): void {
+	if (options?.skipBecauseBackupRead) {
+		return;
+	}
+	if (!existsSync(UNIFIED_SETTINGS_PATH)) {
+		return;
+	}
+	for (let attempt = 0; attempt < 5; attempt += 1) {
+		try {
+			copyFileSync(UNIFIED_SETTINGS_PATH, UNIFIED_SETTINGS_BACKUP_PATH);
+			return;
+		} catch (error) {
+			if (!isRetryableFsError(error) || attempt >= 4) {
+				return;
+			}
+			Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10 * 2 ** attempt);
+		}
+	}
+}
+
+/**
+ * Async variant of `trySnapshotUnifiedSettingsBackupSync`.
+ */
+async function trySnapshotUnifiedSettingsBackupAsync(options?: {
+	skipBecauseBackupRead?: boolean;
+}): Promise<void> {
+	if (options?.skipBecauseBackupRead) {
+		return;
+	}
+	if (!existsSync(UNIFIED_SETTINGS_PATH)) {
+		return;
+	}
+	for (let attempt = 0; attempt < 5; attempt += 1) {
+		try {
+			await fs.copyFile(UNIFIED_SETTINGS_PATH, UNIFIED_SETTINGS_BACKUP_PATH);
+			return;
+		} catch (error) {
+			if (!isRetryableFsError(error) || attempt >= 4) {
+				return;
+			}
+			await sleep(10 * 2 ** attempt);
+		}
+	}
+}
+
 /**
  * Reads and parses the unified settings JSON file from disk.
  *
@@ -55,17 +206,29 @@ function cloneRecord(value: unknown): JsonRecord | null {
  * - Windows: file locking on Windows may cause reads to fail; in those cases this function returns `null`.
  * - Sensitive data: this function performs no token or secret redaction; any sensitive values present in the file are returned as-is and callers are responsible for redaction before logging or external exposure.
  */
-function readSettingsRecordSync(): JsonRecord | null {
-	if (!existsSync(UNIFIED_SETTINGS_PATH)) {
-		return null;
+function readSettingsRecordSyncInternal(): SettingsReadResult {
+	const primaryExists = existsSync(UNIFIED_SETTINGS_PATH);
+	try {
+		const primaryRecord = readSettingsRecordSyncFromPath(UNIFIED_SETTINGS_PATH);
+		if (primaryRecord) {
+			return { record: primaryRecord, usedBackup: false };
+		}
+	} catch (error) {
+		if (!shouldFallbackToSettingsBackup(primaryExists, error)) {
+			throw error;
+		}
+		const backupRecord = readSettingsBackupSync();
+		if (backupRecord) {
+			return { record: backupRecord, usedBackup: true };
+		}
+		throw error;
 	}
 
-	const raw = readFileSync(UNIFIED_SETTINGS_PATH, "utf8");
-	const parsed = cloneRecord(JSON.parse(raw));
-	if (!parsed) {
-		throw new Error("Unified settings must contain a JSON object at the root.");
-	}
-	return parsed;
+	return { record: null, usedBackup: false };
+}
+
+function readSettingsRecordSync(): JsonRecord | null {
+	return readSettingsRecordSyncInternal().record;
 }
 
 /**
@@ -75,17 +238,31 @@ function readSettingsRecordSync(): JsonRecord | null {
  *
  * @returns The parsed settings record as an object clone, or `null` if unavailable or invalid.
  */
-async function readSettingsRecordAsync(): Promise<JsonRecord | null> {
-	if (!existsSync(UNIFIED_SETTINGS_PATH)) {
-		return null;
+async function readSettingsRecordAsyncInternal(): Promise<SettingsReadResult> {
+	const primaryExists = existsSync(UNIFIED_SETTINGS_PATH);
+	try {
+		const primaryRecord = await readSettingsRecordAsyncFromPath(
+			UNIFIED_SETTINGS_PATH,
+		);
+		if (primaryRecord) {
+			return { record: primaryRecord, usedBackup: false };
+		}
+	} catch (error) {
+		if (!shouldFallbackToSettingsBackup(primaryExists, error)) {
+			throw error;
+		}
+		const backupRecord = await readSettingsBackupAsync();
+		if (backupRecord) {
+			return { record: backupRecord, usedBackup: true };
+		}
+		throw error;
 	}
 
-	const raw = await fs.readFile(UNIFIED_SETTINGS_PATH, "utf8");
-	const parsed = cloneRecord(JSON.parse(raw));
-	if (!parsed) {
-		throw new Error("Unified settings must contain a JSON object at the root.");
-	}
-	return parsed;
+	return { record: null, usedBackup: false };
+}
+
+async function readSettingsRecordAsync(): Promise<JsonRecord | null> {
+	return (await readSettingsRecordAsyncInternal()).record;
 }
 
 /**
@@ -120,11 +297,17 @@ function normalizeForWrite(record: JsonRecord): JsonRecord {
  *
  * @param record - The settings object to persist; it will be normalized to include the unified settings version.
  */
-function writeSettingsRecordSync(record: JsonRecord): void {
+function writeSettingsRecordSync(
+	record: JsonRecord,
+	options?: { skipBackupSnapshot?: boolean },
+): void {
 	mkdirSync(getCodexMultiAuthDir(), { recursive: true });
 	const payload = normalizeForWrite(record);
 	const data = `${JSON.stringify(payload, null, 2)}\n`;
 	const tempPath = `${UNIFIED_SETTINGS_PATH}.${process.pid}.${Date.now()}.tmp`;
+	trySnapshotUnifiedSettingsBackupSync({
+		skipBecauseBackupRead: options?.skipBackupSnapshot,
+	});
 	writeFileSync(tempPath, data, "utf8");
 	let moved = false;
 	try {
@@ -171,11 +354,17 @@ function writeSettingsRecordSync(record: JsonRecord): void {
  *
  * @param record - The settings object to persist; it will be normalized (version set)
  */
-async function writeSettingsRecordAsync(record: JsonRecord): Promise<void> {
+async function writeSettingsRecordAsync(
+	record: JsonRecord,
+	options?: { skipBackupSnapshot?: boolean },
+): Promise<void> {
 	await fs.mkdir(getCodexMultiAuthDir(), { recursive: true });
 	const payload = normalizeForWrite(record);
 	const data = `${JSON.stringify(payload, null, 2)}\n`;
 	const tempPath = `${UNIFIED_SETTINGS_PATH}.${process.pid}.${Date.now()}.${Math.random().toString(36).slice(2, 8)}.tmp`;
+	await trySnapshotUnifiedSettingsBackupAsync({
+		skipBecauseBackupRead: options?.skipBackupSnapshot,
+	});
 	await fs.writeFile(tempPath, data, "utf8");
 	let moved = false;
 	try {
@@ -254,9 +443,12 @@ export function loadUnifiedPluginConfigSync(): JsonRecord | null {
  * @param pluginConfig - Key/value map representing plugin configuration to persist
  */
 export function saveUnifiedPluginConfigSync(pluginConfig: JsonRecord): void {
-	const record = readSettingsRecordSync() ?? {};
-	record.pluginConfig = { ...pluginConfig };
-	writeSettingsRecordSync(record);
+	const { record, usedBackup } = readSettingsRecordSyncInternal();
+	const nextRecord = record ?? {};
+	nextRecord.pluginConfig = { ...pluginConfig };
+	writeSettingsRecordSync(nextRecord, {
+		skipBackupSnapshot: usedBackup,
+	});
 }
 
 /**
@@ -271,9 +463,12 @@ export function saveUnifiedPluginConfigSync(pluginConfig: JsonRecord): void {
  */
 export async function saveUnifiedPluginConfig(pluginConfig: JsonRecord): Promise<void> {
 	await enqueueSettingsWrite(async () => {
-		const record = await readSettingsRecordAsync() ?? {};
-		record.pluginConfig = { ...pluginConfig };
-		await writeSettingsRecordAsync(record);
+		const { record, usedBackup } = await readSettingsRecordAsyncInternal();
+		const nextRecord = record ?? {};
+		nextRecord.pluginConfig = { ...pluginConfig };
+		await writeSettingsRecordAsync(nextRecord, {
+			skipBackupSnapshot: usedBackup,
+		});
 	});
 }
 
@@ -314,8 +509,11 @@ export async function saveUnifiedDashboardSettings(
 	dashboardDisplaySettings: JsonRecord,
 ): Promise<void> {
 	await enqueueSettingsWrite(async () => {
-		const record = await readSettingsRecordAsync() ?? {};
-		record.dashboardDisplaySettings = { ...dashboardDisplaySettings };
-		await writeSettingsRecordAsync(record);
+		const { record, usedBackup } = await readSettingsRecordAsyncInternal();
+		const nextRecord = record ?? {};
+		nextRecord.dashboardDisplaySettings = { ...dashboardDisplaySettings };
+		await writeSettingsRecordAsync(nextRecord, {
+			skipBackupSnapshot: usedBackup,
+		});
 	});
 }

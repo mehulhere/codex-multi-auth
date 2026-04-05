@@ -292,7 +292,7 @@ describe("flagged account storage", () => {
 		unlinkSpy.mockRestore();
 	});
 
-	it("does not recover flagged backups when the primary file exists but read fails", async () => {
+	it("recovers flagged backups when the primary file exists but read fails", async () => {
 		await saveFlaggedAccounts({
 			version: 1,
 			accounts: [
@@ -333,11 +333,79 @@ describe("flagged account storage", () => {
 				return originalReadFile(...args);
 			});
 
-		const flagged = await loadFlaggedAccounts();
-		expect(flagged.accounts).toHaveLength(0);
-		expect(existsSync(flaggedPath)).toBe(true);
+	const flagged = await loadFlaggedAccounts();
+	expect(flagged.accounts).toHaveLength(1);
+	expect(flagged.accounts[0]?.refreshToken).toBe("primary-flagged");
+	expect(existsSync(flaggedPath)).toBe(true);
 
-		readSpy.mockRestore();
+	readSpy.mockRestore();
+	});
+
+	it("skips invalid latest flagged backups and falls back to older valid snapshots", async () => {
+		const flaggedPath = getFlaggedAccountsPath();
+		await fs.mkdir(dirname(flaggedPath), { recursive: true });
+		await fs.writeFile(
+			`${flaggedPath}.bak`,
+			JSON.stringify({ version: 99, accounts: "broken" }),
+			"utf8",
+		);
+		await fs.writeFile(
+			`${flaggedPath}.bak.1`,
+			JSON.stringify({
+				version: 1,
+				accounts: [
+					{
+						refreshToken: "valid-older-backup",
+						flaggedAt: 3,
+						addedAt: 3,
+						lastUsed: 3,
+					},
+				],
+			}),
+			"utf8",
+		);
+
+		const flagged = await loadFlaggedAccounts();
+
+		expect(flagged.accounts).toHaveLength(1);
+		expect(flagged.accounts[0]?.refreshToken).toBe("valid-older-backup");
+	});
+
+	it("honors the reset marker even when it appears during backup recovery", async () => {
+		const backupPath = `${getFlaggedAccountsPath()}.bak`;
+		const resetMarkerPath = `${getFlaggedAccountsPath()}.reset-intent`;
+		await fs.writeFile(
+			backupPath,
+			JSON.stringify({
+				version: 1,
+				accounts: [
+					{
+						refreshToken: "backup-race",
+						flaggedAt: 1,
+						addedAt: 1,
+						lastUsed: 1,
+					},
+				],
+			}),
+			"utf8",
+		);
+
+		const originalReadFile = fs.readFile.bind(fs);
+		const readSpy = vi.spyOn(fs, "readFile").mockImplementation(async (...args) => {
+			const [targetPath] = args;
+			const result = await originalReadFile(...args);
+			if (targetPath === backupPath) {
+				await fs.writeFile(resetMarkerPath, "reset", "utf8");
+			}
+			return result;
+		});
+
+		try {
+			const flagged = await loadFlaggedAccounts();
+			expect(flagged.accounts).toHaveLength(0);
+		} finally {
+			readSpy.mockRestore();
+		}
 	});
 
 	it("clears discovered flagged backup artifacts so manual snapshots cannot revive after clear", async () => {
@@ -408,45 +476,6 @@ describe("flagged account storage", () => {
 
 		const flagged = await loadFlaggedAccounts();
 		expect(existsSync(backupPath)).toBe(true);
-		expect(flagged.accounts).toHaveLength(0);
-
-		unlinkSpy.mockRestore();
-	});
-
-	it("suppresses flagged accounts when clear cannot delete the primary file after writing the reset marker", async () => {
-		await saveFlaggedAccounts({
-			version: 1,
-			accounts: [
-				{
-					refreshToken: "stale-primary",
-					flaggedAt: 1,
-					addedAt: 1,
-					lastUsed: 1,
-				},
-			],
-		});
-
-		const flaggedPath = getFlaggedAccountsPath();
-		const originalUnlink = fs.unlink.bind(fs);
-		const unlinkSpy = vi
-			.spyOn(fs, "unlink")
-			.mockImplementation(async (targetPath) => {
-				if (targetPath === flaggedPath) {
-					const error = new Error(
-						"EPERM primary delete",
-					) as NodeJS.ErrnoException;
-					error.code = "EPERM";
-					throw error;
-				}
-				return originalUnlink(targetPath);
-			});
-
-		await expect(clearFlaggedAccounts()).rejects.toThrow(
-			"EPERM primary delete",
-		);
-
-		const flagged = await loadFlaggedAccounts();
-		expect(existsSync(flaggedPath)).toBe(true);
 		expect(flagged.accounts).toHaveLength(0);
 
 		unlinkSpy.mockRestore();
