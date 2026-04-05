@@ -786,6 +786,58 @@ describe("flagged storage extracted helpers", () => {
 		}
 	});
 
+	it("returns empty and does not log successful backup recovery when persist returns false", async () => {
+		const { loadFlaggedAccountsState } = await import(
+			"../lib/storage/flagged-storage-io.js"
+		);
+		const fixtureRoot = join(
+			tmpdir(),
+			`codex-flagged-io-${Math.random().toString(36).slice(2)}`,
+		);
+		const flaggedPath = join(fixtureRoot, "flagged.json");
+		const resetMarkerPath = `${flaggedPath}.reset`;
+		const logError = vi.fn();
+		const logInfo = vi.fn();
+		const persistRecoveredBackup = vi.fn(async () => false);
+
+		try {
+			await fs.mkdir(fixtureRoot, { recursive: true });
+			await fs.writeFile(
+				`${flaggedPath}.bak`,
+				JSON.stringify({
+					version: 1,
+					accounts: [
+						{
+							refreshToken: "backup-token",
+							flaggedAt: 1,
+							addedAt: 1,
+							lastUsed: 1,
+						},
+					],
+				}),
+				"utf8",
+			);
+
+			await expect(
+				loadFlaggedAccountsState({
+					path: flaggedPath,
+					legacyPath: `${flaggedPath}.legacy`,
+					resetMarkerPath,
+					normalizeFlaggedStorage: (data) => data as never,
+					persistRecoveredBackup,
+					saveFlaggedAccounts: vi.fn(async () => {}),
+					logError,
+					logInfo,
+				}),
+			).resolves.toEqual({ version: 1, accounts: [] });
+			expect(persistRecoveredBackup).toHaveBeenCalledTimes(1);
+			expect(logInfo).not.toHaveBeenCalled();
+			expect(logError).not.toHaveBeenCalled();
+		} finally {
+			await removeWithRetry(fixtureRoot, { recursive: true, force: true });
+		}
+	});
+
 	it("retries transient backup read locks before recovering flagged storage", async () => {
 		const { loadFlaggedAccountsState } = await import(
 			"../lib/storage/flagged-storage-io.js"
@@ -802,6 +854,7 @@ describe("flagged storage extracted helpers", () => {
 		const logInfo = vi.fn();
 		const persistRecoveredBackup = vi.fn(async () => true);
 		let backupReadAttempts = 0;
+		let readSpy: ReturnType<typeof vi.spyOn> | undefined;
 
 		try {
 			await fs.mkdir(fixtureRoot, { recursive: true });
@@ -821,7 +874,7 @@ describe("flagged storage extracted helpers", () => {
 				"utf8",
 			);
 
-			const readSpy = vi
+			readSpy = vi
 				.spyOn(fs, "readFile")
 				.mockImplementation(async (...args) => {
 					const [targetPath] = args;
@@ -865,9 +918,8 @@ describe("flagged storage extracted helpers", () => {
 				expect.objectContaining({ from: backupPath, to: flaggedPath, accounts: 1 }),
 			);
 			expect(logError).not.toHaveBeenCalled();
-
-			readSpy.mockRestore();
 		} finally {
+			readSpy?.mockRestore();
 			await removeWithRetry(fixtureRoot, { recursive: true, force: true });
 		}
 	});
@@ -888,6 +940,7 @@ describe("flagged storage extracted helpers", () => {
 		const logInfo = vi.fn();
 		const saveFlaggedAccounts = vi.fn(async () => {});
 		let legacyReadAttempts = 0;
+		let readSpy: ReturnType<typeof vi.spyOn> | undefined;
 
 		try {
 			await fs.mkdir(fixtureRoot, { recursive: true });
@@ -907,7 +960,7 @@ describe("flagged storage extracted helpers", () => {
 				"utf8",
 			);
 
-			const readSpy = vi
+			readSpy = vi
 				.spyOn(fs, "readFile")
 				.mockImplementation(async (...args) => {
 					const [targetPath] = args;
@@ -961,9 +1014,8 @@ describe("flagged storage extracted helpers", () => {
 				expect.objectContaining({ from: legacyPath, to: flaggedPath, accounts: 1 }),
 			);
 			expect(logError).not.toHaveBeenCalled();
-
-			readSpy.mockRestore();
 		} finally {
+			readSpy?.mockRestore();
 			await removeWithRetry(fixtureRoot, { recursive: true, force: true });
 		}
 	});
