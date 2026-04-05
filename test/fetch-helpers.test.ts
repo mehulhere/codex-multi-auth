@@ -1178,14 +1178,14 @@ describe('createEntitlementErrorResponse', () => {
 			}
 		});
 
-	it('caps retryAfterMs at 7 days', async () => {
-		const body = { error: { message: 'rate limited', retry_after_ms: 10 * 24 * 60 * 60 * 1000 } };
-		const response = new Response(JSON.stringify(body), { status: 429 });
-		
-		const { rateLimit } = await handleErrorResponse(response);
-		
-		expect(rateLimit?.retryAfterMs).toBe(7 * 24 * 60 * 60 * 1000);
-	});
+		it('caps retryAfterMs at 7 days', async () => {
+			const body = { error: { message: 'rate limited', retry_after_ms: 10 * 24 * 60 * 60 * 1000 } };
+			const response = new Response(JSON.stringify(body), { status: 429 });
+
+			const { rateLimit } = await handleErrorResponse(response);
+
+			expect(rateLimit?.retryAfterMs).toBe(7 * 24 * 60 * 60 * 1000);
+		});
 
 		it('caps retry-after-ms header values at 7 days', async () => {
 			const headers = new Headers({

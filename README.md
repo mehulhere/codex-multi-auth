@@ -308,9 +308,9 @@ codex auth doctor --json
 
 ## Release Notes
 
-- Current stable: [docs/releases/v1.2.2.md](docs/releases/v1.2.2.md)
-- Previous stable: [docs/releases/v1.2.1.md](docs/releases/v1.2.1.md)
-- Earlier stable: [docs/releases/v1.2.0.md](docs/releases/v1.2.0.md)
+- Current stable: [docs/releases/v1.2.3.md](docs/releases/v1.2.3.md)
+- Previous stable: [docs/releases/v1.2.2.md](docs/releases/v1.2.2.md)
+- Earlier stable: [docs/releases/v1.2.1.md](docs/releases/v1.2.1.md)
 - Archived prerelease: [docs/releases/v0.1.0-beta.0.md](docs/releases/v0.1.0-beta.0.md)
 
 ## License

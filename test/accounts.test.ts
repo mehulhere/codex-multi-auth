@@ -3221,7 +3221,6 @@ describe("AccountManager", () => {
           expires: now + 3600000,
         });
 
-<<<<<<< HEAD
         expect(account.accountId).toBe("account-enriched");
         expect(account.email).toBe("enriched@example.com");
         expect(getRuntimeAccountIdentityKey(account)).toBe(
