@@ -50,6 +50,7 @@ import {
 	runFeaturesCommand,
 	runStatusCommand,
 } from "./codex-manager/commands/status.js";
+import { loadPersistedRuntimeObservabilitySnapshot } from "./runtime/runtime-observability.js";
 import { runSwitchCommand } from "./codex-manager/commands/switch.js";
 import { parseAuthLoginArgs, printUsage } from "./codex-manager/help.js";
 import {
@@ -80,6 +81,7 @@ import {
 } from "./request/helpers/model-map.js";
 import {
 	formatRateLimitEntry as formatAccountRateLimitEntry,
+	getRateLimitResetTimeForFamily,
 	resolveActiveIndex,
 } from "./runtime/account-status.js";
 import {
@@ -100,6 +102,7 @@ import {
 	clearAccounts,
 	findMatchingAccountIndex,
 	formatStorageErrorHint,
+	inspectStorageHealth,
 	getLastAccountsSaveTimestamp,
 	getNamedBackups,
 	getStoragePath,
@@ -644,6 +647,41 @@ function getQuotaCacheEntryForAccount(
 	return null;
 }
 
+function getPersistedQuotaViewForAccount(
+	cache: QuotaCacheData | null,
+	account: Pick<AccountMetadataV3, "accountId" | "email" | "rateLimitResetTimes">,
+	accounts: readonly Pick<AccountMetadataV3, "accountId" | "email">[],
+	now: number,
+	emailFallbackState = buildQuotaEmailFallbackState(accounts),
+): QuotaCacheEntry | null {
+	const cachedEntry = cache
+		? getQuotaCacheEntryForAccount(cache, account, accounts, emailFallbackState)
+		: null;
+	const persistedResetAt = getRateLimitResetTimeForFamily(account, now, "codex");
+	if (typeof persistedResetAt !== "number") {
+		return cachedEntry;
+	}
+	const cachedPrimaryResetAt = cachedEntry?.primary.resetAtMs ?? 0;
+	const cachedSecondaryResetAt = cachedEntry?.secondary.resetAtMs ?? 0;
+	if (
+		cachedEntry?.status === 429 &&
+		Math.max(cachedPrimaryResetAt, cachedSecondaryResetAt) >= persistedResetAt
+	) {
+		return cachedEntry;
+	}
+	return {
+		updatedAt: cachedEntry?.updatedAt ?? now,
+		status: 429,
+		model: cachedEntry?.model ?? "gpt-5-codex",
+		planType: cachedEntry?.planType,
+		primary: {
+			...cachedEntry?.primary,
+			resetAtMs: Math.max(cachedPrimaryResetAt, persistedResetAt),
+		},
+		secondary: cachedEntry?.secondary ?? {},
+	};
+}
+
 function updateQuotaCacheForAccount(
 	cache: QuotaCacheData,
 	account: Pick<AccountMetadataV3, "accountId" | "email">,
@@ -742,10 +780,11 @@ function resolveMenuQuotaProbeInput(
 	if (account.enabled === false) return null;
 	if (!hasUsableAccessToken(account, now)) return null;
 
-	const existing = getQuotaCacheEntryForAccount(
+	const existing = getPersistedQuotaViewForAccount(
 		cache,
 		account,
 		accounts,
+		now,
 		emailFallbackState,
 	);
 	if (
@@ -908,6 +947,7 @@ function mapAccountStatus(
 	index: number,
 	activeIndex: number,
 	now: number,
+	persistedQuotaStatus?: number,
 ): ExistingAccountInfo["status"] {
 	if (account.enabled === false) return "disabled";
 	if (
@@ -916,6 +956,7 @@ function mapAccountStatus(
 	) {
 		return "cooldown";
 	}
+	if (persistedQuotaStatus === 429) return "rate-limited";
 	const rateLimit = formatRateLimitEntry(account, now, "codex");
 	if (rateLimit) return "rate-limited";
 	if (index === activeIndex) return "active";
@@ -1061,14 +1102,13 @@ function toExistingAccountInfo(
 	const layoutMode = resolveMenuLayoutMode(displaySettings);
 	const emailFallbackState = buildQuotaEmailFallbackState(storage.accounts);
 	const baseAccounts = storage.accounts.map((account, index) => {
-		const entry = quotaCache
-			? getQuotaCacheEntryForAccount(
-					quotaCache,
-					account,
-					storage.accounts,
-					emailFallbackState,
-				)
-			: null;
+		const entry = getPersistedQuotaViewForAccount(
+			quotaCache,
+			account,
+			storage.accounts,
+			now,
+			emailFallbackState,
+		);
 		return {
 			index,
 			sourceIndex: index,
@@ -1077,7 +1117,7 @@ function toExistingAccountInfo(
 			email: account.email,
 			addedAt: account.addedAt,
 			lastUsed: account.lastUsed,
-			status: mapAccountStatus(account, index, activeIndex, now),
+			status: mapAccountStatus(account, index, activeIndex, now, entry?.status),
 			quotaSummary:
 				(displaySettings.menuShowQuotaSummary ?? true) && entry
 					? formatAccountQuotaSummary(entry)
@@ -3203,8 +3243,10 @@ export async function runCodexMultiAuthCli(rawArgs: string[]): Promise<number> {
 			setStoragePath,
 			getStoragePath,
 			loadAccounts,
+			inspectStorageHealth,
 			resolveActiveIndex,
 			formatRateLimitEntry,
+			loadRuntimeObservabilitySnapshot: loadPersistedRuntimeObservabilitySnapshot,
 		});
 	}
 	if (command === "switch") {
@@ -3234,6 +3276,7 @@ export async function runCodexMultiAuthCli(rawArgs: string[]): Promise<number> {
 			setStoragePath,
 			getStoragePath,
 			loadAccounts,
+			inspectStorageHealth,
 			saveAccounts,
 			resolveActiveIndex,
 			hasUsableAccessToken,
@@ -3241,6 +3284,7 @@ export async function runCodexMultiAuthCli(rawArgs: string[]): Promise<number> {
 			fetchCodexQuotaSnapshot,
 			formatRateLimitEntry,
 			normalizeFailureDetail,
+			loadRuntimeObservabilitySnapshot: loadPersistedRuntimeObservabilitySnapshot,
 		});
 	}
 	if (command === "fix") {

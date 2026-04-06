@@ -978,24 +978,40 @@ async function safeReadBody(response: Response): Promise<string> {
 }
 
 function mapUsageLimit404WithBody(response: Response, bodyText: string): Response | null {
-        if (response.status !== HTTP_STATUS.NOT_FOUND) return null;
-        if (!bodyText) return null;
+	if (response.status !== HTTP_STATUS.NOT_FOUND) return null;
+	if (!bodyText) return null;
 
 	let code = "";
+	let type = "";
 	try {
-		const parsed = JSON.parse(bodyText) as { error?: { code?: string | number; type?: string } };
-		code = (parsed?.error?.code ?? parsed?.error?.type ?? "").toString();
+		const parsed = JSON.parse(bodyText) as {
+			error?: { code?: string | number; type?: string | number };
+		};
+		code = (parsed?.error?.code ?? "").toString();
+		type = (parsed?.error?.type ?? "").toString();
 	} catch {
 		code = "";
+		type = "";
 	}
 
+	const normalizedSignals = [code, type]
+		.map((value) => value.toLowerCase())
+		.filter((value) => value.length > 0);
+
 	// Check for entitlement errors first - these should NOT be treated as rate limits
-	if (isEntitlementError(code, bodyText)) {
+	if (isEntitlementError(normalizedSignals.join(" "), bodyText)) {
 		return createEntitlementErrorResponse(bodyText);
 	}
 
-	const haystack = `${code} ${bodyText}`.toLowerCase();
-	if (!/usage_limit_reached|rate_limit_exceeded|usage limit/i.test(haystack)) {
+	// Only structured quota-limit codes should be remapped from 404 to 429.
+	// Free-text 404 bodies remain untouched, but known quota/rate-limit codes
+	// should still preserve retry semantics for callers.
+	if (
+		!normalizedSignals.some(
+			(value) =>
+				value.includes("usage_limit") || value.includes("rate_limit_exceeded"),
+		)
+	) {
 		return null;
 	}
 

@@ -3,7 +3,7 @@ import {
 	type ReportCommandDeps,
 	runReportCommand,
 } from "../lib/codex-manager/commands/report.js";
-import type { AccountStorageV3 } from "../lib/storage.js";
+import type { AccountStorageV3, StorageHealthSummary } from "../lib/storage.js";
 
 function createStorage(
 	accounts: AccountStorageV3["accounts"] = [
@@ -50,6 +50,15 @@ function createDeps(
 			secondary: {},
 		})),
 		formatRateLimitEntry: vi.fn(() => null),
+		inspectStorageHealth: vi.fn(async (): Promise<StorageHealthSummary> => ({
+			state: "healthy",
+			path: "/mock/openai-codex-accounts.json",
+			resetMarkerPath: "/mock/openai-codex-accounts.json.intentional-reset",
+			walPath: "/mock/openai-codex-accounts.json.wal",
+			hasResetMarker: false,
+			hasWal: false,
+		})),
+		loadRuntimeObservabilitySnapshot: vi.fn(async () => null),
 		normalizeFailureDetail: vi.fn((message) => message ?? "unknown"),
 		logInfo: vi.fn(),
 		logError: vi.fn(),
@@ -81,6 +90,33 @@ describe("runReportCommand", () => {
 		expect(deps.logError).toHaveBeenCalledWith("Unknown option: --bogus");
 	});
 
+	it("rejects invalid live probe budget values", async () => {
+		const deps = createDeps();
+
+		const result = await runReportCommand(["--max-probes", "0"], deps);
+
+		expect(result).toBe(1);
+		expect(deps.logError).toHaveBeenCalledWith(
+			"--max-probes must be a positive integer",
+		);
+	});
+
+	it.each([
+		["--max-accounts", "1.9", "--max-accounts must be a positive integer"],
+		["--max-accounts", "1e3", "--max-accounts must be a positive integer"],
+		["--max-accounts", "2foo", "--max-accounts must be a positive integer"],
+		["--max-probes", "1.9", "--max-probes must be a positive integer"],
+		["--max-probes", "1e3", "--max-probes must be a positive integer"],
+		["--max-probes", "2foo", "--max-probes must be a positive integer"],
+	] as const)("rejects malformed numeric flags %s %s", async (flag, value, message) => {
+		const deps = createDeps();
+
+		const result = await runReportCommand([flag, value], deps);
+
+		expect(result).toBe(1);
+		expect(deps.logError).toHaveBeenCalledWith(message);
+	});
+
 	it("writes json report output when requested", async () => {
 		const deps = createDeps();
 
@@ -96,6 +132,125 @@ describe("runReportCommand", () => {
 		);
 		expect(deps.logInfo).toHaveBeenCalledWith(
 			expect.stringContaining('"forecast"'),
+		);
+		expect(deps.logInfo).toHaveBeenCalledWith(
+			expect.stringContaining('"liveProbeBudget"'),
+		);
+		expect(deps.logInfo).toHaveBeenCalledWith(
+			expect.stringContaining('"storageHealth"'),
+		);
+	});
+
+	it("includes runtime observability fields in json output when snapshot is available", async () => {
+		const deps = createDeps({
+			loadRuntimeObservabilitySnapshot: vi.fn(async () => ({
+				version: 1,
+				updatedAt: 2000,
+				responsesRequests: 4,
+				authRefreshRequests: 2,
+				diagnosticProbeRequests: 1,
+				currentRequestId: "req_123",
+				poolExhaustionCooldownUntil: 9000,
+				serverBurstCooldownUntil: 12000,
+				runtimeMetrics: {
+					startedAt: 1000,
+					totalRequests: 4,
+					successfulRequests: 3,
+					failedRequests: 1,
+					responsesRequests: 4,
+					authRefreshRequests: 2,
+					diagnosticProbeRequests: 1,
+					outboundRequestAttemptBudget: 6,
+					outboundRequestAttemptsConsumed: 5,
+					requestAttemptBudgetExhaustions: 0,
+					poolExhaustionFastFails: 1,
+					serverBurstFastFails: 0,
+					rateLimitedResponses: 1,
+					serverErrors: 0,
+					networkErrors: 0,
+					userAborts: 0,
+					authRefreshFailures: 0,
+					emptyResponseRetries: 0,
+					accountRotations: 1,
+					sameAccountRetries: 0,
+					streamFailoverAttempts: 0,
+					streamFailoverCandidatesConsidered: 0,
+					lastStreamFailoverCandidateCount: 0,
+					streamFailoverRecoveries: 0,
+					streamFailoverCrossAccountRecoveries: 0,
+					cumulativeLatencyMs: 42,
+					lastRequestAt: 1999,
+					lastError: null,
+				},
+			})),
+		});
+
+		const result = await runReportCommand(["--json"], deps);
+
+		expect(result).toBe(0);
+		const jsonOutput = JSON.parse(
+			(deps.logInfo as ReturnType<typeof vi.fn>).mock.calls.at(-1)?.[0] ?? "{}",
+		) as {
+			runtime: {
+				poolExhaustionCooldownUntil: number;
+				serverBurstCooldownUntil: number;
+				runtimeMetrics: Record<string, unknown>;
+			};
+		};
+		expect(jsonOutput.runtime.poolExhaustionCooldownUntil).toBe(9000);
+		expect(jsonOutput.runtime.serverBurstCooldownUntil).toBe(12000);
+		expect(jsonOutput.runtime.runtimeMetrics).toBeDefined();
+	});
+
+	it("respects live probe account and probe budgets", async () => {
+		const deps = createDeps({
+			loadAccounts: vi.fn(async () =>
+				createStorage([
+					{ email: "one@example.com", refreshToken: "r1", accessToken: "a1", accountId: "acct-1", expiresAt: 5_000, addedAt: 1, lastUsed: 1, enabled: true },
+					{ email: "two@example.com", refreshToken: "r2", accessToken: "a2", accountId: "acct-2", expiresAt: 5_000, addedAt: 2, lastUsed: 2, enabled: true },
+					{ email: "three@example.com", refreshToken: "r3", accessToken: "a3", accountId: "acct-3", expiresAt: 5_000, addedAt: 3, lastUsed: 3, enabled: true },
+				]),
+			),
+			hasUsableAccessToken: vi.fn(() => true),
+		});
+
+		const result = await runReportCommand(
+			["--live", "--json", "--max-accounts", "2", "--max-probes", "1"],
+			deps,
+		);
+
+		expect(result).toBe(0);
+		expect(deps.fetchCodexQuotaSnapshot).toHaveBeenCalledTimes(1);
+		const jsonOutput = JSON.parse(
+			(deps.logInfo as ReturnType<typeof vi.fn>).mock.calls.at(-1)?.[0] ?? "{}",
+		) as { liveProbeBudget: { consideredAccounts: number; executedProbes: number }; forecast: { probeErrors: string[] } };
+		expect(jsonOutput.liveProbeBudget).toEqual(
+			expect.objectContaining({ consideredAccounts: 2, executedProbes: 1 }),
+		);
+		expect(jsonOutput.forecast.probeErrors).toEqual(
+			expect.arrayContaining([
+				expect.stringContaining("live probe request budget reached (1)"),
+			]),
+		);
+	});
+
+	it("skips refreshes in cached-only live mode", async () => {
+		const deps = createDeps({
+			hasUsableAccessToken: vi.fn(() => false),
+		});
+
+		const result = await runReportCommand(["--live", "--json", "--cached-only"], deps);
+
+		expect(result).toBe(0);
+		expect(deps.queuedRefresh).not.toHaveBeenCalled();
+		expect(deps.fetchCodexQuotaSnapshot).not.toHaveBeenCalled();
+		const jsonOutput = JSON.parse(
+			(deps.logInfo as ReturnType<typeof vi.fn>).mock.calls.at(-1)?.[0] ?? "{}",
+		) as { forecast: { probeErrors: string[] } };
+		expect(jsonOutput.forecast.probeErrors).toEqual(
+			expect.arrayContaining([
+				expect.stringContaining("skipped refresh because --cached-only is enabled"),
+			]),
 		);
 	});
 
@@ -191,6 +346,9 @@ describe("runReportCommand", () => {
 			"token expired",
 		);
 		expect(jsonOutput.forecast.accounts[3]?.liveQuota?.planType).toBe("pro");
+		expect(jsonOutput.forecast.recommendation.selectedReason).toEqual(
+			"Lowest risk ready account (low, score 0).",
+		);
 	});
 
 	it("reuses usable access tokens for live probes without forcing refresh", async () => {
@@ -359,6 +517,61 @@ describe("runReportCommand", () => {
 				accessToken: "access-token-updated",
 			}),
 		);
+	});
+
+	it("does not mutate the in-memory report snapshot when refreshed token persistence fails", async () => {
+		const storage = createStorage([
+			{
+				email: "persist-fail@example.com",
+				accountId: "acct-report",
+				accountIdSource: "org",
+				refreshToken: "refresh-token-1",
+				accessToken: "access-token-1",
+				expiresAt: 10,
+				addedAt: 1,
+				lastUsed: 1,
+				enabled: true,
+			},
+		]);
+		const deps = createDeps({
+			loadAccounts: vi.fn(async () => structuredClone(storage)),
+			saveAccounts: vi.fn(async () => {
+				throw Object.assign(new Error("EPERM write blocked"), {
+					code: "EPERM",
+				});
+			}),
+			queuedRefresh: vi.fn(async () => ({
+				type: "success",
+				access: "access-token-updated",
+				refresh: "refresh-token-updated",
+				expires: 500,
+				idToken: "id-token-updated",
+			})),
+			fetchCodexQuotaSnapshot: vi.fn(async () => ({
+				status: 200,
+				model: "gpt-5-codex",
+				primary: {},
+				secondary: {},
+			})),
+		});
+
+		const result = await runReportCommand(["--live", "--json"], deps);
+
+		expect(result).toBe(0);
+		expect(deps.fetchCodexQuotaSnapshot).not.toHaveBeenCalled();
+		expect(deps.saveAccounts).toHaveBeenCalledTimes(4);
+		const jsonOutput = JSON.parse(
+			(deps.logInfo as ReturnType<typeof vi.fn>).mock.calls.at(-1)?.[0] ?? "{}",
+		) as {
+			forecast: { probeErrors: string[]; accounts: Array<{ label: string }> };
+		};
+		expect(jsonOutput.forecast.probeErrors).toEqual(
+			expect.arrayContaining([
+				expect.stringContaining("EPERM write blocked"),
+			]),
+		);
+		expect(storage.accounts[0]?.refreshToken).toBe("refresh-token-1");
+		expect(storage.accounts[0]?.accessToken).toBe("access-token-1");
 	});
 
 	it("prints a human-readable report and announces the output path", async () => {
