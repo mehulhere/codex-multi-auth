@@ -1,6 +1,6 @@
 # Upgrade Guide
 
-Migrate legacy installs to the canonical `codex-multi-auth` workflow on the `0.x` release line.
+Migrate legacy installs to the canonical `codex-multi-auth` workflow on the current `1.x` release line.
 
 ---
 

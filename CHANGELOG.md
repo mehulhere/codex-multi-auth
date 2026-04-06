@@ -3,7 +3,9 @@
 All notable changes to this project are documented in this file.
 Dates use ISO format (`YYYY-MM-DD`).
 
-This repository's canonical public release line is currently `0.x`.
+This repository's current stable release line is `1.x`.
+Current stable release notes live in `docs/releases/`.
+This top-level changelog preserves the foundational `0.x` milestones and points older iteration history to `docs/releases/legacy-pre-0.1-history.md`.
 
 ## [0.1.8] - 2026-03-11
 

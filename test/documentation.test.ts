@@ -34,8 +34,18 @@ function readPackageVersion(): string {
 let packageVersion = "";
 let currentStableReleaseDoc = "";
 // These stay manual so the docs portal keeps an intentional short stable-history window.
-const previousStableReleaseDoc = "docs/releases/v1.2.2.md";
-const earlierStableReleaseDoc = "docs/releases/v1.2.1.md";
+const previousStableReleaseDoc = "docs/releases/v1.2.5.md";
+const earlierStableReleaseDoc = "docs/releases/v1.2.4.md";
+const stableArchiveReleaseDocs = [
+	"docs/releases/v1.2.2.md",
+	"docs/releases/v1.2.1.md",
+	"docs/releases/v1.2.0.md",
+];
+const preOneArchiveReleaseDocs = [
+	"docs/releases/v0.1.7.md",
+	"docs/releases/v0.1.6.md",
+	"docs/releases/v0.1.5.md",
+];
 
 function getUserDocs(): string[] {
 	return [
@@ -57,9 +67,8 @@ function getUserDocs(): string[] {
 		currentStableReleaseDoc,
 		previousStableReleaseDoc,
 		earlierStableReleaseDoc,
-		"docs/releases/v0.1.7.md",
-		"docs/releases/v0.1.6.md",
-		"docs/releases/v0.1.5.md",
+		...stableArchiveReleaseDocs,
+		...preOneArchiveReleaseDocs,
 		"docs/releases/v0.1.4.md",
 		"docs/releases/v0.1.3.md",
 		"docs/releases/v0.1.1.md",
@@ -160,17 +169,21 @@ function compareSemverDescending(left: string, right: string): number {
 		expect(portal).toContain(`releases/v${packageVersion}.md`);
 		expect(portal).toContain(previousStableReleaseDoc.replace("docs/", ""));
 		expect(portal).toContain(earlierStableReleaseDoc.replace("docs/", ""));
-		expect(portal).toContain("releases/v0.1.7.md");
-		expect(portal).toContain("releases/v0.1.6.md");
-		expect(portal).toContain("releases/v0.1.5.md");
+		for (const archivedDoc of stableArchiveReleaseDocs) {
+			expect(portal).toContain(archivedDoc.replace("docs/", ""));
+		}
+		for (const archivedDoc of preOneArchiveReleaseDocs) {
+			expect(portal).toContain(archivedDoc.replace("docs/", ""));
+		}
 		expect(portal).toContain("releases/v0.1.0-beta.0.md");
 		expect(portal).toContain("releases/legacy-pre-0.1-history.md");
 		expect(portal).toContain(
-			"| [Daily Use release notes](#daily-use) | Stable, previous, and archived release notes |",
+			"| [Release history](#release-history) | Stable, previous, and archived release notes |",
 		);
 		expect(readme).toContain(currentStableReleaseDoc);
 		expect(readme).toContain(previousStableReleaseDoc);
 		expect(readme).toContain(earlierStableReleaseDoc);
+		expect(readme).toContain("docs/README.md#release-history");
 
 		const beta = read("docs/releases/v0.1.0-beta.0.md");
 		expect(beta).toContain("Archived");
@@ -428,7 +441,24 @@ function compareSemverDescending(left: string, right: string): number {
 		expect(settingsRef).toContain("- `menuStatuslineFields`");
 	});
 
-	it("keeps changelog aligned with canonical 0.x release policy", () => {
+	it("keeps release-line docs aligned with the current 1.x policy", () => {
+		const changelog = read("CHANGELOG.md");
+		const security = read("SECURITY.md");
+		const docsGovernance = read("docs/DOCUMENTATION.md");
+		const upgradeGuide = read("docs/upgrade.md");
+		const publicApi = read("docs/reference/public-api.md");
+
+		expect(changelog).toContain("current stable release line is `1.x`");
+		expect(changelog).toContain("docs/releases/");
+		expect(security).toContain("`1.x` latest");
+		expect(security).toContain("pre-`1.0` historical releases");
+		expect(docsGovernance).toContain("Current stable release line is `1.x`");
+		expect(upgradeGuide).toContain("current `1.x` release line");
+		expect(publicApi).toContain("inside the current `1.x` line");
+		expect(publicApi).toContain("currently ships on a `1.x` line");
+	});
+
+	it("keeps the historical changelog aligned with the archived 0.x release set", () => {
 		const changelog = read("CHANGELOG.md");
 		expect(changelog).toContain("## [0.1.8] - 2026-03-11");
 		expect(changelog).toContain("## [0.1.7] - 2026-03-03");
@@ -495,6 +525,36 @@ function compareSemverDescending(left: string, right: string): number {
 			vi.unstubAllEnvs();
 			rmSync(tempRoot, { recursive: true, force: true });
 		}
+	});
+
+	it("keeps package metadata aligned with the canonical owner surface", () => {
+		const packageJson = JSON.parse(read("package.json")) as {
+			name?: unknown;
+			author?: unknown;
+			license?: unknown;
+			repository?: { url?: unknown } | unknown;
+			homepage?: unknown;
+			bugs?: { url?: unknown } | unknown;
+			bin?: Record<string, unknown> | unknown;
+		};
+
+		expect(packageJson.name).toBe("codex-multi-auth");
+		expect(packageJson.author).toBe("ndycode");
+		expect(packageJson.license).toBe("MIT");
+		expect(packageJson.repository).toEqual({
+			type: "git",
+			url: "git+https://github.com/ndycode/codex-multi-auth.git",
+		});
+		expect(packageJson.homepage).toBe(
+			"https://github.com/ndycode/codex-multi-auth#readme",
+		);
+		expect(packageJson.bugs).toEqual({
+			url: "https://github.com/ndycode/codex-multi-auth/issues",
+		});
+		expect(packageJson.bin).toEqual({
+			codex: "scripts/codex.js",
+			"codex-multi-auth": "scripts/codex-multi-auth.js",
+		});
 	});
 
 	it("keeps governance templates and security reporting guidance present", () => {

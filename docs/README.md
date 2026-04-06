@@ -23,16 +23,24 @@ Public documentation for `codex-multi-auth`.
 | [configuration.md](configuration.md) | Stable defaults, precedence, and environment overrides |
 | [architecture.md](architecture.md) | Public system overview of the wrapper, storage, and optional plugin runtime |
 | [privacy.md](privacy.md) | Data handling and local storage behavior |
-| [releases/v1.2.6.md](releases/v1.2.6.md) | Stable release notes |
+
+---
+
+## Release History
+
+| Document | Focus |
+| --- | --- |
+| [releases/v1.2.6.md](releases/v1.2.6.md) | Current stable release notes |
 | [releases/v1.2.5.md](releases/v1.2.5.md) | Previous stable release notes |
 | [releases/v1.2.4.md](releases/v1.2.4.md) | Earlier stable release notes |
-| [releases/v1.2.2.md](releases/v1.2.2.md) | Earlier stable release notes |
-| [releases/v1.2.1.md](releases/v1.2.1.md) | Earlier stable release notes |
-| [releases/v1.2.0.md](releases/v1.2.0.md) | Archived stable release notes |
-| [releases/v0.1.7.md](releases/v0.1.7.md) | Archived stable release notes |
-| [releases/v0.1.6.md](releases/v0.1.6.md) | Archived stable release notes |
-| [releases/v0.1.5.md](releases/v0.1.5.md) | Archived stable release notes |
+| [releases/v1.2.2.md](releases/v1.2.2.md) | Stable archive |
+| [releases/v1.2.1.md](releases/v1.2.1.md) | Stable archive |
+| [releases/v1.2.0.md](releases/v1.2.0.md) | Stable archive |
+| [releases/v0.1.7.md](releases/v0.1.7.md) | Pre-1.0 stable archive |
+| [releases/v0.1.6.md](releases/v0.1.6.md) | Pre-1.0 stable archive |
+| [releases/v0.1.5.md](releases/v0.1.5.md) | Pre-1.0 stable archive |
 | [releases/v0.1.0-beta.0.md](releases/v0.1.0-beta.0.md) | Archived prerelease notes |
+| [releases/legacy-pre-0.1-history.md](releases/legacy-pre-0.1-history.md) | Archived pre-0.1 changelog history |
 
 ---
 
@@ -56,8 +64,7 @@ Public documentation for `codex-multi-auth`.
 | [reference/error-contracts.md](reference/error-contracts.md) | CLI, JSON, and helper error semantics |
 | [releases/v1.2.6.md](releases/v1.2.6.md) | Current stable release notes |
 | [releases/v0.1.0-beta.0.md](releases/v0.1.0-beta.0.md) | Archived prerelease reference |
-| [Daily Use release notes](#daily-use) | Stable, previous, and archived release notes |
-| [releases/legacy-pre-0.1-history.md](releases/legacy-pre-0.1-history.md) | Archived pre-0.1 changelog history |
+| [Release history](#release-history) | Stable, previous, and archived release notes |
 
 ---
 
