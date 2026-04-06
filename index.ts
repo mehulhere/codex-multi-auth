@@ -443,14 +443,17 @@ let sessionAffinityWriteVersion = 0;
 	});
 	const syncRuntimeObservability = (requestId: string | null): void => {
 		mutateRuntimeObservabilitySnapshot((snapshot) => {
+			const now = Date.now();
+			const poolRemaining = getPoolExhaustionCooldownRemaining(now);
+			const burstRemaining = getServerBurstCooldownRemaining(now);
 			snapshot.currentRequestId = requestId;
 			snapshot.poolExhaustionCooldownUntil =
-				getPoolExhaustionCooldownRemaining() > 0
-					? Date.now() + getPoolExhaustionCooldownRemaining()
+				poolRemaining > 0
+					? now + poolRemaining
 					: null;
 			snapshot.serverBurstCooldownUntil =
-				getServerBurstCooldownRemaining() > 0
-					? Date.now() + getServerBurstCooldownRemaining()
+				burstRemaining > 0
+					? now + burstRemaining
 					: null;
 			snapshot.responsesRequests = runtimeMetrics.responsesRequests;
 			snapshot.authRefreshRequests = runtimeMetrics.authRefreshRequests;
@@ -1980,18 +1983,26 @@ let sessionAffinityWriteVersion = 0;
 													const serverRetryAfterMs = parseRetryAfterHintMs(
 														response.headers,
 													);
-							const policy = evaluateFailurePolicy(
-								{
-									kind: "server",
-									failoverMode,
-									serverRetryAfterMs:
-										serverRetryAfterMs ?? undefined,
-								},
-								{ serverCooldownMs: serverErrorCooldownMs },
-							);
-							// Overload-type server errors (502 Bad Gateway, 503 Service
-							// Unavailable, 529 Overloaded) signal upstream capacity
-							// pressure. Notify the quota scheduler so it can proactively
+												const policy = evaluateFailurePolicy(
+													{
+														kind: "server",
+														failoverMode,
+														serverRetryAfterMs:
+															serverRetryAfterMs ?? undefined,
+													},
+													{ serverCooldownMs: serverErrorCooldownMs },
+												);
+												const serverBurstCooldownUntil = recordServerBurstFailure(
+													account.index,
+												);
+												if (serverBurstCooldownUntil > 0) {
+													runtimeMetrics.lastError =
+														"Repeated upstream server errors across the account pool";
+													syncRuntimeObservability(requestTraceId);
+												}
+												// Overload-type server errors (502 Bad Gateway, 503 Service
+												// Unavailable, 529 Overloaded) signal upstream capacity
+												// pressure. Notify the quota scheduler so it can proactively
 							// defer subsequent requests for this quota key, mirroring the
 							// 429 handler's scheduler awareness.
 							if (
@@ -2441,12 +2452,14 @@ let sessionAffinityWriteVersion = 0;
 																if (fallbackAccount.index !== account.index) {
 																	runtimeMetrics.streamFailoverCrossAccountRecoveries += 1;
 																	runtimeMetrics.accountRotations += 1;
-																	if (!responseContinuationEnabled) {
-																		sessionAffinityStore?.remember(
-																			sessionAffinityKey,
-																			fallbackAccount.index,
-																		);
-																	}
+													if (!responseContinuationEnabled) {
+														sessionAffinityStore?.rememberWithVersion(
+															sessionAffinityKey,
+															fallbackAccount.index,
+															Date.now(),
+															sessionAffinityVersion,
+														);
+													}
 																}
 
 																logInfo(
@@ -2643,9 +2656,11 @@ let sessionAffinityWriteVersion = 0;
 												!responseContinuationEnabled ||
 												(!isStreaming && !storedResponseIdForSuccess)
 											) {
-												sessionAffinityStore?.remember(
+												sessionAffinityStore?.rememberWithVersion(
 													sessionAffinityKey,
 													successAccountForResponse.index,
+													Date.now(),
+													sessionAffinityVersion,
 												);
 											}
 											runtimeMetrics.successfulRequests++;

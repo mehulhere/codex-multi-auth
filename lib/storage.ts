@@ -1283,7 +1283,7 @@ export async function inspectStorageHealth(): Promise<StorageHealthSummary> {
 		});
 	}
 	if (!existsSync(path)) {
-		const walRecovered = await loadAccountsFromJournal(path);
+		const walRecovered = await loadAccountsFromJournal(path, { silent: true });
 		if (walRecovered && walRecovered.accounts.length > 0) {
 			return createStorageHealthSummary({
 				state: "recoverable",
@@ -1326,7 +1326,7 @@ export async function inspectStorageHealth(): Promise<StorageHealthSummary> {
 				details: "storage parsed but contains no accounts",
 			});
 		}
-		const walRecovered = await loadAccountsFromJournal(path);
+		const walRecovered = await loadAccountsFromJournal(path, { silent: true });
 		if (walRecovered && walRecovered.accounts.length > 0) {
 			return createStorageHealthSummary({
 				state: "recoverable",
@@ -1347,7 +1347,7 @@ export async function inspectStorageHealth(): Promise<StorageHealthSummary> {
 			details: "storage could not be normalized",
 		});
 	} catch (error) {
-		const walRecovered = await loadAccountsFromJournal(path);
+		const walRecovered = await loadAccountsFromJournal(path, { silent: true });
 		if (walRecovered && walRecovered.accounts.length > 0) {
 			return createStorageHealthSummary({
 				state: "recoverable",
@@ -1370,6 +1370,7 @@ export async function inspectStorageHealth(): Promise<StorageHealthSummary> {
 
 async function loadAccountsFromJournal(
 	path: string,
+	options: { silent?: boolean } = {},
 ): Promise<AccountStorageV3 | null> {
 	const walPath = getAccountsWalPath(path);
 	const resetMarkerPath = getIntentionalResetMarkerPath(path);
@@ -1389,7 +1390,9 @@ async function loadAccountsFromJournal(
 			return null;
 		const computed = computeSha256(entry.content);
 		if (computed !== entry.checksum) {
-			log.warn("Account journal checksum mismatch", { path: walPath });
+			if (!options.silent) {
+				log.warn("Account journal checksum mismatch", { path: walPath });
+			}
 			return null;
 		}
 		const data = JSON.parse(entry.content) as unknown;
@@ -1399,11 +1402,13 @@ async function loadAccountsFromJournal(
 			isRecord,
 		);
 		if (!normalized) return null;
-		log.warn("Recovered account storage from WAL journal", { path, walPath });
+		if (!options.silent) {
+			log.warn("Recovered account storage from WAL journal", { path, walPath });
+		}
 		return normalized;
 	} catch (error) {
 		const code = (error as NodeJS.ErrnoException).code;
-		if (code !== "ENOENT") {
+		if (code !== "ENOENT" && !options.silent) {
 			log.warn("Failed to load account WAL journal", {
 				path: walPath,
 				error: String(error),

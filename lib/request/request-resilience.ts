@@ -26,7 +26,11 @@ export function getPoolExhaustionCooldownRemaining(now = Date.now()): number {
 
 export function armPoolExhaustionCooldown(waitMs: number, now = Date.now()): number {
 	const bounded = Math.max(POOL_EXHAUSTION_COOLDOWN_MS, Math.floor(waitMs));
-	poolExhaustionCooldownUntil = now + bounded;
+	const nextExpiry = now + bounded;
+	poolExhaustionCooldownUntil = Math.max(
+		poolExhaustionCooldownUntil ?? 0,
+		nextExpiry,
+	);
 	return poolExhaustionCooldownUntil;
 }
 
@@ -45,7 +49,14 @@ export function recordServerBurstFailure(
 	accountIndex: number,
 	now = Date.now(),
 ): number {
-	if (now - serverBurstState.windowStartedAt > SERVER_BURST_COOLDOWN_MS) {
+	if (serverBurstState.cooldownUntil && serverBurstState.cooldownUntil > now) {
+		return serverBurstState.cooldownUntil;
+	}
+	if (
+		(serverBurstState.cooldownUntil === null ||
+			serverBurstState.cooldownUntil <= now) &&
+		now - serverBurstState.windowStartedAt > SERVER_BURST_COOLDOWN_MS
+	) {
 		serverBurstState = {
 			windowStartedAt: now,
 			accountIndices: new Set<number>(),

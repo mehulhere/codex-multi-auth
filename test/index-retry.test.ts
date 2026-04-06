@@ -481,6 +481,77 @@ describe("OpenAIAuthPlugin rate-limit retry", () => {
 		expect(payload.error.message).toContain("1000ms");
 	});
 
+	it("fast-fails after repeated cross-account 5xx errors arm the server-burst cooldown", async () => {
+		const accounts = Array.from({ length: 4 }, (_, index) =>
+			createMockAccount({
+				index,
+				accountId: `account-${index + 1}`,
+				email: `user${index + 1}@example.com`,
+				refreshToken: `refresh-token-${index + 1}`,
+				access: `access-token-account-${index + 1}`,
+			}),
+		);
+		accountManagerState.accounts = accounts;
+		accountManagerState.accountSelections = [...accounts];
+
+		const fetchMock = vi.fn().mockImplementation(() =>
+			Promise.resolve(
+				new Response(
+					JSON.stringify({
+						error: { code: "server_error", message: "temporary outage" },
+					}),
+					{
+						status: 503,
+						headers: { "content-type": "application/json" },
+					},
+				),
+			),
+		);
+		globalThis.fetch = fetchMock as any;
+
+		const { OpenAIAuthPlugin } = await import("../index.js");
+		const client = {
+			tui: { showToast: vi.fn() },
+			auth: { set: vi.fn() },
+		} as any;
+		const plugin = await OpenAIAuthPlugin({ client });
+
+		const getAuth = async () => ({
+			type: "oauth" as const,
+			access: "a",
+			refresh: "r",
+			expires: Date.now() + 60_000,
+			multiAccount: true,
+		});
+
+		const sdk = (await plugin.auth.loader(getAuth, { options: {}, models: {} })) as any;
+		const { clearPoolExhaustionCooldown } = await import(
+			"../lib/request/request-resilience.js"
+		);
+
+		for (let index = 0; index < 3; index += 1) {
+			accountManagerState.accounts = [accounts[index] as Record<string, unknown>];
+			accountManagerState.accountSelections = [accounts[index] as Record<string, unknown>];
+			const fetchPromise = sdk.fetch("https://example.com", {});
+			await vi.advanceTimersByTimeAsync(2_000);
+			const response = await fetchPromise;
+			expect(response.status).toBe(429);
+			clearPoolExhaustionCooldown();
+		}
+
+		expect(fetchMock).toHaveBeenCalledTimes(3);
+
+		accountManagerState.accounts = [accounts[3] as Record<string, unknown>];
+		accountManagerState.accountSelections = [accounts[3] as Record<string, unknown>];
+		const secondResponse = await sdk.fetch("https://example.com", {});
+		const secondPayload = await secondResponse.json();
+		expect(secondResponse.status).toBe(503);
+		expect(secondPayload.error.message).toContain(
+			"Multiple accounts recently failed with upstream server errors.",
+		);
+		expect(fetchMock).toHaveBeenCalledTimes(3);
+	});
+
 	it("stops after the bounded outbound request budget even when more accounts are available", async () => {
 		const logger = await import("../lib/logger.js");
 		const logDebugSpy = vi.spyOn(logger, "logDebug").mockImplementation(() => {});

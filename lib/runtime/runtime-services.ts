@@ -37,16 +37,11 @@ export async function ensureLiveAccountSyncState<
 	let liveAccountSyncConfigKey = params.currentConfigKey ?? null;
 
 	if (!params.enabled) {
-		if (liveAccountSync) {
-			liveAccountSync.stop();
-			liveAccountSync = null;
-			liveAccountSyncPath = null;
-			liveAccountSyncConfigKey = null;
-		}
+		liveAccountSync?.stop();
 		return {
-			liveAccountSync,
-			liveAccountSyncPath,
-			liveAccountSyncConfigKey,
+			liveAccountSync: null,
+			liveAccountSyncPath: null,
+			liveAccountSyncConfigKey: null,
 		};
 	}
 
@@ -54,8 +49,8 @@ export async function ensureLiveAccountSyncState<
 	if (
 		liveAccountSync &&
 		nextConfigKey !== null &&
-		liveAccountSyncConfigKey !== null &&
-		liveAccountSyncConfigKey !== nextConfigKey
+		(liveAccountSyncConfigKey === null ||
+			liveAccountSyncConfigKey !== nextConfigKey)
 	) {
 		liveAccountSync.stop();
 		liveAccountSync = null;

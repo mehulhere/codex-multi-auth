@@ -1,14 +1,20 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const readFileMock = vi.fn();
+const readFileSyncMock = vi.fn();
+const writeFileMock = vi.fn(async () => undefined);
+const renameMock = vi.fn(async () => undefined);
+const unlinkMock = vi.fn(async () => undefined);
+const mkdirMock = vi.fn(async () => undefined);
 vi.mock("node:fs", () => ({
 	existsSync: vi.fn(() => true),
+	readFileSync: readFileSyncMock,
 	promises: {
 		readFile: readFileMock,
-		writeFile: vi.fn(async () => undefined),
-		rename: vi.fn(async () => undefined),
-		unlink: vi.fn(async () => undefined),
-		mkdir: vi.fn(async () => undefined),
+		writeFile: writeFileMock,
+		rename: renameMock,
+		unlink: unlinkMock,
+		mkdir: mkdirMock,
 	},
 }));
 
@@ -17,12 +23,25 @@ vi.mock("../lib/runtime-paths.js", () => ({
 }));
 
 describe("runtime observability snapshot versioning", () => {
+	const originalVitestEnv = process.env.VITEST;
+
 	beforeEach(() => {
 		vi.resetModules();
+		process.env.VITEST = originalVitestEnv;
 	});
 
 	afterEach(() => {
 		readFileMock.mockReset();
+		readFileSyncMock.mockReset();
+		writeFileMock.mockReset();
+		renameMock.mockReset();
+		unlinkMock.mockReset();
+		mkdirMock.mockReset();
+		if (originalVitestEnv === undefined) {
+			delete process.env.VITEST;
+		} else {
+			process.env.VITEST = originalVitestEnv;
+		}
 	});
 
 	it("normalizes legacy unversioned snapshots", async () => {
@@ -54,5 +73,49 @@ describe("runtime observability snapshot versioning", () => {
 		const snapshot = await loadPersistedRuntimeObservabilitySnapshot();
 
 		expect(snapshot).toBeNull();
+	});
+
+	it("retries transient rename contention when persisting a snapshot", async () => {
+		process.env.VITEST = "";
+		let attempts = 0;
+		renameMock.mockImplementation(async () => {
+			attempts += 1;
+			if (attempts === 1) {
+				throw Object.assign(new Error("busy"), { code: "EBUSY" });
+			}
+		});
+
+		const mod = await import("../lib/runtime/runtime-observability.js");
+		mod.mutateRuntimeObservabilitySnapshot((snapshot) => {
+			snapshot.responsesRequests = 3;
+		});
+
+		await vi.waitFor(() => {
+			expect(renameMock).toHaveBeenCalledTimes(2);
+		});
+		expect(unlinkMock).toHaveBeenCalled();
+	});
+
+	it("seeds the first in-memory snapshot from disk before mutating", async () => {
+		process.env.VITEST = "";
+		readFileSyncMock.mockReturnValue(
+			JSON.stringify({
+				version: 1,
+				authRefreshRequests: 7,
+				poolExhaustionCooldownUntil: 12345,
+				runtimeMetrics: { failedRequests: 4 },
+			}),
+		);
+
+		const mod = await import("../lib/runtime/runtime-observability.js");
+		mod.mutateRuntimeObservabilitySnapshot((snapshot) => {
+			snapshot.responsesRequests = 9;
+		});
+
+		const snapshot = mod.getRuntimeObservabilitySnapshot();
+		expect(snapshot.responsesRequests).toBe(9);
+		expect(snapshot.authRefreshRequests).toBe(7);
+		expect(snapshot.poolExhaustionCooldownUntil).toBe(12345);
+		expect(snapshot.runtimeMetrics.failedRequests).toBe(4);
 	});
 });

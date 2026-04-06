@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { SessionAffinityStore } from "../lib/session-affinity.js";
 
 describe("SessionAffinityStore", () => {
@@ -156,5 +156,19 @@ describe("SessionAffinityStore", () => {
 
 		expect(store.getPreferredAccountIndex("session-a", 5_500)).toBe(2);
 		expect(store.getLastResponseId("session-a", 5_500)).toBe("resp_second");
+	});
+
+	it("generates distinct default write versions for same-timestamp overlaps", () => {
+		vi.useFakeTimers();
+		vi.setSystemTime(new Date("2026-04-06T00:00:00.000Z"));
+		try {
+			const store = new SessionAffinityStore({ ttlMs: 10_000, maxEntries: 4 });
+			store.rememberWithVersion("session-a", 0, 1_000);
+			store.rememberWithVersion("session-a", 1, 1_000);
+
+			expect(store.getPreferredAccountIndex("session-a", 1_500)).toBe(1);
+		} finally {
+			vi.useRealTimers();
+		}
 	});
 });
