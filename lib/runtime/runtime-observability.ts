@@ -1,4 +1,4 @@
-import { existsSync, promises as fs } from "node:fs";
+import { existsSync, readFileSync, promises as fs } from "node:fs";
 import { join } from "node:path";
 import { getCodexMultiAuthDir } from "../runtime-paths.js";
 
@@ -48,6 +48,7 @@ export interface RuntimeObservabilitySnapshot {
 const SNAPSHOT_FILE_NAME = "runtime-observability.json";
 const PERSIST_RUNTIME_SNAPSHOT = process.env.VITEST !== "true";
 const RUNTIME_OBSERVABILITY_SNAPSHOT_VERSION = 1;
+const RETRYABLE_SNAPSHOT_ERRORS = new Set(["EBUSY", "EPERM"]);
 
 let snapshotState: RuntimeObservabilitySnapshot | null = null;
 let pendingWrite: Promise<void> | null = null;
@@ -99,46 +100,102 @@ function createDefaultSnapshot(): RuntimeObservabilitySnapshot {
 	};
 }
 
+function normalizePersistedSnapshot(
+	parsed: Partial<RuntimeObservabilitySnapshot> | null,
+): RuntimeObservabilitySnapshot | null {
+	if (!parsed || typeof parsed !== "object") {
+		return null;
+	}
+	if (
+		typeof parsed.version === "number" &&
+		parsed.version !== RUNTIME_OBSERVABILITY_SNAPSHOT_VERSION
+	) {
+		return null;
+	}
+	const base = createDefaultSnapshot();
+	return {
+		...base,
+		...parsed,
+		version: RUNTIME_OBSERVABILITY_SNAPSHOT_VERSION,
+		runtimeMetrics: {
+			...base.runtimeMetrics,
+			...(parsed.runtimeMetrics ?? {}),
+		},
+	};
+}
+
+function loadPersistedRuntimeObservabilitySnapshotSync(): RuntimeObservabilitySnapshot | null {
+	const path = getSnapshotPath();
+	if (!existsSync(path)) {
+		return null;
+	}
+	try {
+		const raw = readFileSync(path, "utf-8");
+		const parsed = JSON.parse(raw) as Partial<RuntimeObservabilitySnapshot> | null;
+		return normalizePersistedSnapshot(parsed);
+	} catch {
+		return null;
+	}
+}
+
+function ensureSnapshotState(): RuntimeObservabilitySnapshot {
+	if (!snapshotState) {
+		snapshotState =
+			(PERSIST_RUNTIME_SNAPSHOT
+				? loadPersistedRuntimeObservabilitySnapshotSync()
+				: null) ?? createDefaultSnapshot();
+	}
+	return snapshotState;
+}
+
 async function writeSnapshot(snapshot: RuntimeObservabilitySnapshot): Promise<void> {
 	const dir = getCodexMultiAuthDir();
 	const path = getSnapshotPath();
 	await fs.mkdir(dir, { recursive: true });
-	const tempPath = `${path}.${process.pid}.${Date.now()}.tmp`;
-	let moved = false;
-	try {
-		await fs.writeFile(tempPath, JSON.stringify(snapshot, null, 2), "utf-8");
-		await fs.rename(tempPath, path);
-		moved = true;
-	} finally {
-		if (!moved) {
-			try {
-				await fs.unlink(tempPath);
-			} catch {
-				// Best-effort cleanup for interrupted writes.
+	let lastError: unknown = null;
+	for (let attempt = 0; attempt < 3; attempt += 1) {
+		const tempPath = `${path}.${process.pid}.${Date.now()}.${attempt}.tmp`;
+		let moved = false;
+		try {
+			await fs.writeFile(tempPath, JSON.stringify(snapshot, null, 2), "utf-8");
+			await fs.rename(tempPath, path);
+			moved = true;
+			return;
+		} catch (error) {
+			lastError = error;
+			const code = (error as NodeJS.ErrnoException | undefined)?.code ?? "";
+			if (!RETRYABLE_SNAPSHOT_ERRORS.has(code) || attempt >= 2) {
+				throw error;
+			}
+		} finally {
+			if (!moved) {
+				try {
+					await fs.unlink(tempPath);
+				} catch {
+					// Best-effort cleanup for interrupted writes.
+				}
 			}
 		}
+	}
+	if (lastError) {
+		throw lastError;
 	}
 }
 
 export function getRuntimeObservabilitySnapshot(): RuntimeObservabilitySnapshot {
-	if (!snapshotState) {
-		snapshotState = createDefaultSnapshot();
-	}
-	return structuredClone(snapshotState);
+	return structuredClone(ensureSnapshotState());
 }
 
 export function mutateRuntimeObservabilitySnapshot(
 	mutator: (snapshot: RuntimeObservabilitySnapshot) => void,
 ): void {
-	if (!snapshotState) {
-		snapshotState = createDefaultSnapshot();
-	}
-	mutator(snapshotState);
-	snapshotState.updatedAt = Date.now();
+	const snapshot = ensureSnapshotState();
+	mutator(snapshot);
+	snapshot.updatedAt = Date.now();
 	if (!PERSIST_RUNTIME_SNAPSHOT) {
 		return;
 	}
-	const nextSnapshot = structuredClone(snapshotState);
+	const nextSnapshot = structuredClone(snapshot);
 	pendingWrite = (pendingWrite ?? Promise.resolve())
 		.catch(() => undefined)
 		.then(() => writeSnapshot(nextSnapshot));
@@ -152,25 +209,7 @@ export async function loadPersistedRuntimeObservabilitySnapshot(): Promise<Runti
 	try {
 		const raw = await fs.readFile(path, "utf-8");
 		const parsed = JSON.parse(raw) as Partial<RuntimeObservabilitySnapshot> | null;
-		if (!parsed || typeof parsed !== "object") {
-			return null;
-		}
-		if (
-			typeof parsed.version === "number" &&
-			parsed.version !== RUNTIME_OBSERVABILITY_SNAPSHOT_VERSION
-		) {
-			return null;
-		}
-		const base = createDefaultSnapshot();
-		return {
-			...base,
-			...parsed,
-			version: RUNTIME_OBSERVABILITY_SNAPSHOT_VERSION,
-				runtimeMetrics: {
-					...base.runtimeMetrics,
-					...(parsed.runtimeMetrics ?? {}),
-				},
-			};
+		return normalizePersistedSnapshot(parsed);
 	} catch {
 		return null;
 	}

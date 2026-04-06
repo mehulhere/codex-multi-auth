@@ -28,6 +28,26 @@ describe("runtime services helpers", () => {
 		});
 	});
 
+	it("clears stale live sync path and config key even when no watcher exists", async () => {
+		const result = await ensureLiveAccountSyncState({
+			enabled: false,
+			targetPath: "/tmp/a",
+			currentSync: null,
+			currentPath: "/tmp/stale",
+			currentConfigKey: "stale",
+			createSync: vi.fn(),
+			registerCleanup: vi.fn(),
+			logWarn: vi.fn(),
+			pluginName: "plugin",
+		});
+
+		expect(result).toEqual({
+			liveAccountSync: null,
+			liveAccountSyncPath: null,
+			liveAccountSyncConfigKey: null,
+		});
+	});
+
 	it("creates and switches live sync path when enabled", async () => {
 		const syncToPath = vi.fn(async () => undefined);
 		const created = { stop: vi.fn(), syncToPath };
@@ -110,6 +130,30 @@ describe("runtime services helpers", () => {
 		expect(oldSync.stop).toHaveBeenCalledTimes(1);
 		expect(createSync).toHaveBeenCalledTimes(1);
 		expect(newSync.syncToPath).toHaveBeenCalledWith("/tmp/a");
+		expect(result.liveAccountSync).toBe(newSync);
+		expect(result.liveAccountSyncConfigKey).toBe("50:500");
+	});
+
+	it("recreates live sync when the current config key is unknown", async () => {
+		const oldSync = { stop: vi.fn(), syncToPath: vi.fn() };
+		const newSync = { stop: vi.fn(), syncToPath: vi.fn().mockResolvedValue(undefined) };
+		const createSync = vi.fn(() => newSync);
+
+		const result = await ensureLiveAccountSyncState({
+			enabled: true,
+			targetPath: "/tmp/a",
+			currentSync: oldSync,
+			currentPath: "/tmp/a",
+			currentConfigKey: null,
+			configKey: "50:500",
+			createSync,
+			registerCleanup: vi.fn(),
+			logWarn: vi.fn(),
+			pluginName: "plugin",
+		});
+
+		expect(oldSync.stop).toHaveBeenCalledTimes(1);
+		expect(createSync).toHaveBeenCalledTimes(1);
 		expect(result.liveAccountSync).toBe(newSync);
 		expect(result.liveAccountSyncConfigKey).toBe("50:500");
 	});
