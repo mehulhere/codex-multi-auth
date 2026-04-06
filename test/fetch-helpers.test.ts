@@ -464,34 +464,97 @@ describe('Fetch Helpers Module', () => {
 	    expect(headers.get('accept')).toBe('text/event-stream');
     });
 
-                it('maps usage-limit 404 errors to 429', async () => {
-                        const body = {
-                                error: {
-                                        code: 'usage_limit_reached',
-                                        message: 'limit reached',
-                                },
-                        };
-                        const resp = new Response(JSON.stringify(body), { status: 404 });
-                        const { response: mapped, rateLimit } = await handleErrorResponse(resp);
-                        expect(mapped.status).toBe(429);
-                        const json = await mapped.json() as any;
-                        expect(json.error.code).toBe('usage_limit_reached');
-                        expect(rateLimit?.retryAfterMs).toBeGreaterThan(0);
-                });
+		it('maps usage-limit 404 errors to 429', async () => {
+			const body = {
+				error: {
+					code: 'usage_limit_reached',
+					message: 'limit reached',
+				},
+			};
+			const resp = new Response(JSON.stringify(body), { status: 404 });
+			const { response: mapped, rateLimit } = await handleErrorResponse(resp);
+			expect(mapped.status).toBe(429);
+			const json = await mapped.json() as any;
+			expect(json.error.code).toBe('usage_limit_reached');
+			expect(rateLimit?.retryAfterMs).toBeGreaterThan(0);
+		});
 
-                it('leaves non-usage 404 errors unchanged', async () => {
-                        const body = { error: { code: 'not_found', message: 'nope' } };
-                        const resp = new Response(JSON.stringify(body), { status: 404 });
-                        const { response: result, rateLimit } = await handleErrorResponse(resp);
-                        expect(result.status).toBe(404);
-                        const json = await result.json() as any;
-                        expect(json.error.code).toBe('not_found');
-                        expect(rateLimit).toBeUndefined();
-                });
+		it('maps usage-limit 404 errors to 429 when the signal comes from error.type', async () => {
+			const body = {
+				error: {
+					type: 'usage_limit_reached',
+					message: 'limit reached',
+				},
+			};
+			const resp = new Response(JSON.stringify(body), { status: 404 });
+			const { response: mapped, rateLimit } = await handleErrorResponse(resp);
+			expect(mapped.status).toBe(429);
+			const json = await mapped.json() as { error: { type?: string } };
+			expect(json.error.type).toBe('usage_limit_reached');
+			expect(rateLimit?.retryAfterMs).toBeGreaterThan(0);
+		});
+
+		it('maps usage-limit 404 errors to 429 when code and type disagree', async () => {
+			const body = {
+				error: {
+					code: 'rate_limit_exceeded',
+					type: 'usage_limit_reached',
+					message: 'limit reached',
+				},
+			};
+			const resp = new Response(JSON.stringify(body), { status: 404 });
+			const { response: mapped, rateLimit } = await handleErrorResponse(resp);
+			expect(mapped.status).toBe(429);
+			expect(rateLimit?.retryAfterMs).toBeGreaterThan(0);
+		});
+
+		it('maps entitlement-style 404 errors to 403 when only error.type carries the signal', async () => {
+			const body = {
+				error: {
+					code: 'not_found',
+					type: 'usage_not_included',
+					message: 'Not included in your plan',
+				},
+			};
+			const resp = new Response(JSON.stringify(body), { status: 404 });
+			const { response: mapped, rateLimit } = await handleErrorResponse(resp);
+			expect(mapped.status).toBe(403);
+			const json = await mapped.json() as { error: { code?: string; message?: string } };
+			expect(json.error.code).toBe('usage_not_included');
+			expect(json.error.message).toContain('not included');
+			expect(rateLimit).toBeUndefined();
+		});
+
+		it('prioritizes entitlement over rate-limit when signals conflict', async () => {
+			const body = {
+				error: {
+					code: 'usage_not_included',
+					type: 'usage_limit_reached',
+					message: 'mixed signals',
+				},
+			};
+			const resp = new Response(JSON.stringify(body), { status: 404 });
+			const { response: mapped, rateLimit } = await handleErrorResponse(resp);
+			expect(mapped.status).toBe(403);
+			expect(rateLimit).toBeUndefined();
+		});
+
+		it('leaves non-usage 404 errors unchanged', async () => {
+			const body = { error: { code: 'not_found', message: 'nope' } };
+			const resp = new Response(JSON.stringify(body), { status: 404 });
+			const { response: result, rateLimit } = await handleErrorResponse(resp);
+			expect(result.status).toBe(404);
+			const json = await result.json() as any;
+			expect(json.error.code).toBe('not_found');
+			expect(rateLimit).toBeUndefined();
+		});
 
 		it('should remove x-api-key header', () => {
-        const init = { headers: { 'x-api-key': 'should-be-removed' } } as any;
-        const headers = createCodexHeaders(init, accountId, accessToken, { model: 'gpt-5', promptCacheKey: 'session-2' });
+			const init = { headers: { 'x-api-key': 'should-be-removed' } } as any;
+			const headers = createCodexHeaders(init, accountId, accessToken, {
+				model: 'gpt-5',
+				promptCacheKey: 'session-2',
+			});
 
 			expect(headers.has('x-api-key')).toBe(false);
 		});
@@ -981,13 +1044,39 @@ describe('createEntitlementErrorResponse', () => {
 	});
 
 	describe('handleErrorResponse edge cases', () => {
-		it('handles 404 with non-JSON body containing usage limit text', async () => {
+		it('does not remap 404s with free-text usage-limit messages', async () => {
 			const response = new Response('usage limit exceeded - please try again', { status: 404 });
 			
 			const { response: result, rateLimit } = await handleErrorResponse(response);
 			
+			expect(result.status).toBe(404);
+			expect(rateLimit).toBeUndefined();
+		});
+
+		it('remaps structured 404s with rate_limit_exceeded codes', async () => {
+			const response = new Response(
+				JSON.stringify({
+					error: {
+						code: 'rate_limit_exceeded',
+						message: 'upstream overloaded',
+					},
+				}),
+				{ status: 404 },
+			);
+
+			const { response: result, rateLimit } = await handleErrorResponse(response);
+
 			expect(result.status).toBe(429);
 			expect(rateLimit?.retryAfterMs).toBeGreaterThan(0);
+		});
+
+		it('does not remap 404s with malformed json bodies', async () => {
+			const response = new Response('{ invalid json', { status: 404 });
+
+			const { response: result, rateLimit } = await handleErrorResponse(response);
+
+			expect(result.status).toBe(404);
+			expect(rateLimit).toBeUndefined();
 		});
 
 		it('does not treat non-429 rate-limit text as a cooldown signal', async () => {

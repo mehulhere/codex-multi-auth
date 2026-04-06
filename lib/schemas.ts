@@ -38,6 +38,10 @@ export const PluginConfigSchema = z.object({
 	parallelProbingMaxConcurrency: z.number().min(1).max(5).optional(),
 	emptyResponseMaxRetries: z.number().min(0).optional(),
 	emptyResponseRetryDelayMs: z.number().min(0).optional(),
+	rateLimitDedupWindowMs: z.number().min(0).optional(),
+	rateLimitStateResetMs: z.number().min(1_000).optional(),
+	rateLimitMaxBackoffMs: z.number().min(1_000).optional(),
+	rateLimitShortRetryThresholdMs: z.number().min(0).optional(),
 	pidOffsetEnabled: z.boolean().optional(),
 	fetchTimeoutMs: z.number().min(1_000).optional(),
 	streamStallTimeoutMs: z.number().min(1_000).optional(),
@@ -77,7 +81,7 @@ export type AccountIdSourceFromSchema = z.infer<typeof AccountIdSourceSchema>;
 /**
  * Cooldown reason for temporary account suspension.
  */
-export const CooldownReasonSchema = z.enum(["auth-failure", "network-error", "rate-limit"]);
+export const CooldownReasonSchema = z.enum(["auth-failure", "network-error", "server-error", "rate-limit"]);
 
 export type CooldownReasonFromSchema = z.infer<typeof CooldownReasonSchema>;
 

@@ -1,4 +1,4 @@
-import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
+import { readFileSync, writeFileSync, existsSync, mkdirSync, renameSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
 import { createLogger } from "./logger.js";
 import { getCodexCacheDir } from "./runtime-paths.js";
@@ -28,6 +28,53 @@ interface ParsedSemver {
 }
 
 const RETRYABLE_WRITE_ERRORS = new Set(["EBUSY", "EPERM"]);
+let updateCacheWriteQueue: Promise<void> = Promise.resolve();
+
+function enqueueUpdateCacheWrite(writeTask: () => void): Promise<void> {
+	const queued = updateCacheWriteQueue.catch(() => undefined).then(writeTask);
+	updateCacheWriteQueue = queued.then(
+		() => undefined,
+		() => undefined,
+	);
+	return queued;
+}
+
+function writeCacheContents(serialized: string): void {
+	let tempPath: string | null = null;
+	let wroteTemp = false;
+	try {
+		if (!existsSync(CACHE_DIR)) {
+			mkdirSync(CACHE_DIR, { recursive: true });
+		}
+		tempPath = `${CACHE_FILE}.${process.pid}.${Date.now()}.${Math.random().toString(36).slice(2, 8)}.tmp`;
+		let lastError: Error | null = null;
+		for (let attempt = 0; attempt < 4; attempt++) {
+			try {
+				writeFileSync(tempPath, serialized, "utf8");
+				renameSync(tempPath, CACHE_FILE);
+				wroteTemp = false;
+				return;
+			} catch (error) {
+				const code = (error as NodeJS.ErrnoException).code ?? "";
+				lastError = error as Error;
+				wroteTemp = true;
+				if (!RETRYABLE_WRITE_ERRORS.has(code) || attempt >= 3) {
+					throw error;
+				}
+				sleepSync(15 * (2 ** attempt));
+			}
+		}
+		if (lastError) throw lastError;
+	} finally {
+		if (wroteTemp && tempPath) {
+			try {
+				unlinkSync(tempPath);
+			} catch {
+				// Best effort temp cleanup.
+			}
+		}
+	}
+}
 
 function sleepSync(ms: number): void {
   const delay = Math.max(0, Math.floor(ms));
@@ -41,7 +88,10 @@ function getCurrentVersion(): string {
     const packageJsonPath = join(import.meta.dirname ?? __dirname, "..", "package.json");
     const packageJson = JSON.parse(readFileSync(packageJsonPath, "utf8")) as { version: string };
     return packageJson.version;
-  } catch {
+  } catch (error) {
+    log.debug("Failed to read current package version", {
+      error: error instanceof Error ? error.message : String(error),
+    });
     return "0.0.0";
   }
 }
@@ -51,35 +101,22 @@ function loadCache(): UpdateCheckCache | null {
     if (!existsSync(CACHE_FILE)) return null;
     const content = readFileSync(CACHE_FILE, "utf8");
     return JSON.parse(content) as UpdateCheckCache;
-  } catch {
+  } catch (error) {
+    log.debug("Failed to load update cache", {
+      error: error instanceof Error ? error.message : String(error),
+    });
     return null;
   }
 }
 
-function saveCache(cache: UpdateCheckCache): void {
-  try {
-    if (!existsSync(CACHE_DIR)) {
-      mkdirSync(CACHE_DIR, { recursive: true });
-    }
-    const serialized = JSON.stringify(cache, null, 2);
-    let lastError: Error | null = null;
-    for (let attempt = 0; attempt < 4; attempt++) {
-      try {
-        writeFileSync(CACHE_FILE, serialized, "utf8");
-        return;
-      } catch (error) {
-        const code = (error as NodeJS.ErrnoException).code ?? "";
-        lastError = error as Error;
-        if (!RETRYABLE_WRITE_ERRORS.has(code) || attempt >= 3) {
-          throw error;
-        }
-        sleepSync(15 * (2 ** attempt));
-      }
-    }
-    if (lastError) throw lastError;
-  } catch (error) {
-    log.warn("Failed to save update cache", { error: (error as Error).message });
-  }
+async function saveCache(cache: UpdateCheckCache): Promise<void> {
+	await enqueueUpdateCacheWrite(() => {
+		try {
+			writeCacheContents(JSON.stringify(cache, null, 2));
+		} catch (error) {
+			log.warn("Failed to save update cache", { error: (error as Error).message });
+		}
+	});
 }
 
 function parseSemver(version: string): ParsedSemver {
@@ -211,11 +248,11 @@ export async function checkForUpdates(force = false): Promise<UpdateCheckResult>
 
   const latestVersion = await fetchLatestVersion();
 
-  saveCache({
-    lastCheck: now,
-    latestVersion,
-    currentVersion,
-  });
+	await saveCache({
+		lastCheck: now,
+		latestVersion,
+		currentVersion,
+	});
 
   const hasUpdate = latestVersion ? compareVersions(currentVersion, latestVersion) > 0 : false;
 
@@ -250,11 +287,13 @@ export async function checkAndNotify(
 }
 
 export function clearUpdateCache(): void {
-  try {
-    if (existsSync(CACHE_FILE)) {
-      writeFileSync(CACHE_FILE, "{}", "utf8");
-    }
-  } catch {
-    // Ignore errors
-  }
+	void enqueueUpdateCacheWrite(() => {
+		try {
+			if (existsSync(CACHE_FILE)) {
+				writeCacheContents("{}");
+			}
+		} catch {
+			// Ignore errors
+		}
+	});
 }

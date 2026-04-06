@@ -3,8 +3,13 @@ import {
 	formatCooldown,
 	formatWaitTime,
 } from "../../accounts.js";
+import {
+	evaluateForecastAccounts,
+	recommendForecastAccount,
+} from "../../forecast.js";
 import type { ModelFamily } from "../../prompts/codex.js";
-import type { AccountStorageV3 } from "../../storage.js";
+import type { RuntimeObservabilitySnapshot } from "../../runtime/runtime-observability.js";
+import type { AccountStorageV3, StorageHealthSummary } from "../../storage.js";
 
 type LoadedStorage = AccountStorageV3 | null;
 
@@ -21,6 +26,8 @@ export interface StatusCommandDeps {
 		now: number,
 		family: ModelFamily,
 	) => string | null;
+	loadRuntimeObservabilitySnapshot?: () => Promise<RuntimeObservabilitySnapshot | null>;
+	inspectStorageHealth?: () => Promise<StorageHealthSummary>;
 	getNow?: () => number;
 	logInfo?: (message: string) => void;
 }
@@ -31,17 +38,71 @@ export async function runStatusCommand(
 	deps.setStoragePath(null);
 	const storage = await deps.loadAccounts();
 	const path = deps.getStoragePath();
+	const storageHealth = await deps.inspectStorageHealth?.();
 	const logInfo = deps.logInfo ?? console.log;
 	if (!storage || storage.accounts.length === 0) {
-		logInfo("No accounts configured.");
+		logInfo(
+			storageHealth?.state === "intentional-reset"
+				? "No accounts configured. Storage was intentionally reset."
+				: storageHealth?.state === "recoverable"
+					? "No accounts configured. Recovery artifacts are available."
+					: storageHealth?.state === "corrupt"
+						? "No accounts configured. Storage appears corrupted."
+						: "No accounts configured.",
+		);
 		logInfo(`Storage: ${path}`);
+		if (storageHealth) {
+			logInfo(`Storage health: ${storageHealth.state}`);
+		}
 		return 0;
 	}
 
 	const now = deps.getNow?.() ?? Date.now();
 	const activeIndex = deps.resolveActiveIndex(storage, "codex");
+	const forecastResults = evaluateForecastAccounts(
+		storage.accounts.map((account, index) => ({
+			index,
+			account,
+			isCurrent: index === activeIndex,
+			now,
+		})),
+	);
+	const recommendation = recommendForecastAccount(forecastResults);
 	logInfo(`Accounts (${storage.accounts.length})`);
 	logInfo(`Storage: ${path}`);
+	if (recommendation.recommendedIndex !== null) {
+		logInfo(
+			`Selection reason: account ${recommendation.recommendedIndex + 1} (${recommendation.reason})`,
+		);
+	}
+	if (storageHealth) {
+		logInfo(`Storage health: ${storageHealth.state}`);
+	}
+	const runtimeSnapshot = await deps.loadRuntimeObservabilitySnapshot?.();
+	if (runtimeSnapshot) {
+		const runtimeMetrics = runtimeSnapshot.runtimeMetrics;
+		const poolCooldown =
+			typeof runtimeSnapshot.poolExhaustionCooldownUntil === "number" &&
+			runtimeSnapshot.poolExhaustionCooldownUntil > now
+				? formatWaitTime(runtimeSnapshot.poolExhaustionCooldownUntil - now)
+				: null;
+		const serverCooldown =
+			typeof runtimeSnapshot.serverBurstCooldownUntil === "number" &&
+			runtimeSnapshot.serverBurstCooldownUntil > now
+				? formatWaitTime(runtimeSnapshot.serverBurstCooldownUntil - now)
+				: null;
+		logInfo(
+			`Runtime: responses=${runtimeSnapshot.responsesRequests}, refresh=${runtimeSnapshot.authRefreshRequests}, probes=${runtimeSnapshot.diagnosticProbeRequests}, budgetExhaustions=${runtimeMetrics.requestAttemptBudgetExhaustions}`,
+		);
+		if (poolCooldown || serverCooldown) {
+			logInfo(
+				`Cooldowns: pool=${poolCooldown ?? "none"}, server-burst=${serverCooldown ?? "none"}`,
+			);
+		}
+		if (runtimeSnapshot.currentRequestId) {
+			logInfo(`Last request trace: ${runtimeSnapshot.currentRequestId}`);
+		}
+	}
 	logInfo("");
 
 	for (let i = 0; i < storage.accounts.length; i += 1) {
@@ -61,6 +122,10 @@ export async function runStatusCommand(
 				? `used ${formatWaitTime(now - account.lastUsed)} ago`
 				: "never used";
 		logInfo(`${i + 1}. ${label}${markerLabel} ${lastUsed}`);
+		const primaryReason = forecastResults[i]?.reasons[0];
+		if (primaryReason) {
+			logInfo(`   reason: ${primaryReason}`);
+		}
 	}
 
 	return 0;

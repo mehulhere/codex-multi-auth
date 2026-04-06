@@ -441,6 +441,296 @@ describe("OpenAIAuthPlugin rate-limit retry", () => {
 		expect(response.status).toBe(200);
 	});
 
+	it("does not replay across all accounts by default when every account is rate-limited", async () => {
+		delete process.env.CODEX_AUTH_RETRY_ALL_RATE_LIMITED;
+		delete process.env.CODEX_AUTH_RETRY_ALL_MAX_WAIT_MS;
+		delete process.env.CODEX_AUTH_RETRY_ALL_MAX_RETRIES;
+		vi.resetModules();
+		const secondaryAccount = createMockAccount({
+			index: 1,
+			accountId: "account-2",
+			email: "user2@example.com",
+			refreshToken: "refresh-token-account-2",
+			access: "access-token-account-2",
+		});
+		accountManagerState.accounts = [createMockAccount(), secondaryAccount];
+		accountManagerState.accountSelections = [null];
+
+		const { OpenAIAuthPlugin } = await import("../index.js");
+		const client = {
+			tui: { showToast: vi.fn() },
+			auth: { set: vi.fn() },
+		} as any;
+		const plugin = await OpenAIAuthPlugin({ client });
+
+		const getAuth = async () => ({
+			type: "oauth" as const,
+			access: "a",
+			refresh: "r",
+			expires: Date.now() + 60_000,
+			multiAccount: true,
+		});
+
+		const sdk = (await plugin.auth.loader(getAuth, { options: {}, models: {} })) as any;
+		const response = await sdk.fetch("https://example.com", {});
+		const payload = await response.json();
+
+		expect(globalThis.fetch).not.toHaveBeenCalled();
+		expect(response.status).toBe(429);
+		expect(payload.error.message).toContain("All 2 account(s) are rate-limited.");
+		expect(payload.error.message).toContain("15000ms");
+	});
+
+	it("fast-fails after repeated cross-account 5xx errors arm the server-burst cooldown", async () => {
+		const accounts = Array.from({ length: 4 }, (_, index) =>
+			createMockAccount({
+				index,
+				accountId: `account-${index + 1}`,
+				email: `user${index + 1}@example.com`,
+				refreshToken: `refresh-token-${index + 1}`,
+				access: `access-token-account-${index + 1}`,
+			}),
+		);
+		accountManagerState.accounts = accounts;
+		accountManagerState.accountSelections = [...accounts];
+
+		const fetchMock = vi.fn().mockImplementation(() =>
+			Promise.resolve(
+				new Response(
+					JSON.stringify({
+						error: { code: "server_error", message: "temporary outage" },
+					}),
+					{
+						status: 503,
+						headers: { "content-type": "application/json" },
+					},
+				),
+			),
+		);
+		globalThis.fetch = fetchMock as any;
+
+		const { OpenAIAuthPlugin } = await import("../index.js");
+		const client = {
+			tui: { showToast: vi.fn() },
+			auth: { set: vi.fn() },
+		} as any;
+		const plugin = await OpenAIAuthPlugin({ client });
+
+		const getAuth = async () => ({
+			type: "oauth" as const,
+			access: "a",
+			refresh: "r",
+			expires: Date.now() + 60_000,
+			multiAccount: true,
+		});
+
+		const sdk = (await plugin.auth.loader(getAuth, { options: {}, models: {} })) as any;
+		const { clearPoolExhaustionCooldown } = await import(
+			"../lib/request/request-resilience.js"
+		);
+
+		for (let index = 0; index < 3; index += 1) {
+			accountManagerState.accounts = [accounts[index] as Record<string, unknown>];
+			accountManagerState.accountSelections = [accounts[index] as Record<string, unknown>];
+			const fetchPromise = sdk.fetch("https://example.com", {});
+			await vi.advanceTimersByTimeAsync(2_000);
+			const response = await fetchPromise;
+			expect(response.status).toBe(429);
+			clearPoolExhaustionCooldown();
+		}
+
+		expect(fetchMock).toHaveBeenCalledTimes(3);
+
+		accountManagerState.accounts = [accounts[3] as Record<string, unknown>];
+		accountManagerState.accountSelections = [accounts[3] as Record<string, unknown>];
+		const secondResponse = await sdk.fetch("https://example.com", {});
+		const secondPayload = await secondResponse.json();
+		expect(secondResponse.status).toBe(503);
+		expect(secondPayload.error.message).toContain(
+			"Multiple accounts recently failed with upstream server errors.",
+		);
+		expect(fetchMock).toHaveBeenCalledTimes(3);
+	});
+
+	it("stops after the bounded outbound request budget even when more accounts are available", async () => {
+		const logger = await import("../lib/logger.js");
+		const logDebugSpy = vi.spyOn(logger, "logDebug").mockImplementation(() => {});
+		const logWarnSpy = vi.spyOn(logger, "logWarn").mockImplementation(() => {});
+
+		const accounts = Array.from({ length: 8 }, (_, index) =>
+			createMockAccount({
+				index,
+				accountId: `account-${index + 1}`,
+				email: `user${index + 1}@example.com`,
+				refreshToken: `refresh-token-${index + 1}`,
+				access: `access-token-account-${index + 1}`,
+			}),
+		);
+		accountManagerState.accounts = accounts;
+		accountManagerState.accountSelections = [...accounts];
+
+		const fetchMock = vi.fn().mockImplementation(() =>
+			Promise.resolve(
+				new Response(
+					JSON.stringify({
+						error: { code: "server_error", message: "temporary outage" },
+					}),
+					{
+						status: 500,
+						headers: { "content-type": "application/json" },
+					},
+				),
+			),
+		);
+		globalThis.fetch = fetchMock as any;
+
+		const { OpenAIAuthPlugin } = await import("../index.js");
+		const client = {
+			tui: { showToast: vi.fn() },
+			auth: { set: vi.fn() },
+		} as any;
+		const plugin = await OpenAIAuthPlugin({ client });
+
+		const getAuth = async () => ({
+			type: "oauth" as const,
+			access: "a",
+			refresh: "r",
+			expires: Date.now() + 60_000,
+			multiAccount: true,
+		});
+
+		const sdk = (await plugin.auth.loader(getAuth, { options: {}, models: {} })) as any;
+		const response = await sdk.fetch("https://example.com", {});
+		const payload = await response.json();
+
+		expect(fetchMock).toHaveBeenCalledTimes(6);
+		expect(response.status).toBe(503);
+		expect(payload).toEqual({
+			error: {
+				message:
+					"Request attempt budget exhausted after 6 outbound request(s). Try again after the current retries settle.",
+			},
+		});
+		expect(logDebugSpy).toHaveBeenCalledWith(
+			"Configured outbound request attempt budget.",
+			expect.objectContaining({
+				budget: 6,
+				accountCount: 8,
+				maxSameAccountRetries: 1,
+				emptyResponseMaxRetries: 2,
+				streamFailoverMax: 1,
+			}),
+		);
+		expect(logWarnSpy).toHaveBeenCalledWith(
+			"Request attempt budget exhausted.",
+			expect.objectContaining({
+				reason: "primary",
+				accountIndex: 6,
+				budget: 6,
+				consumed: 6,
+			}),
+		);
+	});
+
+	it("keeps the total request cap when empty-response retries and server-error rotation combine", async () => {
+		const logger = await import("../lib/logger.js");
+		const logWarnSpy = vi.spyOn(logger, "logWarn").mockImplementation(() => {});
+
+		const accounts = Array.from({ length: 6 }, (_, index) =>
+			createMockAccount({
+				index,
+				accountId: `account-${index + 1}`,
+				email: `user${index + 1}@example.com`,
+				refreshToken: `refresh-token-${index + 1}`,
+				access: `access-token-account-${index + 1}`,
+			}),
+		);
+		accountManagerState.accounts = accounts;
+		accountManagerState.accountSelections = [...accounts];
+
+		const serverErrorResponse = () =>
+			new Response(
+				JSON.stringify({
+					error: { code: "server_error", message: "temporary outage" },
+				}),
+				{
+					status: 500,
+					headers: { "content-type": "application/json" },
+				},
+			);
+
+		const fetchMock = vi
+			.fn()
+			.mockResolvedValueOnce(
+				new Response("{}", {
+					status: 200,
+					headers: { "content-type": "application/json" },
+				}),
+			)
+			.mockResolvedValueOnce(serverErrorResponse())
+			.mockResolvedValueOnce(serverErrorResponse())
+			.mockResolvedValueOnce(serverErrorResponse())
+			.mockResolvedValueOnce(serverErrorResponse())
+			.mockResolvedValueOnce(serverErrorResponse());
+		globalThis.fetch = fetchMock as any;
+
+		const { OpenAIAuthPlugin } = await import("../index.js");
+		const client = {
+			tui: { showToast: vi.fn() },
+			auth: { set: vi.fn() },
+		} as any;
+		const plugin = await OpenAIAuthPlugin({ client });
+
+		const getAuth = async () => ({
+			type: "oauth" as const,
+			access: "a",
+			refresh: "r",
+			expires: Date.now() + 60_000,
+			multiAccount: true,
+		});
+
+		const sdk = (await plugin.auth.loader(getAuth, { options: {}, models: {} })) as any;
+		const fetchPromise = sdk.fetch("https://example.com", {});
+
+		await vi.advanceTimersByTimeAsync(1500);
+
+		const response = await fetchPromise;
+		const payload = await response.json();
+
+		expect(fetchMock).toHaveBeenCalledTimes(6);
+		expect(
+			fetchMock.mock.calls.map(
+				(call) => (call[1]?.headers as Headers).get("x-account-id"),
+			),
+		).toEqual([
+			"account-1",
+			"account-1",
+			"account-2",
+			"account-3",
+			"account-4",
+			"account-5",
+		]);
+		expect(response.status).toBe(503);
+		expect(payload).toEqual({
+			error: {
+				message:
+					"Request attempt budget exhausted after 6 outbound request(s). Try again after the current retries settle.",
+			},
+		});
+		expect(logWarnSpy).toHaveBeenCalledWith(
+			"Empty response received (attempt 1/2). Retrying...",
+		);
+		expect(logWarnSpy).toHaveBeenCalledWith(
+			"Request attempt budget exhausted.",
+			expect.objectContaining({
+				reason: "primary",
+				accountIndex: 5,
+				budget: 6,
+				consumed: 6,
+			}),
+		);
+	});
+
 	it("rebuilds request headers after rotating to the next workspace", async () => {
 		const account = createMockAccount({
 			workspaces: [

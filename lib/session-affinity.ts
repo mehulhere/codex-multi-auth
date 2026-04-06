@@ -12,6 +12,7 @@ interface SessionAffinityEntry {
 	expiresAt: number;
 	lastResponseId?: string;
 	updatedAt: number;
+	writeVersion: number;
 }
 
 const DEFAULT_TTL_MS = 20 * 60 * 1000;
@@ -42,6 +43,7 @@ export class SessionAffinityStore {
 	private readonly ttlMs: number;
 	private readonly maxEntries: number;
 	private readonly entries = new Map<string, SessionAffinityEntry>();
+	private writeVersionCounter = 0;
 
 	constructor(options: SessionAffinityOptions = {}) {
 		this.ttlMs = Math.max(1_000, Math.floor(options.ttlMs ?? DEFAULT_TTL_MS));
@@ -62,17 +64,35 @@ export class SessionAffinityStore {
 	}
 
 	remember(sessionKey: string | null | undefined, accountIndex: number, now = Date.now()): void {
+		this.rememberWithVersion(sessionKey, accountIndex, now);
+	}
+
+	rememberWithVersion(
+		sessionKey: string | null | undefined,
+		accountIndex: number,
+		now = Date.now(),
+		writeVersion?: number,
+	): void {
 		const key = normalizeSessionKey(sessionKey);
 		if (!key) return;
 		if (!Number.isFinite(accountIndex) || accountIndex < 0) return;
+		const normalizedWriteVersion = this.normalizeWriteVersion(writeVersion);
 
 		const existingEntry = this.entries.get(key);
+		if (
+			existingEntry &&
+			existingEntry.expiresAt > now &&
+			existingEntry.writeVersion > normalizedWriteVersion
+		) {
+			return;
+		}
 
 		this.setEntry(key, {
 			accountIndex,
 			expiresAt: now + this.ttlMs,
 			lastResponseId: existingEntry?.lastResponseId,
 			updatedAt: now,
+			writeVersion: normalizedWriteVersion,
 		});
 	}
 
@@ -110,15 +130,20 @@ export class SessionAffinityStore {
 		sessionKey: string | null | undefined,
 		responseId: string | null | undefined,
 		now = Date.now(),
+		writeVersion?: number,
 	): void {
 		const key = normalizeSessionKey(sessionKey);
 		const normalizedResponseId = typeof responseId === "string" ? responseId.trim() : "";
 		if (!key || !normalizedResponseId) return;
+		const normalizedWriteVersion = this.normalizeWriteVersion(writeVersion);
 
 		const entry = this.entries.get(key);
 		if (!entry) return;
 		if (entry.expiresAt <= now) {
 			this.entries.delete(key);
+			return;
+		}
+		if (entry.writeVersion > normalizedWriteVersion) {
 			return;
 		}
 
@@ -127,6 +152,7 @@ export class SessionAffinityStore {
 			expiresAt: now + this.ttlMs,
 			lastResponseId: normalizedResponseId,
 			updatedAt: now,
+			writeVersion: normalizedWriteVersion,
 		});
 	}
 
@@ -202,5 +228,15 @@ export class SessionAffinityStore {
 		}
 
 		return oldestKey;
+	}
+
+	private normalizeWriteVersion(writeVersion?: number): number {
+		if (typeof writeVersion === "number" && Number.isFinite(writeVersion)) {
+			const normalized = Math.max(0, Math.floor(writeVersion));
+			this.writeVersionCounter = Math.max(this.writeVersionCounter, normalized);
+			return normalized;
+		}
+		this.writeVersionCounter += 1;
+		return this.writeVersionCounter;
 	}
 }

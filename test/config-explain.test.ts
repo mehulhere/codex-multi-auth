@@ -39,6 +39,10 @@ describe("getPluginConfigExplainReport", () => {
 		delete process.env.CODEX_MODE;
 		delete process.env.CODEX_AUTH_FAST_SESSION_STRATEGY;
 		delete process.env.CODEX_MULTI_AUTH_CONFIG_PATH;
+		delete process.env.CODEX_AUTH_RATE_LIMIT_DEDUP_WINDOW_MS;
+		delete process.env.CODEX_AUTH_RATE_LIMIT_STATE_RESET_MS;
+		delete process.env.CODEX_AUTH_RATE_LIMIT_MAX_BACKOFF_MS;
+		delete process.env.CODEX_AUTH_RATE_LIMIT_SHORT_RETRY_THRESHOLD_MS;
 		for (const configPath of tempConfigPaths) {
 			await removeWithRetry(configPath, { force: true }).catch(() => {});
 		}
@@ -128,12 +132,12 @@ describe("getPluginConfigExplainReport", () => {
 		expect(fallback?.source).not.toBe("file");
 	});
 
-	it("normalizes non-finite values for json-safe output", async () => {
+	it("reports retry-all max retries honestly for json-safe output", async () => {
 		const { getPluginConfigExplainReport } = await import("../lib/config.js");
 		const report = getPluginConfigExplainReport();
 		const entry = expectEntry(report, "retryAllAccountsMaxRetries");
-		expect(entry?.value).toBe("Infinity");
-		expect(entry?.defaultValue).toBe("Infinity");
+		expect(entry?.value).toBe(0);
+		expect(entry?.defaultValue).toBe(0);
 		const serialized = JSON.parse(JSON.stringify(report)) as {
 			entries: Array<{ key: string; value: unknown; defaultValue: unknown }>;
 		};
@@ -141,9 +145,45 @@ describe("getPluginConfigExplainReport", () => {
 			(item) => item.key === "retryAllAccountsMaxRetries",
 		);
 		expect(serializedEntry).toMatchObject({
-			value: "Infinity",
-			defaultValue: "Infinity",
+			value: 0,
+			defaultValue: 0,
 		});
+	});
+
+	it("covers the rate-limit explain rows and env sources", async () => {
+		const { getPluginConfigExplainReport } = await import("../lib/config.js");
+		const keys = [
+			"rateLimitDedupWindowMs",
+			"rateLimitStateResetMs",
+			"rateLimitMaxBackoffMs",
+			"rateLimitShortRetryThresholdMs",
+		] as const;
+		const report = getPluginConfigExplainReport();
+		for (const key of keys) {
+			expect(expectEntry(report, key)).toBeDefined();
+		}
+
+		const serialized = JSON.parse(JSON.stringify(report)) as {
+			entries: Array<{ key: string; value: unknown; defaultValue: unknown; source: string }>;
+		};
+		for (const key of keys) {
+			const entry = serialized.entries.find((item) => item.key === key);
+			expect(entry).toBeDefined();
+			expect(entry?.value).toBeDefined();
+			expect(entry?.defaultValue).toBeDefined();
+		}
+
+		vi.resetModules();
+		process.env.CODEX_AUTH_RATE_LIMIT_DEDUP_WINDOW_MS = "3210";
+		process.env.CODEX_AUTH_RATE_LIMIT_STATE_RESET_MS = "654321";
+		process.env.CODEX_AUTH_RATE_LIMIT_MAX_BACKOFF_MS = "12345";
+		process.env.CODEX_AUTH_RATE_LIMIT_SHORT_RETRY_THRESHOLD_MS = "250";
+		const envMod = await import("../lib/config.js");
+		const envReport = envMod.getPluginConfigExplainReport();
+		for (const key of keys) {
+			const entry = expectEntry(envReport, key);
+			expect(entry?.source).toBe("env");
+		}
 	});
 
 	it("reports default and env sources", async () => {

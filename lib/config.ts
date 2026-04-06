@@ -166,9 +166,9 @@ export const DEFAULT_PLUGIN_CONFIG: PluginConfig = {
 	fastSession: false,
 	fastSessionStrategy: "hybrid",
 	fastSessionMaxInputItems: 30,
-	retryAllAccountsRateLimited: true,
+	retryAllAccountsRateLimited: false,
 	retryAllAccountsMaxWaitMs: 0,
-	retryAllAccountsMaxRetries: Infinity,
+	retryAllAccountsMaxRetries: 0,
 	unsupportedCodexPolicy: "strict",
 	fallbackOnUnsupportedCodexModel: false,
 	fallbackToGpt52OnUnsupportedGpt53: true,
@@ -183,6 +183,10 @@ export const DEFAULT_PLUGIN_CONFIG: PluginConfig = {
 	parallelProbingMaxConcurrency: 2,
 	emptyResponseMaxRetries: 2,
 	emptyResponseRetryDelayMs: 1_000,
+	rateLimitDedupWindowMs: 2_000,
+	rateLimitStateResetMs: 120_000,
+	rateLimitMaxBackoffMs: 60_000,
+	rateLimitShortRetryThresholdMs: 5_000,
 	pidOffsetEnabled: false,
 	fetchTimeoutMs: 60_000,
 	streamStallTimeoutMs: 45_000,
@@ -873,7 +877,7 @@ export function getRetryAllAccountsRateLimited(
 	return resolveBooleanSetting(
 		"CODEX_AUTH_RETRY_ALL_RATE_LIMITED",
 		pluginConfig.retryAllAccountsRateLimited,
-		true,
+		false,
 	);
 }
 
@@ -894,7 +898,7 @@ export function getRetryAllAccountsMaxRetries(
 	return resolveNumberSetting(
 		"CODEX_AUTH_RETRY_ALL_MAX_RETRIES",
 		pluginConfig.retryAllAccountsMaxRetries,
-		Infinity,
+		0,
 		{ min: 0 },
 	);
 }
@@ -1072,6 +1076,44 @@ export function getEmptyResponseRetryDelayMs(
 		"CODEX_AUTH_EMPTY_RESPONSE_RETRY_DELAY_MS",
 		pluginConfig.emptyResponseRetryDelayMs,
 		1_000,
+		{ min: 0 },
+	);
+}
+
+export function getRateLimitDedupWindowMs(pluginConfig: PluginConfig): number {
+	return resolveNumberSetting(
+		"CODEX_AUTH_RATE_LIMIT_DEDUP_WINDOW_MS",
+		pluginConfig.rateLimitDedupWindowMs,
+		DEFAULT_PLUGIN_CONFIG.rateLimitDedupWindowMs ?? 2_000,
+		{ min: 0 },
+	);
+}
+
+export function getRateLimitStateResetMs(pluginConfig: PluginConfig): number {
+	return resolveNumberSetting(
+		"CODEX_AUTH_RATE_LIMIT_STATE_RESET_MS",
+		pluginConfig.rateLimitStateResetMs,
+		DEFAULT_PLUGIN_CONFIG.rateLimitStateResetMs ?? 120_000,
+		{ min: 1_000 },
+	);
+}
+
+export function getRateLimitMaxBackoffMs(pluginConfig: PluginConfig): number {
+	return resolveNumberSetting(
+		"CODEX_AUTH_RATE_LIMIT_MAX_BACKOFF_MS",
+		pluginConfig.rateLimitMaxBackoffMs,
+		DEFAULT_PLUGIN_CONFIG.rateLimitMaxBackoffMs ?? 60_000,
+		{ min: 1_000 },
+	);
+}
+
+export function getRateLimitShortRetryThresholdMs(
+	pluginConfig: PluginConfig,
+): number {
+	return resolveNumberSetting(
+		"CODEX_AUTH_RATE_LIMIT_SHORT_RETRY_THRESHOLD_MS",
+		pluginConfig.rateLimitShortRetryThresholdMs,
+		DEFAULT_PLUGIN_CONFIG.rateLimitShortRetryThresholdMs ?? 5_000,
 		{ min: 0 },
 	);
 }
@@ -1679,6 +1721,26 @@ const CONFIG_EXPLAIN_ENTRIES: ConfigExplainMeta[] = [
 		getValue: getEmptyResponseRetryDelayMs,
 	},
 	{
+		key: "rateLimitDedupWindowMs",
+		envNames: ["CODEX_AUTH_RATE_LIMIT_DEDUP_WINDOW_MS"],
+		getValue: getRateLimitDedupWindowMs,
+	},
+	{
+		key: "rateLimitStateResetMs",
+		envNames: ["CODEX_AUTH_RATE_LIMIT_STATE_RESET_MS"],
+		getValue: getRateLimitStateResetMs,
+	},
+	{
+		key: "rateLimitMaxBackoffMs",
+		envNames: ["CODEX_AUTH_RATE_LIMIT_MAX_BACKOFF_MS"],
+		getValue: getRateLimitMaxBackoffMs,
+	},
+	{
+		key: "rateLimitShortRetryThresholdMs",
+		envNames: ["CODEX_AUTH_RATE_LIMIT_SHORT_RETRY_THRESHOLD_MS"],
+		getValue: getRateLimitShortRetryThresholdMs,
+	},
+	{
 		key: "pidOffsetEnabled",
 		envNames: ["CODEX_AUTH_PID_OFFSET_ENABLED"],
 		getValue: getPidOffsetEnabled,
@@ -1781,10 +1843,11 @@ export function getPluginConfigExplainReport(): ConfigExplainReport {
 	const storedRecord = stored.record ?? null;
 	const entries = CONFIG_EXPLAIN_ENTRIES.map((entry) => {
 		const value = entry.getValue(pluginConfig);
+		const defaultValue = DEFAULT_PLUGIN_CONFIG[entry.key];
 		return {
 			key: entry.key,
 			value: normalizeConfigExplainValue(value),
-			defaultValue: normalizeConfigExplainValue(DEFAULT_PLUGIN_CONFIG[entry.key]),
+			defaultValue: normalizeConfigExplainValue(defaultValue),
 			source: resolveConfigExplainSource(
 				entry,
 				pluginConfig,

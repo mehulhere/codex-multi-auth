@@ -5,6 +5,8 @@ vi.mock("node:fs", () => ({
 	writeFileSync: vi.fn(),
 	existsSync: vi.fn(),
 	mkdirSync: vi.fn(),
+	renameSync: vi.fn(),
+	unlinkSync: vi.fn(),
 }));
 
 describe("auto-update-checker", () => {
@@ -12,6 +14,11 @@ describe("auto-update-checker", () => {
 	let checkForUpdates: typeof import("../lib/auto-update-checker.js").checkForUpdates;
 	let checkAndNotify: typeof import("../lib/auto-update-checker.js").checkAndNotify;
 	let clearUpdateCache: typeof import("../lib/auto-update-checker.js").clearUpdateCache;
+	let logger: {
+		debug: ReturnType<typeof vi.fn>;
+		info: ReturnType<typeof vi.fn>;
+		warn: ReturnType<typeof vi.fn>;
+	};
 
 	const mockPackageJson = { version: "4.12.0" };
 
@@ -20,6 +27,14 @@ describe("auto-update-checker", () => {
 		vi.useFakeTimers();
 		vi.setSystemTime(new Date("2026-01-30T12:00:00Z"));
 		mockPackageJson.version = "4.12.0";
+		logger = {
+			debug: vi.fn(),
+			info: vi.fn(),
+			warn: vi.fn(),
+		};
+		vi.doMock("../lib/logger.js", () => ({
+			createLogger: () => logger,
+		}));
 
 		fs = await import("node:fs");
 		vi.mocked(fs.readFileSync).mockImplementation((path: unknown) => {
@@ -226,6 +241,28 @@ describe("auto-update-checker", () => {
 	});
 
 	describe("checkForUpdates", () => {
+		it("logs debug details when package metadata cannot be parsed", async () => {
+			vi.mocked(fs.readFileSync).mockImplementation((path: unknown) => {
+				if (String(path).includes("package.json")) {
+					return "{";
+				}
+				throw new Error("File not found");
+			});
+			vi.mocked(globalThis.fetch).mockResolvedValue({
+				ok: true,
+				json: async () => ({ version: "5.0.0" }),
+			} as Response);
+
+			const result = await checkForUpdates(true);
+
+			expect(result.currentVersion).toBe("0.0.0");
+			expect(globalThis.fetch).toHaveBeenCalled();
+			expect(logger.debug).toHaveBeenCalledWith(
+				"Failed to read current package version",
+				expect.objectContaining({ error: expect.any(String) }),
+			);
+		});
+
 		it("uses cache when check is recent", async () => {
 			const cacheData = {
 				lastCheck: Date.now() - 1000 * 60 * 60,
@@ -249,6 +286,62 @@ describe("auto-update-checker", () => {
 			expect(result.hasUpdate).toBe(true);
 			expect(result.latestVersion).toBe("5.0.0");
 		});
+
+		it("logs debug details when cached update JSON is unreadable", async () => {
+			vi.mocked(fs.existsSync).mockReturnValue(true);
+			vi.mocked(fs.readFileSync).mockImplementation((path: unknown) => {
+				if (String(path).includes("package.json")) {
+					return JSON.stringify(mockPackageJson);
+				}
+				if (String(path).includes("update-check-cache.json")) {
+					return "{";
+				}
+				throw new Error("File not found");
+			});
+			vi.mocked(globalThis.fetch).mockResolvedValue({
+				ok: true,
+				json: async () => ({ version: "5.0.0" }),
+			} as Response);
+
+			await checkForUpdates();
+
+			expect(logger.debug).toHaveBeenCalledWith(
+				"Failed to load update cache",
+				expect.objectContaining({ error: expect.any(String) }),
+			);
+			expect(globalThis.fetch).toHaveBeenCalled();
+		});
+
+		it.each(["EBUSY", "EPERM"] as const)(
+			"logs debug details when cache read fails on windows-style lock (%s)",
+			async (code) => {
+				vi.mocked(fs.existsSync).mockReturnValue(true);
+				vi.mocked(fs.readFileSync).mockImplementation((path: unknown) => {
+					if (String(path).includes("package.json")) {
+						return JSON.stringify(mockPackageJson);
+					}
+					if (String(path).includes("update-check-cache.json")) {
+						const error = new Error(`${code}: locked`) as NodeJS.ErrnoException;
+						error.code = code;
+						error.name = code;
+						throw error;
+					}
+					throw new Error("File not found");
+				});
+				vi.mocked(globalThis.fetch).mockResolvedValue({
+					ok: true,
+					json: async () => ({ version: "5.0.0" }),
+				} as Response);
+
+				await checkForUpdates();
+
+				expect(logger.debug).toHaveBeenCalledWith(
+					"Failed to load update cache",
+					expect.objectContaining({ error: expect.stringContaining(code) }),
+				);
+				expect(globalThis.fetch).toHaveBeenCalled();
+			},
+		);
 
 		it("handles cached null latestVersion without update", async () => {
 			const cacheData = {
@@ -358,11 +451,13 @@ describe("auto-update-checker", () => {
 			await checkForUpdates(true);
 
 			expect(fs.writeFileSync).toHaveBeenCalled();
+			expect(fs.renameSync).toHaveBeenCalled();
 			const writeCall = vi.mocked(fs.writeFileSync).mock.calls[0];
 			const savedData = JSON.parse(writeCall[1] as string) as {
 				latestVersion: string;
 			};
 			expect(savedData.latestVersion).toBe("5.0.0");
+			expect(String(writeCall[0])).toContain("update-check-cache.json.");
 		});
 
 		it("creates cache directory if missing", async () => {
@@ -383,8 +478,8 @@ describe("auto-update-checker", () => {
 			"retries cache writes when filesystem is transiently locked (%s)",
 			async (code) => {
 			let attempts = 0;
-			vi.mocked(fs.writeFileSync).mockClear();
-			vi.mocked(fs.writeFileSync).mockImplementation(() => {
+			vi.mocked(fs.renameSync).mockClear();
+			vi.mocked(fs.renameSync).mockImplementation(() => {
 				attempts += 1;
 				if (attempts < 3) {
 					const error = new Error("busy") as NodeJS.ErrnoException;
@@ -400,9 +495,35 @@ describe("auto-update-checker", () => {
 
 			await checkForUpdates(true);
 
-			expect(fs.writeFileSync).toHaveBeenCalledTimes(3);
+			expect(fs.renameSync).toHaveBeenCalledTimes(3);
 			},
 		);
+
+		it("serializes concurrent cache writes through temp-file renames", async () => {
+			vi.mocked(fs.writeFileSync).mockClear();
+			vi.mocked(fs.renameSync).mockClear();
+			vi.mocked(globalThis.fetch)
+				.mockResolvedValueOnce({
+					ok: true,
+					json: async () => ({ version: "5.0.0" }),
+				} as Response)
+				.mockResolvedValueOnce({
+					ok: true,
+					json: async () => ({ version: "5.0.1" }),
+				} as Response);
+
+			await Promise.all([checkForUpdates(true), checkForUpdates(true)]);
+
+			expect(fs.renameSync).toHaveBeenCalledTimes(2);
+			const writeTargets = vi
+				.mocked(fs.writeFileSync)
+				.mock.calls.map((call) => String(call[0]));
+			expect(
+				writeTargets.every((target) =>
+					target.includes("update-check-cache.json."),
+				),
+			).toBe(true);
+		});
 
 		it("includes updateCommand in result", async () => {
 			vi.mocked(globalThis.fetch).mockResolvedValue({
@@ -481,14 +602,20 @@ describe("auto-update-checker", () => {
 		it("writes empty object when cache exists", () => {
 			vi.mocked(fs.existsSync).mockReturnValue(true);
 			vi.mocked(fs.writeFileSync).mockClear();
+			vi.mocked(fs.renameSync).mockClear();
 
 			clearUpdateCache();
 
-			expect(fs.writeFileSync).toHaveBeenCalledWith(
-				expect.stringContaining("update-check-cache.json"),
-				"{}",
-				"utf8"
-			);
+			return Promise.resolve().then(() => {
+				return Promise.resolve().then(() => {
+					expect(fs.writeFileSync).toHaveBeenCalledWith(
+						expect.stringContaining("update-check-cache.json."),
+						"{}",
+						"utf8"
+					);
+					expect(fs.renameSync).toHaveBeenCalled();
+				});
+			});
 		});
 
 		it("does nothing when cache does not exist", () => {
@@ -498,6 +625,25 @@ describe("auto-update-checker", () => {
 			clearUpdateCache();
 
 			expect(fs.writeFileSync).not.toHaveBeenCalled();
+		});
+
+		it("keeps clearUpdateCache ordered after the latest save", async () => {
+			vi.mocked(fs.existsSync).mockReturnValue(true);
+			vi.mocked(fs.writeFileSync).mockClear();
+			vi.mocked(fs.renameSync).mockClear();
+			vi.mocked(globalThis.fetch).mockResolvedValue({
+				ok: true,
+				json: async () => ({ version: "5.0.0" }),
+			} as Response);
+
+			await checkForUpdates(true);
+			clearUpdateCache();
+			await Promise.resolve();
+			await Promise.resolve();
+
+			const writes = vi.mocked(fs.writeFileSync).mock.calls;
+			expect(writes).toHaveLength(2);
+			expect(writes.at(-1)?.[1]).toBe("{}");
 		});
 	});
 });

@@ -8,10 +8,16 @@ import {
 } from "../../accounts.js";
 import {
 	evaluateForecastAccounts,
-	type ForecastAccountResult,
 	recommendForecastAccount,
 	summarizeForecast,
 } from "../../forecast.js";
+import {
+	type AccountIdentityMatch,
+	applyRefreshedAccountPatch,
+	persistRefreshedAccountPatch,
+	type RefreshedAccountPatch,
+	serializeForecastResults,
+} from "../forecast-report-shared.js";
 import {
 	type CodexQuotaSnapshot,
 	formatQuotaSnapshotLine,
@@ -23,10 +29,11 @@ import {
 	resolveNormalizedModel,
 } from "../../request/helpers/model-map.js";
 import {
-	findMatchingAccountIndex,
 	type AccountMetadataV3,
 	type AccountStorageV3,
+	type StorageHealthSummary,
 } from "../../storage.js";
+import type { RuntimeObservabilitySnapshot } from "../../runtime/runtime-observability.js";
 import type { TokenFailure, TokenResult } from "../../types.js";
 import { sleep } from "../../utils.js";
 
@@ -35,6 +42,9 @@ interface ReportCliOptions {
 	json: boolean;
 	explain: boolean;
 	model: string;
+	maxAccounts?: number;
+	maxProbes?: number;
+	cachedOnly: boolean;
 	outPath?: string;
 }
 
@@ -48,6 +58,20 @@ interface ModelInspection {
 	remapped: boolean;
 	promptFamily: ModelFamily;
 	capabilities: ReturnType<typeof getModelCapabilities>;
+}
+
+function parsePositiveIntegerOption(
+	rawValue: string,
+): number | null {
+	const normalized = rawValue.trim();
+	if (!/^\d+$/.test(normalized)) {
+		return null;
+	}
+	const parsed = Number.parseInt(normalized, 10);
+	if (!Number.isSafeInteger(parsed) || parsed < 1) {
+		return null;
+	}
+	return parsed;
 }
 
 const RETRYABLE_WRITE_CODES = new Set(["EBUSY", "EPERM"]);
@@ -73,6 +97,7 @@ export interface ReportCommandDeps {
 		now: number,
 		family: "codex",
 	) => string | null;
+	inspectStorageHealth?: () => Promise<StorageHealthSummary>;
 	normalizeFailureDetail: (
 		message: string | undefined,
 		reason: string | undefined,
@@ -82,6 +107,7 @@ export interface ReportCommandDeps {
 	getNow?: () => number;
 	getCwd?: () => string;
 	writeFile?: (path: string, contents: string) => Promise<void>;
+	loadRuntimeObservabilitySnapshot?: () => Promise<RuntimeObservabilitySnapshot | null>;
 }
 
 function isRetryableWriteError(error: unknown): boolean {
@@ -99,6 +125,9 @@ function printReportUsage(logInfo: (message: string) => void): void {
 			"  --json, -j         Print machine-readable JSON output",
 			"  --explain          Print per-account reasoning in text mode",
 			"  --model, -m        Probe model for live mode (default: gpt-5-codex)",
+			"  --max-accounts N   Limit how many enabled accounts live mode can consider",
+			"  --max-probes N     Limit how many live quota probes can run",
+			"  --cached-only      Skip refreshes and only use already-usable access tokens",
 			"  --out              Write JSON report to a file path",
 		].join("\n"),
 	);
@@ -110,6 +139,7 @@ function parseReportArgs(args: string[]): ParsedArgsResult<ReportCliOptions> {
 		json: false,
 		explain: false,
 		model: "gpt-5-codex",
+		cachedOnly: false,
 	};
 
 	for (let i = 0; i < args.length; i += 1) {
@@ -127,6 +157,10 @@ function parseReportArgs(args: string[]): ParsedArgsResult<ReportCliOptions> {
 			options.explain = true;
 			continue;
 		}
+		if (arg === "--cached-only") {
+			options.cachedOnly = true;
+			continue;
+		}
 		if (arg === "--model" || arg === "-m") {
 			const value = args[i + 1];
 			if (!value) return { ok: false, message: "Missing value for --model" };
@@ -138,6 +172,44 @@ function parseReportArgs(args: string[]): ParsedArgsResult<ReportCliOptions> {
 			const value = arg.slice("--model=".length).trim();
 			if (!value) return { ok: false, message: "Missing value for --model" };
 			options.model = value;
+			continue;
+		}
+		if (arg === "--max-accounts") {
+			const value = args[i + 1];
+			if (!value) return { ok: false, message: "Missing value for --max-accounts" };
+			const parsed = parsePositiveIntegerOption(value);
+			if (parsed === null) {
+				return { ok: false, message: "--max-accounts must be a positive integer" };
+			}
+			options.maxAccounts = parsed;
+			i += 1;
+			continue;
+		}
+		if (arg.startsWith("--max-accounts=")) {
+			const parsed = parsePositiveIntegerOption(arg.slice("--max-accounts=".length));
+			if (parsed === null) {
+				return { ok: false, message: "--max-accounts must be a positive integer" };
+			}
+			options.maxAccounts = parsed;
+			continue;
+		}
+		if (arg === "--max-probes") {
+			const value = args[i + 1];
+			if (!value) return { ok: false, message: "Missing value for --max-probes" };
+			const parsed = parsePositiveIntegerOption(value);
+			if (parsed === null) {
+				return { ok: false, message: "--max-probes must be a positive integer" };
+			}
+			options.maxProbes = parsed;
+			i += 1;
+			continue;
+		}
+		if (arg.startsWith("--max-probes=")) {
+			const parsed = parsePositiveIntegerOption(arg.slice("--max-probes=".length));
+			if (parsed === null) {
+				return { ok: false, message: "--max-probes must be a positive integer" };
+			}
+			options.maxProbes = parsed;
 			continue;
 		}
 		if (arg === "--out") {
@@ -157,53 +229,6 @@ function parseReportArgs(args: string[]): ParsedArgsResult<ReportCliOptions> {
 	}
 
 	return { ok: true, options };
-}
-
-function serializeForecastResults(
-	results: ForecastAccountResult[],
-	liveQuotaByIndex: Map<number, CodexQuotaSnapshot>,
-	refreshFailures: Map<number, TokenFailure>,
-): Array<{
-	index: number;
-	label: string;
-	isCurrent: boolean;
-	availability: ForecastAccountResult["availability"];
-	riskScore: number;
-	riskLevel: ForecastAccountResult["riskLevel"];
-	waitMs: number;
-	reasons: string[];
-	liveQuota?: {
-		status: number;
-		planType?: string;
-		activeLimit?: number;
-		model: string;
-		summary: string;
-	};
-	refreshFailure?: TokenFailure;
-}> {
-	return results.map((result) => {
-		const liveQuota = liveQuotaByIndex.get(result.index);
-		return {
-			index: result.index,
-			label: result.label,
-			isCurrent: result.isCurrent,
-			availability: result.availability,
-			riskScore: result.riskScore,
-			riskLevel: result.riskLevel,
-			waitMs: result.waitMs,
-			reasons: result.reasons,
-			liveQuota: liveQuota
-				? {
-						status: liveQuota.status,
-						planType: liveQuota.planType,
-						activeLimit: liveQuota.activeLimit,
-						model: liveQuota.model,
-						summary: formatQuotaSnapshotLine(liveQuota),
-					}
-				: undefined,
-			refreshFailure: refreshFailures.get(result.index),
-		};
-	});
 }
 
 function inspectRequestedModel(requestedModel: string): ModelInspection {
@@ -259,77 +284,6 @@ async function defaultWriteFile(path: string, contents: string): Promise<void> {
 	}
 }
 
-async function saveAccountsWithRetry(
-	storage: AccountStorageV3,
-	saveAccounts: ReportCommandDeps["saveAccounts"],
-): Promise<void> {
-	for (let attempt = 0; ; attempt += 1) {
-		try {
-			await saveAccounts(storage);
-			return;
-		} catch (error) {
-			if (!isRetryableWriteError(error) || attempt >= 3) {
-				throw error;
-			}
-			await sleep(10 * 2 ** attempt);
-		}
-	}
-}
-
-type AccountIdentityMatch = Pick<
-	AccountMetadataV3,
-	"accountId" | "email" | "refreshToken"
->;
-type RefreshedAccountPatch = Pick<
-	AccountMetadataV3,
-	"refreshToken" | "accessToken" | "expiresAt"
-> & {
-	email?: AccountMetadataV3["email"];
-	accountId?: AccountMetadataV3["accountId"];
-	accountIdSource?: AccountMetadataV3["accountIdSource"];
-};
-
-function applyRefreshedAccountPatch(
-	account: AccountMetadataV3,
-	patch: RefreshedAccountPatch,
-): void {
-	account.refreshToken = patch.refreshToken;
-	account.accessToken = patch.accessToken;
-	account.expiresAt = patch.expiresAt;
-	if (patch.email) account.email = patch.email;
-	if (patch.accountId) {
-		account.accountId = patch.accountId;
-		account.accountIdSource = patch.accountIdSource;
-	}
-}
-
-async function persistRefreshedAccountPatch(
-	storage: AccountStorageV3,
-	accountMatch: AccountIdentityMatch,
-	patch: RefreshedAccountPatch,
-	loadAccounts: ReportCommandDeps["loadAccounts"],
-	saveAccounts: ReportCommandDeps["saveAccounts"],
-): Promise<void> {
-	const latestStorage = (await loadAccounts()) ?? storage;
-	const nextStorage = structuredClone(latestStorage);
-	const targetIndex =
-		findMatchingAccountIndex(nextStorage.accounts, accountMatch, {
-			allowUniqueAccountIdFallbackWithoutEmail: true,
-		}) ??
-		findMatchingAccountIndex(nextStorage.accounts, patch, {
-			allowUniqueAccountIdFallbackWithoutEmail: true,
-		});
-	if (targetIndex === undefined) {
-		throw new Error("Unable to resolve refreshed account for persistence");
-	}
-	const targetAccount = nextStorage.accounts[targetIndex];
-	if (!targetAccount) {
-		throw new Error("Unable to resolve refreshed account for persistence");
-	}
-	applyRefreshedAccountPatch(targetAccount, patch);
-	await saveAccountsWithRetry(nextStorage, saveAccounts);
-}
-
 export async function runReportCommand(
 	args: string[],
 	deps: ReportCommandDeps,
@@ -354,22 +308,41 @@ export async function runReportCommand(
 	deps.setStoragePath(null);
 	const storagePath = deps.getStoragePath();
 	const storage = await deps.loadAccounts();
+	const storageHealth = await deps.inspectStorageHealth?.();
 	const now = deps.getNow?.() ?? Date.now();
 	const accountCount = storage?.accounts.length ?? 0;
 	const activeIndex = storage ? deps.resolveActiveIndex(storage, "codex") : 0;
 	const refreshFailures = new Map<number, TokenFailure>();
 	const liveQuotaByIndex = new Map<number, CodexQuotaSnapshot>();
 	const probeErrors: string[] = [];
+	let consideredLiveAccounts = 0;
+	let executedLiveProbes = 0;
 
 	if (storage && options.live) {
 		for (let i = 0; i < storage.accounts.length; i += 1) {
+			if (
+				typeof options.maxAccounts === "number" &&
+				consideredLiveAccounts >= options.maxAccounts
+			) {
+				probeErrors.push(
+					`live probe account budget reached (${options.maxAccounts})`,
+				);
+				break;
+			}
 			const account = storage.accounts[i];
 			if (!account || account.enabled === false) continue;
+			consideredLiveAccounts += 1;
 
 			let probeAccessToken = account.accessToken;
 			let probeAccountId =
 				account.accountId ?? extractAccountId(account.accessToken);
 			if (!deps.hasUsableAccessToken(account, now)) {
+				if (options.cachedOnly) {
+					probeErrors.push(
+						`${formatAccountLabel(account, i)}: skipped refresh because --cached-only is enabled`,
+					);
+					continue;
+				}
 				const refreshResult = await deps.queuedRefresh(account.refreshToken);
 				if (refreshResult.type !== "success") {
 					refreshFailures.set(i, {
@@ -409,9 +382,6 @@ export async function runReportCommand(
 					email: previousEmail,
 					accountId: previousAccountId,
 				};
-				applyRefreshedAccountPatch(account, refreshPatch);
-				probeAccessToken = refreshResult.access;
-				probeAccountId = account.accountId ?? refreshedAccountId;
 				if (
 					previousRefreshToken !== refreshPatch.refreshToken ||
 					previousAccessToken !== refreshPatch.accessToken ||
@@ -435,7 +405,11 @@ export async function runReportCommand(
 						probeErrors.push(`${formatAccountLabel(account, i)}: ${message}`);
 						continue;
 					}
+					applyRefreshedAccountPatch(account, refreshPatch);
 				}
+				probeAccessToken = refreshResult.access;
+				probeAccountId =
+					refreshPatch.accountId ?? account.accountId ?? refreshedAccountId;
 			}
 
 			if (!probeAccessToken || !probeAccountId) {
@@ -444,8 +418,16 @@ export async function runReportCommand(
 				);
 				continue;
 			}
+			if (
+				typeof options.maxProbes === "number" &&
+				executedLiveProbes >= options.maxProbes
+			) {
+				probeErrors.push(`live probe request budget reached (${options.maxProbes})`);
+				break;
+			}
 
 			try {
+				executedLiveProbes += 1;
 				const liveQuota = await deps.fetchCodexQuotaSnapshot({
 					accountId: probeAccountId,
 					accessToken: probeAccessToken,
@@ -497,6 +479,7 @@ export async function runReportCommand(
 		command: "report",
 		generatedAt: new Date(now).toISOString(),
 		storagePath,
+		storageHealth,
 		model: requestedModel,
 		modelSelection: {
 			requested: modelInspection.requested,
@@ -506,6 +489,13 @@ export async function runReportCommand(
 			capabilities: modelInspection.capabilities,
 		},
 		liveProbe: options.live,
+		liveProbeBudget: {
+			cachedOnly: options.cachedOnly,
+			maxAccounts: options.maxAccounts ?? null,
+			maxProbes: options.maxProbes ?? null,
+			consideredAccounts: consideredLiveAccounts,
+			executedProbes: executedLiveProbes,
+		},
 		accounts: {
 			total: accountCount,
 			enabled: enabledCount,
@@ -516,15 +506,30 @@ export async function runReportCommand(
 		activeIndex: accountCount > 0 ? activeIndex + 1 : null,
 		forecast: {
 			summary: forecastSummary,
-			recommendation,
+			recommendation: {
+				...recommendation,
+				selectedReason:
+					recommendation.recommendedIndex !== null
+						? forecastResults[recommendation.recommendedIndex]?.reasons[0] ?? recommendation.reason
+						: recommendation.reason,
+			},
 			probeErrors,
 			accounts: serializeForecastResults(
 				forecastResults,
 				liveQuotaByIndex,
 				refreshFailures,
+				formatQuotaSnapshotLine,
 			),
 		},
+		runtime: await deps.loadRuntimeObservabilitySnapshot?.(),
 	};
+	if (report.forecast.recommendation.recommendedIndex !== null) {
+		const selectedIndex = report.forecast.recommendation.recommendedIndex;
+		const selected = report.forecast.accounts[selectedIndex];
+		if (selected) {
+			selected.selected = true;
+		}
+	}
 
 	const cwd = deps.getCwd?.() ?? process.cwd();
 	if (options.outPath) {
@@ -542,7 +547,26 @@ export async function runReportCommand(
 
 	logInfo(`Report generated at ${report.generatedAt}`);
 	logInfo(`Storage: ${report.storagePath}`);
+	if (report.storageHealth) {
+		logInfo(`Storage health: ${report.storageHealth.state}`);
+	}
 	logInfo(`Model: ${formatModelInspection(modelInspection)}`);
+	if (options.live) {
+		const budgetParts = [
+			`considered ${consideredLiveAccounts} account(s)`,
+			`executed ${executedLiveProbes} probe(s)`,
+		];
+		if (typeof options.maxAccounts === "number") {
+			budgetParts.push(`max-accounts ${options.maxAccounts}`);
+		}
+		if (typeof options.maxProbes === "number") {
+			budgetParts.push(`max-probes ${options.maxProbes}`);
+		}
+		if (options.cachedOnly) {
+			budgetParts.push("cached-only");
+		}
+		logInfo(`Live probe budget: ${budgetParts.join(", ")}`);
+	}
 	logInfo(
 		`Accounts: ${report.accounts.total} total (${report.accounts.enabled} enabled, ${report.accounts.disabled} disabled, ${report.accounts.coolingDown} cooling, ${report.accounts.rateLimited} rate-limited)`,
 	);
@@ -564,6 +588,11 @@ export async function runReportCommand(
 	}
 	if (report.forecast.probeErrors.length > 0) {
 		logInfo(`Probe notes: ${report.forecast.probeErrors.length}`);
+	}
+	if (report.runtime) {
+		logInfo(
+			`Runtime traffic: responses=${report.runtime.responsesRequests}, refresh=${report.runtime.authRefreshRequests}, probes=${report.runtime.diagnosticProbeRequests}`,
+		);
 	}
 	if (options.explain) {
 		logInfo("");
