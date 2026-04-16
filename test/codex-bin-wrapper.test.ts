@@ -1,5 +1,6 @@
 import { type SpawnSyncReturns, spawn, spawnSync } from "node:child_process";
 import {
+	chmodSync,
 	copyFileSync,
 	mkdirSync,
 	mkdtempSync,
@@ -167,6 +168,43 @@ function createCustomFakeCodexBin(rootDir: string, lines: string[]): string {
 	const fakeBin = join(rootDir, `fake-codex-${createdDirs.length}.js`);
 	writeFileSync(fakeBin, lines.join("\n"), "utf8");
 	return fakeBin;
+}
+
+function createFakeNativeCodexBin(rootDir: string): string {
+	if (process.platform === "win32") {
+		const fakeBin = join(rootDir, `fake-native-codex-${createdDirs.length}.ps1`);
+		writeFileSync(
+			fakeBin,
+			[
+				'Write-Output ("FORWARDED_NATIVE:" + ($args -join " "))',
+				"exit 0",
+			].join("\r\n"),
+			"utf8",
+		);
+		return fakeBin;
+	}
+
+	const fakeBin = join(rootDir, `fake-native-codex-${createdDirs.length}`);
+	writeFileSync(
+		fakeBin,
+		[
+			"#!/bin/sh",
+			'printf "FORWARDED_NATIVE:%s\\n" "$*"',
+			exitLine(),
+		].join("\n"),
+		"utf8",
+	);
+	chmodSync(fakeBin, 0o755);
+	return fakeBin;
+}
+
+function exitLine(): string {
+	return "exit 0";
+}
+
+function resolveWindowsPowerShellPath(): string {
+	const systemRoot = process.env.SystemRoot ?? process.env.SYSTEMROOT ?? "C:\\Windows";
+	return join(systemRoot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
 }
 
 function injectShadowCleanupBusyFailures(
@@ -376,6 +414,22 @@ describe("codex bin wrapper", () => {
 
 		expect(result.status).toBe(0);
 		expect(result.stdout).toContain("FORWARDED:--version");
+	});
+
+	it("forwards non-auth commands to native codex executables", () => {
+		const fixtureRoot = createWrapperFixture();
+		const fakeBin = createFakeNativeCodexBin(fixtureRoot);
+		const nativeBin = process.platform === "win32" ? resolveWindowsPowerShellPath() : fakeBin;
+		const args =
+			process.platform === "win32"
+				? ["-NoProfile", "-File", fakeBin, "--version"]
+				: ["--version"];
+		const result = runWrapper(fixtureRoot, args, {
+			CODEX_MULTI_AUTH_REAL_CODEX_BIN: nativeBin,
+		});
+
+		expect(result.status).toBe(0);
+		expect(result.stdout).toContain("FORWARDED_NATIVE:--version");
 	});
 
 	it("injects file auth store forwarding for wrapped real cli invocations by default", () => {
@@ -1139,6 +1193,30 @@ describe("codex bin wrapper", () => {
 		},
 	);
 
+	it("prefers native codex executables on PATH when npm launcher is unavailable", () => {
+		const pathEntries = [join("C:", "custom", "bin")];
+		const nativeCodexPath =
+			process.platform === "win32"
+				? join(pathEntries[0], "codex.exe")
+				: join("/opt", "homebrew", "bin", "codex");
+		const resolved = resolveRealCodexBin({
+			env: {
+				PATH: process.platform === "win32" ? pathEntries.join(";") : "/opt/homebrew/bin:/usr/bin",
+			},
+			argv: [process.execPath, join(repoRootDir, "scripts", "codex.js")],
+			platform: process.platform,
+			moduleUrl: pathToFileURL(join(repoRootDir, "scripts", "codex.js")).href,
+			resolvePackageBin: () => null,
+			spawnSyncImpl: () => createSpawnSyncSuccess(`${nativeCodexPath}\n`),
+			existsSyncImpl: (candidate) => candidate === nativeCodexPath,
+		});
+
+		expect(resolved).toEqual({
+			path: nativeCodexPath,
+			launchWithNode: false,
+		});
+	});
+
 	it.skipIf(process.platform !== "win32")(
 		"does not install Windows shell guards unless explicitly enabled",
 		() => {
@@ -1396,9 +1474,9 @@ describe("codex bin wrapper", () => {
 		expect(output).toContain(
 			`CODEX_MULTI_AUTH_REAL_CODEX_BIN is set but missing: ${missingOverride}`,
 		);
-		expect(output).toContain("Could not locate the official Codex CLI binary");
+		expect(output).toContain("Could not locate the official Codex CLI.");
 		expect(output).toContain(
-			"Install it globally: npm install -g @openai/codex",
+			"Install it with npm, Homebrew, or an official native release so `codex` is on PATH.",
 		);
 	});
 
@@ -1433,7 +1511,7 @@ describe("codex bin wrapper", () => {
 			},
 		});
 
-		expect(resolvedBin).toBe(fakeGlobalBin);
+		expect(resolvedBin).toEqual({ path: fakeGlobalBin, launchWithNode: true });
 		expect(spawnCalls).toHaveLength(1);
 		expect(spawnCalls[0]?.command).toBe("C:\\Windows\\System32\\cmd.exe");
 		expect(spawnCalls[0]?.args).toEqual(["/d", "/s", "/c", "npm root -g"]);
@@ -1482,7 +1560,7 @@ describe("codex bin wrapper", () => {
 			},
 		});
 
-		expect(resolvedBin).toBe(fakeGlobalBin);
+		expect(resolvedBin).toEqual({ path: fakeGlobalBin, launchWithNode: true });
 		expect(spawnCalls).toHaveLength(1);
 		expect(spawnCalls[0]?.command).toBe("C:\\Windows\\System32\\cmd.exe");
 		expect(spawnCalls[0]?.args).toEqual(["/d", "/s", "/c", "npm root -g"]);
@@ -1531,7 +1609,7 @@ describe("codex bin wrapper", () => {
 			},
 		});
 
-		expect(resolvedBin).toBe(fakeGlobalBin);
+		expect(resolvedBin).toEqual({ path: fakeGlobalBin, launchWithNode: true });
 		expect(spawnCalls).toHaveLength(1);
 		expect(spawnCalls[0]?.command).toBe("C:\\Windows\\System32\\cmd.exe");
 		expect(spawnCalls[0]?.args).toEqual(["/d", "/s", "/c", "npm root -g"]);
@@ -1574,7 +1652,7 @@ describe("codex bin wrapper", () => {
 			},
 		});
 
-		expect(resolvedBin).toBe(fakeGlobalBin);
+		expect(resolvedBin).toEqual({ path: fakeGlobalBin, launchWithNode: true });
 		expect(spawnCalls).toHaveLength(1);
 		expect(spawnCalls[0]?.command).toBe("C:\\Windows\\System32\\cmd.exe");
 		expect(spawnCalls[0]?.args).toEqual(["/d", "/s", "/c", "npm root -g"]);
@@ -1612,7 +1690,7 @@ describe("codex bin wrapper", () => {
 			},
 		});
 
-		expect(spawnCalls).toHaveLength(1);
+		expect(spawnCalls).toHaveLength(2);
 		expect(spawnCalls[0]?.command).toBe("cmd.exe");
 		expect(spawnCalls[0]?.args).toEqual(["/d", "/s", "/c", "npm root -g"]);
 		expect(spawnCalls[0]?.options).toMatchObject({
@@ -1626,6 +1704,8 @@ describe("codex bin wrapper", () => {
 			timeout: 5000,
 			windowsHide: true,
 		});
+		expect(spawnCalls[1]?.command).toBe("cmd.exe");
+		expect(spawnCalls[1]?.args).toEqual(["/d", "/s", "/c", "where codex"]);
 	});
 
 	it("discovers the real codex bin via npm root fallback on POSIX", () => {
@@ -1658,7 +1738,7 @@ describe("codex bin wrapper", () => {
 			},
 		});
 
-		expect(resolvedBin).toBe(fakeGlobalBin);
+		expect(resolvedBin).toEqual({ path: fakeGlobalBin, launchWithNode: true });
 		expect(spawnCalls).toHaveLength(1);
 		expect(spawnCalls[0]?.command).toBe("npm");
 		expect(spawnCalls[0]?.args).toEqual(["root", "-g"]);
