@@ -225,6 +225,19 @@ describe("proactive-refresh", () => {
 	});
 
 	describe("refreshExpiringAccounts", () => {
+		async function runRefreshExpiringAccounts(
+			accounts: ManagedAccount[],
+			bufferMs?: number,
+			onResult?: (
+				account: ManagedAccount,
+				result: Awaited<ReturnType<typeof proactiveRefreshAccount>>,
+			) => Promise<void> | void,
+		): Promise<Map<number, Awaited<ReturnType<typeof proactiveRefreshAccount>>>> {
+			const pending = refreshExpiringAccounts(accounts, bufferMs, onResult);
+			await vi.runAllTimersAsync();
+			return pending;
+		}
+
 		it("returns empty map when no accounts need refresh", async () => {
 			const accounts = [
 				createMockAccount({
@@ -239,7 +252,7 @@ describe("proactive-refresh", () => {
 				}),
 			];
 
-			const results = await refreshExpiringAccounts(accounts);
+			const results = await runRefreshExpiringAccounts(accounts);
 
 			expect(results.size).toBe(0);
 			expect(refreshQueue.queuedRefresh).not.toHaveBeenCalled();
@@ -261,7 +274,7 @@ describe("proactive-refresh", () => {
 				}),
 			];
 
-			const results = await refreshExpiringAccounts(accounts);
+			const results = await runRefreshExpiringAccounts(accounts);
 
 			expect(results.size).toBe(2);
 			expect(results.get(0)?.reason).toBe("no_refresh_token");
@@ -292,7 +305,7 @@ describe("proactive-refresh", () => {
 				expires: Date.now() + 3600000,
 			});
 
-			const results = await refreshExpiringAccounts(accounts);
+			const results = await runRefreshExpiringAccounts(accounts);
 
 			expect(results.size).toBe(1);
 			expect(results.has(0)).toBe(true);
@@ -330,7 +343,7 @@ describe("proactive-refresh", () => {
 				expires: Date.now() + 3600000,
 			});
 
-			const results = await refreshExpiringAccounts(accounts);
+			const results = await runRefreshExpiringAccounts(accounts);
 
 			expect(results.size).toBe(3);
 			expect(refreshQueue.queuedRefresh).toHaveBeenCalledTimes(3);
@@ -365,7 +378,7 @@ describe("proactive-refresh", () => {
 					message: "Invalid token",
 				});
 
-			const results = await refreshExpiringAccounts(accounts);
+			const results = await runRefreshExpiringAccounts(accounts);
 
 			expect(results.size).toBe(2);
 			expect(results.get(0)?.reason).toBe("success");
@@ -396,7 +409,7 @@ describe("proactive-refresh", () => {
 				expires: Date.now() + 3_600_000,
 			});
 
-			const results = await refreshExpiringAccounts(
+			const results = await runRefreshExpiringAccounts(
 				accounts,
 				DEFAULT_PROACTIVE_BUFFER_MS,
 				onResult,

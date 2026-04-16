@@ -910,9 +910,14 @@ describe("codex manager cli commands", () => {
 		const exitCode = await runCodexMultiAuthCli(["auth", "list"]);
 
 		expect(exitCode).toBe(0);
-		expect(logSpy).toHaveBeenCalledWith("No accounts configured.");
+		expect(logSpy).toHaveBeenCalledWith(
+			"No accounts configured. Storage was intentionally reset.",
+		);
 		expect(logSpy).toHaveBeenCalledWith(
 			"Storage: /mock/openai-codex-accounts.json",
+		);
+		expect(logSpy).toHaveBeenCalledWith(
+			"Storage health: intentional-reset",
 		);
 		expect(setStoragePathMock).toHaveBeenCalledWith(null);
 	});
