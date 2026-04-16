@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, realpathSync } from "node:fs";
 import { createRequire } from "node:module";
 import { basename, delimiter, dirname, extname, join } from "node:path";
 import process from "node:process";
@@ -15,6 +15,18 @@ function createResolvedCodexBin(path) {
 		path,
 		launchWithNode: isJavaScriptEntryPath(path),
 	};
+}
+
+function normalizeResolvedPath(candidatePath, realpathSyncImpl) {
+	try {
+		return realpathSyncImpl(candidatePath);
+	} catch {
+		return candidatePath;
+	}
+}
+
+function resolveWrapperScriptPath(moduleUrl, realpathSyncImpl) {
+	return normalizeResolvedPath(fileURLToPath(moduleUrl), realpathSyncImpl);
 }
 
 function defaultResolvePackageBin(moduleUrl) {
@@ -52,10 +64,25 @@ function resolvePathExecutableName(platform) {
 	return platform === "win32" ? "codex.exe" : "codex";
 }
 
-function resolveCodexExecutableFromPath(pathEntries, platform, existsSyncImpl) {
+function resolveCodexExecutableFromPath(
+	pathEntries,
+	platform,
+	existsSyncImpl,
+	selfScriptPath,
+	realpathSyncImpl,
+) {
 	const executableName = resolvePathExecutableName(platform);
 	for (const entry of pathEntries) {
 		const candidate = join(entry, executableName);
+		if (!existsSyncImpl(candidate)) {
+			continue;
+		}
+		if (
+			selfScriptPath &&
+			normalizeResolvedPath(candidate, realpathSyncImpl) === selfScriptPath
+		) {
+			continue;
+		}
 		if (existsSyncImpl(candidate)) {
 			return candidate;
 		}
@@ -70,9 +97,22 @@ function normalizeWhereOutput(stdout) {
 		.filter((line) => line.length > 0);
 }
 
-function resolveCodexExecutableFromSystemPath(env, platform, spawnSyncImpl, existsSyncImpl) {
+function resolveCodexExecutableFromSystemPath(
+	env,
+	platform,
+	spawnSyncImpl,
+	existsSyncImpl,
+	selfScriptPath,
+	realpathSyncImpl,
+) {
 	const pathEntries = splitPathEntries(env.PATH ?? env.Path ?? "");
-	const fromEnvPath = resolveCodexExecutableFromPath(pathEntries, platform, existsSyncImpl);
+	const fromEnvPath = resolveCodexExecutableFromPath(
+		pathEntries,
+		platform,
+		existsSyncImpl,
+		selfScriptPath,
+		realpathSyncImpl,
+	);
 	if (fromEnvPath) {
 		return fromEnvPath;
 	}
@@ -100,6 +140,12 @@ function resolveCodexExecutableFromSystemPath(env, platform, spawnSyncImpl, exis
 			if (!existsSyncImpl(candidate)) {
 				continue;
 			}
+			if (
+				selfScriptPath &&
+				normalizeResolvedPath(candidate, realpathSyncImpl) === selfScriptPath
+			) {
+				continue;
+			}
 			const fileName = basename(candidate).toLowerCase();
 			if (fileName === "codex" || fileName === "codex.exe") {
 				return candidate;
@@ -119,6 +165,7 @@ export function resolveRealCodexBin(options = {}) {
 		platform = process.platform,
 		moduleUrl = import.meta.url,
 		existsSyncImpl = existsSync,
+		realpathSyncImpl = realpathSync,
 		spawnSyncImpl = spawnSync,
 		resolvePackageBin = defaultResolvePackageBin,
 	} = options;
@@ -181,11 +228,15 @@ export function resolveRealCodexBin(options = {}) {
 		// Ignore and fall through to null.
 	}
 
+	const selfScriptPath = resolveWrapperScriptPath(moduleUrl, realpathSyncImpl);
+
 	const nativeCodexBin = resolveCodexExecutableFromSystemPath(
 		env,
 		platform,
 		spawnSyncImpl,
 		existsSyncImpl,
+		selfScriptPath,
+		realpathSyncImpl,
 	);
 	if (nativeCodexBin) {
 		return createResolvedCodexBin(nativeCodexBin);

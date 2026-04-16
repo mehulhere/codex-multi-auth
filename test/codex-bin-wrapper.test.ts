@@ -1288,6 +1288,82 @@ describe("codex bin wrapper", () => {
 		});
 	});
 
+	it("skips self-referential codex wrapper entries on PATH before native binaries", () => {
+		const wrapperScriptPath = join(
+			"C:\\test-root",
+			"npm",
+			"lib",
+			"node_modules",
+			"codex-multi-auth",
+			"scripts",
+			"codex.js",
+		);
+		const wrapperBinPath = join("C:\\test-root", "npm", "bin", "codex");
+		const nativeCodexPath = join("C:\\test-root", "native", "bin", "codex");
+		const resolved = resolveRealCodexBin({
+			env: {
+				PATH: [join("C:\\test-root", "npm", "bin"), join("C:\\test-root", "native", "bin")].join(delimiter),
+			},
+			argv: [process.execPath, wrapperScriptPath],
+			platform: "linux",
+			moduleUrl: pathToFileURL(join(repoRootDir, "scripts", "codex.js")).href,
+			resolvePackageBin: () => null,
+			spawnSyncImpl: () => createSpawnSyncSuccess(""),
+			existsSyncImpl: (candidate) =>
+				candidate === wrapperBinPath || candidate === nativeCodexPath,
+			realpathSyncImpl: (candidate) => {
+				if (candidate === join(repoRootDir, "scripts", "codex.js")) {
+					return wrapperScriptPath;
+				}
+				if (candidate === wrapperBinPath) {
+					return wrapperScriptPath;
+				}
+				return candidate;
+			},
+		});
+
+		expect(resolved).toEqual({
+			path: nativeCodexPath,
+			launchWithNode: false,
+		});
+	});
+
+	it("discovers native codex executables via which fallback when PATH scan misses", () => {
+		const nativeCodexPath = "/opt/homebrew/bin/codex";
+		const spawnCalls = [];
+		const resolved = resolveRealCodexBin({
+			env: {
+				PATH: "/usr/local/bin",
+			},
+			argv: [process.execPath, join(repoRootDir, "scripts", "codex.js")],
+			platform: "linux",
+			moduleUrl: pathToFileURL(join(repoRootDir, "scripts", "codex.js")).href,
+			resolvePackageBin: () => null,
+			spawnSyncImpl: (command, args, options) => {
+				spawnCalls.push({ command, args, options: options ?? {} });
+				if (command === "npm") {
+					return createSpawnSyncSuccess("");
+				}
+				return createSpawnSyncSuccess(`${nativeCodexPath}\n`);
+			},
+			existsSyncImpl: (candidate) => candidate === nativeCodexPath,
+		});
+
+		expect(resolved).toEqual({
+			path: nativeCodexPath,
+			launchWithNode: false,
+		});
+		expect(spawnCalls).toHaveLength(2);
+		expect(spawnCalls[0]).toMatchObject({
+			command: "npm",
+			args: ["root", "-g"],
+		});
+		expect(spawnCalls[1]).toMatchObject({
+			command: "which",
+			args: ["codex"],
+		});
+	});
+
 	it.skipIf(process.platform !== "win32")(
 		"does not install Windows shell guards unless explicitly enabled",
 		() => {
@@ -1438,6 +1514,51 @@ describe("codex bin wrapper", () => {
 			expect(readFileSync(join(shimDir, "codex.ps1"), "utf8")).toContain(
 				"node_modules/codex-multi-auth/scripts/codex.js",
 			);
+		},
+	);
+
+	it.skipIf(process.platform !== "win32")(
+		"installs Windows shell guards over each native Codex shim pattern",
+		() => {
+			const patterns = [
+				{
+					cmd: '@ECHO OFF\r\necho "%dp0%\\node_modules\\@openai\\codex-win32-x64\\vendor\\x86_64-pc-windows-msvc\\codex\\codex.exe"\r\n',
+					ps1: 'Write-Output "$basedir/node_modules/@openai/codex-win32-x64/vendor/x86_64-pc-windows-msvc/codex/codex.exe"',
+				},
+				{
+					cmd: '@ECHO OFF\r\necho "%dp0%\\node_modules\\@openai\\codex-win32-arm64\\vendor\\aarch64-pc-windows-msvc\\codex\\codex.exe"\r\n',
+					ps1: 'Write-Output "$basedir/node_modules/@openai/codex-win32-arm64/vendor/aarch64-pc-windows-msvc/codex/codex.exe"',
+				},
+			];
+
+			for (const [index, pattern] of patterns.entries()) {
+				const fixtureRoot = createWrapperFixture();
+				const fakeBin = createFakeCodexBin(fixtureRoot);
+				const shimDir = join(fixtureRoot, `native-shim-bin-${index}`);
+				mkdirSync(shimDir, { recursive: true });
+				writeFileSync(
+					join(shimDir, "codex-multi-auth.cmd"),
+					"@ECHO OFF\r\nREM fixture codex-multi-auth shim\r\n",
+					"utf8",
+				);
+				writeFileSync(join(shimDir, "codex.cmd"), pattern.cmd, "utf8");
+				writeFileSync(join(shimDir, "codex.ps1"), `${pattern.ps1}\r\n`, "utf8");
+
+				const result = runWrapper(fixtureRoot, ["--version"], {
+					CODEX_MULTI_AUTH_REAL_CODEX_BIN: fakeBin,
+					CODEX_MULTI_AUTH_WINDOWS_BATCH_SHIM_GUARD: "1",
+					PATH: `${shimDir}${delimiter}${process.env.PATH ?? ""}`,
+					USERPROFILE: fixtureRoot,
+					HOME: fixtureRoot,
+				});
+				expect(result.status).toBe(0);
+				expect(readFileSync(join(shimDir, "codex.cmd"), "utf8")).toContain(
+					"node_modules\\codex-multi-auth\\scripts\\codex.js",
+				);
+				expect(readFileSync(join(shimDir, "codex.ps1"), "utf8")).toContain(
+					"node_modules/codex-multi-auth/scripts/codex.js",
+				);
+			}
 		},
 	);
 
