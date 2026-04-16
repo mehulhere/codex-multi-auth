@@ -481,12 +481,12 @@ describe("codex bin wrapper", () => {
 	it("auto-discovers native codex executables on PATH and forwards end-to-end", () => {
 		const fixtureRoot = createWrapperFixture();
 		const resolverPath = join(fixtureRoot, "scripts", "codex-bin-resolver.js");
+		const originalSource = readFileSync(resolverPath, "utf8");
+		const patchTarget = 'return require.resolve("@openai/codex/bin/codex.js");';
+		expect(originalSource).toContain(patchTarget);
 		writeFileSync(
 			resolverPath,
-			readFileSync(resolverPath, "utf8").replace(
-				'return require.resolve("@openai/codex/bin/codex.js");',
-				"return null;",
-			),
+			originalSource.replace(patchTarget, "return null;"),
 			"utf8",
 		);
 		const nativeFixture = createPathDiscoveredNativeCodexFixture(fixtureRoot);
