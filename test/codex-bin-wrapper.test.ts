@@ -1288,6 +1288,27 @@ describe("codex bin wrapper", () => {
 		});
 	});
 
+	it("accepts Windows native codex paths without an .exe suffix", () => {
+		const pathEntry = join("C:", "custom", "bin");
+		const nativeCodexPath = join(pathEntry, "codex");
+		const resolved = resolveRealCodexBin({
+			env: {
+				PATH: pathEntry,
+			},
+			argv: [process.execPath, join(repoRootDir, "scripts", "codex.js")],
+			platform: "win32",
+			moduleUrl: pathToFileURL(join(repoRootDir, "scripts", "codex.js")).href,
+			resolvePackageBin: () => null,
+			spawnSyncImpl: () => createSpawnSyncSuccess("") as SpawnSyncReturns<string>,
+			existsSyncImpl: (candidate) => candidate === nativeCodexPath,
+		});
+
+		expect(resolved).toEqual({
+			path: nativeCodexPath,
+			launchWithNode: false,
+		});
+	});
+
 	it("skips self-referential codex wrapper entries on PATH before native binaries", () => {
 		const wrapperScriptPath = join(
 			"C:\\test-root",

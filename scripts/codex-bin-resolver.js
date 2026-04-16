@@ -50,7 +50,7 @@ function resolveWindowsCmdPath(env) {
 	return "cmd.exe";
 }
 
-function splitPathEntries(pathValue) {
+export function splitPathEntries(pathValue) {
 	if (typeof pathValue !== "string" || pathValue.trim().length === 0) {
 		return [];
 	}
@@ -64,6 +64,13 @@ function resolvePathExecutableName(platform) {
 	return platform === "win32" ? "codex.exe" : "codex";
 }
 
+function resolveCandidateExecutableNames(platform) {
+	if (platform !== "win32") {
+		return [resolvePathExecutableName(platform)];
+	}
+	return ["codex.exe", "codex"];
+}
+
 function resolveCodexExecutableFromPath(
 	pathEntries,
 	platform,
@@ -71,19 +78,18 @@ function resolveCodexExecutableFromPath(
 	selfScriptPath,
 	realpathSyncImpl,
 ) {
-	const executableName = resolvePathExecutableName(platform);
 	for (const entry of pathEntries) {
-		const candidate = join(entry, executableName);
-		if (!existsSyncImpl(candidate)) {
-			continue;
-		}
-		if (
-			selfScriptPath &&
-			normalizeResolvedPath(candidate, realpathSyncImpl) === selfScriptPath
-		) {
-			continue;
-		}
-		if (existsSyncImpl(candidate)) {
+		for (const executableName of resolveCandidateExecutableNames(platform)) {
+			const candidate = join(entry, executableName);
+			if (!existsSyncImpl(candidate)) {
+				continue;
+			}
+			if (
+				selfScriptPath &&
+				normalizeResolvedPath(candidate, realpathSyncImpl) === selfScriptPath
+			) {
+				continue;
+			}
 			return candidate;
 		}
 	}

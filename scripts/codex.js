@@ -18,7 +18,10 @@ import { homedir, tmpdir } from "node:os";
 import { basename, delimiter, dirname, join, resolve as resolvePath } from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
-import { resolveRealCodexBin as resolveRealCodexBinFromEnvironment } from "./codex-bin-resolver.js";
+import {
+	resolveRealCodexBin as resolveRealCodexBinFromEnvironment,
+	splitPathEntries,
+} from "./codex-bin-resolver.js";
 import { normalizeAuthAlias, shouldHandleMultiAuthAuth } from "./codex-routing.js";
 
 const RETRYABLE_SHADOW_HOME_CLEANUP_CODES = new Set(["EBUSY", "EPERM", "ENOTEMPTY"]);
@@ -999,16 +1002,6 @@ function shouldInstallWindowsBatchShimGuard() {
 	if (process.platform !== "win32") return false;
 	const override = (process.env.CODEX_MULTI_AUTH_WINDOWS_BATCH_SHIM_GUARD ?? "0").trim();
 	return override !== "0";
-}
-
-function splitPathEntries(pathValue) {
-	if (typeof pathValue !== "string" || pathValue.trim().length === 0) {
-		return [];
-	}
-	return pathValue
-		.split(delimiter)
-		.map((entry) => entry.trim())
-		.filter((entry) => entry.length > 0);
 }
 
 function resolveWindowsShimDirectoryFromInvocation() {
