@@ -29,6 +29,8 @@ function resolveWrapperScriptPath(moduleUrl, realpathSyncImpl) {
 	return normalizeResolvedPath(fileURLToPath(moduleUrl), realpathSyncImpl);
 }
 
+const DEFAULT_WRAPPER_MODULE_URL = new URL("./codex.js", import.meta.url).href;
+
 function defaultResolvePackageBin(moduleUrl) {
 	try {
 		const require = createRequire(moduleUrl);
@@ -169,7 +171,7 @@ export function resolveRealCodexBin(options = {}) {
 		env = process.env,
 		argv = process.argv,
 		platform = process.platform,
-		moduleUrl = import.meta.url,
+		moduleUrl = DEFAULT_WRAPPER_MODULE_URL,
 		existsSyncImpl = existsSync,
 		realpathSyncImpl = realpathSync,
 		spawnSyncImpl = spawnSync,
