@@ -18,7 +18,10 @@ import { homedir, tmpdir } from "node:os";
 import { basename, delimiter, dirname, join, resolve as resolvePath } from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
-import { resolveRealCodexBin as resolveRealCodexBinFromEnvironment } from "./codex-bin-resolver.js";
+import {
+	resolveRealCodexBin as resolveRealCodexBinFromEnvironment,
+	splitPathEntries,
+} from "./codex-bin-resolver.js";
 import { normalizeAuthAlias, shouldHandleMultiAuthAuth } from "./codex-routing.js";
 
 const RETRYABLE_SHADOW_HOME_CLEANUP_CODES = new Set(["EBUSY", "EPERM", "ENOTEMPTY"]);
@@ -124,11 +127,17 @@ async function autoSyncManagerActiveSelectionIfEnabled() {
 function resolveRealCodexBin() {
 	const override = (process.env.CODEX_MULTI_AUTH_REAL_CODEX_BIN ?? "").trim();
 	if (override.length > 0) {
-		if (existsSync(override)) return override;
-		console.error(
-			`CODEX_MULTI_AUTH_REAL_CODEX_BIN is set but missing: ${override}`,
-		);
-		return null;
+		if (!existsSync(override)) {
+			console.error(
+				`CODEX_MULTI_AUTH_REAL_CODEX_BIN is set but missing: ${override}`,
+			);
+			return null;
+		}
+		return resolveRealCodexBinFromEnvironment({
+			moduleUrl: import.meta.url,
+			env: process.env,
+			existsSyncImpl: existsSync,
+		});
 	}
 
 	return resolveRealCodexBinFromEnvironment({ moduleUrl: import.meta.url });
@@ -145,7 +154,9 @@ function forwardToRealCodex(codexBin, args, env = process.env, cleanup) {
 			resolve(exitCode);
 		};
 
-		const child = spawn(process.execPath, [codexBin, ...args], {
+		const command = codexBin.launchWithNode ? process.execPath : codexBin.path;
+		const commandArgs = codexBin.launchWithNode ? [codexBin.path, ...args] : args;
+		const child = spawn(command, commandArgs, {
 			stdio: "inherit",
 			env,
 		});
@@ -993,16 +1004,6 @@ function shouldInstallWindowsBatchShimGuard() {
 	return override !== "0";
 }
 
-function splitPathEntries(pathValue) {
-	if (typeof pathValue !== "string" || pathValue.trim().length === 0) {
-		return [];
-	}
-	return pathValue
-		.split(delimiter)
-		.map((entry) => entry.trim())
-		.filter((entry) => entry.length > 0);
-}
-
 function resolveWindowsShimDirectoryFromInvocation() {
 	const invokedScript = (process.argv[1] ?? "").trim();
 	if (invokedScript.length === 0) return null;
@@ -1138,7 +1139,13 @@ function ensureWindowsShellShim(filePath, desiredContent, options = {}) {
 		}
 		const looksLikeStockOpenAiShim =
 			currentContent.includes("node_modules\\@openai\\codex\\bin\\codex.js") ||
-			currentContent.includes("node_modules/@openai/codex/bin/codex.js");
+			currentContent.includes("node_modules/@openai/codex/bin/codex.js") ||
+			currentContent.includes("@openai\\codex-win32-") ||
+			currentContent.includes("@openai/codex-win32-") ||
+			currentContent.includes("vendor\\x86_64-pc-windows-msvc\\codex\\codex.exe") ||
+			currentContent.includes("vendor\\aarch64-pc-windows-msvc\\codex\\codex.exe") ||
+			currentContent.includes("vendor/x86_64-pc-windows-msvc/codex/codex.exe") ||
+			currentContent.includes("vendor/aarch64-pc-windows-msvc/codex/codex.exe");
 		if (looksLikeStockOpenAiShim) {
 			try {
 				writeFileSync(filePath, desiredContent, { encoding: "utf8", mode: 0o755 });
@@ -1318,9 +1325,9 @@ async function main() {
 	if (!realCodexBin) {
 		console.error(
 			[
-				"Could not locate the official Codex CLI binary (@openai/codex).",
-				"Install it globally: npm install -g @openai/codex",
-				"Or set CODEX_MULTI_AUTH_REAL_CODEX_BIN to a full bin/codex.js path.",
+				"Could not locate the official Codex CLI.",
+				"Install it with npm, Homebrew, or an official native release so `codex` is on PATH.",
+				"Or set CODEX_MULTI_AUTH_REAL_CODEX_BIN to the full path of either codex or @openai/codex/bin/codex.js.",
 			].join("\n"),
 		);
 		return 1;

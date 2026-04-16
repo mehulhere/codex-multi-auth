@@ -3,7 +3,7 @@
 [![npm version](https://img.shields.io/npm/v/codex-multi-auth.svg)](https://www.npmjs.com/package/codex-multi-auth)
 [![npm downloads](https://img.shields.io/npm/dw/codex-multi-auth.svg)](https://www.npmjs.com/package/codex-multi-auth)
 
-Codex CLI-first multi-account OAuth manager for the official `@openai/codex` CLI.
+Codex CLI-first multi-account OAuth manager for the official Codex CLI, including the `@openai/codex` npm launcher and native `codex` installs.
 
 <img width="1270" height="729" alt="2026-02-28 12_54_58-prompt txt ‎- Notepads" src="https://github.com/user-attachments/assets/0cecb77e-a6d3-432a-ba48-3577db0c7093" />
 
@@ -72,6 +72,8 @@ codex-multi-auth --version
 codex auth status
 ```
 
+Any official install path is fine as long as `codex` is on `PATH`: `npm i -g @openai/codex`, `brew install --cask codex`, or an official release binary.
+
 </details>
 
 <details>
@@ -102,6 +104,13 @@ Install and sign in:
 
 ```bash
 npm i -g @openai/codex
+npm i -g codex-multi-auth
+codex auth login
+```
+
+If you already installed the official native CLI via Homebrew or a release binary, you only need:
+
+```bash
 npm i -g codex-multi-auth
 codex auth login
 ```
@@ -274,7 +283,7 @@ codex auth login
 <details>
 <summary><b>Common symptoms</b></summary>
 
-- `codex auth` unrecognized: run `where codex`, then follow `docs/troubleshooting.md` for routing fallback commands
+- `codex auth` unrecognized: run `where codex` or `which codex`, then follow `docs/troubleshooting.md` for routing fallback commands
 - Switch succeeds but wrong account appears active: run `codex auth switch <index>`, then restart session
 - Requests fail fast with a pool cooldown message: wait for the cooldown window or inspect `codex auth status`
 - Requests fail fast after repeated upstream 5xx errors: inspect `codex auth report --json` for runtime traffic and cooldown details
