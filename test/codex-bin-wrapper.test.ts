@@ -1306,6 +1306,29 @@ describe("codex bin wrapper", () => {
 		});
 	});
 
+	it("prefers Windows codex.exe over extensionless codex when both exist", () => {
+		const pathEntry = join("C:", "custom", "bin");
+		const nativeCodexExePath = join(pathEntry, "codex.exe");
+		const nativeCodexPath = join(pathEntry, "codex");
+		const resolved = resolveRealCodexBin({
+			env: {
+				PATH: pathEntry,
+			},
+			argv: [process.execPath, join(repoRootDir, "scripts", "codex.js")],
+			platform: "win32",
+			moduleUrl: pathToFileURL(join(repoRootDir, "scripts", "codex.js")).href,
+			resolvePackageBin: () => null,
+			spawnSyncImpl: () => createSpawnSyncSuccess("") as SpawnSyncReturns<string>,
+			existsSyncImpl: (candidate) =>
+				candidate === nativeCodexExePath || candidate === nativeCodexPath,
+		});
+
+		expect(resolved).toEqual({
+			path: nativeCodexExePath,
+			launchWithNode: false,
+		});
+	});
+
 	it("skips self-referential codex wrapper entries on PATH before native binaries", () => {
 		const wrapperScriptPath = join(
 			"C:\\test-root",
