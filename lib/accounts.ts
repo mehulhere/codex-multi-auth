@@ -18,6 +18,11 @@ import {
 	type AccountWithMetrics,
 	type HybridSelectionOptions,
 } from "./rotation.js";
+import {
+	withRoutingMutex,
+	type RoutingMutexMode,
+	type SelectionRecord,
+} from "./routing-mutex.js";
 import { nowMs } from "./utils.js";
 import { ERROR_MESSAGES, HTTP_STATUS } from "./constants.js";
 import { CodexAuthError } from "./errors.js";
@@ -264,6 +269,14 @@ export class AccountManager {
 	private saveDebounceTimer: ReturnType<typeof setTimeout> | null = null;
 	private pendingSave: Promise<void> | null = null;
 	private readonly storagePathState: StoragePathState;
+	/**
+	 * PR-N / R4: feature-flagged routing mutex mode.
+	 * Defaults to `"legacy"` to preserve pre-PR-N behaviour for one release
+	 * cycle. When set to `"enabled"` the cursor-mutation helpers (markSwitched,
+	 * markAccountCoolingDown, setActiveIndex) serialize through the shared
+	 * async mutex in `lib/routing-mutex.ts`.
+	 */
+	private routingMutexMode: RoutingMutexMode = "legacy";
 
 	static async loadFromDisk(
 		authFallback?: OAuthAuthDetails,
@@ -853,6 +866,82 @@ export class AccountManager {
 	): void {
 		account.lastSwitchReason = reason;
 		this.currentAccountIndexByFamily[family] = account.index;
+	}
+
+	/**
+	 * PR-N / R4: configure routing-mutex mode for this pool.
+	 * Callers typically derive the value from `getRoutingMutexMode(pluginConfig)`
+	 * at plugin init / settings reload. Called frequently during tests too; no
+	 * side effects beyond mutating the private field.
+	 */
+	setRoutingMutexMode(mode: RoutingMutexMode): void {
+		this.routingMutexMode = mode;
+	}
+
+	/** PR-N / R4: expose current mutex mode (mostly for diagnostics/tests). */
+	getRoutingMutexMode(): RoutingMutexMode {
+		return this.routingMutexMode;
+	}
+
+	/**
+	 * PR-N / R4: mutex-serialized variant of `markSwitched`.
+	 *
+	 * Wraps the cursor mutation in the shared async mutex when
+	 * `routingMutexMode === "enabled"`. In legacy mode it runs inline so the
+	 * flag check stays O(1) per call. Returns a `SelectionRecord` describing
+	 * the decision so the fetch loop can thread it through to observability.
+	 */
+	async markSwitchedLocked(
+		account: ManagedAccount,
+		reason: "rate-limit" | "initial" | "rotation",
+		family: ModelFamily,
+		context?: { trackerKeyQuota?: string; score?: number },
+	): Promise<SelectionRecord> {
+		return withRoutingMutex(this.routingMutexMode, () => {
+			account.lastSwitchReason = reason;
+			this.currentAccountIndexByFamily[family] = account.index;
+			const trackerKey = getRuntimeTrackerKey(account);
+			const healthTracker = getHealthTracker();
+			const tokenTracker = getTokenTracker();
+			const trackerKeyQuota = context?.trackerKeyQuota;
+			return {
+				accountIndex: account.index,
+				accountId: account.accountId ?? account.email ?? String(trackerKey),
+				reason,
+				timestamp: nowMs(),
+				trackerKeyQuota,
+				health: healthTracker.getScore(trackerKey, trackerKeyQuota),
+				tokens: tokenTracker.getTokens(trackerKey, trackerKeyQuota),
+				score: context?.score,
+			};
+		});
+	}
+
+	/**
+	 * PR-N / R4: mutex-serialized variant of `markAccountCoolingDown`.
+	 * Same flag-gated behaviour as `markSwitchedLocked`.
+	 */
+	async markAccountCoolingDownLocked(
+		account: ManagedAccount,
+		cooldownMs: number,
+		reason: CooldownReason,
+	): Promise<void> {
+		await withRoutingMutex(this.routingMutexMode, () => {
+			const ms = Math.max(0, Math.floor(cooldownMs));
+			account.coolingDownUntil = nowMs() + ms;
+			account.cooldownReason = reason;
+		});
+	}
+
+	/**
+	 * PR-N / R4: mutex-serialized variant of `setActiveIndex`.
+	 * Returns the newly active account on success, or `null` when the index
+	 * is out of range / disabled (matching sync semantics).
+	 */
+	async setActiveIndexLocked(index: number): Promise<ManagedAccount | null> {
+		return withRoutingMutex(this.routingMutexMode, () => {
+			return this.setActiveIndex(index);
+		});
 	}
 
 	markRateLimited(
