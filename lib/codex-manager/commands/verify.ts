@@ -1,4 +1,4 @@
-import { join } from "node:path";
+import { isAbsolute, join, relative, resolve } from "node:path";
 import { homedir, tmpdir } from "node:os";
 
 export interface VerifyCliOptions {
@@ -52,6 +52,7 @@ export interface VerifyCommandDeps {
 	runVerifyPaths?: (deps: VerifyPathsDeps) => VerifyPathsReport;
 	runVerifyFlagged?: (args: string[]) => Promise<number>;
 	verifyPathsDeps: VerifyPathsDeps;
+	setStoragePath?: (path: string | null) => void;
 	logInfo?: (message: string) => void;
 	logError?: (message: string) => void;
 }
@@ -147,6 +148,57 @@ export function runVerifyPathsCheck(deps: VerifyPathsDeps): VerifyPathsReport {
 	};
 }
 
+function normalizeForCompare(p: string): string {
+	const abs = resolve(p);
+	return process.platform === "win32" ? abs.toLowerCase() : abs;
+}
+
+function isWithinBase(baseDir: string, targetPath: string): boolean {
+	const base = normalizeForCompare(baseDir);
+	const target = normalizeForCompare(targetPath);
+	const rel = relative(base, target);
+	return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
+}
+
+/**
+ * Pick an absolute path guaranteed to be outside the three sandbox roots
+ * (homedir, tmpdir, and projectRoot as detected by resolvePath's state).
+ *
+ * resolvePath falls back to process.cwd() when no projectRoot is set, so when
+ * the caller ran `codex auth verify --paths` from `/` or any ancestor of the
+ * probe target, a naive `/etc/shadow` probe reports sandbox-broken even though
+ * the sandbox is working as designed. This helper builds candidates on Windows
+ * (nonexistent drive letter) or POSIX (synthetic root directory) and verifies
+ * they are genuinely outside every base before returning.
+ *
+ * Returns null when no safe candidate is available (e.g. homedir or tmpdir is
+ * literally the filesystem root on a malformed system); callers treat a null
+ * as "skip the escape probe" rather than a spurious failure.
+ */
+function pickEscapeProbePath(projectRoot: string): string | null {
+	const tag = `codex_multi_auth_sandbox_escape_probe_${process.pid}`;
+	const candidates: string[] =
+		process.platform === "win32"
+			? [
+					`Z:\\__${tag}__`,
+					`Y:\\__${tag}__`,
+					`\\\\?\\UNC\\server-that-does-not-exist\\share\\${tag}`,
+				]
+			: [`/__${tag}__`, `/var/__${tag}__`, `/opt/__${tag}__`];
+
+	for (const candidate of candidates) {
+		if (
+			!isWithinBase(homedir(), candidate) &&
+			!isWithinBase(tmpdir(), candidate) &&
+			!isWithinBase(projectRoot, candidate)
+		) {
+			return candidate;
+		}
+	}
+
+	return null;
+}
+
 function runSandboxTests(deps: VerifyPathsDeps): VerifySandboxResult[] {
 	const results: VerifySandboxResult[] = [];
 
@@ -188,10 +240,20 @@ function runSandboxTests(deps: VerifyPathsDeps): VerifySandboxResult[] {
 		});
 	}
 
-	const escapeAttempt =
-		process.platform === "win32"
-			? "\\\\?\\UNC\\server-that-does-not-exist\\share\\SAM"
-			: "/etc/shadow";
+	const projectRoot = deps.getCwd();
+	const escapeAttempt = pickEscapeProbePath(projectRoot);
+	if (escapeAttempt === null) {
+		results.push({
+			name: "sandbox-reject-escape",
+			input: "",
+			rejected: false,
+			ok: true,
+			error:
+				"skipped: no candidate outside home/tmp/project could be constructed",
+		});
+		return results;
+	}
+
 	try {
 		deps.resolvePath(escapeAttempt);
 		results.push({
@@ -247,6 +309,13 @@ export async function runVerifyCommand(
 	const runner = deps.runVerifyPaths ?? runVerifyPathsCheck;
 	let pathsReport: VerifyPathsReport | null = null;
 	if (options.paths) {
+		// Reset storage-path state so the sandbox probe and path-chain steps
+		// run against a clean baseline, matching the convention used by
+		// why-selected, verify-flagged, doctor, fix, and the other command
+		// handlers (see lib/codex-manager/commands/*.ts setStoragePath(null)).
+		if (deps.setStoragePath) {
+			deps.setStoragePath(null);
+		}
 		pathsReport = runner(deps.verifyPathsDeps);
 	}
 

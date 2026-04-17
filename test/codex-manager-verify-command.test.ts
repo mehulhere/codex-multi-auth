@@ -1,6 +1,6 @@
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
 	parseVerifyArgs,
 	printVerifyUsage,
@@ -10,6 +10,8 @@ import {
 	type VerifyCommandDeps,
 	type VerifyPathsDeps,
 } from "../lib/codex-manager/commands/verify.js";
+import { resolvePath } from "../lib/storage/paths.js";
+import { setStoragePath } from "../lib/storage.js";
 
 function makePathsDeps(
 	overrides: Partial<VerifyPathsDeps> = {},
@@ -30,11 +32,14 @@ function makePathsDeps(
 			),
 		),
 		resolvePath: vi.fn((input: string) => {
+			const lowered = input.toLowerCase();
 			if (
 				input.includes("etc/shadow") ||
-				input.toLowerCase().includes("system32") ||
-				input.toLowerCase().startsWith("\\\\?\\unc\\") ||
-				input.toLowerCase().startsWith("/etc/")
+				lowered.includes("system32") ||
+				lowered.startsWith("\\\\?\\unc\\") ||
+				lowered.startsWith("/etc/") ||
+				lowered.includes("codex_multi_auth_sandbox_escape_probe") ||
+				/^[yz]:[\\/]/i.test(input)
 			) {
 				throw new Error("Access denied: path must be within ...");
 			}
@@ -270,5 +275,44 @@ describe("printVerifyUsage", () => {
 		} finally {
 			spy.mockRestore();
 		}
+	});
+});
+
+describe("sandbox-reject-escape probe with pathological cwd", () => {
+	afterEach(() => {
+		setStoragePath(null);
+		vi.restoreAllMocks();
+	});
+
+	it("rejects the escape probe even when process.cwd() is the filesystem root", () => {
+		// Reset storage state so resolvePath falls back to process.cwd() for
+		// projectRoot, matching the production edge case the audit flagged.
+		setStoragePath(null);
+
+		const rootCwd = process.platform === "win32" ? "C:\\" : "/";
+		const cwdSpy = vi.spyOn(process, "cwd").mockReturnValue(rootCwd);
+
+		const deps: VerifyPathsDeps = {
+			getCwd: () => rootCwd,
+			findProjectRoot: () => rootCwd,
+			resolveProjectStorageIdentityRoot: () => rootCwd,
+			getProjectStorageKey: () => "project-rootcwd-probe",
+			getProjectConfigDir: () => rootCwd,
+			getProjectGlobalConfigDir: () =>
+				join(homedir(), ".codex", "multi-auth", "projects", "root-probe"),
+			// Delegate to the real resolvePath so we exercise the actual
+			// sandbox gate instead of a test double.
+			resolvePath,
+		};
+
+		const report = runVerifyPathsCheck(deps);
+
+		const escapeTest = report.sandboxTests.find(
+			(test) => test.name === "sandbox-reject-escape",
+		);
+		expect(escapeTest).toBeDefined();
+		expect(escapeTest?.ok).toBe(true);
+
+		cwdSpy.mockRestore();
 	});
 });

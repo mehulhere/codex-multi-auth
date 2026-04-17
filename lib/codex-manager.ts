@@ -3395,6 +3395,7 @@ export async function runCodexMultiAuthCli(rawArgs: string[]): Promise<number> {
 			printVerifyUsage,
 			runVerifyFlagged: async (flaggedArgs: string[]) =>
 				runRepairVerifyFlagged(flaggedArgs, createRepairCommandDeps()),
+			setStoragePath,
 			verifyPathsDeps: {
 				getCwd: () => process.cwd(),
 				findProjectRoot,
