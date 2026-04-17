@@ -4,17 +4,138 @@
  * Based on Codex-antigravity-auth recovery module.
  */
 
-import { existsSync, mkdirSync, readdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
+import {
+	existsSync,
+	mkdirSync,
+	readdirSync,
+	readFileSync,
+	renameSync,
+	unlinkSync,
+	writeFileSync,
+} from "node:fs";
 import { join } from "node:path";
-import { MESSAGE_STORAGE, PART_STORAGE, THINKING_TYPES, META_TYPES } from "./constants.js";
+import {
+	MESSAGE_STORAGE,
+	PART_STORAGE,
+	THINKING_TYPES,
+	META_TYPES,
+} from "./constants.js";
 import type { StoredMessageMeta, StoredPart, StoredTextPart } from "./types.js";
 
 const SAFE_ID_PATTERN = /^[a-zA-Z0-9_-]+$/;
 
 function validatePathId(id: string, name: string): void {
-  if (!SAFE_ID_PATTERN.test(id)) {
-    throw new Error(`Invalid ${name}: contains unsafe characters`);
-  }
+	if (!SAFE_ID_PATTERN.test(id)) {
+		throw new Error(`Invalid ${name}: contains unsafe characters`);
+	}
+}
+
+// Codes that indicate transient Windows filesystem locks (antivirus,
+// file-indexing, concurrent reader) rather than real failures. Align with the
+// retry taxonomy already used by scripts/repo-hygiene.js and lib/storage.ts.
+const RETRYABLE_FS_CODES = new Set(["EBUSY", "EPERM", "ENOTEMPTY", "EAGAIN"]);
+
+/**
+ * Rename `source` over `target` with bounded retry on transient Windows
+ * filesystem lock errors (AV, indexer, concurrent reader). Matches the
+ * retry convention used by `renameFileWithRetry` in lib/storage.ts:281
+ * (max 4 attempts, exponential backoff 10/20/40/80ms).
+ *
+ * Uses a synchronous wait budget because atomicWriteFileSync is called from
+ * synchronous recovery code paths where async rename is not available.
+ */
+function renameSyncWithRetry(source: string, target: string): void {
+	const maxAttempts = 4;
+	let lastError: unknown;
+	for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+		try {
+			renameSync(source, target);
+			return;
+		} catch (error) {
+			lastError = error;
+			const code = (error as NodeJS.ErrnoException | undefined)?.code;
+			if (!code || !RETRYABLE_FS_CODES.has(code)) {
+				throw error;
+			}
+			if (attempt === maxAttempts - 1) {
+				break;
+			}
+			// Exponential backoff: 10, 20, 40 ms before the next attempt.
+			// Synchronous wait is acceptable here because the recovery helper
+			// is already on a sync code path and retries only fire on genuine
+			// Windows lock contention.
+			const waitUntil = Date.now() + 10 * 2 ** attempt;
+			while (Date.now() < waitUntil) {
+				// busy-wait within budget (cumulative max ~70ms across attempts)
+			}
+		}
+	}
+	throw lastError as Error;
+}
+
+/**
+ * Atomic write: stage the payload to a sibling temp file, then `rename` over
+ * the target. Readers either see the old file or the new file — never a
+ * partially-written payload.
+ *
+ * Cleans up the staged file on failure so retries do not accumulate
+ * `*.tmp.<rand>` droppings next to the target. Closes AUDIT-M01 / E-03 for
+ * the recovery module, matching the pattern already in use by lib/storage.ts.
+ *
+ * The rename step uses `renameSyncWithRetry` so that transient Windows
+ * EBUSY/EPERM/ENOTEMPTY/EAGAIN faults from antivirus or file-indexer locks
+ * do not silently drop the payload. See AUDIT-M01 HIGH-2.
+ */
+function atomicWriteFileSync(
+	path: string,
+	data: string,
+	options: { mode?: number } = {},
+): void {
+	const tempSuffix = `.tmp.${process.pid}.${Date.now()}.${Math.random().toString(36).slice(2, 10)}`;
+	const tempPath = `${path}${tempSuffix}`;
+	try {
+		writeFileSync(tempPath, data, { mode: options.mode ?? 0o600 });
+		renameSyncWithRetry(tempPath, path);
+	} catch (error) {
+		try {
+			unlinkSync(tempPath);
+		} catch {
+			// Ignore cleanup failure: the original write error is more useful to
+			// callers than a secondary ENOENT from an already-gone temp file.
+		}
+		throw error;
+	}
+}
+
+/**
+ * Best-effort delete with bounded retry for transient Windows lock errors.
+ * Returns true on successful removal, false on missing file or exhausted
+ * retries. Never throws.
+ */
+function safeUnlinkWithRetry(filePath: string, maxAttempts = 4): boolean {
+	for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+		try {
+			unlinkSync(filePath);
+			return true;
+		} catch (error) {
+			const code = (error as NodeJS.ErrnoException | undefined)?.code;
+			if (code === "ENOENT") return false;
+			if (
+				!code ||
+				!RETRYABLE_FS_CODES.has(code) ||
+				attempt === maxAttempts - 1
+			) {
+				return false;
+			}
+			// Small synchronous backoff; recovery storage is not on a hot path, so
+			// a handful of milliseconds here is cheaper than leaving orphan files.
+			const waitUntil = Date.now() + 2 ** attempt * 5;
+			while (Date.now() < waitUntil) {
+				// busy-wait within budget (max ~40ms across four attempts)
+			}
+		}
+	}
+	return false;
 }
 
 // =============================================================================
@@ -22,9 +143,9 @@ function validatePathId(id: string, name: string): void {
 // =============================================================================
 
 export function generatePartId(): string {
-  const timestamp = Date.now().toString(16);
-  const random = Math.random().toString(36).substring(2, 10);
-  return `prt_${timestamp}${random}`;
+	const timestamp = Date.now().toString(16);
+	const random = Math.random().toString(36).substring(2, 10);
+	return `prt_${timestamp}${random}`;
 }
 
 // =============================================================================
@@ -32,27 +153,27 @@ export function generatePartId(): string {
 // =============================================================================
 
 export function getMessageDir(sessionID: string): string {
-  validatePathId(sessionID, "sessionID");
-  if (!existsSync(MESSAGE_STORAGE)) return "";
+	validatePathId(sessionID, "sessionID");
+	if (!existsSync(MESSAGE_STORAGE)) return "";
 
-  const directPath = join(MESSAGE_STORAGE, sessionID);
-  if (existsSync(directPath)) {
-    return directPath;
-  }
+	const directPath = join(MESSAGE_STORAGE, sessionID);
+	if (existsSync(directPath)) {
+		return directPath;
+	}
 
-  // Search in subdirectories
-  try {
-    for (const dir of readdirSync(MESSAGE_STORAGE)) {
-      const sessionPath = join(MESSAGE_STORAGE, dir, sessionID);
-      if (existsSync(sessionPath)) {
-        return sessionPath;
-      }
-    }
-  } catch {
-    // Ignore read errors
-  }
+	// Search in subdirectories
+	try {
+		for (const dir of readdirSync(MESSAGE_STORAGE)) {
+			const sessionPath = join(MESSAGE_STORAGE, dir, sessionID);
+			if (existsSync(sessionPath)) {
+				return sessionPath;
+			}
+		}
+	} catch {
+		// Ignore read errors
+	}
 
-  return "";
+	return "";
 }
 
 // =============================================================================
@@ -60,30 +181,30 @@ export function getMessageDir(sessionID: string): string {
 // =============================================================================
 
 export function readMessages(sessionID: string): StoredMessageMeta[] {
-  const messageDir = getMessageDir(sessionID);
-  if (!messageDir || !existsSync(messageDir)) return [];
+	const messageDir = getMessageDir(sessionID);
+	if (!messageDir || !existsSync(messageDir)) return [];
 
-  const messages: StoredMessageMeta[] = [];
-  try {
-    for (const file of readdirSync(messageDir)) {
-      if (!file.endsWith(".json")) continue;
-      try {
-        const content = readFileSync(join(messageDir, file), "utf-8");
-        messages.push(JSON.parse(content));
-      } catch {
-        continue;
-      }
-    }
-  } catch {
-    return [];
-  }
+	const messages: StoredMessageMeta[] = [];
+	try {
+		for (const file of readdirSync(messageDir)) {
+			if (!file.endsWith(".json")) continue;
+			try {
+				const content = readFileSync(join(messageDir, file), "utf-8");
+				messages.push(JSON.parse(content));
+			} catch {
+				continue;
+			}
+		}
+	} catch {
+		return [];
+	}
 
-  return messages.sort((a, b) => {
-    const aTime = a.time?.created ?? 0;
-    const bTime = b.time?.created ?? 0;
-    if (aTime !== bTime) return aTime - bTime;
-    return a.id.localeCompare(b.id);
-  });
+	return messages.sort((a, b) => {
+		const aTime = a.time?.created ?? 0;
+		const bTime = b.time?.created ?? 0;
+		if (aTime !== bTime) return aTime - bTime;
+		return a.id.localeCompare(b.id);
+	});
 }
 
 // =============================================================================
@@ -91,26 +212,26 @@ export function readMessages(sessionID: string): StoredMessageMeta[] {
 // =============================================================================
 
 export function readParts(messageID: string): StoredPart[] {
-  validatePathId(messageID, "messageID");
-  const partDir = join(PART_STORAGE, messageID);
-  if (!existsSync(partDir)) return [];
+	validatePathId(messageID, "messageID");
+	const partDir = join(PART_STORAGE, messageID);
+	if (!existsSync(partDir)) return [];
 
-  const parts: StoredPart[] = [];
-  try {
-    for (const file of readdirSync(partDir)) {
-      if (!file.endsWith(".json")) continue;
-      try {
-        const content = readFileSync(join(partDir, file), "utf-8");
-        parts.push(JSON.parse(content));
-      } catch {
-        continue;
-      }
-    }
-  } catch {
-    return [];
-  }
+	const parts: StoredPart[] = [];
+	try {
+		for (const file of readdirSync(partDir)) {
+			if (!file.endsWith(".json")) continue;
+			try {
+				const content = readFileSync(join(partDir, file), "utf-8");
+				parts.push(JSON.parse(content));
+			} catch {
+				continue;
+			}
+		}
+	} catch {
+		return [];
+	}
 
-  return parts;
+	return parts;
 }
 
 // =============================================================================
@@ -118,57 +239,65 @@ export function readParts(messageID: string): StoredPart[] {
 // =============================================================================
 
 export function hasContent(part: StoredPart): boolean {
-  if (THINKING_TYPES.has(part.type)) return false;
-  if (META_TYPES.has(part.type)) return false;
+	if (THINKING_TYPES.has(part.type)) return false;
+	if (META_TYPES.has(part.type)) return false;
 
-  if (part.type === "text") {
-    const textPart = part as StoredTextPart;
-    return !!(textPart.text?.trim());
-  }
+	if (part.type === "text") {
+		const textPart = part as StoredTextPart;
+		return !!textPart.text?.trim();
+	}
 
-  if (part.type === "tool" || part.type === "tool_use") {
-    return true;
-  }
+	if (part.type === "tool" || part.type === "tool_use") {
+		return true;
+	}
 
-  if (part.type === "tool_result") {
-    return true;
-  }
+	if (part.type === "tool_result") {
+		return true;
+	}
 
-  return false;
+	return false;
 }
 
 export function messageHasContent(messageID: string): boolean {
-  const parts = readParts(messageID);
-  return parts.some(hasContent);
+	const parts = readParts(messageID);
+	return parts.some(hasContent);
 }
 
 // =============================================================================
 // Part Injection (for recovery)
 // =============================================================================
 
-export function injectTextPart(sessionID: string, messageID: string, text: string): boolean {
-  const partDir = join(PART_STORAGE, messageID);
+export function injectTextPart(
+	sessionID: string,
+	messageID: string,
+	text: string,
+): boolean {
+	const partDir = join(PART_STORAGE, messageID);
 
-  try {
-    if (!existsSync(partDir)) {
-      mkdirSync(partDir, { recursive: true });
-    }
+	try {
+		if (!existsSync(partDir)) {
+			mkdirSync(partDir, { recursive: true });
+		}
 
-    const partId = generatePartId();
-    const part: StoredTextPart = {
-      id: partId,
-      sessionID,
-      messageID,
-      type: "text",
-      text,
-      synthetic: true,
-    };
+		const partId = generatePartId();
+		const part: StoredTextPart = {
+			id: partId,
+			sessionID,
+			messageID,
+			type: "text",
+			text,
+			synthetic: true,
+		};
 
-    writeFileSync(join(partDir, `${partId}.json`), JSON.stringify(part, null, 2), { mode: 0o600 });
-    return true;
-  } catch {
-    return false;
-  }
+		atomicWriteFileSync(
+			join(partDir, `${partId}.json`),
+			JSON.stringify(part, null, 2),
+			{ mode: 0o600 },
+		);
+		return true;
+	} catch {
+		return false;
+	}
 }
 
 // =============================================================================
@@ -176,120 +305,128 @@ export function injectTextPart(sessionID: string, messageID: string, text: strin
 // =============================================================================
 
 export function findMessagesWithThinkingBlocks(sessionID: string): string[] {
-  const messages = readMessages(sessionID);
-  const result: string[] = [];
+	const messages = readMessages(sessionID);
+	const result: string[] = [];
 
-  for (const msg of messages) {
-    if (msg.role !== "assistant") continue;
+	for (const msg of messages) {
+		if (msg.role !== "assistant") continue;
 
-    const parts = readParts(msg.id);
-    const hasThinking = parts.some((p) => THINKING_TYPES.has(p.type));
-    if (hasThinking) {
-      result.push(msg.id);
-    }
-  }
+		const parts = readParts(msg.id);
+		const hasThinking = parts.some((p) => THINKING_TYPES.has(p.type));
+		if (hasThinking) {
+			result.push(msg.id);
+		}
+	}
 
-  return result;
+	return result;
 }
 
 export function findMessagesWithThinkingOnly(sessionID: string): string[] {
-  const messages = readMessages(sessionID);
-  const result: string[] = [];
+	const messages = readMessages(sessionID);
+	const result: string[] = [];
 
-  for (const msg of messages) {
-    if (msg.role !== "assistant") continue;
+	for (const msg of messages) {
+		if (msg.role !== "assistant") continue;
 
-    const parts = readParts(msg.id);
-    if (parts.length === 0) continue;
+		const parts = readParts(msg.id);
+		if (parts.length === 0) continue;
 
-    const hasThinking = parts.some((p) => THINKING_TYPES.has(p.type));
-    const hasTextContent = parts.some(hasContent);
+		const hasThinking = parts.some((p) => THINKING_TYPES.has(p.type));
+		const hasTextContent = parts.some(hasContent);
 
-    // Has thinking but no text content = orphan thinking
-    if (hasThinking && !hasTextContent) {
-      result.push(msg.id);
-    }
-  }
+		// Has thinking but no text content = orphan thinking
+		if (hasThinking && !hasTextContent) {
+			result.push(msg.id);
+		}
+	}
 
-  return result;
+	return result;
 }
 
 export function findMessagesWithOrphanThinking(sessionID: string): string[] {
-  const messages = readMessages(sessionID);
-  const result: string[] = [];
+	const messages = readMessages(sessionID);
+	const result: string[] = [];
 
-  for (let i = 0; i < messages.length; i++) {
-    const msg = messages[i];
-    if (!msg || msg.role !== "assistant") continue;
+	for (let i = 0; i < messages.length; i++) {
+		const msg = messages[i];
+		if (!msg || msg.role !== "assistant") continue;
 
-    const parts = readParts(msg.id);
-    if (parts.length === 0) continue;
+		const parts = readParts(msg.id);
+		if (parts.length === 0) continue;
 
-    const sortedParts = [...parts].sort((a, b) => a.id.localeCompare(b.id));
-    const firstPart = sortedParts[0];
-    if (!firstPart) continue;
+		const sortedParts = [...parts].sort((a, b) => a.id.localeCompare(b.id));
+		const firstPart = sortedParts[0];
+		if (!firstPart) continue;
 
-    const firstIsThinking = THINKING_TYPES.has(firstPart.type);
+		const firstIsThinking = THINKING_TYPES.has(firstPart.type);
 
-    // If first part is not thinking, it's orphan
-    if (!firstIsThinking) {
-      result.push(msg.id);
-    }
-  }
+		// If first part is not thinking, it's orphan
+		if (!firstIsThinking) {
+			result.push(msg.id);
+		}
+	}
 
-  return result;
+	return result;
 }
 
-export function prependThinkingPart(sessionID: string, messageID: string): boolean {
-  const partDir = join(PART_STORAGE, messageID);
+export function prependThinkingPart(
+	sessionID: string,
+	messageID: string,
+): boolean {
+	const partDir = join(PART_STORAGE, messageID);
 
-  try {
-    if (!existsSync(partDir)) {
-      mkdirSync(partDir, { recursive: true });
-    }
+	try {
+		if (!existsSync(partDir)) {
+			mkdirSync(partDir, { recursive: true });
+		}
 
-    const partId = "prt_0000000000_thinking";
-    const part = {
-      id: partId,
-      sessionID,
-      messageID,
-      type: "thinking",
-      thinking: "",
-      synthetic: true,
-    };
+		const partId = "prt_0000000000_thinking";
+		const part = {
+			id: partId,
+			sessionID,
+			messageID,
+			type: "thinking",
+			thinking: "",
+			synthetic: true,
+		};
 
-    writeFileSync(join(partDir, `${partId}.json`), JSON.stringify(part, null, 2), { mode: 0o600 });
-    return true;
-  } catch {
-    return false;
-  }
+		atomicWriteFileSync(
+			join(partDir, `${partId}.json`),
+			JSON.stringify(part, null, 2),
+			{ mode: 0o600 },
+		);
+		return true;
+	} catch {
+		return false;
+	}
 }
 
 export function stripThinkingParts(messageID: string): boolean {
-  const partDir = join(PART_STORAGE, messageID);
-  if (!existsSync(partDir)) return false;
+	const partDir = join(PART_STORAGE, messageID);
+	if (!existsSync(partDir)) return false;
 
-  let anyRemoved = false;
-  try {
-    for (const file of readdirSync(partDir)) {
-      if (!file.endsWith(".json")) continue;
-      try {
-        const filePath = join(partDir, file);
-        const content = readFileSync(filePath, "utf-8");
-        const part = JSON.parse(content) as StoredPart;
-        if (THINKING_TYPES.has(part.type)) {
-          unlinkSync(filePath);
-          anyRemoved = true;
-        }
-      } catch {
-        continue;
-      }
-    }
-  } catch {
-    return false;
-  }
+	let anyRemoved = false;
+	try {
+		for (const file of readdirSync(partDir)) {
+			if (!file.endsWith(".json")) continue;
+			try {
+				const filePath = join(partDir, file);
+				const content = readFileSync(filePath, "utf-8");
+				const part = JSON.parse(content) as StoredPart;
+				if (THINKING_TYPES.has(part.type)) {
+					if (safeUnlinkWithRetry(filePath)) {
+						anyRemoved = true;
+					}
+				}
+			} catch {
+				continue;
+			}
+		}
+	} catch {
+		return false;
+	}
 
-  return anyRemoved;
+	return anyRemoved;
 }
 
 // =============================================================================
@@ -297,112 +434,120 @@ export function stripThinkingParts(messageID: string): boolean {
 // =============================================================================
 
 export function findEmptyMessages(sessionID: string): string[] {
-  const messages = readMessages(sessionID);
-  const emptyIds: string[] = [];
+	const messages = readMessages(sessionID);
+	const emptyIds: string[] = [];
 
-  for (const msg of messages) {
-    if (!messageHasContent(msg.id)) {
-      emptyIds.push(msg.id);
-    }
-  }
+	for (const msg of messages) {
+		if (!messageHasContent(msg.id)) {
+			emptyIds.push(msg.id);
+		}
+	}
 
-  return emptyIds;
+	return emptyIds;
 }
 
-export function findEmptyMessageByIndex(sessionID: string, targetIndex: number): string | null {
-  const messages = readMessages(sessionID);
+export function findEmptyMessageByIndex(
+	sessionID: string,
+	targetIndex: number,
+): string | null {
+	const messages = readMessages(sessionID);
 
-  // API index may differ from storage index due to system messages
-  const indicesToTry = [targetIndex, targetIndex - 1, targetIndex - 2];
+	// API index may differ from storage index due to system messages
+	const indicesToTry = [targetIndex, targetIndex - 1, targetIndex - 2];
 
-  for (const idx of indicesToTry) {
-    if (idx < 0 || idx >= messages.length) continue;
+	for (const idx of indicesToTry) {
+		if (idx < 0 || idx >= messages.length) continue;
 
-    const targetMsg = messages[idx];
-    if (!targetMsg) continue;
+		const targetMsg = messages[idx];
+		if (!targetMsg) continue;
 
-    if (!messageHasContent(targetMsg.id)) {
-      return targetMsg.id;
-    }
-  }
+		if (!messageHasContent(targetMsg.id)) {
+			return targetMsg.id;
+		}
+	}
 
-  return null;
+	return null;
 }
 
-export function findMessageByIndexNeedingThinking(sessionID: string, targetIndex: number): string | null {
-  const messages = readMessages(sessionID);
+export function findMessageByIndexNeedingThinking(
+	sessionID: string,
+	targetIndex: number,
+): string | null {
+	const messages = readMessages(sessionID);
 
-  if (targetIndex < 0 || targetIndex >= messages.length) return null;
+	if (targetIndex < 0 || targetIndex >= messages.length) return null;
 
-  const targetMsg = messages[targetIndex];
-  if (!targetMsg || targetMsg.role !== "assistant") return null;
+	const targetMsg = messages[targetIndex];
+	if (!targetMsg || targetMsg.role !== "assistant") return null;
 
-  const parts = readParts(targetMsg.id);
-  if (parts.length === 0) return null;
+	const parts = readParts(targetMsg.id);
+	if (parts.length === 0) return null;
 
-  const sortedParts = [...parts].sort((a, b) => a.id.localeCompare(b.id));
-  const firstPart = sortedParts[0];
-  if (!firstPart) return null;
+	const sortedParts = [...parts].sort((a, b) => a.id.localeCompare(b.id));
+	const firstPart = sortedParts[0];
+	if (!firstPart) return null;
 
-  const firstIsThinking = THINKING_TYPES.has(firstPart.type);
+	const firstIsThinking = THINKING_TYPES.has(firstPart.type);
 
-  if (!firstIsThinking) {
-    return targetMsg.id;
-  }
+	if (!firstIsThinking) {
+		return targetMsg.id;
+	}
 
-  return null;
+	return null;
 }
 
-export function replaceEmptyTextParts(messageID: string, replacementText: string): boolean {
-  const partDir = join(PART_STORAGE, messageID);
-  if (!existsSync(partDir)) return false;
+export function replaceEmptyTextParts(
+	messageID: string,
+	replacementText: string,
+): boolean {
+	const partDir = join(PART_STORAGE, messageID);
+	if (!existsSync(partDir)) return false;
 
-  let anyReplaced = false;
-  try {
-    for (const file of readdirSync(partDir)) {
-      if (!file.endsWith(".json")) continue;
-      try {
-        const filePath = join(partDir, file);
-        const content = readFileSync(filePath, "utf-8");
-        const part = JSON.parse(content) as StoredPart;
+	let anyReplaced = false;
+	try {
+		for (const file of readdirSync(partDir)) {
+			if (!file.endsWith(".json")) continue;
+			try {
+				const filePath = join(partDir, file);
+				const content = readFileSync(filePath, "utf-8");
+				const part = JSON.parse(content) as StoredPart;
 
-        if (part.type === "text") {
-          const textPart = part as StoredTextPart;
-          if (!textPart.text?.trim()) {
-            textPart.text = replacementText;
-            textPart.synthetic = true;
-            writeFileSync(filePath, JSON.stringify(textPart, null, 2), { mode: 0o600 });
-            anyReplaced = true;
-          }
-        }
-      } catch {
-        continue;
-      }
-    }
-  } catch {
-    return false;
-  }
+				if (part.type === "text") {
+					const textPart = part as StoredTextPart;
+					if (!textPart.text?.trim()) {
+						textPart.text = replacementText;
+						textPart.synthetic = true;
+						atomicWriteFileSync(filePath, JSON.stringify(textPart, null, 2));
+						anyReplaced = true;
+					}
+				}
+			} catch {
+				continue;
+			}
+		}
+	} catch {
+		return false;
+	}
 
-  return anyReplaced;
+	return anyReplaced;
 }
 
 export function findMessagesWithEmptyTextParts(sessionID: string): string[] {
-  const messages = readMessages(sessionID);
-  const result: string[] = [];
+	const messages = readMessages(sessionID);
+	const result: string[] = [];
 
-  for (const msg of messages) {
-    const parts = readParts(msg.id);
-    const hasEmptyTextPart = parts.some((p) => {
-      if (p.type !== "text") return false;
-      const textPart = p as StoredTextPart;
-      return !textPart.text?.trim();
-    });
+	for (const msg of messages) {
+		const parts = readParts(msg.id);
+		const hasEmptyTextPart = parts.some((p) => {
+			if (p.type !== "text") return false;
+			const textPart = p as StoredTextPart;
+			return !textPart.text?.trim();
+		});
 
-    if (hasEmptyTextPart) {
-      result.push(msg.id);
-    }
-  }
+		if (hasEmptyTextPart) {
+			result.push(msg.id);
+		}
+	}
 
-  return result;
+	return result;
 }
-
