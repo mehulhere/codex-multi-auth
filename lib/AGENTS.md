@@ -1,7 +1,7 @@
 # LIB KNOWLEDGE BASE
 
-Generated: 2026-03-01
-Commit: 9ac8a84
+Generated: 2026-04-17
+Commit: 1f6da97
 
 ## OVERVIEW
 Core plugin logic: authentication, request pipeline, account management, prompt templates, CLI dashboard, settings hub, worktree-aware storage, and UI layer.
