@@ -73,7 +73,7 @@ When project-scoped behavior is enabled:
 - first 12 chars of `sha256(normalized project path)`
 
 On Windows, normalization lowercases drive/path segments before hashing.
-Implementation reference: `lib/storage/paths.ts` (`deriveProjectKey`).
+Implementation reference: `lib/storage/paths.ts` (`getProjectStorageKey`).
 
 **Worktree behavior:**
 

@@ -1,8 +1,9 @@
 # PROJECT KNOWLEDGE BASE
 
-Generated: 2026-03-01
-Commit: 9ac8a84
+Generated: 2026-04-17
+Commit: 1f6da97
 Branch: main
+Package version: 1.2.7
 
 ## OVERVIEW
 Codex plugin: intercepts OpenAI SDK calls, routes through ChatGPT Codex backend with multi-account OAuth rotation. Includes CLI management dashboard, per-project/worktree account storage, and deterministic repo hygiene tooling.
@@ -70,7 +71,7 @@ Codex plugin: intercepts OpenAI SDK calls, routes through ChatGPT Codex backend 
 | UI layer | `lib/ui/` | ansi, auth-menu, confirm, copy, format, runtime, select, theme |
 | Repo hygiene | `scripts/repo-hygiene.js` | `clean --mode aggressive`, `check`, Windows `removeWithRetry` |
 | Codex bin wrapper | `scripts/codex.js` | lazy-load auth runtime, graceful missing-dist handling |
-| Tests | `test/` | vitest globals, 80% coverage threshold, 87 files, 2071 tests |
+| Tests | `test/` | vitest globals, 80% coverage threshold, 225 files, 3418 tests |
 
 ## CONVENTIONS
 - Source: root `index.ts` + `lib/`; `dist/` is generated output.
@@ -94,7 +95,7 @@ Codex plugin: intercepts OpenAI SDK calls, routes through ChatGPT Codex backend 
 ```bash
 npm run build            # tsc + copy oauth-success.html
 npm run typecheck        # type checking only
-npm test                 # vitest once (87 files, 2071 tests)
+npm test                 # vitest once (225 files, 3418 tests)
 npm run test:watch       # vitest watch mode
 npm run test:coverage    # vitest with coverage report
 npm run lint             # eslint (ts + scripts)
