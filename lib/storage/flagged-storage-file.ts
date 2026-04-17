@@ -1,7 +1,12 @@
 import type { FlaggedAccountStorageV1 } from "../storage.js";
 import { sleep } from "../utils.js";
 
-const RETRYABLE_READ_CODES = new Set(["EBUSY", "EAGAIN"]);
+// Include EPERM: on Windows, antivirus + file-indexing briefly take an
+// exclusive lock on recently-written files, producing EPERM on the reader's
+// next open. The write side of this module already retries EBUSY/EPERM, so
+// the read side must match or the flagged-state reader fails prematurely and
+// triggers unnecessary empty/backup fallbacks (AUDIT-M05 / E-08).
+const RETRYABLE_READ_CODES = new Set(["EBUSY", "EPERM", "EAGAIN"]);
 
 function isRetryableReadError(error: unknown): boolean {
 	const code = (error as NodeJS.ErrnoException | undefined)?.code;

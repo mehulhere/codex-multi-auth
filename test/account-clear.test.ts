@@ -17,16 +17,14 @@ describe("account clear helper", () => {
 	afterEach(async () => {
 		vi.restoreAllMocks();
 		vi.useRealTimers();
-		// Best-effort cleanup so re-running the suite does not accumulate state.
 		try {
 			await fs.rm(testTmpRoot, { recursive: true, force: true });
 		} catch {
-			// Ignore: rm can race with antivirus scanners on Windows; next run
-			// will retry the directory creation.
+			// Ignore: rm can race with antivirus scanners on Windows.
 		}
 	});
 
-	it("clears primary, wal, and backups after writing marker", async () => {
+	it("writes the reset marker before clearing primary, wal, and backups (AUDIT-M04)", async () => {
 		await expect(
 			clearAccountStorageArtifacts({
 				path: join(testTmpRoot, "tmp-accounts.json"),
@@ -36,12 +34,23 @@ describe("account clear helper", () => {
 				logError: vi.fn(),
 			}),
 		).resolves.toBeUndefined();
+		// AUDIT-M04 / E-07: marker is written first so a mid-run failure is
+		// recognisable as an intentional reset instead of accidental loss.
+		await expect(
+			fs.stat(join(testTmpRoot, "tmp-accounts.marker")),
+		).resolves.toBeTruthy();
 	});
 
 	it.each([
 		"EBUSY",
 		"EPERM",
 	] as const)("retries transient %s errors when clearing required artifacts", async (code) => {
+		// Marker write is a real fs.writeFile; stub it so the test does
+		// not depend on real disk I/O and so fake timers can drain the
+		// retry backoff without racing a live write.
+		const writeFileSpy = vi.spyOn(fs, "writeFile");
+		writeFileSpy.mockResolvedValue(undefined);
+
 		vi.useFakeTimers();
 		const unlinkSpy = vi.spyOn(fs, "unlink");
 		let attempts = 0;
@@ -65,6 +74,7 @@ describe("account clear helper", () => {
 
 		await vi.runAllTimersAsync();
 		await expect(clearPromise).resolves.toBeUndefined();
+		expect(writeFileSpy).toHaveBeenCalledTimes(1);
 		expect(unlinkSpy).toHaveBeenCalled();
 	});
 });
