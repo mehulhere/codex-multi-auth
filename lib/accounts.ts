@@ -543,10 +543,10 @@ export class AccountManager {
 			const candidate = (clamped + step) % this.accounts.length;
 			if (this.accounts[candidate]?.enabled !== false) return candidate;
 		}
-		// All accounts disabled — preserve the clamped pointer so callers can
-		// surface "no routable account" via their normal unavailable-pool path
-		// instead of getting -1 mid-rotation.
-		return clamped;
+		// All accounts disabled — return -1 to match the empty-pool sentinel so
+		// callers do not receive a disabled index they might trust without an
+		// enabled re-check (oracle audit F1).
+		return -1;
 	}
 
 	getAccountsSnapshot(): ManagedAccount[] {
@@ -1266,16 +1266,30 @@ export class AccountManager {
 		// so UI / automation / routing do not hold a stale pointer to a slot
 		// that cannot route (AUDIT-H10 / D-05). Walks forward to the next enabled
 		// account for each family whose pointer matches the just-disabled index.
+		// Both currentAccountIndexByFamily and cursorByFamily must be normalized
+		// in lockstep — leaving cursor stale is a latent inconsistency that the
+		// rotation skip-disabled loop currently masks (oracle audit F2).
 		if (!enabled) {
+			const findNextEnabled = (start: number): number => {
+				for (let step = 1; step < this.accounts.length; step += 1) {
+					const candidate = (start + step) % this.accounts.length;
+					if (this.accounts[candidate]?.enabled !== false) return candidate;
+				}
+				return -1;
+			};
 			for (const family of Object.keys(
 				this.currentAccountIndexByFamily,
 			) as ModelFamily[]) {
-				if (this.currentAccountIndexByFamily[family] !== index) continue;
-				for (let step = 1; step < this.accounts.length; step += 1) {
-					const candidate = (index + step) % this.accounts.length;
-					if (this.accounts[candidate]?.enabled !== false) {
-						this.currentAccountIndexByFamily[family] = candidate;
-						break;
+				if (this.currentAccountIndexByFamily[family] === index) {
+					const next = findNextEnabled(index);
+					if (next !== -1) {
+						this.currentAccountIndexByFamily[family] = next;
+					}
+				}
+				if (this.cursorByFamily[family] === index) {
+					const next = findNextEnabled(index);
+					if (next !== -1) {
+						this.cursorByFamily[family] = next;
 					}
 				}
 			}
