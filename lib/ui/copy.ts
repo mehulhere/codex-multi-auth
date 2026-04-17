@@ -1,3 +1,5 @@
+import { AUTH_REDIRECT } from "../auth/auth.js";
+
 export const UI_COPY = {
 	mainMenu: {
 		title: "Accounts Dashboard",
@@ -17,7 +19,8 @@ export const UI_COPY = {
 		dangerZone: "Danger Zone",
 		removeAllAccounts: "Delete All Accounts",
 		helpCompact: "↑↓ Move | Enter Select | / Search | 1-9 Switch | Q Back",
-		helpDetailed: "Arrow keys move, Enter selects, / searches, 1-9 switches account, Q goes back",
+		helpDetailed:
+			"Arrow keys move, Enter selects, / searches, 1-9 switches account, Q goes back",
 	},
 	accountDetails: {
 		back: "Back",
@@ -40,7 +43,8 @@ export const UI_COPY = {
 		chooseBackupManually: "Choose Backup Manually",
 		back: "Back",
 		chooseModeHelp: "↑↓ Move | Enter Select | 1 Easy | 2 Manual | Q Back",
-		chooseModeHelpWithBackup: "↑↓ Move | Enter Select | 1 Easy | 2 Manual | 3 Backup | Q Back",
+		chooseModeHelpWithBackup:
+			"↑↓ Move | Enter Select | 1 Easy | 2 Manual | 3 Backup | Q Back",
 		restoreBackupTitle: "Restore Saved Backup",
 		restoreBackupSubtitle: "Choose how you want to recover saved accounts.",
 		restoreBackupLatestHint: "Fastest way to recover your saved accounts.",
@@ -48,7 +52,11 @@ export const UI_COPY = {
 		manualBackupTitle: "Choose Backup",
 		manualBackupSubtitle: "Pick a saved backup to restore.",
 		manualBackupHelp: "↑↓ Move | Enter Select | Q Back",
-		loadLastBackupHint: (fileName: string, accountCount: number, savedAt: string) =>
+		loadLastBackupHint: (
+			fileName: string,
+			accountCount: number,
+			savedAt: string,
+		) =>
 			`${fileName} | ${accountCount} account${accountCount === 1 ? "" : "s"} | saved ${savedAt}`,
 		manualBackupHint: (accountCount: number, savedAt: string) =>
 			`${accountCount} account${accountCount === 1 ? "" : "s"} | saved ${savedAt}`,
@@ -64,9 +72,10 @@ export const UI_COPY = {
 		pastePrompt: "Paste callback URL or code here (Q to cancel):",
 		browserOpened: "Browser opened.",
 		browserOpenFail: "Could not open browser. Use this link:",
-		waitingCallback: "Waiting for login callback on localhost:1455...",
+		waitingCallback: `Waiting for login callback on ${AUTH_REDIRECT.host}:${AUTH_REDIRECT.port}...`,
 		callbackBypassed: "Manual mode active. Paste the callback URL manually.",
-		callbackUnavailable: "Callback listener unavailable. Paste the callback URL manually.",
+		callbackUnavailable:
+			"Callback listener unavailable. Paste the callback URL manually.",
 		callbackMissed: "No callback received. Paste manually.",
 		cancelled: "Sign-in cancelled.",
 		cancelledBackToMenu: "Sign-in cancelled. Going back to menu.",
@@ -74,7 +83,8 @@ export const UI_COPY = {
 	returnFlow: {
 		continuePrompt: "Press Enter to go back.",
 		actionFailedPrompt: "Action failed. Press Enter to go back.",
-		autoReturn: (seconds: number) => `Returning in ${seconds}s... Press any key to pause.`,
+		autoReturn: (seconds: number) =>
+			`Returning in ${seconds}s... Press any key to pause.`,
 		paused: "Paused. Press any key to continue.",
 		working: "Running...",
 		done: "Done.",
@@ -93,7 +103,8 @@ export const UI_COPY = {
 		theme: "Color Theme",
 		experimental: "Experimental",
 		experimentalTitle: "Experimental",
-		experimentalSubtitle: "Preview sync and backup actions before they become stable",
+		experimentalSubtitle:
+			"Preview sync and backup actions before they become stable",
 		experimentalHelpMenu:
 			"Enter Select | 1 Sync | 2 Backup | 3 Guard | [ - Down | ] + Up | S Save | Q Back",
 		experimentalHelpPreview: "Enter Select | A Apply | Q Back",
@@ -115,22 +126,27 @@ export const UI_COPY = {
 		backNoSave: "Back Without Saving",
 		accountListTitle: "Account List View",
 		accountListSubtitle: "Choose row details and optional smart sorting",
-		accountListHelp: "Enter Toggle | Number Toggle | M Sort | L Layout | S Save | Q Back (No Save)",
+		accountListHelp:
+			"Enter Toggle | Number Toggle | M Sort | L Layout | S Save | Q Back (No Save)",
 		summaryTitle: "Account Details Row",
 		summarySubtitle: "Choose and order detail fields",
-		summaryHelp: "Enter Toggle | 1-3 Toggle | [ ] Reorder | S Save | Q Back (No Save)",
+		summaryHelp:
+			"Enter Toggle | 1-3 Toggle | [ ] Reorder | S Save | Q Back (No Save)",
 		behaviorTitle: "Return Behavior",
 		behaviorSubtitle: "Control how result screens return",
-		behaviorHelp: "Enter Select | 1-3 Delay | P Pause | L AutoFetch | F Status | T TTL | S Save | Q Back (No Save)",
+		behaviorHelp:
+			"Enter Select | 1-3 Delay | P Pause | L AutoFetch | F Status | T TTL | S Save | Q Back (No Save)",
 		themeTitle: "Color Theme",
 		themeSubtitle: "Pick base color and accent",
 		themeHelp: "Enter Select | 1-2 Base | S Save | Q Back (No Save)",
 		backendTitle: "Backend Controls",
 		backendSubtitle: "Tune sync, retry, and limit behavior",
-		backendHelp: "Enter Open | 1-4 Category | S Save | R Reset | Q Back (No Save)",
+		backendHelp:
+			"Enter Open | 1-4 Category | S Save | R Reset | Q Back (No Save)",
 		backendCategoriesHeading: "Categories",
 		backendCategoryTitle: "Backend Category",
-		backendCategoryHelp: "Enter Toggle/Adjust | +/- or [ ] Number | 1-9 Toggle | R Reset | Q Back",
+		backendCategoryHelp:
+			"Enter Toggle/Adjust | +/- or [ ] Number | 1-9 Toggle | R Reset | Q Back",
 		backendToggleHeading: "Switches",
 		backendNumberHeading: "Numbers",
 		backendDecrease: "Decrease Focused Value",
@@ -144,8 +160,10 @@ export const UI_COPY = {
 		moveDown: "Move Focused Field Down",
 	},
 	fallback: {
-		addAnotherTip: "Tip: Use private mode or sign out before adding another account.",
-		addAnotherQuestion: (count: number) => `Add another account? (${count} added) (y/n): `,
+		addAnotherTip:
+			"Tip: Use private mode or sign out before adding another account.",
+		addAnotherQuestion: (count: number) =>
+			`Add another account? (${count} added) (y/n): `,
 		selectModePrompt:
 			"(a) add, (c) check, (b) best, fi(x), (s) settings, (d) deep, (g) problem, (f) fresh, (q) back [a/c/b/x/s/d/g/f/q]: ",
 		invalidModePrompt: "Use one of: a, c, b, x, s, d, g, f, q.",
