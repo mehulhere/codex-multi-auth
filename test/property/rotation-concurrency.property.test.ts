@@ -38,6 +38,13 @@ interface PoolState {
 	activeIndex: number;
 	coolingDownUntil: Record<number, number>;
 	history: SelectionResult[];
+	/**
+	 * External concurrency observer — counts how many tasks are currently
+	 * INSIDE the critical section. Under a working mutex this must never
+	 * exceed 1. A broken mutex (or legacy mode) will let it reach 2+.
+	 */
+	concurrentCallers: number;
+	maxConcurrentCallers: number;
 }
 
 function createPoolState(accounts: number): PoolState {
@@ -46,6 +53,8 @@ function createPoolState(accounts: number): PoolState {
 		activeIndex: 0,
 		coolingDownUntil: {},
 		history: [],
+		concurrentCallers: 0,
+		maxConcurrentCallers: 0,
 	};
 }
 
@@ -57,7 +66,14 @@ function createPoolState(accounts: number): PoolState {
  *   - commit the new activeIndex
  *
  * The yield (setImmediate) between read and write is what exposes the race
- * when no mutex guards the region.
+ * when no mutex guards the region. The concurrentCallers counter is the
+ * external observer that proves the mutex actually serializes access — a
+ * broken mutex would let the counter exceed 1 during the yield.
+ *
+ * Returns the result, plus pushes it to history OUTSIDE the critical
+ * section so the invariant that `history` chains linearizably is observable
+ * from outside the mutex (a broken mutex cannot fake chained history when
+ * push happens post-release).
  */
 async function rotateOnce(
 	state: PoolState,
@@ -65,38 +81,50 @@ async function rotateOnce(
 	cooldownWindowMs: number,
 	nowMs: number,
 ): Promise<SelectionResult> {
-	return withRoutingMutex(mode, async () => {
-		const prior = state.activeIndex;
-		// Simulate decision latency so the interleaving race window is real.
-		await new Promise((r) => setImmediate(r));
-
-		// Policy: skip cooling-down accounts. In real code this is the
-		// `isAvailable` filter inside selectHybridAccount. If every account is
-		// cooling we fall back to the prior account (LRU) to match the
-		// selection fallback behaviour.
-		let next = prior;
-		for (let offset = 1; offset <= state.accounts; offset += 1) {
-			const candidate = (prior + offset) % state.accounts;
-			if ((state.coolingDownUntil[candidate] ?? 0) <= nowMs) {
-				next = candidate;
-				break;
-			}
+	const result = await withRoutingMutex(mode, async () => {
+		state.concurrentCallers += 1;
+		if (state.concurrentCallers > state.maxConcurrentCallers) {
+			state.maxConcurrentCallers = state.concurrentCallers;
 		}
+		try {
+			const prior = state.activeIndex;
+			// Simulate decision latency so the interleaving race window is real.
+			await new Promise((r) => setImmediate(r));
 
-		const wasDoubleInsideCooldown =
-			next !== prior && (state.coolingDownUntil[next] ?? 0) > nowMs;
+			// Policy: skip cooling-down accounts. In real code this is the
+			// `isAvailable` filter inside selectHybridAccount. If every account is
+			// cooling we fall back to the prior account (LRU) to match the
+			// selection fallback behaviour.
+			let next = prior;
+			for (let offset = 1; offset <= state.accounts; offset += 1) {
+				const candidate = (prior + offset) % state.accounts;
+				if ((state.coolingDownUntil[candidate] ?? 0) <= nowMs) {
+					next = candidate;
+					break;
+				}
+			}
 
-		state.coolingDownUntil[prior] = nowMs + cooldownWindowMs;
-		state.activeIndex = next;
+			const wasDoubleInsideCooldown =
+				next !== prior && (state.coolingDownUntil[next] ?? 0) > nowMs;
 
-		const result: SelectionResult = {
-			chosenIndex: next,
-			priorActiveIndex: prior,
-			wasDoubleInsideCooldown,
-		};
-		state.history.push(result);
-		return result;
+			state.coolingDownUntil[prior] = nowMs + cooldownWindowMs;
+			state.activeIndex = next;
+
+			return {
+				chosenIndex: next,
+				priorActiveIndex: prior,
+				wasDoubleInsideCooldown,
+			} satisfies SelectionResult;
+		} finally {
+			state.concurrentCallers -= 1;
+		}
 	});
+	// Push to history OUTSIDE the critical section so history chaining is
+	// observable post-release. Under a broken mutex the chain invariant
+	// (cur.priorActiveIndex === prev.chosenIndex) would be violated because
+	// two tasks could read the same `prior` before either wrote.
+	state.history.push(result);
+	return result;
 }
 
 describe("routing mutex concurrency property tests", () => {
@@ -120,6 +148,9 @@ describe("routing mutex concurrency property tests", () => {
 					// Invariant 2: no double-selection inside cooldown window.
 					const offenders = results.filter((r) => r.wasDoubleInsideCooldown);
 					expect(offenders).toEqual([]);
+					// Invariant 4: external observer proves mutual exclusion — a broken
+					// mutex would let two+ tasks enter the critical section concurrently.
+					expect(state.maxConcurrentCallers).toBeLessThanOrEqual(1);
 				},
 			),
 			{ numRuns: 100 },
@@ -149,6 +180,9 @@ describe("routing mutex concurrency property tests", () => {
 						const cur = state.history[i];
 						expect(cur?.priorActiveIndex).toBe(prev?.chosenIndex);
 					}
+					// Invariant 4: external observer proves mutual exclusion — a broken
+					// mutex would let two+ tasks enter the critical section concurrently.
+					expect(state.maxConcurrentCallers).toBeLessThanOrEqual(1);
 				},
 			),
 			{ numRuns: 100 },
@@ -159,6 +193,12 @@ describe("routing mutex concurrency property tests", () => {
 		// We do not assert absence of races here — legacy mode is the
 		// unprotected baseline. We only assert that the system does not
 		// crash and that history length matches the number of issued tasks.
+		//
+		// Note: `state.maxConcurrentCallers` is EXPECTED to be > 1 under legacy
+		// mode because the no-op mutex allows overlapping execution of the
+		// critical section — that is precisely the race window PR-N closes.
+		// No assertion is made here; this test is intentionally a
+		// documentation-only baseline for the pre-PR-N behaviour.
 		await fc.assert(
 			fc.asyncProperty(
 				fc.integer({ min: 3, max: 5 }),
