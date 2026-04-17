@@ -15,6 +15,7 @@ import {
 	createAuthorizationFlow,
 	exchangeAuthorizationCode,
 	parseAuthorizationInput,
+	redactOAuthUrlForLog,
 	REDIRECT_URI,
 } from "./auth/auth.js";
 import {
@@ -293,7 +294,9 @@ function createRepairCommandDeps(): RepairCommandDeps {
 	};
 }
 
-function isOAuthCancellation(result: Exclude<TokenResult, { type: "success" }>): boolean {
+function isOAuthCancellation(
+	result: Exclude<TokenResult, { type: "success" }>,
+): boolean {
 	const message = (result.message ?? result.reason ?? "").trim().toLowerCase();
 	return message.includes("cancelled") || message.includes("canceled");
 }
@@ -649,7 +652,10 @@ function getQuotaCacheEntryForAccount(
 
 function getPersistedQuotaViewForAccount(
 	cache: QuotaCacheData | null,
-	account: Pick<AccountMetadataV3, "accountId" | "email" | "rateLimitResetTimes">,
+	account: Pick<
+		AccountMetadataV3,
+		"accountId" | "email" | "rateLimitResetTimes"
+	>,
 	accounts: readonly Pick<AccountMetadataV3, "accountId" | "email">[],
 	now: number,
 	emailFallbackState = buildQuotaEmailFallbackState(accounts),
@@ -657,7 +663,11 @@ function getPersistedQuotaViewForAccount(
 	const cachedEntry = cache
 		? getQuotaCacheEntryForAccount(cache, account, accounts, emailFallbackState)
 		: null;
-	const persistedResetAt = getRateLimitResetTimeForFamily(account, now, "codex");
+	const persistedResetAt = getRateLimitResetTimeForFamily(
+		account,
+		now,
+		"codex",
+	);
 	if (typeof persistedResetAt !== "number") {
 		return cachedEntry;
 	}
@@ -1029,8 +1039,7 @@ function compareReadyFirstAccounts(
 	right: ExistingAccountInfo,
 ): number {
 	const bucketDelta =
-		accountReadinessSortBucket(left) -
-		accountReadinessSortBucket(right);
+		accountReadinessSortBucket(left) - accountReadinessSortBucket(right);
 	if (bucketDelta !== 0) return bucketDelta;
 
 	const leftFloor = readQuotaFloorPercent(left);
@@ -1817,13 +1826,22 @@ async function runOAuthFlow(
 			}
 		}
 
+		// Display the OAuth URL with sensitive query parameters (state,
+		// code, code_challenge, code_verifier) redacted so they do not leak
+		// into shell history, screen captures, CI transcripts, or clipboard
+		// managers. The full URL is still handed to the browser opener and
+		// the clipboard so sign-in continues to work end-to-end.
+		const displayUrl = redactOAuthUrlForLog(url);
+
 		if (signInMode === "browser") {
 			const opened = openBrowserUrl(url);
 			if (opened) {
 				console.log(stylePromptText(UI_COPY.oauth.browserOpened, "success"));
 			} else {
 				console.log(stylePromptText(UI_COPY.oauth.browserOpenFail, "warning"));
-				console.log(`${stylePromptText(UI_COPY.oauth.goTo, "accent")} ${url}`);
+				console.log(
+					`${stylePromptText(UI_COPY.oauth.goTo, "accent")} ${displayUrl}`,
+				);
 				const copied = copyTextToClipboard(url);
 				console.log(
 					stylePromptText(
@@ -1833,7 +1851,9 @@ async function runOAuthFlow(
 				);
 			}
 		} else {
-			console.log(`${stylePromptText(UI_COPY.oauth.goTo, "accent")} ${url}`);
+			console.log(
+				`${stylePromptText(UI_COPY.oauth.goTo, "accent")} ${displayUrl}`,
+			);
 			const copied = copyTextToClipboard(url);
 			console.log(
 				stylePromptText(
@@ -2482,8 +2502,8 @@ function matchesManageActionAccount(
 		return account.accountId === candidate.accountId;
 	}
 	return (
-		account.refreshToken === candidate.refreshToken
-		&& sanitizeEmail(account.email) === sanitizeEmail(candidate.email)
+		account.refreshToken === candidate.refreshToken &&
+		sanitizeEmail(account.email) === sanitizeEmail(candidate.email)
 	);
 }
 async function handleManageAction(
@@ -2552,7 +2572,10 @@ async function handleManageAction(
 					return;
 				}
 				const nextAccount = nextStorage.accounts[nextIndex];
-				if (!nextAccount || !matchesManageActionAccount(selectedAccount, nextAccount)) {
+				if (
+					!nextAccount ||
+					!matchesManageActionAccount(selectedAccount, nextAccount)
+				) {
 					return;
 				}
 				nextAccount.enabled = nextAccount.enabled === false;
@@ -2642,9 +2665,9 @@ async function runAuthLogin(args: string[]): Promise<number> {
 					skipNextMenuQuotaAutoRefresh = false;
 				}
 				if (
-					shouldAutoFetchLimits
-					&& !pendingMenuQuotaRefresh
-					&& !shouldSkipAutoFetchThisPass
+					shouldAutoFetchLimits &&
+					!pendingMenuQuotaRefresh &&
+					!shouldSkipAutoFetchThisPass
 				) {
 					const staleCount = countMenuQuotaRefreshTargets(
 						currentStorage,
@@ -2968,8 +2991,12 @@ async function runAuthLogin(args: string[]): Promise<number> {
 			console.log(`Added account. Total: ${count}`);
 			console.log("Next steps:");
 			console.log("  codex auth status  Check that the wrapper is active.");
-			console.log("  codex auth check   Confirm your saved accounts look healthy.");
-			console.log("  codex auth list    Review saved accounts before switching.");
+			console.log(
+				"  codex auth check   Confirm your saved accounts look healthy.",
+			);
+			console.log(
+				"  codex auth list    Review saved accounts before switching.",
+			);
 			if (count >= ACCOUNT_LIMITS.MAX_ACCOUNTS) {
 				console.log(
 					`Reached maximum account limit (${ACCOUNT_LIMITS.MAX_ACCOUNTS}).`,
@@ -3185,8 +3212,8 @@ export async function autoSyncActiveAccountToCodex(): Promise<boolean> {
 			const targetIndex =
 				findMatchingAccountIndex(nextStorage.accounts, accountMatch, {
 					allowUniqueAccountIdFallbackWithoutEmail: true,
-				})
-				?? findMatchingAccountIndex(nextStorage.accounts, nextStoredAccount, {
+				}) ??
+				findMatchingAccountIndex(nextStorage.accounts, nextStoredAccount, {
 					allowUniqueAccountIdFallbackWithoutEmail: true,
 				});
 			if (targetIndex === undefined) {
@@ -3246,7 +3273,8 @@ export async function runCodexMultiAuthCli(rawArgs: string[]): Promise<number> {
 			inspectStorageHealth,
 			resolveActiveIndex,
 			formatRateLimitEntry,
-			loadRuntimeObservabilitySnapshot: loadPersistedRuntimeObservabilitySnapshot,
+			loadRuntimeObservabilitySnapshot:
+				loadPersistedRuntimeObservabilitySnapshot,
 		});
 	}
 	if (command === "switch") {
@@ -3284,7 +3312,8 @@ export async function runCodexMultiAuthCli(rawArgs: string[]): Promise<number> {
 			fetchCodexQuotaSnapshot,
 			formatRateLimitEntry,
 			normalizeFailureDetail,
-			loadRuntimeObservabilitySnapshot: loadPersistedRuntimeObservabilitySnapshot,
+			loadRuntimeObservabilitySnapshot:
+				loadPersistedRuntimeObservabilitySnapshot,
 		});
 	}
 	if (command === "fix") {
