@@ -53,19 +53,28 @@ For user-facing behavior changes, review these files at minimum:
 
 ### Dual-Linter Scope (Biome + ESLint)
 
-This repo runs **both** Biome and ESLint, each owning a different slice:
+This repo ships configuration for **both** Biome and ESLint, but only
+ESLint is wired into automation. Each tool owns a different slice:
 
-- **Biome (`biome.jsonc`)** — formatting + fast style checks. Pre-commit
-  hook (via `lint-staged`) applies Biome formatting automatically on
-  every staged change; that is why commits can touch adjacent lines for
-  trailing-comma / wrap normalization.
+- **Biome (`biome.jsonc`)** — formatting + fast style checks. Biome is
+  configured but **not** automatically invoked by any npm script,
+  `lint-staged` entry, or git hook. Run it manually when you want
+  formatting applied, for example `npx biome check --write .` before
+  committing large mechanical changes.
 - **ESLint (`eslint.config.js`)** — correctness rules: `no-explicit-any`,
-  unused-var hygiene (`_` prefix), TypeScript-specific checks. Enforced
-  in CI via `npm run lint`.
+  unused-var hygiene (`_` prefix), TypeScript-specific checks. ESLint is
+  invoked two ways:
+  - **Pre-commit**: `lint-staged` (via the Husky `pre-commit` hook) runs
+    `eslint --max-warnings=0 --fix --no-warn-ignored` on staged `*.ts`
+    and `scripts/**/*.{js,mjs}` files.
+  - **CI**: `npm run lint` runs as a dedicated job in
+    `.github/workflows/ci.yml` (push to `main`) and
+    `.github/workflows/pr-ci.yml` (pull requests).
 
-If the two tools disagree, Biome wins on formatting and ESLint wins on
-correctness. Do not disable either one to silence conflicts — surface
-the conflict in a PR so it can be resolved intentionally.
+If the two tools ever disagree on a file you format manually with
+Biome, prefer ESLint's verdict for correctness and surface formatting
+conflicts in a PR so they can be resolved intentionally rather than
+silenced.
 
 ### `prepare` Hook Installs Husky On Every `npm install`
 
