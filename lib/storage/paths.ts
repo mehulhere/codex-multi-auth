@@ -377,13 +377,26 @@ function isWithinDirectory(baseDir: string, targetPath: string): boolean {
  * (not a descendant). A trailing separator after the base prefix must be present
  * to be considered a proper descendant; anything else (e.g. `home-evil/...`) is a
  * lookalike sibling and must be rejected to prevent path-guard bypass.
+ *
+ * Filesystem roots (POSIX `/`, Windows `C:\`) are stripped of their trailing
+ * separator before comparison so that legitimate descendants such as
+ * `C:\Users\neil\.codex\...` are not misclassified as siblings. A root has no
+ * siblings by construction, so after the strip we return false early when the
+ * base is empty (POSIX root) or just a drive letter (Windows root).
  */
 function isLookalikeSibling(baseDir: string, targetPath: string): boolean {
 	const normalizedBase = normalizePathForComparison(baseDir);
 	const normalizedTarget = normalizePathForComparison(targetPath);
-	if (normalizedTarget.length <= normalizedBase.length) return false;
-	if (!normalizedTarget.startsWith(normalizedBase)) return false;
-	const boundary = normalizedTarget.charAt(normalizedBase.length);
+	const baseWithoutTrailingSep = normalizedBase.replace(/[\\/]+$/, "");
+	if (
+		baseWithoutTrailingSep === "" ||
+		/^[a-z]:$/.test(baseWithoutTrailingSep)
+	) {
+		return false;
+	}
+	if (normalizedTarget.length <= baseWithoutTrailingSep.length) return false;
+	if (!normalizedTarget.startsWith(baseWithoutTrailingSep)) return false;
+	const boundary = normalizedTarget.charAt(baseWithoutTrailingSep.length);
 	return boundary !== sep && boundary !== "/" && boundary !== "\\";
 }
 

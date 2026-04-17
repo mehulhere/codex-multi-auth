@@ -315,4 +315,44 @@ describe("sandbox-reject-escape probe with pathological cwd", () => {
 
 		cwdSpy.mockRestore();
 	});
+
+	it("accepts sandbox-accept-home and sandbox-accept-tmp when cwd is the filesystem root", () => {
+		// Regression for install-test: running `verify --paths` from a
+		// directory with no detectable project root (where resolvePath falls
+		// back to process.cwd() for the sandbox projectRoot) must still
+		// accept paths under homedir() and tmpdir(). The prior lookalike
+		// sibling check falsely rejected them when cwd was the filesystem
+		// root because the trailing separator of the root made every
+		// descendant appear to be a sibling.
+		setStoragePath(null);
+
+		const rootCwd = process.platform === "win32" ? "C:\\" : "/";
+		const cwdSpy = vi.spyOn(process, "cwd").mockReturnValue(rootCwd);
+
+		const deps: VerifyPathsDeps = {
+			getCwd: () => rootCwd,
+			findProjectRoot: () => null,
+			resolveProjectStorageIdentityRoot: () => rootCwd,
+			getProjectStorageKey: () => "project-rootcwd-probe",
+			getProjectConfigDir: () => rootCwd,
+			getProjectGlobalConfigDir: () =>
+				join(homedir(), ".codex", "multi-auth", "projects", "root-probe"),
+			resolvePath,
+		};
+
+		const report = runVerifyPathsCheck(deps);
+
+		const homeAccept = report.sandboxTests.find(
+			(test) => test.name === "sandbox-accept-home",
+		);
+		const tmpAccept = report.sandboxTests.find(
+			(test) => test.name === "sandbox-accept-tmp",
+		);
+		expect(homeAccept?.rejected).toBe(false);
+		expect(homeAccept?.ok).toBe(true);
+		expect(tmpAccept?.rejected).toBe(false);
+		expect(tmpAccept?.ok).toBe(true);
+
+		cwdSpy.mockRestore();
+	});
 });

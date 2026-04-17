@@ -862,6 +862,32 @@ describe("Storage Paths Module", () => {
 			expect(() => resolvePath(outsideLookalike)).toThrow("Access denied");
 		});
 
+		it("accepts paths within home/tmp when cwd is the filesystem root", () => {
+			// Regression: when process.cwd() is `C:\\` (or POSIX `/`) and no
+			// project root is set, resolvePath used to wrongly classify any
+			// path starting with the root drive/separator as a "lookalike
+			// sibling" of the root. That falsely rejected legitimate
+			// descendants such as `C:\\Users\\neil\\.codex\\...`.
+			setStoragePathState({
+				currentStoragePath: null,
+				currentLegacyProjectStoragePath: null,
+				currentLegacyWorktreeStoragePath: null,
+				currentProjectRoot: null,
+			});
+
+			const rootCwd = process.platform === "win32" ? "C:\\" : "/";
+			const cwdSpy = vi.spyOn(process, "cwd").mockReturnValue(rootCwd);
+
+			try {
+				const homePath = path.join(homedir(), ".codex", "verify-probe");
+				const tmpPath = path.join(tmpdir(), "verify-probe.tmp");
+				expect(() => resolvePath(homePath)).not.toThrow();
+				expect(() => resolvePath(tmpPath)).not.toThrow();
+			} finally {
+				cwdSpy.mockRestore();
+			}
+		});
+
 		it("should handle tilde-only path", () => {
 			const result = resolvePath("~");
 			expect(result).toBe(homedir());
