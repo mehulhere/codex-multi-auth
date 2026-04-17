@@ -1,10 +1,14 @@
 import { describe, it, expect } from "vitest";
+import { z } from "zod";
 import {
 	PluginConfigSchema,
 	AccountMetadataV3Schema,
 	AccountStorageV3Schema,
 	AccountStorageV1Schema,
 	AnyAccountStorageSchema,
+	AccountsJournalEntrySchema,
+	FlaggedAccountMetadataV1Schema,
+	FlaggedAccountStorageV1Schema,
 	TokenSuccessSchema,
 	TokenFailureSchema,
 	TokenResultSchema,
@@ -12,6 +16,9 @@ import {
 	safeParsePluginConfig,
 	safeParseAccountStorage,
 	safeParseAccountStorageV3,
+	safeParseAccountsJournalEntry,
+	safeParseFlaggedAccountStorageV1,
+	safeParseJson,
 	safeParseTokenResult,
 	safeParseOAuthTokenResponse,
 	getValidationErrors,
@@ -100,15 +107,16 @@ describe("PluginConfigSchema", () => {
 	it.each([
 		["preemptiveQuotaRemainingPercent5h", -1, 0, 100, 101],
 		["preemptiveQuotaRemainingPercent7d", -1, 0, 100, 101],
-	] as const)(
-		"enforces 0-100 range for %s",
-		(key, belowMin, min, max, aboveMax) => {
-			expect(PluginConfigSchema.safeParse({ [key]: belowMin }).success).toBe(false);
-			expect(PluginConfigSchema.safeParse({ [key]: min }).success).toBe(true);
-			expect(PluginConfigSchema.safeParse({ [key]: max }).success).toBe(true);
-			expect(PluginConfigSchema.safeParse({ [key]: aboveMax }).success).toBe(false);
-		},
-	);
+	] as const)("enforces 0-100 range for %s", (key, belowMin, min, max, aboveMax) => {
+		expect(PluginConfigSchema.safeParse({ [key]: belowMin }).success).toBe(
+			false,
+		);
+		expect(PluginConfigSchema.safeParse({ [key]: min }).success).toBe(true);
+		expect(PluginConfigSchema.safeParse({ [key]: max }).success).toBe(true);
+		expect(PluginConfigSchema.safeParse({ [key]: aboveMax }).success).toBe(
+			false,
+		);
+	});
 
 	it.each([
 		"liveAccountSyncDebounceMs",
@@ -136,13 +144,17 @@ describe("PluginConfigSchema", () => {
 	});
 
 	it("rejects negative numbers for numeric fields", () => {
-		const result = PluginConfigSchema.safeParse({ retryAllAccountsMaxWaitMs: -100 });
+		const result = PluginConfigSchema.safeParse({
+			retryAllAccountsMaxWaitMs: -100,
+		});
 		expect(result.success).toBe(false);
 	});
 
 	it("rejects timeout settings below 1000ms", () => {
 		const fetchResult = PluginConfigSchema.safeParse({ fetchTimeoutMs: 999 });
-		const stallResult = PluginConfigSchema.safeParse({ streamStallTimeoutMs: 999 });
+		const stallResult = PluginConfigSchema.safeParse({
+			streamStallTimeoutMs: 999,
+		});
 		expect(fetchResult.success).toBe(false);
 		expect(stallResult.success).toBe(false);
 	});
@@ -153,7 +165,9 @@ describe("PluginConfigSchema", () => {
 	});
 
 	it("rejects invalid unsupportedCodexPolicy", () => {
-		const result = PluginConfigSchema.safeParse({ unsupportedCodexPolicy: "invalid" });
+		const result = PluginConfigSchema.safeParse({
+			unsupportedCodexPolicy: "invalid",
+		});
 		expect(result.success).toBe(false);
 	});
 });
@@ -187,22 +201,34 @@ describe("AccountMetadataV3Schema", () => {
 	});
 
 	it("rejects empty refreshToken", () => {
-		const result = AccountMetadataV3Schema.safeParse({ ...validAccount, refreshToken: "" });
+		const result = AccountMetadataV3Schema.safeParse({
+			...validAccount,
+			refreshToken: "",
+		});
 		expect(result.success).toBe(false);
 	});
 
 	it("rejects missing refreshToken", () => {
-		const result = AccountMetadataV3Schema.safeParse({ addedAt: Date.now(), lastUsed: Date.now() });
+		const result = AccountMetadataV3Schema.safeParse({
+			addedAt: Date.now(),
+			lastUsed: Date.now(),
+		});
 		expect(result.success).toBe(false);
 	});
 
 	it("rejects invalid accountIdSource", () => {
-		const result = AccountMetadataV3Schema.safeParse({ ...validAccount, accountIdSource: "invalid" });
+		const result = AccountMetadataV3Schema.safeParse({
+			...validAccount,
+			accountIdSource: "invalid",
+		});
 		expect(result.success).toBe(false);
 	});
 
 	it("rejects invalid cooldownReason", () => {
-		const result = AccountMetadataV3Schema.safeParse({ ...validAccount, cooldownReason: "unknown" });
+		const result = AccountMetadataV3Schema.safeParse({
+			...validAccount,
+			cooldownReason: "unknown",
+		});
 		expect(result.success).toBe(false);
 	});
 });
@@ -234,17 +260,27 @@ describe("AccountStorageV3Schema", () => {
 	});
 
 	it("accepts empty accounts array", () => {
-		const result = AccountStorageV3Schema.safeParse({ version: 3, accounts: [], activeIndex: 0 });
+		const result = AccountStorageV3Schema.safeParse({
+			version: 3,
+			accounts: [],
+			activeIndex: 0,
+		});
 		expect(result.success).toBe(true);
 	});
 
 	it("rejects wrong version", () => {
-		const result = AccountStorageV3Schema.safeParse({ ...validStorage, version: 2 });
+		const result = AccountStorageV3Schema.safeParse({
+			...validStorage,
+			version: 2,
+		});
 		expect(result.success).toBe(false);
 	});
 
 	it("rejects negative activeIndex", () => {
-		const result = AccountStorageV3Schema.safeParse({ ...validStorage, activeIndex: -1 });
+		const result = AccountStorageV3Schema.safeParse({
+			...validStorage,
+			activeIndex: -1,
+		});
 		expect(result.success).toBe(false);
 	});
 });
@@ -253,7 +289,12 @@ describe("AccountStorageV1Schema", () => {
 	const validV1 = {
 		version: 1,
 		accounts: [
-			{ refreshToken: "rt_1", addedAt: Date.now(), lastUsed: Date.now(), rateLimitResetTime: Date.now() + 60000 },
+			{
+				refreshToken: "rt_1",
+				addedAt: Date.now(),
+				lastUsed: Date.now(),
+				rateLimitResetTime: Date.now() + 60000,
+			},
 		],
 		activeIndex: 0,
 	};
@@ -330,12 +371,18 @@ describe("TokenSuccessSchema", () => {
 	});
 
 	it("rejects empty access token", () => {
-		const result = TokenSuccessSchema.safeParse({ ...validSuccess, access: "" });
+		const result = TokenSuccessSchema.safeParse({
+			...validSuccess,
+			access: "",
+		});
 		expect(result.success).toBe(false);
 	});
 
 	it("rejects empty refresh token", () => {
-		const result = TokenSuccessSchema.safeParse({ ...validSuccess, refresh: "" });
+		const result = TokenSuccessSchema.safeParse({
+			...validSuccess,
+			refresh: "",
+		});
 		expect(result.success).toBe(false);
 	});
 });
@@ -357,7 +404,10 @@ describe("TokenFailureSchema", () => {
 	});
 
 	it("rejects invalid reason", () => {
-		const result = TokenFailureSchema.safeParse({ type: "failed", reason: "invalid_reason" });
+		const result = TokenFailureSchema.safeParse({
+			type: "failed",
+			reason: "invalid_reason",
+		});
 		expect(result.success).toBe(false);
 	});
 });
@@ -461,7 +511,11 @@ describe("safeParseAccountStorage", () => {
 	});
 
 	it("returns null for invalid storage", () => {
-		const result = safeParseAccountStorage({ version: 99, accounts: [], activeIndex: 0 });
+		const result = safeParseAccountStorage({
+			version: 99,
+			accounts: [],
+			activeIndex: 0,
+		});
 		expect(result).toBeNull();
 	});
 });
@@ -512,7 +566,10 @@ describe("safeParseTokenResult", () => {
 
 describe("safeParseOAuthTokenResponse", () => {
 	it("returns parsed response", () => {
-		const result = safeParseOAuthTokenResponse({ access_token: "at", expires_in: 3600 });
+		const result = safeParseOAuthTokenResponse({
+			access_token: "at",
+			expires_in: 3600,
+		});
 		expect(result).not.toBeNull();
 		expect(result?.access_token).toBe("at");
 	});
@@ -530,7 +587,9 @@ describe("getValidationErrors", () => {
 	});
 
 	it("returns error messages for invalid data", () => {
-		const errors = getValidationErrors(PluginConfigSchema, { codexMode: "yes" });
+		const errors = getValidationErrors(PluginConfigSchema, {
+			codexMode: "yes",
+		});
 		expect(errors.length).toBeGreaterThan(0);
 		expect(errors[0]).toContain("codexMode");
 	});
@@ -542,12 +601,234 @@ describe("getValidationErrors", () => {
 			activeIndex: 0,
 		});
 		expect(errors.length).toBeGreaterThan(0);
-		expect(errors.some((e) => e.includes("accounts") || e.includes("refreshToken"))).toBe(true);
+		expect(
+			errors.some((e) => e.includes("accounts") || e.includes("refreshToken")),
+		).toBe(true);
 	});
 
 	it("returns error without path prefix when path is empty (line 286 coverage)", () => {
 		const errors = getValidationErrors(PluginConfigSchema, "not-an-object");
 		expect(errors.length).toBeGreaterThan(0);
 		expect(errors[0]).not.toMatch(/^[a-zA-Z0-9_.]+: /);
+	});
+});
+
+describe("FlaggedAccountStorageV1Schema", () => {
+	const validAccount = {
+		refreshToken: "rt",
+		addedAt: 1,
+		lastUsed: 1,
+		flaggedAt: 2,
+	};
+
+	it("accepts version 1 with empty accounts", () => {
+		const result = FlaggedAccountStorageV1Schema.safeParse({
+			version: 1,
+			accounts: [],
+		});
+		expect(result.success).toBe(true);
+	});
+
+	it("accepts version 1 with populated accounts and optional fields", () => {
+		const result = FlaggedAccountStorageV1Schema.safeParse({
+			version: 1,
+			accounts: [
+				{
+					...validAccount,
+					flaggedReason: "rate-limit",
+					lastError: "429",
+					email: "a@b.com",
+				},
+			],
+		});
+		expect(result.success).toBe(true);
+	});
+
+	it("rejects non-1 version", () => {
+		const result = FlaggedAccountStorageV1Schema.safeParse({
+			version: 2,
+			accounts: [],
+		});
+		expect(result.success).toBe(false);
+	});
+
+	it("rejects missing accounts field", () => {
+		const result = FlaggedAccountStorageV1Schema.safeParse({ version: 1 });
+		expect(result.success).toBe(false);
+	});
+
+	it("rejects account missing required flaggedAt", () => {
+		const result = FlaggedAccountStorageV1Schema.safeParse({
+			version: 1,
+			accounts: [{ refreshToken: "rt", addedAt: 1, lastUsed: 1 }],
+		});
+		expect(result.success).toBe(false);
+	});
+
+	it("rejects account with wrong types", () => {
+		const result = FlaggedAccountStorageV1Schema.safeParse({
+			version: 1,
+			accounts: [{ ...validAccount, flaggedAt: "not-a-number" }],
+		});
+		expect(result.success).toBe(false);
+	});
+
+	it("permits unknown fields via passthrough (V3 compatibility)", () => {
+		const result = FlaggedAccountStorageV1Schema.safeParse({
+			version: 1,
+			accounts: [{ ...validAccount, workspaces: [] }],
+		});
+		expect(result.success).toBe(true);
+	});
+});
+
+describe("AccountsJournalEntrySchema", () => {
+	it("accepts a valid entry with required fields", () => {
+		const result = AccountsJournalEntrySchema.safeParse({
+			version: 1,
+			content: "{}",
+			checksum: "abc",
+		});
+		expect(result.success).toBe(true);
+	});
+
+	it("accepts optional createdAt and path", () => {
+		const result = AccountsJournalEntrySchema.safeParse({
+			version: 1,
+			content: "{}",
+			checksum: "abc",
+			createdAt: 123,
+			path: "/tmp/a",
+		});
+		expect(result.success).toBe(true);
+	});
+
+	it("rejects non-1 version", () => {
+		const result = AccountsJournalEntrySchema.safeParse({
+			version: 2,
+			content: "{}",
+			checksum: "abc",
+		});
+		expect(result.success).toBe(false);
+	});
+
+	it("rejects missing content", () => {
+		const result = AccountsJournalEntrySchema.safeParse({
+			version: 1,
+			checksum: "abc",
+		});
+		expect(result.success).toBe(false);
+	});
+
+	it("rejects wrong types (content: number)", () => {
+		const result = AccountsJournalEntrySchema.safeParse({
+			version: 1,
+			content: 12,
+			checksum: "abc",
+		});
+		expect(result.success).toBe(false);
+	});
+});
+
+describe("safeParseJson", () => {
+	const schema = z.object({ a: z.number() });
+
+	it("parses valid JSON matching schema", () => {
+		const result = safeParseJson('{"a":1}', schema, "test.happy");
+		expect(result).toEqual({ a: 1 });
+	});
+
+	it("returns null on SyntaxError", () => {
+		const result = safeParseJson("{not-valid-json", schema, "test.syntax");
+		expect(result).toBeNull();
+	});
+
+	it("returns null when JSON is valid but schema rejects", () => {
+		const result = safeParseJson('{"a":"x"}', schema, "test.schema");
+		expect(result).toBeNull();
+	});
+
+	it("returns null on non-string input", () => {
+		// Exercise the typeof-string guard; passing objects / numbers should
+		// short-circuit without throwing.
+		expect(safeParseJson(null as unknown, schema, "test.null")).toBeNull();
+		expect(
+			safeParseJson(undefined as unknown, schema, "test.undef"),
+		).toBeNull();
+		expect(safeParseJson(123 as unknown, schema, "test.num")).toBeNull();
+		expect(safeParseJson({} as unknown, schema, "test.obj")).toBeNull();
+	});
+
+	it("uses default context when none is provided", () => {
+		// Smoke-test: no throw, still returns null on bad input.
+		expect(safeParseJson("not-json", schema)).toBeNull();
+	});
+
+	it("validates an AnyAccountStorage payload end-to-end", () => {
+		const raw = JSON.stringify({
+			version: 3,
+			accounts: [{ refreshToken: "rt", addedAt: 1, lastUsed: 1 }],
+			activeIndex: 0,
+		});
+		const result = safeParseJson(
+			raw,
+			AnyAccountStorageSchema,
+			"test.end-to-end",
+		);
+		expect(result).not.toBeNull();
+		expect(result?.version).toBe(3);
+	});
+});
+
+describe("safeParseFlaggedAccountStorageV1", () => {
+	it("returns parsed storage on success", () => {
+		const result = safeParseFlaggedAccountStorageV1({
+			version: 1,
+			accounts: [],
+		});
+		expect(result).not.toBeNull();
+		expect(result?.version).toBe(1);
+	});
+
+	it("returns null on invalid shape", () => {
+		expect(
+			safeParseFlaggedAccountStorageV1({ version: 99, accounts: [] }),
+		).toBeNull();
+	});
+});
+
+describe("safeParseAccountsJournalEntry", () => {
+	it("returns parsed entry on success", () => {
+		const result = safeParseAccountsJournalEntry({
+			version: 1,
+			content: "{}",
+			checksum: "c",
+		});
+		expect(result).not.toBeNull();
+	});
+
+	it("returns null on invalid shape", () => {
+		expect(safeParseAccountsJournalEntry({ version: 2 })).toBeNull();
+	});
+});
+
+describe("FlaggedAccountMetadataV1Schema", () => {
+	it("inherits V3 account required fields", () => {
+		const result = FlaggedAccountMetadataV1Schema.safeParse({
+			refreshToken: "rt",
+			addedAt: 1,
+			lastUsed: 1,
+			flaggedAt: 2,
+		});
+		expect(result.success).toBe(true);
+	});
+
+	it("rejects when flaggedAt is missing", () => {
+		const result = FlaggedAccountMetadataV1Schema.safeParse({
+			refreshToken: "rt",
+			addedAt: 1,
+			lastUsed: 1,
+		});
+		expect(result.success).toBe(false);
 	});
 });
