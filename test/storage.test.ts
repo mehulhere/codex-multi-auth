@@ -69,7 +69,10 @@ describe("storage", () => {
 			const cause = Object.assign(new Error("permission denied"), {
 				code: "EPERM",
 			});
-			const hint = formatStorageErrorHint(cause, "/tmp/openai-codex-accounts.json");
+			const hint = formatStorageErrorHint(
+				cause,
+				"/tmp/openai-codex-accounts.json",
+			);
 			const error = new StorageError(
 				"failed to persist accounts",
 				"EPERM",
@@ -768,19 +771,18 @@ describe("storage", () => {
 
 			const originalRename = fs.rename.bind(fs);
 			let flaggedRenameAttempts = 0;
-			const renameSpy = vi.spyOn(fs, "rename").mockImplementation(
-				async (from, to) => {
+			const renameSpy = vi
+				.spyOn(fs, "rename")
+				.mockImplementation(async (from, to) => {
 					if (String(to).endsWith("openai-codex-flagged-accounts.json")) {
 						flaggedRenameAttempts += 1;
-						const error = Object.assign(
-							new Error("flagged storage busy"),
-							{ code: "EBUSY" },
-						);
+						const error = Object.assign(new Error("flagged storage busy"), {
+							code: "EBUSY",
+						});
 						throw error;
 					}
 					return originalRename(from, to);
-				},
-			);
+				});
 
 			try {
 				await expect(
@@ -866,9 +868,8 @@ describe("storage", () => {
 				],
 			});
 
-			const actualFs = await vi.importActual<typeof import("node:fs")>(
-				"node:fs",
-			);
+			const actualFs =
+				await vi.importActual<typeof import("node:fs")>("node:fs");
 			let accountRenameAttempts = 0;
 			let flaggedRenameAttempts = 0;
 			vi.resetModules();
@@ -883,10 +884,9 @@ describe("storage", () => {
 						const targetPath = String(to);
 						if (targetPath === flaggedStoragePath) {
 							flaggedRenameAttempts += 1;
-							const error = Object.assign(
-								new Error("flagged storage busy"),
-								{ code: "EBUSY" },
-							);
+							const error = Object.assign(new Error("flagged storage busy"), {
+								code: "EBUSY",
+							});
 							throw error;
 						}
 						if (targetPath === storagePath) {
@@ -995,21 +995,20 @@ describe("storage", () => {
 
 			const originalRename = fs.rename.bind(fs);
 			let flaggedRenameAttempts = 0;
-			const renameSpy = vi.spyOn(fs, "rename").mockImplementation(
-				async (from, to) => {
+			const renameSpy = vi
+				.spyOn(fs, "rename")
+				.mockImplementation(async (from, to) => {
 					if (String(to).endsWith("openai-codex-flagged-accounts.json")) {
 						flaggedRenameAttempts += 1;
 						if (flaggedRenameAttempts <= 5) {
-							const error = Object.assign(
-								new Error("flagged storage busy"),
-								{ code: "EBUSY" },
-							);
+							const error = Object.assign(new Error("flagged storage busy"), {
+								code: "EBUSY",
+							});
 							throw error;
 						}
 					}
 					return originalRename(from, to);
-				},
-			);
+				});
 
 			try {
 				await expect(
@@ -1177,21 +1176,20 @@ describe("storage", () => {
 
 			const originalRename = fs.rename.bind(fs);
 			let flaggedRenameAttempts = 0;
-			const renameSpy = vi.spyOn(fs, "rename").mockImplementation(
-				async (from, to) => {
+			const renameSpy = vi
+				.spyOn(fs, "rename")
+				.mockImplementation(async (from, to) => {
 					if (String(to).endsWith("openai-codex-flagged-accounts.json")) {
 						flaggedRenameAttempts += 1;
 						if (flaggedRenameAttempts <= 2) {
-							const error = Object.assign(
-								new Error("flagged storage busy"),
-								{ code: "EBUSY" },
-							);
+							const error = Object.assign(new Error("flagged storage busy"), {
+								code: "EBUSY",
+							});
 							throw error;
 						}
 					}
 					return originalRename(from, to);
-				},
-			);
+				});
 
 			try {
 				await saveFlaggedAccounts({
@@ -1254,10 +1252,7 @@ describe("storage", () => {
 		});
 
 		it("ignores stale transaction snapshots from a different storage path during export", async () => {
-			const populatedStoragePath = join(
-				testWorkDir,
-				"accounts-populated.json",
-			);
+			const populatedStoragePath = join(testWorkDir, "accounts-populated.json");
 			setStoragePathDirect(populatedStoragePath);
 			await saveAccounts({
 				version: 3,
@@ -1310,7 +1305,10 @@ describe("storage", () => {
 		});
 
 		it("exports legacy-migrated storage without persisting it during another storage transaction", async () => {
-			const transactionStoragePath = join(testWorkDir, "accounts-transaction.json");
+			const transactionStoragePath = join(
+				testWorkDir,
+				"accounts-transaction.json",
+			);
 			const currentStoragePath = join(testWorkDir, "accounts-current.json");
 			const legacyStoragePath = join(testWorkDir, "accounts-legacy.json");
 			await fs.writeFile(
@@ -1376,7 +1374,10 @@ describe("storage", () => {
 		});
 
 		it("does not persist v3 normalization while export reads storage unlocked", async () => {
-			const transactionStoragePath = join(testWorkDir, "accounts-transaction.json");
+			const transactionStoragePath = join(
+				testWorkDir,
+				"accounts-transaction.json",
+			);
 			const currentStoragePath = join(testWorkDir, "accounts-v1.json");
 			await fs.writeFile(
 				currentStoragePath,
@@ -1454,143 +1455,151 @@ describe("storage", () => {
 			}
 		});
 
-		it.each(["EBUSY", "EPERM", "EAGAIN"] as const)(
-			"rethrows %s when export cannot read the current storage file",
-			async (code) => {
-				const lockedStoragePath = join(testWorkDir, `accounts-${code}.json`);
-				await fs.writeFile(
-					lockedStoragePath,
-					JSON.stringify({
-						version: 3,
-						activeIndex: 0,
-						activeIndexByFamily: {},
-						accounts: [
-							{
-								accountId: "locked",
-								refreshToken: "locked-token",
-								addedAt: 1,
-								lastUsed: 1,
-							},
-						],
-					}),
-				);
+		it.each([
+			"EBUSY",
+			"EPERM",
+			"EAGAIN",
+		] as const)("rethrows %s when export cannot read the current storage file", async (code) => {
+			const lockedStoragePath = join(testWorkDir, `accounts-${code}.json`);
+			await fs.writeFile(
+				lockedStoragePath,
+				JSON.stringify({
+					version: 3,
+					activeIndex: 0,
+					activeIndexByFamily: {},
+					accounts: [
+						{
+							accountId: "locked",
+							refreshToken: "locked-token",
+							addedAt: 1,
+							lastUsed: 1,
+						},
+					],
+				}),
+			);
 
-				const actualStorageParser = await vi.importActual<
-					typeof import("../lib/storage/storage-parser.js")
-				>("../lib/storage/storage-parser.js");
+			const actualStorageParser = await vi.importActual<
+				typeof import("../lib/storage/storage-parser.js")
+			>("../lib/storage/storage-parser.js");
+			vi.resetModules();
+			vi.doMock("../lib/storage/storage-parser.js", () => ({
+				...actualStorageParser,
+				loadAccountsFromPath: vi.fn(async (path, deps) => {
+					if (path === lockedStoragePath) {
+						throw Object.assign(new Error(`locked ${code}`), { code });
+					}
+					return actualStorageParser.loadAccountsFromPath(path, deps);
+				}),
+			}));
+
+			try {
+				const isolatedStorageModule = await import("../lib/storage.js");
+				isolatedStorageModule.setStoragePathDirect(lockedStoragePath);
+				await expect(
+					isolatedStorageModule.exportAccounts(exportPath),
+				).rejects.toMatchObject({ code });
+			} finally {
+				vi.doUnmock("../lib/storage/storage-parser.js");
 				vi.resetModules();
-				vi.doMock("../lib/storage/storage-parser.js", () => ({
-					...actualStorageParser,
-					loadAccountsFromPath: vi.fn(async (path, deps) => {
-						if (path === lockedStoragePath) {
-							throw Object.assign(new Error(`locked ${code}`), { code });
-						}
-						return actualStorageParser.loadAccountsFromPath(path, deps);
-					}),
-				}));
+				setStoragePathDirect(testStoragePath);
+			}
+		});
 
-				try {
-					const isolatedStorageModule = await import("../lib/storage.js");
-					isolatedStorageModule.setStoragePathDirect(lockedStoragePath);
-					await expect(
-						isolatedStorageModule.exportAccounts(exportPath),
-					).rejects.toMatchObject({ code });
-				} finally {
-					vi.doUnmock("../lib/storage/storage-parser.js");
-					vi.resetModules();
-					setStoragePathDirect(testStoragePath);
-				}
-			},
-		);
+		it.each([
+			"EBUSY",
+			"EPERM",
+			"EAGAIN",
+		] as const)("does not write an export file when %s happens while reading another storage path during a transaction", async (code) => {
+			const transactionStoragePath = join(
+				testWorkDir,
+				`accounts-transaction-${code}.json`,
+			);
+			const currentStoragePath = join(
+				testWorkDir,
+				`accounts-live-${code}.json`,
+			);
+			await fs.writeFile(
+				transactionStoragePath,
+				JSON.stringify({
+					version: 3,
+					activeIndex: 0,
+					activeIndexByFamily: {},
+					accounts: [
+						{
+							accountId: "transaction",
+							refreshToken: "transaction-token",
+							addedAt: 1,
+							lastUsed: 1,
+						},
+					],
+				}),
+			);
+			await fs.writeFile(
+				currentStoragePath,
+				JSON.stringify({
+					version: 3,
+					activeIndex: 0,
+					activeIndexByFamily: {},
+					accounts: [
+						{
+							accountId: "live",
+							refreshToken: "live-token",
+							addedAt: 1,
+							lastUsed: 1,
+						},
+					],
+				}),
+			);
 
-		it.each(["EBUSY", "EPERM", "EAGAIN"] as const)(
-			"does not write an export file when %s happens while reading another storage path during a transaction",
-			async (code) => {
-				const transactionStoragePath = join(
-					testWorkDir,
-					`accounts-transaction-${code}.json`,
-				);
-				const currentStoragePath = join(testWorkDir, `accounts-live-${code}.json`);
-				await fs.writeFile(
-					transactionStoragePath,
-					JSON.stringify({
-						version: 3,
-						activeIndex: 0,
-						activeIndexByFamily: {},
-						accounts: [
-							{
-								accountId: "transaction",
-								refreshToken: "transaction-token",
-								addedAt: 1,
-								lastUsed: 1,
-							},
-						],
-					}),
-				);
-				await fs.writeFile(
-					currentStoragePath,
-					JSON.stringify({
-						version: 3,
-						activeIndex: 0,
-						activeIndexByFamily: {},
-						accounts: [
-							{
-								accountId: "live",
-								refreshToken: "live-token",
-								addedAt: 1,
-								lastUsed: 1,
-							},
-						],
-					}),
-				);
+			const actualStorageParser = await vi.importActual<
+				typeof import("../lib/storage/storage-parser.js")
+			>("../lib/storage/storage-parser.js");
+			vi.resetModules();
+			vi.doMock("../lib/storage/storage-parser.js", () => ({
+				...actualStorageParser,
+				loadAccountsFromPath: vi.fn(async (path, deps) => {
+					if (path === currentStoragePath) {
+						throw Object.assign(new Error(`locked ${code}`), { code });
+					}
+					return actualStorageParser.loadAccountsFromPath(path, deps);
+				}),
+			}));
 
-				const actualStorageParser = await vi.importActual<
-					typeof import("../lib/storage/storage-parser.js")
-				>("../lib/storage/storage-parser.js");
+			try {
+				const isolatedStorageModule = await import("../lib/storage.js");
+				const isolatedPathState = await import("../lib/storage/path-state.js");
+				isolatedStorageModule.setStoragePathDirect(transactionStoragePath);
+				await expect(
+					isolatedStorageModule.withAccountStorageTransaction(async () => {
+						isolatedPathState.setStoragePathState({
+							currentStoragePath,
+							currentLegacyProjectStoragePath: null,
+							currentLegacyWorktreeStoragePath: null,
+							currentProjectRoot: null,
+						});
+						await isolatedStorageModule.exportAccounts(exportPath);
+					}),
+				).rejects.toMatchObject({ code });
+
+				const transactionStorage = JSON.parse(
+					await fs.readFile(transactionStoragePath, "utf-8"),
+				);
+				expect(transactionStorage.accounts).toEqual([
+					expect.objectContaining({ refreshToken: "transaction-token" }),
+				]);
+				expect(existsSync(exportPath)).toBe(false);
+			} finally {
+				vi.doUnmock("../lib/storage/storage-parser.js");
 				vi.resetModules();
-				vi.doMock("../lib/storage/storage-parser.js", () => ({
-					...actualStorageParser,
-					loadAccountsFromPath: vi.fn(async (path, deps) => {
-						if (path === currentStoragePath) {
-							throw Object.assign(new Error(`locked ${code}`), { code });
-						}
-						return actualStorageParser.loadAccountsFromPath(path, deps);
-					}),
-				}));
-
-				try {
-					const isolatedStorageModule = await import("../lib/storage.js");
-					const isolatedPathState = await import("../lib/storage/path-state.js");
-					isolatedStorageModule.setStoragePathDirect(transactionStoragePath);
-					await expect(
-						isolatedStorageModule.withAccountStorageTransaction(async () => {
-							isolatedPathState.setStoragePathState({
-								currentStoragePath,
-								currentLegacyProjectStoragePath: null,
-								currentLegacyWorktreeStoragePath: null,
-								currentProjectRoot: null,
-							});
-							await isolatedStorageModule.exportAccounts(exportPath);
-						}),
-					).rejects.toMatchObject({ code });
-
-					const transactionStorage = JSON.parse(
-						await fs.readFile(transactionStoragePath, "utf-8"),
-					);
-					expect(transactionStorage.accounts).toEqual([
-						expect.objectContaining({ refreshToken: "transaction-token" }),
-					]);
-					expect(existsSync(exportPath)).toBe(false);
-				} finally {
-					vi.doUnmock("../lib/storage/storage-parser.js");
-					vi.resetModules();
-					setStoragePathDirect(testStoragePath);
-				}
-			},
-		);
+				setStoragePathDirect(testStoragePath);
+			}
+		});
 
 		it("does not revive legacy accounts when the current storage exists but is empty", async () => {
-			const currentStoragePath = join(testWorkDir, "accounts-empty-current.json");
+			const currentStoragePath = join(
+				testWorkDir,
+				"accounts-empty-current.json",
+			);
 			const legacyStoragePath = join(testWorkDir, "accounts-empty-legacy.json");
 			await fs.writeFile(
 				currentStoragePath,
@@ -1643,8 +1652,14 @@ describe("storage", () => {
 		});
 
 		it("exports legacy storage without persisting it when current storage is missing", async () => {
-			const currentStoragePath = join(testWorkDir, "accounts-missing-current.json");
-			const legacyStoragePath = join(testWorkDir, "accounts-missing-legacy.json");
+			const currentStoragePath = join(
+				testWorkDir,
+				"accounts-missing-current.json",
+			);
+			const legacyStoragePath = join(
+				testWorkDir,
+				"accounts-missing-legacy.json",
+			);
 			await fs.writeFile(
 				legacyStoragePath,
 				JSON.stringify({
@@ -1693,8 +1708,7 @@ describe("storage", () => {
 				testWorkDir,
 				"accounts-reset-during-fallback-legacy.json",
 			);
-			const resetMarkerPath =
-				getIntentionalResetMarkerPath(currentStoragePath);
+			const resetMarkerPath = getIntentionalResetMarkerPath(currentStoragePath);
 			await fs.writeFile(
 				legacyStoragePath,
 				JSON.stringify({
@@ -1831,95 +1845,98 @@ describe("storage", () => {
 			}
 		});
 
-		it.each(["EBUSY", "EPERM", "EAGAIN"] as const)(
-			"rethrows %s when the current storage reappears locked during export fallback",
-			async (code) => {
-				const currentStoragePath = join(
-					testWorkDir,
-					`accounts-reappeared-locked-${code}.json`,
-				);
-				const legacyStoragePath = join(
-					testWorkDir,
-					`accounts-reappeared-legacy-${code}.json`,
-				);
-				await fs.writeFile(
-					legacyStoragePath,
-					JSON.stringify({
-						version: 3,
-						activeIndex: 0,
-						activeIndexByFamily: {},
-						accounts: [
-							{
-								accountId: "legacy",
-								refreshToken: "legacy-token",
-								addedAt: 1,
-								lastUsed: 1,
-							},
-						],
-					}),
-				);
+		it.each([
+			"EBUSY",
+			"EPERM",
+			"EAGAIN",
+		] as const)("rethrows %s when the current storage reappears locked during export fallback", async (code) => {
+			const currentStoragePath = join(
+				testWorkDir,
+				`accounts-reappeared-locked-${code}.json`,
+			);
+			const legacyStoragePath = join(
+				testWorkDir,
+				`accounts-reappeared-legacy-${code}.json`,
+			);
+			await fs.writeFile(
+				legacyStoragePath,
+				JSON.stringify({
+					version: 3,
+					activeIndex: 0,
+					activeIndexByFamily: {},
+					accounts: [
+						{
+							accountId: "legacy",
+							refreshToken: "legacy-token",
+							addedAt: 1,
+							lastUsed: 1,
+						},
+					],
+				}),
+			);
 
-				const actualStorageParser = await vi.importActual<
-					typeof import("../lib/storage/storage-parser.js")
-				>("../lib/storage/storage-parser.js");
-				let currentReadCount = 0;
-				vi.resetModules();
-				vi.doMock("../lib/storage/storage-parser.js", () => ({
-					...actualStorageParser,
-					loadAccountsFromPath: vi.fn(async (path, deps) => {
-						if (path === currentStoragePath) {
-							currentReadCount += 1;
-							if (currentReadCount === 1) {
-								await fs.writeFile(
-									currentStoragePath,
-									JSON.stringify({
-										version: 3,
-										activeIndex: 0,
-										activeIndexByFamily: {},
-										accounts: [],
-									}),
-								);
-								throw Object.assign(
-									new Error("missing current storage"),
-									{ code: "ENOENT" },
-								);
-							}
-							throw Object.assign(new Error(`locked ${code}`), { code });
+			const actualStorageParser = await vi.importActual<
+				typeof import("../lib/storage/storage-parser.js")
+			>("../lib/storage/storage-parser.js");
+			let currentReadCount = 0;
+			vi.resetModules();
+			vi.doMock("../lib/storage/storage-parser.js", () => ({
+				...actualStorageParser,
+				loadAccountsFromPath: vi.fn(async (path, deps) => {
+					if (path === currentStoragePath) {
+						currentReadCount += 1;
+						if (currentReadCount === 1) {
+							await fs.writeFile(
+								currentStoragePath,
+								JSON.stringify({
+									version: 3,
+									activeIndex: 0,
+									activeIndexByFamily: {},
+									accounts: [],
+								}),
+							);
+							throw Object.assign(new Error("missing current storage"), {
+								code: "ENOENT",
+							});
 						}
-						return actualStorageParser.loadAccountsFromPath(path, deps);
-					}),
-				}));
+						throw Object.assign(new Error(`locked ${code}`), { code });
+					}
+					return actualStorageParser.loadAccountsFromPath(path, deps);
+				}),
+			}));
 
-				try {
-					const isolatedStorageModule = await import("../lib/storage.js");
-					const isolatedPathState = await import("../lib/storage/path-state.js");
-					isolatedPathState.setStoragePathState({
-						currentStoragePath,
-						currentLegacyProjectStoragePath: legacyStoragePath,
-						currentLegacyWorktreeStoragePath: null,
-						currentProjectRoot: null,
-					});
+			try {
+				const isolatedStorageModule = await import("../lib/storage.js");
+				const isolatedPathState = await import("../lib/storage/path-state.js");
+				isolatedPathState.setStoragePathState({
+					currentStoragePath,
+					currentLegacyProjectStoragePath: legacyStoragePath,
+					currentLegacyWorktreeStoragePath: null,
+					currentProjectRoot: null,
+				});
 
-					await expect(
-						isolatedStorageModule.exportAccounts(exportPath),
-					).rejects.toMatchObject({ code });
+				await expect(
+					isolatedStorageModule.exportAccounts(exportPath),
+				).rejects.toMatchObject({ code });
 
-					const currentStorage = JSON.parse(
-						await fs.readFile(currentStoragePath, "utf-8"),
-					);
-					expect(currentStorage.accounts).toEqual([]);
-					expect(existsSync(legacyStoragePath)).toBe(true);
-					expect(existsSync(exportPath)).toBe(false);
-				} finally {
-					vi.doUnmock("../lib/storage/storage-parser.js");
-					vi.resetModules();
-					setStoragePathDirect(testStoragePath);
-				}
-			},
-		);
+				const currentStorage = JSON.parse(
+					await fs.readFile(currentStoragePath, "utf-8"),
+				);
+				expect(currentStorage.accounts).toEqual([]);
+				expect(existsSync(legacyStoragePath)).toBe(true);
+				expect(existsSync(exportPath)).toBe(false);
+			} finally {
+				vi.doUnmock("../lib/storage/storage-parser.js");
+				vi.resetModules();
+				setStoragePathDirect(testStoragePath);
+			}
+		});
 
 		it("does not revive legacy accounts when the current storage has an intentional reset marker", async () => {
-			const currentStoragePath = join(testWorkDir, "accounts-reset-current.json");
+			const currentStoragePath = join(
+				testWorkDir,
+				"accounts-reset-current.json",
+			);
 			const legacyStoragePath = join(testWorkDir, "accounts-reset-legacy.json");
 			await fs.writeFile(
 				legacyStoragePath,
@@ -2961,7 +2978,7 @@ describe("storage", () => {
 			await fs.rm(testWorkDir, { recursive: true, force: true });
 		});
 
-		it("throws and does not write reset marker when the primary storage file cannot be removed", async () => {
+		it("throws but leaves the reset marker in place when the primary storage file cannot be removed (AUDIT-M04)", async () => {
 			await fs.writeFile(testStoragePath, "{}", "utf-8");
 			const resetMarkerPath = getIntentionalResetMarkerPath(testStoragePath);
 			const unlinkSpy = vi
@@ -2975,29 +2992,49 @@ describe("storage", () => {
 				});
 
 			await expect(clearAccounts()).rejects.toMatchObject({ code: "EPERM" });
+			// Contract change (AUDIT-M04 / E-07): the reset-intent marker is
+			// now written BEFORE deletion starts so a crash/failure between the
+			// marker write and the unlink does not look like accidental data
+			// loss. Previously the marker was written AFTER all deletions, so
+			// a mid-run failure left the storage inconsistent. The primary
+			// file is still present because we mocked the unlink to fail.
 			expect(existsSync(testStoragePath)).toBe(true);
-			expect(existsSync(resetMarkerPath)).toBe(false);
+			expect(existsSync(resetMarkerPath)).toBe(true);
 
 			unlinkSpy.mockRestore();
+			// Clean up the marker we deliberately left behind.
+			try {
+				await fs.unlink(resetMarkerPath);
+			} catch {
+				/* best-effort */
+			}
 		});
 
-		it("throws and does not write reset marker when the wal file cannot be removed", async () => {
+		it("throws but leaves the reset marker in place when the wal file cannot be removed (AUDIT-M04)", async () => {
 			await fs.writeFile(testStoragePath, "{}", "utf-8");
 			await fs.writeFile(`${testStoragePath}.wal`, "{}", "utf-8");
 			const resetMarkerPath = getIntentionalResetMarkerPath(testStoragePath);
-			const unlinkSpy = vi.spyOn(fs, "unlink").mockImplementation(async (targetPath) => {
-				if (String(targetPath) === `${testStoragePath}.wal`) {
-					const error = Object.assign(new Error("locked"), { code: "EBUSY" });
-					throw error;
-				}
-				return Promise.resolve();
-			});
+			const unlinkSpy = vi
+				.spyOn(fs, "unlink")
+				.mockImplementation(async (targetPath) => {
+					if (String(targetPath) === `${testStoragePath}.wal`) {
+						const error = Object.assign(new Error("locked"), { code: "EBUSY" });
+						throw error;
+					}
+					return Promise.resolve();
+				});
 
 			try {
 				await expect(clearAccounts()).rejects.toMatchObject({ code: "EBUSY" });
-				expect(existsSync(resetMarkerPath)).toBe(false);
+				// Same ordering change as above: marker first, deletes after.
+				expect(existsSync(resetMarkerPath)).toBe(true);
 			} finally {
 				unlinkSpy.mockRestore();
+				try {
+					await fs.unlink(resetMarkerPath);
+				} catch {
+					/* best-effort */
+				}
 			}
 		});
 	});

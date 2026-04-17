@@ -115,7 +115,7 @@ describe("flagged account storage", () => {
 		);
 	});
 
-	it("preserves \"best\" as a flagged account switch reason on load", async () => {
+	it('preserves "best" as a flagged account switch reason on load', async () => {
 		await saveFlaggedAccounts({
 			version: 1,
 			accounts: [
@@ -376,7 +376,9 @@ describe("flagged account storage", () => {
 				if (targetPath === flaggedPath) {
 					primaryReadAttempts += 1;
 					if (primaryReadAttempts === 1) {
-						const error = new Error("EBUSY flagged read") as NodeJS.ErrnoException;
+						const error = new Error(
+							"EBUSY flagged read",
+						) as NodeJS.ErrnoException;
 						error.code = "EBUSY";
 						throw error;
 					}
@@ -449,14 +451,16 @@ describe("flagged account storage", () => {
 		);
 
 		const originalReadFile = fs.readFile.bind(fs);
-		const readSpy = vi.spyOn(fs, "readFile").mockImplementation(async (...args) => {
-			const [targetPath] = args;
-			const result = await originalReadFile(...args);
-			if (targetPath === backupPath) {
-				await fs.writeFile(resetMarkerPath, "reset", "utf8");
-			}
-			return result;
-		});
+		const readSpy = vi
+			.spyOn(fs, "readFile")
+			.mockImplementation(async (...args) => {
+				const [targetPath] = args;
+				const result = await originalReadFile(...args);
+				if (targetPath === backupPath) {
+					await fs.writeFile(resetMarkerPath, "reset", "utf8");
+				}
+				return result;
+			});
 
 		try {
 			const flagged = await loadFlaggedAccounts();
@@ -627,14 +631,17 @@ describe("flagged account storage", () => {
 	});
 });
 
-
 describe("flagged storage extracted helpers", () => {
 	it("retries transient Windows read locks before parsing", async () => {
 		const normalizeFlaggedStorage = vi.fn((data) => data as never);
 		const readFile = vi
 			.fn()
-			.mockRejectedValueOnce(Object.assign(new Error("busy"), { code: "EBUSY" }))
-			.mockRejectedValueOnce(Object.assign(new Error("again"), { code: "EAGAIN" }))
+			.mockRejectedValueOnce(
+				Object.assign(new Error("busy"), { code: "EBUSY" }),
+			)
+			.mockRejectedValueOnce(
+				Object.assign(new Error("again"), { code: "EAGAIN" }),
+			)
 			.mockResolvedValueOnce('{"version":1,"accounts":[]}');
 		await expect(
 			loadFlaggedAccountsFromFile("flagged.json", {
@@ -644,14 +651,19 @@ describe("flagged storage extracted helpers", () => {
 			}),
 		).resolves.toEqual({ version: 1, accounts: [] });
 		expect(readFile).toHaveBeenCalledTimes(3);
-		expect(normalizeFlaggedStorage).toHaveBeenCalledWith({ version: 1, accounts: [] });
+		expect(normalizeFlaggedStorage).toHaveBeenCalledWith({
+			version: 1,
+			accounts: [],
+		});
 	});
 
-	it("does not retry non-retryable permission errors", async () => {
+	it("retries EPERM permission errors as a transient Windows lock (AUDIT-M05)", async () => {
 		const sleep = vi.fn(async () => {});
 		const readFile = vi
 			.fn()
-			.mockRejectedValue(Object.assign(new Error("permission denied"), { code: "EPERM" }));
+			.mockRejectedValue(
+				Object.assign(new Error("permission denied"), { code: "EPERM" }),
+			);
 		await expect(
 			loadFlaggedAccountsFromFile("flagged.json", {
 				readFile,
@@ -659,6 +671,30 @@ describe("flagged storage extracted helpers", () => {
 				sleep,
 			}),
 		).rejects.toThrow("permission denied");
+		// Contract change (AUDIT-M05 / E-08): EPERM is now retried as a
+		// transient Windows lock to match the write side of this module.
+		// The retry budget is 4 attempts (initial + 3 retries), so readFile
+		// is called 4 times and sleep is called between attempts.
+		expect(readFile).toHaveBeenCalledTimes(4);
+		expect(sleep).toHaveBeenCalledTimes(3);
+	});
+
+	it("does not retry non-retryable permission errors (EACCES)", async () => {
+		const sleep = vi.fn(async () => {});
+		const readFile = vi
+			.fn()
+			.mockRejectedValue(
+				Object.assign(new Error("access denied"), { code: "EACCES" }),
+			);
+		await expect(
+			loadFlaggedAccountsFromFile("flagged.json", {
+				readFile,
+				normalizeFlaggedStorage: vi.fn(),
+				sleep,
+			}),
+		).rejects.toThrow("access denied");
+		// EACCES is a hard permission error (not a lock), so we fail fast
+		// after the first attempt.
 		expect(readFile).toHaveBeenCalledTimes(1);
 		expect(sleep).not.toHaveBeenCalled();
 	});
@@ -681,7 +717,6 @@ describe("flagged storage extracted helpers", () => {
 		expect(sleep).toHaveBeenNthCalledWith(3, 40);
 	});
 
-
 	it("propagates malformed JSON parse errors", async () => {
 		await expect(
 			loadFlaggedAccountsFromFile("flagged.json", {
@@ -696,7 +731,11 @@ describe("flagged storage extracted helpers", () => {
 		await expect(
 			describeFlaggedSnapshot("flagged.json", "flagged-accounts", {
 				index: 0,
-				statSnapshot: vi.fn(async () => ({ exists: true, bytes: 12, mtimeMs: 34 })),
+				statSnapshot: vi.fn(async () => ({
+					exists: true,
+					bytes: 12,
+					mtimeMs: 34,
+				})),
 				loadFlaggedAccountsFromPath: vi.fn(async () => {
 					throw Object.assign(new Error("locked"), { code: "EBUSY" });
 				}),
@@ -778,7 +817,10 @@ describe("flagged storage extracted helpers", () => {
 			});
 			expect(logError).toHaveBeenCalledWith(
 				"Failed to persist recovered flagged account storage",
-				expect.objectContaining({ from: `${flaggedPath}.bak`, to: flaggedPath }),
+				expect.objectContaining({
+					from: `${flaggedPath}.bak`,
+					to: flaggedPath,
+				}),
 			);
 			expect(logInfo).not.toHaveBeenCalled();
 		} finally {
@@ -874,20 +916,20 @@ describe("flagged storage extracted helpers", () => {
 				"utf8",
 			);
 
-			readSpy = vi
-				.spyOn(fs, "readFile")
-				.mockImplementation(async (...args) => {
-					const [targetPath] = args;
-					if (targetPath === backupPath) {
-						backupReadAttempts += 1;
-						if (backupReadAttempts === 1) {
-							const error = new Error("EBUSY backup read") as NodeJS.ErrnoException;
-							error.code = "EBUSY";
-							throw error;
-						}
+			readSpy = vi.spyOn(fs, "readFile").mockImplementation(async (...args) => {
+				const [targetPath] = args;
+				if (targetPath === backupPath) {
+					backupReadAttempts += 1;
+					if (backupReadAttempts === 1) {
+						const error = new Error(
+							"EBUSY backup read",
+						) as NodeJS.ErrnoException;
+						error.code = "EBUSY";
+						throw error;
 					}
-					return originalReadFile(...args);
-				});
+				}
+				return originalReadFile(...args);
+			});
 
 			await expect(
 				loadFlaggedAccountsState({
@@ -915,7 +957,11 @@ describe("flagged storage extracted helpers", () => {
 			expect(persistRecoveredBackup).toHaveBeenCalledTimes(1);
 			expect(logInfo).toHaveBeenCalledWith(
 				"Recovered flagged account storage from backup",
-				expect.objectContaining({ from: backupPath, to: flaggedPath, accounts: 1 }),
+				expect.objectContaining({
+					from: backupPath,
+					to: flaggedPath,
+					accounts: 1,
+				}),
 			);
 			expect(logError).not.toHaveBeenCalled();
 		} finally {
@@ -960,20 +1006,20 @@ describe("flagged storage extracted helpers", () => {
 				"utf8",
 			);
 
-			readSpy = vi
-				.spyOn(fs, "readFile")
-				.mockImplementation(async (...args) => {
-					const [targetPath] = args;
-					if (targetPath === legacyPath) {
-						legacyReadAttempts += 1;
-						if (legacyReadAttempts === 1) {
-							const error = new Error("EBUSY legacy read") as NodeJS.ErrnoException;
-							error.code = "EBUSY";
-							throw error;
-						}
+			readSpy = vi.spyOn(fs, "readFile").mockImplementation(async (...args) => {
+				const [targetPath] = args;
+				if (targetPath === legacyPath) {
+					legacyReadAttempts += 1;
+					if (legacyReadAttempts === 1) {
+						const error = new Error(
+							"EBUSY legacy read",
+						) as NodeJS.ErrnoException;
+						error.code = "EBUSY";
+						throw error;
 					}
-					return originalReadFile(...args);
-				});
+				}
+				return originalReadFile(...args);
+			});
 
 			await expect(
 				loadFlaggedAccountsState({
@@ -1011,7 +1057,11 @@ describe("flagged storage extracted helpers", () => {
 			});
 			expect(logInfo).toHaveBeenCalledWith(
 				"Migrated legacy flagged account storage",
-				expect.objectContaining({ from: legacyPath, to: flaggedPath, accounts: 1 }),
+				expect.objectContaining({
+					from: legacyPath,
+					to: flaggedPath,
+					accounts: 1,
+				}),
 			);
 			expect(logError).not.toHaveBeenCalled();
 		} finally {
