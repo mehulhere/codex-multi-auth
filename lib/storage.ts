@@ -69,7 +69,10 @@ import {
 } from "./storage/import-export.js";
 import { formatStorageErrorHint } from "./storage/error-hints.js";
 export { StorageError } from "./errors.js";
-export { formatStorageErrorHint, toStorageError } from "./storage/error-hints.js";
+export {
+	formatStorageErrorHint,
+	toStorageError,
+} from "./storage/error-hints.js";
 export {
 	getAccountIdentityKey,
 	normalizeEmailKey,
@@ -113,6 +116,11 @@ import {
 	loadNormalizedStorageFromPath,
 	mergeStorageForMigration,
 } from "./storage/project-migration.js";
+import {
+	AccountsJournalEntrySchema,
+	AnyAccountStorageSchema,
+	safeParseJson,
+} from "./schemas.js";
 import { clampIndex, isRecord } from "./storage/record-utils.js";
 import { buildRestoreAssessment } from "./storage/restore-assessment.js";
 import { restoreAccountsFromBackupEntry } from "./storage/restore-backup-entry.js";
@@ -461,8 +469,12 @@ async function describeAccountsWalSnapshot(
 	}
 	try {
 		const raw = await fs.readFile(path, "utf-8");
-		const parsed = JSON.parse(raw) as unknown;
-		if (!isRecord(parsed)) {
+		const entry = safeParseJson(
+			raw,
+			AccountsJournalEntrySchema,
+			"storage.describeAccountsWalSnapshot",
+		);
+		if (!entry || computeSha256(entry.content) !== entry.checksum) {
 			return {
 				kind: "accounts-wal",
 				path,
@@ -472,28 +484,33 @@ async function describeAccountsWalSnapshot(
 				mtimeMs: stats.mtimeMs,
 			};
 		}
-		const entry = parsed as Partial<AccountsJournalEntry>;
-		if (
-			entry.version !== 1 ||
-			typeof entry.content !== "string" ||
-			typeof entry.checksum !== "string" ||
-			computeSha256(entry.content) !== entry.checksum
-		) {
-			return {
-				kind: "accounts-wal",
-				path,
-				exists: true,
-				valid: false,
-				bytes: stats.bytes,
-				mtimeMs: stats.mtimeMs,
-			};
+		const innerPayload = safeParseJson(
+			entry.content,
+			AnyAccountStorageSchema,
+			"storage.describeAccountsWalSnapshot.content",
+		);
+		// Schema-invalid inner payloads still flow through the TS normalizer
+		// so schemaErrors stay populated for observability; fail-closed on
+		// JSON syntax errors only.
+		let innerData: unknown;
+		if (innerPayload !== null) {
+			innerData = innerPayload;
+		} else {
+			try {
+				innerData = JSON.parse(entry.content) as unknown;
+			} catch {
+				return {
+					kind: "accounts-wal",
+					path,
+					exists: true,
+					valid: false,
+					bytes: stats.bytes,
+					mtimeMs: stats.mtimeMs,
+				};
+			}
 		}
 		const { normalized, storedVersion, schemaErrors } =
-			parseAndNormalizeStorage(
-				JSON.parse(entry.content) as unknown,
-				normalizeAccountStorage,
-				isRecord,
-			);
+			parseAndNormalizeStorage(innerData, normalizeAccountStorage, isRecord);
 		return {
 			kind: "accounts-wal",
 			path,
@@ -749,17 +766,22 @@ async function migrateLegacyProjectStorageIfNeeded(options?: {
 		return null;
 	}
 
-	const loadCurrentStorageForMigration = async (): Promise<AccountStorageV3 | null> =>
-		loadNormalizedStorageFromPath(currentStoragePath, "current account storage", {
-			loadAccountsFromPath: (path) =>
-				loadAccountsFromPath(path, {
-					normalizeAccountStorage,
-					isRecord,
-				}),
-			logWarn: (message, details) => {
-				log.warn(message, details);
-			},
-		});
+	const loadCurrentStorageForMigration =
+		async (): Promise<AccountStorageV3 | null> =>
+			loadNormalizedStorageFromPath(
+				currentStoragePath,
+				"current account storage",
+				{
+					loadAccountsFromPath: (path) =>
+						loadAccountsFromPath(path, {
+							normalizeAccountStorage,
+							isRecord,
+						}),
+					logWarn: (message, details) => {
+						log.warn(message, details);
+					},
+				},
+			);
 	const readLiveCurrentStorageIfExportMode = async (): Promise<{
 		exists: boolean;
 		storage: AccountStorageV3 | null;
@@ -1382,12 +1404,12 @@ async function loadAccountsFromJournal(
 		if (existsSync(resetMarkerPath)) {
 			return null;
 		}
-		const parsed = JSON.parse(raw) as unknown;
-		if (!isRecord(parsed)) return null;
-		const entry = parsed as Partial<AccountsJournalEntry>;
-		if (entry.version !== 1) return null;
-		if (typeof entry.content !== "string" || typeof entry.checksum !== "string")
-			return null;
+		const entry = safeParseJson(
+			raw,
+			AccountsJournalEntrySchema,
+			"storage.loadAccountsFromJournal",
+		);
+		if (!entry) return null;
 		const computed = computeSha256(entry.content);
 		if (computed !== entry.checksum) {
 			if (!options.silent) {
@@ -1395,7 +1417,21 @@ async function loadAccountsFromJournal(
 			}
 			return null;
 		}
-		const data = JSON.parse(entry.content) as unknown;
+		const validatedInner = safeParseJson(
+			entry.content,
+			AnyAccountStorageSchema,
+			"storage.loadAccountsFromJournal.content",
+		);
+		let data: unknown;
+		if (validatedInner !== null) {
+			data = validatedInner;
+		} else {
+			try {
+				data = JSON.parse(entry.content) as unknown;
+			} catch {
+				return null;
+			}
+		}
 		const { normalized } = parseAndNormalizeStorage(
 			data,
 			normalizeAccountStorage,
@@ -1625,8 +1661,9 @@ async function loadAccountsForExport(): Promise<AccountStorageV3 | null> {
 			return createEmptyStorageWithMetadata(false, "intentional-reset");
 		}
 		if (code === "ENOENT") {
-			const migratedLegacyStorage =
-				await migrateLegacyProjectStorageIfNeeded({ commit: false });
+			const migratedLegacyStorage = await migrateLegacyProjectStorageIfNeeded({
+				commit: false,
+			});
 			if (existsSync(resetMarkerPath)) {
 				return createEmptyStorageWithMetadata(false, "intentional-reset");
 			}
@@ -1796,7 +1833,9 @@ export async function withAccountAndFlaggedStorageTransaction<T>(
 			accountStorage: AccountStorageV3,
 			flaggedStorage: FlaggedAccountStorageV1,
 		): Promise<void> => {
-			const previousAccounts = cloneAccountStorageForPersistence(state.snapshot);
+			const previousAccounts = cloneAccountStorageForPersistence(
+				state.snapshot,
+			);
 			const nextAccounts = cloneAccountStorageForPersistence(accountStorage);
 			const nextFlagged = cloneFlaggedStorageForPersistence(flaggedStorage);
 			await saveAccountsUnlocked(nextAccounts);

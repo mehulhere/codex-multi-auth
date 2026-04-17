@@ -4,7 +4,19 @@
  * Types are inferred from schemas using z.infer.
  */
 import { z } from "zod";
+import { createLogger, type ScopedLogger } from "./logger.js";
 import { MODEL_FAMILIES, type ModelFamily } from "./prompts/codex.js";
+
+// Lazy-init so partial `vi.mock("../lib/logger.js", ...)` stubs in tests that
+// do not export `createLogger` (e.g. `test/auth-logging.test.ts`) continue to
+// load this module without crashing at import time.
+let schemaLogInstance: ScopedLogger | null = null;
+function schemaLog(): ScopedLogger | null {
+	if (schemaLogInstance) return schemaLogInstance;
+	if (typeof createLogger !== "function") return null;
+	schemaLogInstance = createLogger("schemas");
+	return schemaLogInstance;
+}
 
 // ============================================================================
 // Plugin Configuration Schema
@@ -24,10 +36,9 @@ export const PluginConfigSchema = z.object({
 	unsupportedCodexPolicy: z.enum(["strict", "fallback"]).optional(),
 	fallbackOnUnsupportedCodexModel: z.boolean().optional(),
 	fallbackToGpt52OnUnsupportedGpt53: z.boolean().optional(),
-	unsupportedCodexFallbackChain: z.record(
-		z.string(),
-		z.array(z.string().min(1)),
-	).optional(),
+	unsupportedCodexFallbackChain: z
+		.record(z.string(), z.array(z.string().min(1)))
+		.optional(),
 	tokenRefreshSkewMs: z.number().min(0).optional(),
 	rateLimitToastDebounceMs: z.number().min(0).optional(),
 	toastDurationMs: z.number().min(1000).optional(),
@@ -74,14 +85,24 @@ export type PluginConfigFromSchema = z.infer<typeof PluginConfigSchema>;
 /**
  * Source of the accountId used for ChatGPT requests.
  */
-export const AccountIdSourceSchema = z.enum(["token", "id_token", "org", "manual"]);
+export const AccountIdSourceSchema = z.enum([
+	"token",
+	"id_token",
+	"org",
+	"manual",
+]);
 
 export type AccountIdSourceFromSchema = z.infer<typeof AccountIdSourceSchema>;
 
 /**
  * Cooldown reason for temporary account suspension.
  */
-export const CooldownReasonSchema = z.enum(["auth-failure", "network-error", "server-error", "rate-limit"]);
+export const CooldownReasonSchema = z.enum([
+	"auth-failure",
+	"network-error",
+	"server-error",
+	"rate-limit",
+]);
 
 export type CooldownReasonFromSchema = z.infer<typeof CooldownReasonSchema>;
 
@@ -101,7 +122,10 @@ export type SwitchReasonFromSchema = z.infer<typeof SwitchReasonSchema>;
 /**
  * Rate limit state - maps model family to reset timestamp.
  */
-export const RateLimitStateV3Schema = z.record(z.string(), z.number().optional());
+export const RateLimitStateV3Schema = z.record(
+	z.string(),
+	z.number().optional(),
+);
 
 export type RateLimitStateV3FromSchema = z.infer<typeof RateLimitStateV3Schema>;
 
@@ -125,17 +149,29 @@ export const AccountMetadataV3Schema = z.object({
 	cooldownReason: CooldownReasonSchema.optional(),
 });
 
-export type AccountMetadataV3FromSchema = z.infer<typeof AccountMetadataV3Schema>;
+export type AccountMetadataV3FromSchema = z.infer<
+	typeof AccountMetadataV3Schema
+>;
 
 /**
  * Build activeIndexByFamily schema dynamically from MODEL_FAMILIES.
  */
-const modelFamilyEntries = MODEL_FAMILIES.map((family) => [family, z.number().optional()]);
-export const ActiveIndexByFamilySchema = z.object(
-	Object.fromEntries(modelFamilyEntries) as Record<ModelFamily, z.ZodOptional<z.ZodNumber>>
-).partial();
+const modelFamilyEntries = MODEL_FAMILIES.map((family) => [
+	family,
+	z.number().optional(),
+]);
+export const ActiveIndexByFamilySchema = z
+	.object(
+		Object.fromEntries(modelFamilyEntries) as Record<
+			ModelFamily,
+			z.ZodOptional<z.ZodNumber>
+		>,
+	)
+	.partial();
 
-export type ActiveIndexByFamilyFromSchema = z.infer<typeof ActiveIndexByFamilySchema>;
+export type ActiveIndexByFamilyFromSchema = z.infer<
+	typeof ActiveIndexByFamilySchema
+>;
 
 /**
  * Account storage V3 - current storage format with per-family active indices.
@@ -169,7 +205,9 @@ export const AccountMetadataV1Schema = z.object({
 	cooldownReason: CooldownReasonSchema.optional(),
 });
 
-export type AccountMetadataV1FromSchema = z.infer<typeof AccountMetadataV1Schema>;
+export type AccountMetadataV1FromSchema = z.infer<
+	typeof AccountMetadataV1Schema
+>;
 
 /**
  * Legacy V1 storage format for migration support.
@@ -190,7 +228,61 @@ export const AnyAccountStorageSchema = z.discriminatedUnion("version", [
 	AccountStorageV3Schema,
 ]);
 
-export type AnyAccountStorageFromSchema = z.infer<typeof AnyAccountStorageSchema>;
+export type AnyAccountStorageFromSchema = z.infer<
+	typeof AnyAccountStorageSchema
+>;
+
+// ============================================================================
+// Flagged Account Storage Schemas
+// ============================================================================
+
+/**
+ * Flagged account metadata V1 - extends V3 account metadata with flagging info.
+ * Mirrors the `FlaggedAccountMetadataV1` TS interface in `lib/storage.ts`.
+ * Uses `passthrough` so V3-compatible extra fields (workspaces, etc.) survive.
+ */
+export const FlaggedAccountMetadataV1Schema = AccountMetadataV3Schema.extend({
+	flaggedAt: z.number(),
+	flaggedReason: z.string().optional(),
+	lastError: z.string().optional(),
+}).passthrough();
+
+export type FlaggedAccountMetadataV1FromSchema = z.infer<
+	typeof FlaggedAccountMetadataV1Schema
+>;
+
+/**
+ * Flagged account storage V1 format (version: 1, accounts: []).
+ */
+export const FlaggedAccountStorageV1Schema = z.object({
+	version: z.literal(1),
+	accounts: z.array(FlaggedAccountMetadataV1Schema),
+});
+
+export type FlaggedAccountStorageV1FromSchema = z.infer<
+	typeof FlaggedAccountStorageV1Schema
+>;
+
+// ============================================================================
+// Accounts Journal (WAL) Entry Schema
+// ============================================================================
+
+/**
+ * WAL journal entry used to persist in-flight account storage state.
+ * `content` is a JSON string that parses into an `AnyAccountStorage` payload.
+ * Mirrors the internal `AccountsJournalEntry` type in `lib/storage.ts`.
+ */
+export const AccountsJournalEntrySchema = z.object({
+	version: z.literal(1),
+	createdAt: z.number().optional(),
+	path: z.string().optional(),
+	content: z.string(),
+	checksum: z.string(),
+});
+
+export type AccountsJournalEntryFromSchema = z.infer<
+	typeof AccountsJournalEntrySchema
+>;
 
 // ============================================================================
 // Token Result Schemas
@@ -207,7 +299,9 @@ export const TokenFailureReasonSchema = z.enum([
 	"unknown",
 ]);
 
-export type TokenFailureReasonFromSchema = z.infer<typeof TokenFailureReasonSchema>;
+export type TokenFailureReasonFromSchema = z.infer<
+	typeof TokenFailureReasonSchema
+>;
 
 /**
  * Successful token exchange result.
@@ -261,7 +355,9 @@ export const OAuthTokenResponseSchema = z.object({
 	scope: z.string().optional(),
 });
 
-export type OAuthTokenResponseFromSchema = z.infer<typeof OAuthTokenResponseSchema>;
+export type OAuthTokenResponseFromSchema = z.infer<
+	typeof OAuthTokenResponseSchema
+>;
 
 // ============================================================================
 // Helper Functions
@@ -271,7 +367,9 @@ export type OAuthTokenResponseFromSchema = z.infer<typeof OAuthTokenResponseSche
  * Safely parse plugin configuration with detailed error logging.
  * Returns null on failure, allowing graceful degradation.
  */
-export function safeParsePluginConfig(data: unknown): PluginConfigFromSchema | null {
+export function safeParsePluginConfig(
+	data: unknown,
+): PluginConfigFromSchema | null {
 	const result = PluginConfigSchema.safeParse(data);
 	if (!result.success) {
 		return null;
@@ -283,7 +381,9 @@ export function safeParsePluginConfig(data: unknown): PluginConfigFromSchema | n
  * Safely parse account storage (any version).
  * Returns null on failure, allowing graceful degradation.
  */
-export function safeParseAccountStorage(data: unknown): AnyAccountStorageFromSchema | null {
+export function safeParseAccountStorage(
+	data: unknown,
+): AnyAccountStorageFromSchema | null {
 	const result = AnyAccountStorageSchema.safeParse(data);
 	if (!result.success) {
 		return null;
@@ -295,7 +395,9 @@ export function safeParseAccountStorage(data: unknown): AnyAccountStorageFromSch
  * Safely parse V3 account storage specifically.
  * Returns null on failure.
  */
-export function safeParseAccountStorageV3(data: unknown): AccountStorageV3FromSchema | null {
+export function safeParseAccountStorageV3(
+	data: unknown,
+): AccountStorageV3FromSchema | null {
 	const result = AccountStorageV3Schema.safeParse(data);
 	if (!result.success) {
 		return null;
@@ -307,7 +409,9 @@ export function safeParseAccountStorageV3(data: unknown): AccountStorageV3FromSc
  * Safely parse token result.
  * Returns null on failure.
  */
-export function safeParseTokenResult(data: unknown): TokenResultFromSchema | null {
+export function safeParseTokenResult(
+	data: unknown,
+): TokenResultFromSchema | null {
 	const result = TokenResultSchema.safeParse(data);
 	if (!result.success) {
 		return null;
@@ -319,9 +423,89 @@ export function safeParseTokenResult(data: unknown): TokenResultFromSchema | nul
  * Safely parse OAuth token response from API.
  * Returns null on failure.
  */
-export function safeParseOAuthTokenResponse(data: unknown): OAuthTokenResponseFromSchema | null {
+export function safeParseOAuthTokenResponse(
+	data: unknown,
+): OAuthTokenResponseFromSchema | null {
 	const result = OAuthTokenResponseSchema.safeParse(data);
 	if (!result.success) {
+		return null;
+	}
+	return result.data;
+}
+
+/**
+ * Safely parse flagged account storage V1.
+ * Returns null on failure.
+ */
+export function safeParseFlaggedAccountStorageV1(
+	data: unknown,
+): FlaggedAccountStorageV1FromSchema | null {
+	const result = FlaggedAccountStorageV1Schema.safeParse(data);
+	if (!result.success) {
+		return null;
+	}
+	return result.data;
+}
+
+/**
+ * Safely parse accounts WAL journal entry.
+ * Returns null on failure.
+ */
+export function safeParseAccountsJournalEntry(
+	data: unknown,
+): AccountsJournalEntryFromSchema | null {
+	const result = AccountsJournalEntrySchema.safeParse(data);
+	if (!result.success) {
+		return null;
+	}
+	return result.data;
+}
+
+/**
+ * Fail-closed helper that wraps BOTH `JSON.parse` and Zod schema validation.
+ *
+ * Behavior:
+ * - Returns `null` if `raw` is not a string.
+ * - Returns `null` on `JSON.parse` `SyntaxError`, logging a debug-level message
+ *   tagged with `context` so callers can identify the boundary.
+ * - Returns `null` on schema validation failure, logging a debug-level message
+ *   with the first validation issues.
+ * - Returns the parsed + validated data on success.
+ *
+ * Use this at JSON.parse boundaries (disk reads, user imports, WAL replay) so
+ * schema drift and corrupt files fail closed instead of crashing the caller.
+ */
+export function safeParseJson<T>(
+	raw: unknown,
+	schema: z.ZodType<T>,
+	context = "safeParseJson",
+): T | null {
+	if (typeof raw !== "string") {
+		schemaLog()?.debug("safeParseJson received non-string input", {
+			context,
+			type: typeof raw,
+		});
+		return null;
+	}
+	let parsed: unknown;
+	try {
+		parsed = JSON.parse(raw);
+	} catch (error) {
+		schemaLog()?.debug("safeParseJson JSON.parse failed", {
+			context,
+			error: error instanceof Error ? error.message : String(error),
+		});
+		return null;
+	}
+	const result = schema.safeParse(parsed);
+	if (!result.success) {
+		schemaLog()?.debug("safeParseJson schema validation failed", {
+			context,
+			issues: result.error.issues.slice(0, 3).map((issue) => {
+				const path = issue.path.length > 0 ? `${issue.path.join(".")}: ` : "";
+				return `${path}${issue.message}`;
+			}),
+		});
 		return null;
 	}
 	return result.data;
@@ -331,7 +515,10 @@ export function safeParseOAuthTokenResponse(data: unknown): OAuthTokenResponseFr
  * Get validation errors as a flat array of strings.
  * Useful for logging and error messages.
  */
-export function getValidationErrors(schema: z.ZodType, data: unknown): string[] {
+export function getValidationErrors(
+	schema: z.ZodType,
+	data: unknown,
+): string[] {
 	const result = schema.safeParse(data);
 	if (result.success) {
 		return [];

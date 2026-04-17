@@ -1,5 +1,6 @@
 import { existsSync, promises as fs } from "node:fs";
 import { dirname } from "node:path";
+import { AnyAccountStorageSchema, safeParseJson } from "../schemas.js";
 import type { AccountStorageV3 } from "../storage.js";
 
 const EXPORT_RENAME_MAX_ATTEMPTS = 4;
@@ -89,11 +90,25 @@ export async function readImportFile(params: {
 	}
 
 	const content = await fs.readFile(params.resolvedPath, "utf-8");
+	// Try the strict Zod-guarded boundary first (fail-closed parse + schema).
+	// A successful parse hands Zod-validated data straight to the normalizer,
+	// making Zod authoritative for imports. On failure we distinguish
+	// SyntaxError (→ "Invalid JSON") from structurally-unknown payloads
+	// (→ pass through to `normalizeAccountStorage` for legacy shapes).
+	const validated = safeParseJson(
+		content,
+		AnyAccountStorageSchema,
+		"storage.readImportFile",
+	);
 	let imported: unknown;
-	try {
-		imported = JSON.parse(content);
-	} catch {
-		throw new Error(`Invalid JSON in import file: ${params.resolvedPath}`);
+	if (validated !== null) {
+		imported = validated;
+	} else {
+		try {
+			imported = JSON.parse(content) as unknown;
+		} catch {
+			throw new Error(`Invalid JSON in import file: ${params.resolvedPath}`);
+		}
 	}
 
 	const normalized = params.normalizeAccountStorage(imported);

@@ -1,5 +1,6 @@
 import { existsSync, promises as fs } from "node:fs";
 import { dirname } from "node:path";
+import { FlaggedAccountStorageV1Schema, safeParseJson } from "../schemas.js";
 import type { FlaggedAccountStorageV1 } from "../storage.js";
 import { readFileWithRetry } from "./flagged-storage-file.js";
 
@@ -25,6 +26,29 @@ function isValidFlaggedStorageCandidate(
 }
 
 /**
+ * Parse flagged account storage content with Zod as the authoritative
+ * validator while preserving legacy JSON-level recovery semantics.
+ *
+ * - On Zod-valid JSON: returns the validated payload directly (Zod wins).
+ * - On JSON-valid but schema-invalid: returns the raw JSON so the caller can
+ *   still invoke `normalizeFlaggedStorage` + `isValidFlaggedStorageCandidate`
+ *   (preserves legacy partial-recovery behavior).
+ * - On `SyntaxError`: the error propagates to outer `try/catch` blocks which
+ *   log + fall back to backups (same as pre-migration behavior).
+ */
+function parseFlaggedStorageContent(content: string, context: string): unknown {
+	const validated = safeParseJson(
+		content,
+		FlaggedAccountStorageV1Schema,
+		context,
+	);
+	if (validated !== null) {
+		return validated;
+	}
+	return JSON.parse(content) as unknown;
+}
+
+/**
  * Return the ordered backup paths consulted for flagged-account recovery.
  */
 function getFlaggedBackupPaths(path: string): string[] {
@@ -41,11 +65,7 @@ async function unlinkWithRetry(candidatePath: string): Promise<void> {
 			if (code === "ENOENT") {
 				return;
 			}
-			if (
-				!code ||
-				!RETRYABLE_UNLINK_CODES.has(code) ||
-				attempt >= 4
-			) {
+			if (!code || !RETRYABLE_UNLINK_CODES.has(code) || attempt >= 4) {
 				throw error;
 			}
 			await new Promise((resolve) => setTimeout(resolve, 10 * 2 ** attempt));
@@ -70,67 +90,80 @@ export async function loadFlaggedAccountsState(params: {
 	if (existsSync(params.resetMarkerPath)) {
 		return empty;
 	}
-	const loadFlaggedBackup = async (): Promise<FlaggedAccountStorageV1 | null> => {
-		for (const backupPath of getFlaggedBackupPaths(params.path)) {
-			if (!existsSync(backupPath)) {
-				continue;
-			}
-			try {
-				const backupContent = await readFileWithRetry(backupPath, {
-					readFile: fs.readFile,
-				});
-				const backupData = JSON.parse(backupContent) as unknown;
-				const recovered = params.normalizeFlaggedStorage(backupData);
-				if (!isValidFlaggedStorageCandidate(backupData, recovered)) {
-					params.logError("Skipping invalid flagged account backup payload", {
-						from: backupPath,
-						to: params.path,
-					});
+	const loadFlaggedBackup =
+		async (): Promise<FlaggedAccountStorageV1 | null> => {
+			for (const backupPath of getFlaggedBackupPaths(params.path)) {
+				if (!existsSync(backupPath)) {
 					continue;
 				}
-				if (existsSync(params.resetMarkerPath)) {
-					return empty;
-				}
-				if (recovered.accounts.length > 0) {
-					try {
-						const persisted = await params.persistRecoveredBackup(
-							recovered,
-							params.resetMarkerPath,
-						);
-						if (!persisted) {
-							return empty;
-						}
-					} catch (persistError) {
-						params.logError("Failed to persist recovered flagged account storage", {
+				try {
+					const backupContent = await readFileWithRetry(backupPath, {
+						readFile: fs.readFile,
+					});
+					const backupData = parseFlaggedStorageContent(
+						backupContent,
+						"loadFlaggedAccountsState.backup",
+					);
+					const recovered = params.normalizeFlaggedStorage(backupData);
+					if (!isValidFlaggedStorageCandidate(backupData, recovered)) {
+						params.logError("Skipping invalid flagged account backup payload", {
 							from: backupPath,
 							to: params.path,
-							error: String(persistError),
 						});
-						return recovered;
+						continue;
 					}
+					if (existsSync(params.resetMarkerPath)) {
+						return empty;
+					}
+					if (recovered.accounts.length > 0) {
+						try {
+							const persisted = await params.persistRecoveredBackup(
+								recovered,
+								params.resetMarkerPath,
+							);
+							if (!persisted) {
+								return empty;
+							}
+						} catch (persistError) {
+							params.logError(
+								"Failed to persist recovered flagged account storage",
+								{
+									from: backupPath,
+									to: params.path,
+									error: String(persistError),
+								},
+							);
+							return recovered;
+						}
+					}
+					params.logInfo("Recovered flagged account storage from backup", {
+						from: backupPath,
+						to: params.path,
+						accounts: recovered.accounts.length,
+					});
+					return recovered;
+				} catch (backupError) {
+					params.logError(
+						"Failed to recover flagged account storage from backup",
+						{
+							from: backupPath,
+							to: params.path,
+							error: String(backupError),
+						},
+					);
 				}
-				params.logInfo("Recovered flagged account storage from backup", {
-					from: backupPath,
-					to: params.path,
-					accounts: recovered.accounts.length,
-				});
-				return recovered;
-			} catch (backupError) {
-				params.logError("Failed to recover flagged account storage from backup", {
-					from: backupPath,
-					to: params.path,
-					error: String(backupError),
-				});
 			}
-		}
-		return null;
-	};
+			return null;
+		};
 
 	try {
 		const content = await readFileWithRetry(params.path, {
 			readFile: fs.readFile,
 		});
-		const data = JSON.parse(content) as unknown;
+		const data = parseFlaggedStorageContent(
+			content,
+			"loadFlaggedAccountsState.primary",
+		);
 		const loaded = params.normalizeFlaggedStorage(data);
 		if (!isValidFlaggedStorageCandidate(data, loaded)) {
 			throw new Error("Invalid flagged account storage payload");
@@ -163,7 +196,10 @@ export async function loadFlaggedAccountsState(params: {
 		const legacyContent = await readFileWithRetry(params.legacyPath, {
 			readFile: fs.readFile,
 		});
-		const legacyData = JSON.parse(legacyContent) as unknown;
+		const legacyData = parseFlaggedStorageContent(
+			legacyContent,
+			"loadFlaggedAccountsState.legacy",
+		);
 		const migrated = params.normalizeFlaggedStorage(legacyData);
 		if (migrated.accounts.length > 0) {
 			await params.saveFlaggedAccounts(migrated);
@@ -268,10 +304,7 @@ export async function clearFlaggedAccountsOnDisk(params: {
 		});
 		throw error;
 	}
-	for (const candidate of [
-		params.path,
-		...params.backupPaths,
-	]) {
+	for (const candidate of [params.path, ...params.backupPaths]) {
 		try {
 			await unlinkWithRetry(candidate);
 		} catch (error) {

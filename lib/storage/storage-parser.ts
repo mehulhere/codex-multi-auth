@@ -1,5 +1,9 @@
 import { promises as fs } from "node:fs";
-import { AnyAccountStorageSchema, getValidationErrors } from "../schemas.js";
+import {
+	AnyAccountStorageSchema,
+	getValidationErrors,
+	safeParseJson,
+} from "../schemas.js";
 import type { AccountStorageV3 } from "../storage.js";
 
 export function parseAndNormalizeStorage(
@@ -19,6 +23,23 @@ export function parseAndNormalizeStorage(
 	return { normalized, storedVersion, schemaErrors };
 }
 
+/**
+ * Load account storage from disk through the Zod-guarded JSON boundary.
+ *
+ * Semantics:
+ * - `fs.readFile` errors (ENOENT, etc.) still propagate unchanged.
+ * - `SyntaxError` from `JSON.parse` is also re-thrown unchanged. Callers in
+ *   `lib/storage.ts` (`loadAccountsInternal`, `loadAccountsFromJournal`,
+ *   `diagnoseStorageHealth`, backup recovery) rely on `SyntaxError` to trigger
+ *   WAL / backup recovery paths. Converting parse failures to `null` would
+ *   silently skip recovery and is explicitly preserved as a throw contract.
+ * - On happy path, Zod is the authoritative normalizer: `AnyAccountStorageSchema`
+ *   validates the on-disk shape before `parseAndNormalizeStorage` runs.
+ * - When JSON parses cleanly but violates `AnyAccountStorageSchema`, we still
+ *   fall back through the TS-side `normalizeAccountStorage` so legacy
+ *   unknown-shape files can be surfaced with schema warnings (non-zero
+ *   `schemaErrors`).
+ */
 export async function loadAccountsFromPath(
 	path: string,
 	deps: {
@@ -31,6 +52,28 @@ export async function loadAccountsFromPath(
 	schemaErrors: string[];
 }> {
 	const content = await fs.readFile(path, "utf-8");
+
+	// Run the Zod-guarded JSON boundary first. Returns null on either a
+	// `SyntaxError` or a schema mismatch; we disambiguate below so the
+	// `SyntaxError` contract keeps propagating to callers that rely on it
+	// for WAL / backup recovery.
+	const validated = safeParseJson(
+		content,
+		AnyAccountStorageSchema,
+		"storage-parser.loadAccountsFromPath",
+	);
+	if (validated !== null) {
+		return parseAndNormalizeStorage(
+			validated,
+			deps.normalizeAccountStorage,
+			deps.isRecord,
+		);
+	}
+
+	// `validated === null`: either SyntaxError or schema mismatch.
+	// A raw JSON.parse distinguishes them: SyntaxError propagates to preserve
+	// existing recovery semantics; otherwise fall through to the TS normalizer
+	// (legacy unknown-shape path, surfaced via `schemaErrors`).
 	const data = JSON.parse(content) as unknown;
 	return parseAndNormalizeStorage(
 		data,

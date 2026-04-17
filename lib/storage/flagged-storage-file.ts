@@ -1,3 +1,4 @@
+import { FlaggedAccountStorageV1Schema, safeParseJson } from "../schemas.js";
 import type { FlaggedAccountStorageV1 } from "../storage.js";
 import { sleep } from "../utils.js";
 
@@ -36,6 +37,20 @@ export async function loadFlaggedAccountsFromFile(
 	},
 ): Promise<FlaggedAccountStorageV1> {
 	const content = await readFileWithRetry(path, deps);
+	// Fail-closed JSON boundary: Zod is the primary validator. On happy path
+	// the validated payload flows straight to the TS normalizer (Zod wins).
+	// On schema or syntax failure we fall through to `JSON.parse` so:
+	//   - structurally-unknown legacy payloads still reach the normalizer, and
+	//   - `SyntaxError` continues to propagate to outer callers in
+	//     `flagged-storage-io.ts`, which log + fall back to backups.
+	const validated = safeParseJson(
+		content,
+		FlaggedAccountStorageV1Schema,
+		"storage.loadFlaggedAccountsFromFile",
+	);
+	if (validated !== null) {
+		return deps.normalizeFlaggedStorage(validated);
+	}
 	const data = JSON.parse(content) as unknown;
 	return deps.normalizeFlaggedStorage(data);
 }

@@ -1,5 +1,13 @@
+import {
+	AccountsJournalEntrySchema,
+	AnyAccountStorageSchema,
+	safeParseJson,
+} from "../schemas.js";
 import type { FlaggedAccountStorageV1 } from "../storage.js";
-import type { BackupSnapshotMetadata, SnapshotStats } from "./backup-metadata.js";
+import type {
+	BackupSnapshotMetadata,
+	SnapshotStats,
+} from "./backup-metadata.js";
 
 export async function describeAccountsWalSnapshot(
 	path: string,
@@ -21,8 +29,12 @@ export async function describeAccountsWalSnapshot(
 	}
 	try {
 		const raw = await deps.readFile(path, "utf-8");
-		const parsed = JSON.parse(raw) as unknown;
-		if (!deps.isRecord(parsed)) {
+		const entry = safeParseJson(
+			raw,
+			AccountsJournalEntrySchema,
+			"storage.snapshot-inspectors.accounts-wal",
+		);
+		if (!entry || deps.computeSha256(entry.content) !== entry.checksum) {
 			return {
 				kind: "accounts-wal",
 				path,
@@ -32,28 +44,30 @@ export async function describeAccountsWalSnapshot(
 				mtimeMs: stats.mtimeMs,
 			};
 		}
-		const entry = parsed as Partial<{
-			version: 1;
-			content: string;
-			checksum: string;
-		}>;
-		if (
-			entry.version !== 1 ||
-			typeof entry.content !== "string" ||
-			typeof entry.checksum !== "string" ||
-			deps.computeSha256(entry.content) !== entry.checksum
-		) {
-			return {
-				kind: "accounts-wal",
-				path,
-				exists: true,
-				valid: false,
-				bytes: stats.bytes,
-				mtimeMs: stats.mtimeMs,
-			};
+		const validatedInner = safeParseJson(
+			entry.content,
+			AnyAccountStorageSchema,
+			"storage.snapshot-inspectors.accounts-wal.content",
+		);
+		let innerData: unknown;
+		if (validatedInner !== null) {
+			innerData = validatedInner;
+		} else {
+			try {
+				innerData = JSON.parse(entry.content) as unknown;
+			} catch {
+				return {
+					kind: "accounts-wal",
+					path,
+					exists: true,
+					valid: false,
+					bytes: stats.bytes,
+					mtimeMs: stats.mtimeMs,
+				};
+			}
 		}
 		const { normalized, storedVersion, schemaErrors } =
-			deps.parseAndNormalizeStorage(JSON.parse(entry.content) as unknown);
+			deps.parseAndNormalizeStorage(innerData);
 		return {
 			kind: "accounts-wal",
 			path,
