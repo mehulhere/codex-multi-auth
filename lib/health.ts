@@ -1,6 +1,34 @@
 import { getCircuitBreaker, type CircuitState } from "./circuit-breaker.js";
 import { getAccountIdentityKey } from "./storage/identity.js";
 
+// AUDIT-M08 / D-04 docstring (master repository audit, Oracle-confirmed):
+// --------------------------------------------------------------------------
+// This module is a PURE SHAPE-TRANSFORMATION UTILITY. Callers pass an
+// already-flattened accounts array with the fields defined in the public
+// `getAccountHealth` parameter shape below. It is deliberately decoupled
+// from the live AccountManager: that keeps the function easy to test, and
+// lets external consumers (dashboards, diagnostics scripts, JSON exporters)
+// build the input from any source without taking a hard dependency on the
+// manager singleton.
+//
+// HOWEVER, the parameter shape uses field names that do NOT exactly match
+// ManagedAccount in lib/accounts.ts:
+//
+//   getAccountHealth input   ManagedAccount field
+//   ----------------------   --------------------
+//   rateLimitedUntil         <computed from rateLimitResetTimes per family>
+//   cooldownUntil            coolingDownUntil
+//   lastUsedAt               lastUsed
+//   health                   <computed from getHealthTracker().getScore()>
+//
+// Callers are responsible for flattening ManagedAccount → the input shape
+// via a small adapter. If a future refactor wants a single call site that
+// reads straight from AccountManager, add a `getPluginHealthFromManager(
+// manager: AccountManager): PluginHealth` function here and implement the
+// flattening inline. Do NOT change the signature of the existing
+// `getAccountHealth` function without a deprecation cycle — it is exported
+// via lib/index.ts and is considered public API.
+
 export interface AccountHealth {
 	index: number;
 	email?: string;
