@@ -9,14 +9,42 @@ This top-level changelog preserves the foundational `0.x` milestones and points 
 
 ## [Unreleased]
 
+## [1.3.0] - 2026-04-17
+
+Phase 1 post-audit hardening: 20 focused PRs + 7 audit-fix commits + 1 follow-up PR (#413). 3527 tests (+182 from v1.2.7). Zero breaking changes, one opt-in flag (`routingMutex`). See [docs/releases/v1.3.0.md](docs/releases/v1.3.0.md) for full details.
+
 ### Added
 
 - `routingMutex` plugin config flag (PR-N / R4) with values `"enabled" | "legacy"` (default `"legacy"`). When `"enabled"`, cursor-mutation sites in the account pool (`markSwitchedLocked`, `markAccountCoolingDownLocked`, `setActiveIndexLocked`) are serialized through a promise-chain async mutex in `lib/routing-mutex.ts`, closing the TOCTOU race described in design items D-02/D-09. The flag defaults to `"legacy"` for one full release cycle so existing deployments see zero behavior change; users can opt in via settings or the `CODEX_AUTH_ROUTING_MUTEX=enabled` environment variable. A new `SelectionRecord` type is threaded out of the rotation decision path so the fetch loop can hand structured selection metadata to observability, why-selected, and failure-policy consumers.
+- `codex auth why-selected [--now|--last] [--json]` diagnostic command surfacing per-candidate hybrid scoring breakdown (PR-P).
+- `codex auth verify [--paths|--flagged|--all] [--json]` self-test command walking the storage path resolution chain and exercising the `resolvePath()` sandbox (PR-P). `verify-flagged` retained as back-compat alias.
+- Zod `safeParseJson<T>(raw, schema, context)` helper; 12 storage-read sites migrated to schema-validated JSON parsing with `AnyAccountStorageSchema` as authoritative normalizer (PR-L / AUDIT-M20).
+- New types exported: `SelectionRecord`, `HybridSelectionCandidateTrace`, `HybridSelectionTraceResult`, `FlaggedAccountStorageV1Schema`, `AccountsJournalEntrySchema`.
+- `docs/audits/MASTER_AUDIT.md` + `docs/audits/evidence/findings-index.json` published (PR #393).
+- Phase 1 regression suite locking in audit invariants (PKCE S256, state entropy, SSE failover) (PR-S / AUDIT-L01).
+
+### Changed
+
+- `resolvePath()` now rejects lookalike-prefix paths (e.g. `HomeX` vs `Home/`) via `path.relative()` comparison, closing a sandbox-escape class (PR-A / AUDIT-C1 / AUDIT-H1).
+- OAuth URLs redacted in user-facing login output to prevent token leakage through clipboard or terminal scrollback (PR-B / AUDIT-H4).
+- OAuth callback host unified through `AUTH_REDIRECT` SSOT (`127.0.0.1:1455`) across bind, copy, and HTML; 4 duplicate hardcoded sites removed (PR-C / AUDIT-H5 / M14 / M30).
+- Hybrid selector now returns `null` when no accounts are available instead of a stale fallback (PR-D / AUDIT-H2).
+- Short-429 retry marks the account unavailable BEFORE the retry sleep, closing a TOCTOU race between two requests targeting the same rate-limited account (PR-E / AUDIT-H3).
+- Active-account pointer normalized on disable/remove; residual `removeAccount` last-in-family dangle resolved in follow-up #413 (PR-F / #413 / AUDIT-H10).
+- Recovery storage migrated to atomic write + retry-safe delete pattern; atomic write migration completed for `injectTextPart` / `prependThinkingPart`; `renameSync` retries on `EBUSY`/`EPERM` (PR-H / audit-fix `f877c85` / AUDIT-M01).
+- Account-clear ordering writes the reset marker BEFORE deletion and retries `EPERM` on read (PR-I / AUDIT-M04 / M05).
+- Per-project vs CLI-sync config conflict surfaced to the user instead of silently bypassing project-scoped isolation (PR-J / AUDIT-M09).
+- Malformed SSE JSON chunks surface as structured warnings instead of silent buffer drops; 10MB buffer cap documented; deprecation/sunset headers logged uniformly across success and failure paths (PR-K / AUDIT-H9 / M16 / M18 / M34).
+- `lib/codex-manager/settings-hub.ts` (808 LOC) split into 5 focused sub-modules under `lib/codex-manager/settings-hub/` (`dashboard`, `backend`, `experimental`, `shared`, `index`), each <500 LOC; original file retained as a 9-line re-export stub for test compatibility (PR-M / AUDIT-M24 / G-01 / JN-03).
+- `getAccountHealth()` now reads the tracker directly; field-name drift vs `ManagedAccount` documented (PR-O / AUDIT-M08 / D-04).
+- `npm run pack:check` builds first; tests migrated to `os.tmpdir()`; 6 stray `tmp*` directories removed from repo root (PR-G / AUDIT-H7 / M31).
+- Dual-linter scope documented: ESLint in lint-staged, Biome manual, CI enforcement via `ci.yml` + `pr-ci.yml`; husky `prepare` hook side effect documented (PR-T / audit-fix `d9f7253` / AUDIT-M21 / M22 / M23 partial).
+- `lib/AGENTS.md` staleness fixed; `docs/reference/storage-paths.md` `deriveProjectKey` typo corrected (PR-Q / AUDIT-H8 / M32 / L04).
 
 ### Rollout plan
 
-- Release N: flag shipped with default `"legacy"`. Advanced users opt in via config or env.
-- Release N+1: evaluate enablement based on telemetry and flip default to `"enabled"`.
+- v1.3.0: `routingMutex` shipped with default `"legacy"`. Advanced users opt in via config or env.
+- v1.4.0: evaluate enablement based on telemetry and flip default to `"enabled"`.
 
 ## [0.1.8] - 2026-03-11
 
@@ -192,3 +220,4 @@ Historical entries from pre-`0.1.0` internal iteration cycles are preserved in:
 [0.1.5]: https://github.com/ndycode/codex-multi-auth/releases/tag/v0.1.5
 [0.1.6]: https://github.com/ndycode/codex-multi-auth/releases/tag/v0.1.6
 [0.1.7]: https://github.com/ndycode/codex-multi-auth/releases/tag/v0.1.7
+[1.3.0]: https://github.com/ndycode/codex-multi-auth/releases/tag/v1.3.0
