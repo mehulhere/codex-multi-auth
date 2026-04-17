@@ -36,6 +36,44 @@ function validatePathId(id: string, name: string): void {
 const RETRYABLE_FS_CODES = new Set(["EBUSY", "EPERM", "ENOTEMPTY", "EAGAIN"]);
 
 /**
+ * Rename `source` over `target` with bounded retry on transient Windows
+ * filesystem lock errors (AV, indexer, concurrent reader). Matches the
+ * retry convention used by `renameFileWithRetry` in lib/storage.ts:281
+ * (max 4 attempts, exponential backoff 10/20/40/80ms).
+ *
+ * Uses a synchronous wait budget because atomicWriteFileSync is called from
+ * synchronous recovery code paths where async rename is not available.
+ */
+function renameSyncWithRetry(source: string, target: string): void {
+	const maxAttempts = 4;
+	let lastError: unknown;
+	for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+		try {
+			renameSync(source, target);
+			return;
+		} catch (error) {
+			lastError = error;
+			const code = (error as NodeJS.ErrnoException | undefined)?.code;
+			if (!code || !RETRYABLE_FS_CODES.has(code)) {
+				throw error;
+			}
+			if (attempt === maxAttempts - 1) {
+				break;
+			}
+			// Exponential backoff: 10, 20, 40 ms before the next attempt.
+			// Synchronous wait is acceptable here because the recovery helper
+			// is already on a sync code path and retries only fire on genuine
+			// Windows lock contention.
+			const waitUntil = Date.now() + 10 * 2 ** attempt;
+			while (Date.now() < waitUntil) {
+				// busy-wait within budget (cumulative max ~70ms across attempts)
+			}
+		}
+	}
+	throw lastError as Error;
+}
+
+/**
  * Atomic write: stage the payload to a sibling temp file, then `rename` over
  * the target. Readers either see the old file or the new file — never a
  * partially-written payload.
@@ -43,6 +81,10 @@ const RETRYABLE_FS_CODES = new Set(["EBUSY", "EPERM", "ENOTEMPTY", "EAGAIN"]);
  * Cleans up the staged file on failure so retries do not accumulate
  * `*.tmp.<rand>` droppings next to the target. Closes AUDIT-M01 / E-03 for
  * the recovery module, matching the pattern already in use by lib/storage.ts.
+ *
+ * The rename step uses `renameSyncWithRetry` so that transient Windows
+ * EBUSY/EPERM/ENOTEMPTY/EAGAIN faults from antivirus or file-indexer locks
+ * do not silently drop the payload. See AUDIT-M01 HIGH-2.
  */
 function atomicWriteFileSync(
 	path: string,
@@ -53,7 +95,7 @@ function atomicWriteFileSync(
 	const tempPath = `${path}${tempSuffix}`;
 	try {
 		writeFileSync(tempPath, data, { mode: options.mode ?? 0o600 });
-		renameSync(tempPath, path);
+		renameSyncWithRetry(tempPath, path);
 	} catch (error) {
 		try {
 			unlinkSync(tempPath);
@@ -247,7 +289,7 @@ export function injectTextPart(
 			synthetic: true,
 		};
 
-		writeFileSync(
+		atomicWriteFileSync(
 			join(partDir, `${partId}.json`),
 			JSON.stringify(part, null, 2),
 			{ mode: 0o600 },
@@ -348,7 +390,7 @@ export function prependThinkingPart(
 			synthetic: true,
 		};
 
-		writeFileSync(
+		atomicWriteFileSync(
 			join(partDir, `${partId}.json`),
 			JSON.stringify(part, null, 2),
 			{ mode: 0o600 },

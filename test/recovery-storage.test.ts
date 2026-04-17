@@ -355,10 +355,18 @@ describe("RecoveryStorage", () => {
 			expect(fsMock.mkdirSync).toHaveBeenCalledWith(partDir, {
 				recursive: true,
 			});
+			// AUDIT-M01 / R6 atomic recovery writes: injectTextPart now stages
+			// the payload to a .tmp.<rand> sibling and renames it over the
+			// final prt_*.json target. writeFileSync lands on the temp path;
+			// renameSync moves it onto the final part filename.
 			expect(fsMock.writeFileSync).toHaveBeenCalledTimes(1);
+			expect(fsMock.renameSync).toHaveBeenCalledTimes(1);
 
-			const [filePath, payload] = fsMock.writeFileSync.mock.calls[0] ?? [];
-			expect(filePath).toMatch(/prt_[0-9a-f]+[a-z0-9]+\.json$/);
+			const [tempPath, payload] = fsMock.writeFileSync.mock.calls[0] ?? [];
+			expect(tempPath).toMatch(/prt_[0-9a-f]+[a-z0-9]+\.json\.tmp\./);
+			const [renameFrom, renameTo] = fsMock.renameSync.mock.calls[0] ?? [];
+			expect(renameFrom).toBe(tempPath);
+			expect(renameTo).toMatch(/prt_[0-9a-f]+[a-z0-9]+\.json$/);
 			const parsed = JSON.parse(payload);
 			expect(parsed).toMatchObject({
 				sessionID,
@@ -560,9 +568,18 @@ describe("RecoveryStorage", () => {
 			expect(fsMock.mkdirSync).toHaveBeenCalledWith(partDir, {
 				recursive: true,
 			});
+			// AUDIT-M01 / R6 atomic recovery writes: prependThinkingPart now
+			// stages the payload to a .tmp.<rand> sibling and renames it over
+			// the final prt_0000000000_thinking.json target.
+			expect(fsMock.writeFileSync).toHaveBeenCalledTimes(1);
+			expect(fsMock.renameSync).toHaveBeenCalledTimes(1);
 
-			const [filePath, payload] = fsMock.writeFileSync.mock.calls[0] ?? [];
-			expect(filePath).toBe(join(partDir, "prt_0000000000_thinking.json"));
+			const finalPath = join(partDir, "prt_0000000000_thinking.json");
+			const [tempPath, payload] = fsMock.writeFileSync.mock.calls[0] ?? [];
+			expect(tempPath).toMatch(/prt_0000000000_thinking\.json\.tmp\./);
+			const [renameFrom, renameTo] = fsMock.renameSync.mock.calls[0] ?? [];
+			expect(renameFrom).toBe(tempPath);
+			expect(renameTo).toBe(finalPath);
 			expect(JSON.parse(payload)).toMatchObject({
 				id: "prt_0000000000_thinking",
 				sessionID,
