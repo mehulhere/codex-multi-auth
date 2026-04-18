@@ -495,6 +495,71 @@ describe("unified settings", () => {
 		}
 	});
 
+	it("retries sync rename on retryable fs errors without Atomics.wait", async () => {
+		const atomicsWaitSpy = vi.spyOn(Atomics, "wait");
+		vi.resetModules();
+		vi.doMock("node:fs", async () => {
+			const actual = await vi.importActual<typeof import("node:fs")>("node:fs");
+			let first = true;
+			return {
+				...actual,
+				renameSync: (...args: Parameters<typeof actual.renameSync>) => {
+					if (first) {
+						first = false;
+						const error = new Error("busy") as NodeJS.ErrnoException;
+						error.code = "EBUSY";
+						throw error;
+					}
+					return actual.renameSync(...args);
+				},
+			};
+		});
+		try {
+			const { saveUnifiedPluginConfigSync, loadUnifiedPluginConfigSync } =
+				await import("../lib/unified-settings.js");
+			saveUnifiedPluginConfigSync({ codexMode: true, retries: 9 });
+			expect(atomicsWaitSpy).not.toHaveBeenCalled();
+			expect(loadUnifiedPluginConfigSync()).toEqual({
+				codexMode: true,
+				retries: 9,
+			});
+		} finally {
+			vi.doUnmock("node:fs");
+			vi.resetModules();
+			atomicsWaitSpy.mockRestore();
+		}
+	});
+
+	it("retries sync backup snapshot copy on retryable fs errors without Atomics.wait", async () => {
+		const atomicsWaitSpy = vi.spyOn(Atomics, "wait");
+		vi.resetModules();
+		vi.doMock("node:fs", async () => {
+			const actual = await vi.importActual<typeof import("node:fs")>("node:fs");
+			let first = true;
+			return {
+				...actual,
+				copyFileSync: (...args: Parameters<typeof actual.copyFileSync>) => {
+					if (first) {
+						first = false;
+						const error = new Error("perm") as NodeJS.ErrnoException;
+						error.code = "EPERM";
+						throw error;
+					}
+					return actual.copyFileSync(...args);
+				},
+			};
+		});
+		try {
+			const { saveUnifiedPluginConfigSync } = await import("../lib/unified-settings.js");
+			saveUnifiedPluginConfigSync({ codexMode: true, retries: 1 });
+			expect(atomicsWaitSpy).not.toHaveBeenCalled();
+		} finally {
+			vi.doUnmock("node:fs");
+			vi.resetModules();
+			atomicsWaitSpy.mockRestore();
+		}
+	});
+
 	it("cleans async temp file when rename fails with non-retryable code", async () => {
 		const { saveUnifiedPluginConfig, getUnifiedSettingsPath } = await import(
 			"../lib/unified-settings.js"

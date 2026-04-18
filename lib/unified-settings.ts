@@ -189,7 +189,6 @@ function trySnapshotUnifiedSettingsBackupSync(options?: {
 			if (!isRetryableFsError(error) || attempt >= 4) {
 				return;
 			}
-			Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10 * 2 ** attempt);
 		}
 	}
 }
@@ -349,7 +348,6 @@ function writeSettingsRecordSync(
 				if (!isRetryableFsError(error) || attempt >= 4) {
 					throw error;
 				}
-				Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10 * 2 ** attempt);
 			}
 		}
 	} finally {
