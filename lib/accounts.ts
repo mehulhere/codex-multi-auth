@@ -866,6 +866,16 @@ export class AccountManager {
 	): void {
 		account.lastSwitchReason = reason;
 		this.currentAccountIndexByFamily[family] = account.index;
+		// HI-02: keep cursorByFamily in lockstep so subsequent round-robin
+		// passes resume AFTER the just-switched account, matching the
+		// convention used in getCurrentOrNextForFamilyHybrid / the
+		// getCurrentOrNextForFamily inner loop. Without this, the cursor
+		// still points at the pre-switch position and the next selection
+		// can re-pick or skip the freshly marked account.
+		const count = this.accounts.length;
+		if (count > 0) {
+			this.cursorByFamily[family] = (account.index + 1) % count;
+		}
 	}
 
 	/**
@@ -900,6 +910,13 @@ export class AccountManager {
 		return withRoutingMutex(this.routingMutexMode, () => {
 			account.lastSwitchReason = reason;
 			this.currentAccountIndexByFamily[family] = account.index;
+			// HI-02: keep cursorByFamily in lockstep with the active-index
+			// mutation so the mutex-serialized variant preserves the same
+			// round-robin invariant as the legacy `markSwitched` path.
+			const count = this.accounts.length;
+			if (count > 0) {
+				this.cursorByFamily[family] = (account.index + 1) % count;
+			}
 			const trackerKey = getRuntimeTrackerKey(account);
 			const healthTracker = getHealthTracker();
 			const tokenTracker = getTokenTracker();
