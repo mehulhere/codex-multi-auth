@@ -1,6 +1,6 @@
 import { promises as fs } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { removeWithRetry } from "./helpers/remove-with-retry.js";
 
@@ -492,6 +492,80 @@ describe("unified settings", () => {
 			});
 		} finally {
 			renameSpy.mockRestore();
+		}
+	});
+
+	it("retries sync rename on retryable fs errors without Atomics.wait", async () => {
+		const atomicsWaitSpy = vi.spyOn(Atomics, "wait");
+		vi.resetModules();
+		vi.doMock("node:fs", async () => {
+			const actual = await vi.importActual<typeof import("node:fs")>("node:fs");
+			let first = true;
+			return {
+				...actual,
+				renameSync: (...args: Parameters<typeof actual.renameSync>) => {
+					if (first) {
+						first = false;
+						const error = new Error("busy") as NodeJS.ErrnoException;
+						error.code = "EBUSY";
+						throw error;
+					}
+					return actual.renameSync(...args);
+				},
+			};
+		});
+		try {
+			const { saveUnifiedPluginConfigSync, loadUnifiedPluginConfigSync } =
+				await import("../lib/unified-settings.js");
+			saveUnifiedPluginConfigSync({ codexMode: true, retries: 9 });
+			expect(atomicsWaitSpy).not.toHaveBeenCalled();
+			expect(loadUnifiedPluginConfigSync()).toEqual({
+				codexMode: true,
+				retries: 9,
+			});
+		} finally {
+			vi.doUnmock("node:fs");
+			vi.resetModules();
+			atomicsWaitSpy.mockRestore();
+		}
+	});
+
+	it("retries sync backup snapshot copy on retryable fs errors without Atomics.wait", async () => {
+		const { getUnifiedSettingsPath } = await import("../lib/unified-settings.js");
+		const settingsPath = getUnifiedSettingsPath();
+		await fs.mkdir(dirname(settingsPath), { recursive: true });
+		await fs.writeFile(
+			settingsPath,
+			JSON.stringify({ version: 1, pluginConfig: { codexMode: true } }, null, 2),
+			"utf8",
+		);
+
+		const atomicsWaitSpy = vi.spyOn(Atomics, "wait");
+		vi.resetModules();
+		vi.doMock("node:fs", async () => {
+			const actual = await vi.importActual<typeof import("node:fs")>("node:fs");
+			let first = true;
+			return {
+				...actual,
+				copyFileSync: (...args: Parameters<typeof actual.copyFileSync>) => {
+					if (first) {
+						first = false;
+						const error = new Error("perm") as NodeJS.ErrnoException;
+						error.code = "EPERM";
+						throw error;
+					}
+					return actual.copyFileSync(...args);
+				},
+			};
+		});
+		try {
+			const { saveUnifiedPluginConfigSync } = await import("../lib/unified-settings.js");
+			saveUnifiedPluginConfigSync({ codexMode: true, retries: 1 });
+			expect(atomicsWaitSpy).not.toHaveBeenCalled();
+		} finally {
+			vi.doUnmock("node:fs");
+			vi.resetModules();
+			atomicsWaitSpy.mockRestore();
 		}
 	});
 
