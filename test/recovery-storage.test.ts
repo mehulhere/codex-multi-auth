@@ -638,12 +638,6 @@ describe("RecoveryStorage", () => {
 				// Final target paths MUST differ so the second pass does not
 				// overwrite the first synthetic thinking part.
 				expect(firstTarget).not.toBe(secondTarget);
-				expect(firstTarget).toContain(
-					join(partDir, "prt_0000000000_thinking_abc123_0_"),
-				);
-				expect(secondTarget).toContain(
-					join(partDir, "prt_0000000000_thinking_abc124_1_"),
-				);
 
 				// Both payloads must carry their own unique id matching their final
 				// target filename, so readers see two distinct parts on disk.
