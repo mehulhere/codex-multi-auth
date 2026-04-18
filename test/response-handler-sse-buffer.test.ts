@@ -112,4 +112,31 @@ describe("convertSseToJson: REQ-HIGH-03 linear buffering with pre-append cap", (
 		expect(reader.read).toHaveBeenCalledTimes(1);
 		expect(reader.cancel).toHaveBeenCalled();
 	});
+
+	it("counts utf-8 bytes rather than utf-16 code units in the pre-append guard", async () => {
+		// 😀 is 2 UTF-16 code units but 4 UTF-8 bytes. The guard must count bytes
+		// or it underestimates multi-byte chunks and can exceed the 10MB budget.
+		const emoji = "😀";
+		const repeats = Math.ceil((MAX_SSE_SIZE_FOR_TEST + 16) / 4);
+		const filler = emoji.repeat(repeats);
+		const sse =
+			'data: {"type":"response.started"}\n' +
+			`data: {"type":"response.done","response":{"id":"resp_emoji","output":${JSON.stringify(filler)}}}\n`;
+		const bytes = new TextEncoder().encode(sse);
+		// Sanity check: real bytes exceed cap even though string length alone would
+		// underestimate the size.
+		const decodedLengthEstimate = sse.length;
+		const byteLength = bytes.byteLength;
+		if (!(byteLength > MAX_SSE_SIZE_FOR_TEST && decodedLengthEstimate < byteLength)) {
+			throw new Error("test setup invalid: expected utf-8 bytes > utf-16 length");
+		}
+
+		const { response, reader } = buildChunkedReader([bytes]);
+		await expect(convertSseToJson(response, new Headers())).rejects.toThrow(
+			/exceeds.*bytes limit/,
+		);
+		// One read only; the first chunk is rejected based on byte length.
+		expect(reader.read).toHaveBeenCalledTimes(1);
+		expect(reader.cancel).toHaveBeenCalled();
+	});
 });

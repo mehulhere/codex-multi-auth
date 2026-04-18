@@ -789,14 +789,15 @@ export async function convertSseToJson(
 			);
 			if (done) break;
 			const decoded = decoder.decode(value, { stream: true });
+			const decodedBytes = Buffer.byteLength(decoded, "utf8");
 			// Pre-append size check: reject before allocating/retaining the chunk
 			// alongside the accumulated buffer. This bounds peak memory to the
 			// cap rather than cap + chunk.
-			if (totalSize + decoded.length > MAX_SSE_SIZE) {
+			if (totalSize + decodedBytes > MAX_SSE_SIZE) {
 				throw new Error(`SSE response exceeds ${MAX_SSE_SIZE} bytes limit`);
 			}
 			chunks.push(decoded);
-			totalSize += decoded.length;
+			totalSize += decodedBytes;
 		}
 
 		const fullText = chunks.join("");
