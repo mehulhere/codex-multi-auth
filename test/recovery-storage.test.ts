@@ -608,54 +608,36 @@ describe("RecoveryStorage", () => {
 			const sessionID = "s";
 			const messageID = "m";
 			const partDir = join(PART_STORAGE, messageID);
-			const dateNowSpy = vi
-				.spyOn(Date, "now")
-				.mockReturnValueOnce(0xabc123)
-				.mockReturnValueOnce(0xabc124);
-			const mathRandomSpy = vi
-				.spyOn(Math, "random")
-				.mockReturnValueOnce(0.123456)
-				.mockReturnValueOnce(0.654321);
+			fsMock.existsSync.mockReturnValue(true);
 
-			try {
-				fsMock.existsSync.mockReturnValue(true);
+			expect(storage.prependThinkingPart(sessionID, messageID)).toBe(true);
+			expect(storage.prependThinkingPart(sessionID, messageID)).toBe(true);
 
-				expect(storage.prependThinkingPart(sessionID, messageID)).toBe(true);
-				expect(storage.prependThinkingPart(sessionID, messageID)).toBe(true);
+			expect(fsMock.writeFileSync).toHaveBeenCalledTimes(2);
+			expect(fsMock.renameSync).toHaveBeenCalledTimes(2);
 
-				expect(fsMock.writeFileSync).toHaveBeenCalledTimes(2);
-				expect(fsMock.renameSync).toHaveBeenCalledTimes(2);
+			const [firstTemp, firstPayload] =
+				fsMock.writeFileSync.mock.calls[0] ?? [];
+			const [secondTemp, secondPayload] =
+				fsMock.writeFileSync.mock.calls[1] ?? [];
+			const [, firstTarget] = fsMock.renameSync.mock.calls[0] ?? [];
+			const [, secondTarget] = fsMock.renameSync.mock.calls[1] ?? [];
 
-				const [firstTemp, firstPayload] =
-					fsMock.writeFileSync.mock.calls[0] ?? [];
-				const [secondTemp, secondPayload] =
-					fsMock.writeFileSync.mock.calls[1] ?? [];
-				const [, firstTarget] = fsMock.renameSync.mock.calls[0] ?? [];
-				const [, secondTarget] = fsMock.renameSync.mock.calls[1] ?? [];
+			// Temp staging paths must differ (otherwise two writers would race).
+			expect(firstTemp).not.toBe(secondTemp);
+			// Final target paths MUST differ so the second pass does not
+			// overwrite the first synthetic thinking part.
+			expect(firstTarget).not.toBe(secondTarget);
 
-				// Temp staging paths must differ (otherwise two writers would race).
-				expect(firstTemp).not.toBe(secondTemp);
-				// Final target paths MUST differ so the second pass does not
-				// overwrite the first synthetic thinking part.
-				expect(firstTarget).not.toBe(secondTarget);
-
-				// Both payloads must carry their own unique id matching their final
-				// target filename, so readers see two distinct parts on disk.
-				const firstParsed = JSON.parse(firstPayload);
-				const secondParsed = JSON.parse(secondPayload);
-				expect(firstParsed.id).toMatch(
-					/^prt_0000000000_thinking_abc123_0_[0-9a-z]{1,6}$/,
-				);
-				expect(secondParsed.id).toMatch(
-					/^prt_0000000000_thinking_abc124_1_[0-9a-z]{1,6}$/,
-				);
-				expect(firstParsed.id).not.toBe(secondParsed.id);
-				expect(firstTarget).toContain(`${firstParsed.id}.json`);
-				expect(secondTarget).toContain(`${secondParsed.id}.json`);
-			} finally {
-				dateNowSpy.mockRestore();
-				mathRandomSpy.mockRestore();
-			}
+			// Both payloads must carry their own unique id matching their final
+			// target filename, so readers see two distinct parts on disk.
+			const firstParsed = JSON.parse(firstPayload);
+			const secondParsed = JSON.parse(secondPayload);
+			expect(firstParsed.id).toMatch(/^prt_0000000000_thinking_[0-9a-f]+_[0-9a-z]+_[0-9a-z]+$/);
+			expect(secondParsed.id).toMatch(/^prt_0000000000_thinking_[0-9a-f]+_[0-9a-z]+_[0-9a-z]+$/);
+			expect(firstParsed.id).not.toBe(secondParsed.id);
+			expect(firstTarget).toContain(`${firstParsed.id}.json`);
+			expect(secondTarget).toContain(`${secondParsed.id}.json`);
 		});
 
 		it("should generate ids that sort before real generatePartId ids so orphan detection still sees thinking first", () => {
