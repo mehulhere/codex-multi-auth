@@ -5,6 +5,7 @@ import type { AccountStorageV3 } from "../storage.js";
 
 const EXPORT_RENAME_MAX_ATTEMPTS = 4;
 const EXPORT_RENAME_BASE_DELAY_MS = 25;
+const MAX_IMPORT_BYTES = 4 * 1024 * 1024;
 
 async function renameExportFileWithRetry(
 	sourcePath: string,
@@ -87,6 +88,13 @@ export async function readImportFile(params: {
 }): Promise<AccountStorageV3> {
 	if (!existsSync(params.resolvedPath)) {
 		throw new Error(`Import file not found: ${params.resolvedPath}`);
+	}
+
+	const stats = await fs.stat(params.resolvedPath);
+	if (stats.size > MAX_IMPORT_BYTES) {
+		throw new Error(
+			`Import file exceeds maximum size of ${MAX_IMPORT_BYTES} bytes: ${params.resolvedPath}`,
+		);
 	}
 
 	const content = await fs.readFile(params.resolvedPath, "utf-8");
