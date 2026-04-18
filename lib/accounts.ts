@@ -1375,6 +1375,14 @@ export class AccountManager {
 			return true;
 		}
 
+		// Track successor accounts that we explicitly retarget onto because the
+		// removed account was the caller's "current" for a given family. We
+		// stamp each such successor with lastSwitchReason="rotation" so the
+		// retarget is auditable instead of silently carrying whatever stale
+		// reason the successor already had (HI-04). De-duplicated across
+		// families because lastSwitchReason is per-account, not per-family.
+		const retargetedSuccessors = new Set<number>();
+
 		for (const family of MODEL_FAMILIES) {
 			// Cursor: shift down if it was past the removed index, then normalize
 			// into [0, length). If the cursor was pointing AT the removed slot
@@ -1397,11 +1405,14 @@ export class AccountManager {
 			// AT the removed slot (or is now dangling off the end after
 			// splice), advance to the next enabled account instead of
 			// defaulting to -1. Fall back to -1 only when every remaining
-			// account is disabled or the pool is empty.
+			// account is disabled or the pool is empty. When we retarget off
+			// the removed slot onto a different account, record the successor
+			// so we can explicitly signal the retarget via lastSwitchReason.
 			let active = priorActive[family];
+			const activeWasRemoved = active === idx;
 			if (active > idx) {
 				active -= 1;
-			} else if (active === idx) {
+			} else if (activeWasRemoved) {
 				// Same numeric position now hosts the successor account.
 				active = this.findNextEnabled(Math.min(idx, this.accounts.length - 1));
 			}
@@ -1409,6 +1420,22 @@ export class AccountManager {
 				active = this.findNextEnabled(0);
 			}
 			this.currentAccountIndexByFamily[family] = active;
+			if (activeWasRemoved && active >= 0 && active < this.accounts.length) {
+				retargetedSuccessors.add(active);
+			}
+		}
+
+		// Stamp retarget signal on each successor account that replaced a
+		// removed "current" pointer. This mirrors the existing rotation
+		// convention used by setActiveIndex / markSwitched, so downstream
+		// callers observing lastSwitchReason see a clear audit trail that the
+		// pool re-chose this account rather than the user selecting it
+		// themselves.
+		for (const successorIdx of retargetedSuccessors) {
+			const successor = this.accounts[successorIdx];
+			if (successor) {
+				successor.lastSwitchReason = "rotation";
+			}
 		}
 
 		return true;

@@ -3078,6 +3078,122 @@ describe("AccountManager", () => {
 			});
 		});
 
+		describe("removed-current retarget signal (HI-04)", () => {
+			// PR #413 hardened removeAccount() to avoid the pointer-dangle
+			// default-to-minus-one behavior, but it silently retargeted the
+			// current pointer onto a different account when the removed
+			// account WAS the current one. HI-04 flagged that silent
+			// retarget: callers observing getCurrentAccountForFamily()
+			// receive an account they never selected with no audit trail.
+			//
+			// The fix stamps lastSwitchReason="rotation" on the successor
+			// whenever removeAccount() retargets off the removed slot. This
+			// mirrors the convention already used by setActiveIndex() and
+			// markSwitched() for pool-driven selection events.
+
+			it("stamps lastSwitchReason='rotation' on successor when current is removed", () => {
+				const now = Date.now();
+				const stored = {
+					version: 3 as const,
+					activeIndex: 1,
+					activeIndexByFamily: { codex: 1 },
+					accounts: [
+						{ refreshToken: "token-1", addedAt: now, lastUsed: now, lastSwitchReason: "initial" as const },
+						{ refreshToken: "token-2", addedAt: now, lastUsed: now, lastSwitchReason: "initial" as const },
+						{ refreshToken: "token-3", addedAt: now, lastUsed: now, lastSwitchReason: "initial" as const },
+					],
+				};
+
+				const manager = new AccountManager(undefined, stored as never);
+				const active = manager.getCurrentAccountForFamily("codex");
+				expect(active?.refreshToken).toBe("token-2");
+
+				// Remove the currently active (middle) account. The successor
+				// (token-3) shifts into index 1 and becomes the new current.
+				manager.removeAccount(active!);
+
+				const after = manager.getCurrentAccountForFamily("codex");
+				expect(after?.refreshToken).toBe("token-3");
+				// Successor must be explicitly stamped with the rotation
+				// reason so callers can tell the pool retargeted them rather
+				// than assuming they still hold the account they originally
+				// selected.
+				expect(after?.lastSwitchReason).toBe("rotation");
+
+				// The untouched account (token-1) retains its prior reason,
+				// proving we only stamp the successor the retarget landed on.
+				const untouched = manager.getAccountByIndex(0);
+				expect(untouched?.refreshToken).toBe("token-1");
+				expect(untouched?.lastSwitchReason).toBe("initial");
+			});
+
+			it("does not stamp a successor when every remaining account is disabled", () => {
+				const now = Date.now();
+				const stored = {
+					version: 3 as const,
+					activeIndex: 2,
+					activeIndexByFamily: { codex: 2 },
+					accounts: [
+						{ refreshToken: "token-1", addedAt: now, lastUsed: now, enabled: false, lastSwitchReason: "initial" as const },
+						{ refreshToken: "token-2", addedAt: now, lastUsed: now, enabled: false, lastSwitchReason: "initial" as const },
+						{ refreshToken: "token-3", addedAt: now, lastUsed: now, enabled: true, lastSwitchReason: "initial" as const },
+					],
+				};
+
+				const manager = new AccountManager(undefined, stored as never);
+				const active = manager.getCurrentAccountForFamily("codex");
+				expect(active?.refreshToken).toBe("token-3");
+
+				// Remove the last enabled account; remaining pool is entirely
+				// disabled. Pointer must fall to -1 (no routable account).
+				manager.removeAccount(active!);
+
+				expect(manager.getCurrentAccountForFamily("codex")).toBeNull();
+				expect(manager.getActiveIndexForFamily("codex")).toBe(-1);
+
+				// Neither surviving (disabled) account may be silently
+				// promoted by having rotation stamped on them. Their stored
+				// reason must stay "initial".
+				for (let i = 0; i < manager.getAccountCount(); i++) {
+					const acc = manager.getAccountByIndex(i);
+					expect(acc?.lastSwitchReason).toBe("initial");
+				}
+			});
+
+			it("stamps the sole enabled successor when all other peers are disabled", () => {
+				const now = Date.now();
+				const stored = {
+					version: 3 as const,
+					activeIndex: 0,
+					activeIndexByFamily: { codex: 0 },
+					accounts: [
+						{ refreshToken: "token-1", addedAt: now, lastUsed: now, enabled: true, lastSwitchReason: "initial" as const },
+						{ refreshToken: "token-2", addedAt: now, lastUsed: now, enabled: false, lastSwitchReason: "initial" as const },
+						{ refreshToken: "token-3", addedAt: now, lastUsed: now, enabled: true, lastSwitchReason: "initial" as const },
+					],
+				};
+
+				const manager = new AccountManager(undefined, stored as never);
+				const active = manager.getCurrentAccountForFamily("codex");
+				expect(active?.refreshToken).toBe("token-1");
+
+				// Remove the currently active account (token-1). token-2 is
+				// disabled, so findNextEnabled must skip it and land on
+				// token-3 (the single remaining enabled peer).
+				manager.removeAccount(active!);
+
+				const after = manager.getCurrentAccountForFamily("codex");
+				expect(after?.refreshToken).toBe("token-3");
+				expect(after?.lastSwitchReason).toBe("rotation");
+
+				// The disabled peer that was skipped during retarget must
+				// keep its original reason â€” we only stamp the account the
+				// pointer actually lands on.
+				const disabledPeer = manager.getAccountByIndex(0);
+				expect(disabledPeer?.refreshToken).toBe("token-2");
+				expect(disabledPeer?.lastSwitchReason).toBe("initial");
+			});
+		});
 	describe("flushPendingSave", () => {
 		it("flushes pending debounced save", async () => {
 			const { saveAccounts } = await import("../lib/storage.js");
