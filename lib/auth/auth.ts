@@ -73,10 +73,23 @@ const OAUTH_SENSITIVE_BODY_KEYS = [
 	"accessToken",
 	"id_token",
 	"idToken",
+	"codeVerifier",
 	"token",
 	"code",
 	"code_verifier",
 ] as const;
+
+function scrubTokenLikeSubstrings(value: string): string {
+	let scrubbed = value.replace(
+		/(\b(?:refresh|access|id)[_-]?token\s*[:=]\s*)([^\s,;"'}]{8,})/gi,
+		(_match, prefix) => `${prefix}***REDACTED***`,
+	);
+	scrubbed = scrubbed.replace(
+		/\b(?:RT|AT)_ch_[A-Za-z0-9_-]{20,}\b/g,
+		"***REDACTED***",
+	);
+	return scrubbed;
+}
 
 function redactSensitiveFields(value: unknown): unknown {
 	if (Array.isArray(value)) {
@@ -93,6 +106,9 @@ function redactSensitiveFields(value: unknown): unknown {
 			}
 		}
 		return out;
+	}
+	if (typeof value === "string") {
+		return scrubTokenLikeSubstrings(value);
 	}
 	return value;
 }

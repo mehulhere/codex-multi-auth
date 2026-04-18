@@ -830,6 +830,26 @@ describe("Auth Module", () => {
 			expect(out).not.toContain(OPAQUE_REFRESH);
 			expect(out).not.toContain(OPAQUE_ACCESS);
 		});
+
+		it("masks codeVerifier camelCase variant", () => {
+			const body = JSON.stringify({
+				codeVerifier: OPAQUE_REFRESH,
+				status: 400,
+			});
+			const out = sanitizeOAuthResponseBodyForLog(body);
+			expect(out).not.toContain(OPAQUE_REFRESH);
+			expect(out).toContain("***REDACTED***");
+			expect(out).toContain("400");
+		});
+
+		it("scrubs token-like substrings inside parsed JSON string values", () => {
+			const body = JSON.stringify({
+				error_description: `refresh failed for token ${OPAQUE_REFRESH}`,
+			});
+			const out = sanitizeOAuthResponseBodyForLog(body);
+			expect(out).not.toContain(OPAQUE_REFRESH);
+			expect(out).toContain("***REDACTED***");
+		});
 	});
 
 	describe("refreshAccessToken does not leak tokens into log message (LIB-HIGH-001)", () => {
