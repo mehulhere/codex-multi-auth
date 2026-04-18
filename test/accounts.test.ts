@@ -1953,6 +1953,37 @@ describe("AccountManager", () => {
 				"token-0",
 			);
 		});
+
+		it("syncs cursorByFamily in the mutex-serialized markSwitchedLocked path", async () => {
+			const now = Date.now();
+			const stored = {
+				version: 3 as const,
+				activeIndex: 0,
+				accounts: [
+					{ refreshToken: "token-0", addedAt: now, lastUsed: now },
+					{ refreshToken: "token-1", addedAt: now, lastUsed: now },
+					{ refreshToken: "token-2", addedAt: now, lastUsed: now },
+				],
+			};
+
+			const manager = new AccountManager(undefined, stored, {
+				routingMutexMode: "enabled",
+			});
+
+			expect(manager.getCurrentOrNextForFamily("codex")?.refreshToken).toBe(
+				"token-0",
+			);
+
+			const account2 = manager.getAccountByIndex(2)!;
+			await manager.markSwitchedLocked(account2, "rate-limit", "codex");
+
+			expect(manager.getCurrentAccountForFamily("codex")?.refreshToken).toBe(
+				"token-2",
+			);
+			expect(manager.getCurrentOrNextForFamily("codex")?.refreshToken).toBe(
+				"token-0",
+			);
+		});
 	});
 
 	describe("saveToDisk", () => {
