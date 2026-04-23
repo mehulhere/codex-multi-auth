@@ -99,6 +99,16 @@ Keep these enabled for most environments:
 
 ---
 
+## Shipped Templates
+
+The shipped config templates now expose the current GPT-5.5 general-model release aliases:
+
+- `config/codex-modern.json` includes `gpt-5.5` and `gpt-5.5-pro`
+- `config/codex-legacy.json` includes `gpt-5.5-*` and `gpt-5.5-pro-*` entries
+- those aliases normalize to the exact released model IDs `gpt-5.5-20260423` and `gpt-5.5-pro-20260423`
+
+---
+
 ## Validate Effective Configuration
 
 ```bash

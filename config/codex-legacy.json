@@ -15,8 +15,8 @@
         "store": false
       },
       "models": {
-        "gpt-5.2-none": {
-          "name": "GPT 5.2 None (OAuth)",
+        "gpt-5.5-none": {
+          "name": "GPT 5.5 20260423 None (OAuth)",
           "limit": {
             "context": 272000,
             "output": 128000
@@ -40,8 +40,8 @@
             "store": false
           }
         },
-        "gpt-5.2-low": {
-          "name": "GPT 5.2 Low (OAuth)",
+        "gpt-5.5-low": {
+          "name": "GPT 5.5 20260423 Low (OAuth)",
           "limit": {
             "context": 272000,
             "output": 128000
@@ -65,8 +65,8 @@
             "store": false
           }
         },
-        "gpt-5.2-medium": {
-          "name": "GPT 5.2 Medium (OAuth)",
+        "gpt-5.5-medium": {
+          "name": "GPT 5.5 20260423 Medium (OAuth)",
           "limit": {
             "context": 272000,
             "output": 128000
@@ -90,8 +90,8 @@
             "store": false
           }
         },
-        "gpt-5.2-high": {
-          "name": "GPT 5.2 High (OAuth)",
+        "gpt-5.5-high": {
+          "name": "GPT 5.5 20260423 High (OAuth)",
           "limit": {
             "context": 272000,
             "output": 128000
@@ -115,8 +115,83 @@
             "store": false
           }
         },
-        "gpt-5.2-xhigh": {
-          "name": "GPT 5.2 Extra High (OAuth)",
+        "gpt-5.5-xhigh": {
+          "name": "GPT 5.5 20260423 Extra High (OAuth)",
+          "limit": {
+            "context": 272000,
+            "output": 128000
+          },
+          "modalities": {
+            "input": [
+              "text",
+              "image"
+            ],
+            "output": [
+              "text"
+            ]
+          },
+          "options": {
+            "reasoningEffort": "xhigh",
+            "reasoningSummary": "detailed",
+            "textVerbosity": "medium",
+            "include": [
+              "reasoning.encrypted_content"
+            ],
+            "store": false
+          }
+        },
+        "gpt-5.5-pro-medium": {
+          "name": "GPT 5.5 Pro 20260423 Medium (OAuth)",
+          "limit": {
+            "context": 272000,
+            "output": 128000
+          },
+          "modalities": {
+            "input": [
+              "text",
+              "image"
+            ],
+            "output": [
+              "text"
+            ]
+          },
+          "options": {
+            "reasoningEffort": "medium",
+            "reasoningSummary": "detailed",
+            "textVerbosity": "medium",
+            "include": [
+              "reasoning.encrypted_content"
+            ],
+            "store": false
+          }
+        },
+        "gpt-5.5-pro-high": {
+          "name": "GPT 5.5 Pro 20260423 High (OAuth)",
+          "limit": {
+            "context": 272000,
+            "output": 128000
+          },
+          "modalities": {
+            "input": [
+              "text",
+              "image"
+            ],
+            "output": [
+              "text"
+            ]
+          },
+          "options": {
+            "reasoningEffort": "high",
+            "reasoningSummary": "detailed",
+            "textVerbosity": "medium",
+            "include": [
+              "reasoning.encrypted_content"
+            ],
+            "store": false
+          }
+        },
+        "gpt-5.5-pro-xhigh": {
+          "name": "GPT 5.5 Pro 20260423 Extra High (OAuth)",
           "limit": {
             "context": 272000,
             "output": 128000
