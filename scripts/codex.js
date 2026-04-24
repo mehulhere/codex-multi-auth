@@ -253,11 +253,29 @@ function replaceRequestedModel(args, nextModel) {
 	return nextArgs;
 }
 
-function forwardToRealCodexOnce(codexBin, args, env = process.env, cleanup) {
+function shouldCaptureForwardedCodexOutput(env = process.env) {
+	const override = (env.CODEX_MULTI_AUTH_CAPTURE_FORWARD_OUTPUT ?? "").trim();
+	if (override === "1") {
+		return true;
+	}
+	if (override === "0") {
+		return false;
+	}
+	return process.stdout.isTTY !== true || process.stderr.isTTY !== true;
+}
+
+function forwardToRealCodexOnce(
+	codexBin,
+	args,
+	env = process.env,
+	cleanup,
+	options = {},
+) {
 	return new Promise((resolve) => {
 		let settled = false;
 		let stdout = "";
 		let stderr = "";
+		const captureOutput = options.captureOutput === true;
 		const finalize = (exitCode) => {
 			if (settled) {
 				return;
@@ -276,27 +294,38 @@ function forwardToRealCodexOnce(codexBin, args, env = process.env, cleanup) {
 
 		const command = codexBin.launchWithNode ? process.execPath : codexBin.path;
 		const commandArgs = codexBin.launchWithNode ? [codexBin.path, ...args] : args;
-		const child = spawn(command, commandArgs, {
-			stdio: ["inherit", "pipe", "pipe"],
-			env,
-		});
-
-		child.stdout?.on("data", (chunk) => {
-			const text = typeof chunk === "string" ? chunk : chunk.toString("utf8");
-			stdout += text;
-			process.stdout.write(chunk);
-		});
-		child.stderr?.on("data", (chunk) => {
-			const text = typeof chunk === "string" ? chunk : chunk.toString("utf8");
-			stderr += text;
-			process.stderr.write(chunk);
-		});
-
-		child.once("error", (error) => {
+		let child;
+		const failLaunch = (error) => {
 			const message = `Failed to launch real Codex CLI: ${String(error)}`;
 			stderr += `${stderr ? "\n" : ""}${message}`;
 			console.error(message);
 			finalize(1);
+		};
+		try {
+			child = spawn(command, commandArgs, {
+				stdio: captureOutput ? ["inherit", "pipe", "pipe"] : "inherit",
+				env,
+			});
+		} catch (error) {
+			failLaunch(error);
+			return;
+		}
+
+		if (captureOutput) {
+			child.stdout?.on("data", (chunk) => {
+				const text = typeof chunk === "string" ? chunk : chunk.toString("utf8");
+				stdout += text;
+				process.stdout.write(chunk);
+			});
+			child.stderr?.on("data", (chunk) => {
+				const text = typeof chunk === "string" ? chunk : chunk.toString("utf8");
+				stderr += text;
+				process.stderr.write(chunk);
+			});
+		}
+
+		child.once("error", (error) => {
+			failLaunch(error);
 		});
 
 		child.once("close", (code, signal) => {
@@ -333,6 +362,9 @@ async function forwardToRealCodex(codexBin, rawArgs, baseEnv = process.env) {
 			compatibility.args,
 			compatibility.env,
 			compatibility.cleanup,
+			{
+				captureOutput: shouldCaptureForwardedCodexOutput(compatibility.env),
+			},
 		);
 		lastExitCode = result.exitCode;
 		if (result.exitCode === 0) {

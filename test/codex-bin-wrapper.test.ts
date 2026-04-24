@@ -1231,6 +1231,35 @@ describe("codex bin wrapper", () => {
 		);
 	});
 
+	it("can forward without capturing child stdio for terminal-sensitive Codex runs", () => {
+		const fixtureRoot = createWrapperFixture();
+		const stateDir = join(fixtureRoot, "no-capture-state");
+		mkdirSync(stateDir, { recursive: true });
+		const fakeBin = createCustomFakeCodexBin(fixtureRoot, [
+			"const fs = require('node:fs');",
+			"const path = require('node:path');",
+			"const counterPath = path.join(process.env.CODEX_MULTI_AUTH_TEST_STATE_DIR, 'attempt.txt');",
+			"const attempt = fs.existsSync(counterPath) ? Number(fs.readFileSync(counterPath, 'utf8')) : 0;",
+			"fs.writeFileSync(counterPath, String(attempt + 1), 'utf8');",
+			"console.error(\"The 'gpt-5.5' model is not supported when using Codex with a ChatGPT account.\");",
+			"process.exit(1);",
+		]);
+
+		const result = runWrapper(fixtureRoot, ["exec", "status", "--model", "gpt-5.5"], {
+			CODEX_MULTI_AUTH_CAPTURE_FORWARD_OUTPUT: "0",
+			CODEX_MULTI_AUTH_REAL_CODEX_BIN: fakeBin,
+			CODEX_MULTI_AUTH_TEST_STATE_DIR: stateDir,
+		});
+
+		const output = combinedOutput(result);
+		expect(result.status).toBe(1);
+		expect(readFileSync(join(stateDir, "attempt.txt"), "utf8")).toBe("1");
+		expect(output).toContain(
+			"The 'gpt-5.5' model is not supported when using Codex with a ChatGPT account.",
+		);
+		expect(output).not.toContain("Retrying with gpt-5.4");
+	});
+
 	it("retries GPT-5.5 after access-denied style model errors", () => {
 		const fixtureRoot = createWrapperFixture();
 		const stateDir = join(fixtureRoot, "retry-state-access");
