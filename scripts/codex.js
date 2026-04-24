@@ -261,6 +261,7 @@ function shouldCaptureForwardedCodexOutput(env = process.env) {
 	if (override === "0") {
 		return false;
 	}
+	// Windows child processes can report undefined isTTY; treat that as non-TTY so retry capture remains available.
 	return process.stdout.isTTY !== true || process.stderr.isTTY !== true;
 }
 
