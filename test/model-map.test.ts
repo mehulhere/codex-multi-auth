@@ -18,11 +18,9 @@ describe("model map", () => {
 			expect(MODEL_MAP["codex-mini-latest"]).toBe("gpt-5.1-codex-mini");
 		});
 
-		it("adds first-class GPT-5.5 release aliases alongside existing general models", () => {
-			expect(MODEL_MAP["gpt-5.5"]).toBe("gpt-5.5-20260423");
-			expect(MODEL_MAP["gpt-5.5-pro-high"]).toBe(
-				"gpt-5.5-pro-20260423",
-			);
+		it("keeps GPT-5.5 aliases canonical while preserving existing general models", () => {
+			expect(MODEL_MAP["gpt-5.5"]).toBe("gpt-5.5");
+			expect(MODEL_MAP["gpt-5.5-pro-high"]).toBe("gpt-5.5-pro");
 			expect(MODEL_MAP["gpt-5.4"]).toBe("gpt-5.4");
 			expect(MODEL_MAP["gpt-5"]).toBe("gpt-5");
 		});
@@ -42,10 +40,8 @@ describe("model map", () => {
 
 	describe("getNormalizedModel", () => {
 		it("returns exact aliases case-insensitively", () => {
-			expect(getNormalizedModel("GPT-5.5")).toBe("gpt-5.5-20260423");
-			expect(getNormalizedModel("GPT-5.5-PRO-HIGH")).toBe(
-				"gpt-5.5-pro-20260423",
-			);
+			expect(getNormalizedModel("GPT-5.5")).toBe("gpt-5.5");
+			expect(getNormalizedModel("GPT-5.5-PRO-HIGH")).toBe("gpt-5.5-pro");
 			expect(getNormalizedModel("GPT-5.4")).toBe("gpt-5.4");
 			expect(getNormalizedModel("GPT-5.4-PRO-HIGH")).toBe("gpt-5.4-pro");
 			expect(getNormalizedModel("gpt-5.4-mini")).toBe("gpt-5-mini");
@@ -64,12 +60,8 @@ describe("model map", () => {
 
 	describe("resolveNormalizedModel", () => {
 		it("resolves provider-prefixed and verbose GPT-5 variants", () => {
-			expect(resolveNormalizedModel("openai/gpt-5.5-20260423")).toBe(
-				"gpt-5.5-20260423",
-			);
-			expect(resolveNormalizedModel("GPT 5.5 Pro High")).toBe(
-				"gpt-5.5-pro-20260423",
-			);
+			expect(resolveNormalizedModel("openai/gpt-5.5-20260423")).toBe("gpt-5.5");
+			expect(resolveNormalizedModel("GPT 5.5 Pro High")).toBe("gpt-5.5-pro");
 			expect(resolveNormalizedModel("openai/gpt-5.4")).toBe("gpt-5.4");
 			expect(resolveNormalizedModel("openai/gpt-5.4-mini-high")).toBe("gpt-5-mini");
 			expect(resolveNormalizedModel("GPT 5.4 Pro High")).toBe("gpt-5.4-pro");
@@ -81,11 +73,11 @@ describe("model map", () => {
 			expect(resolveNormalizedModel("gpt 5 experimental build")).toBe("gpt-5.4");
 		});
 
-		it("maps GPT-5.5 aliases to the exact 20260423 release IDs", () => {
-			expect(resolveNormalizedModel("gpt-5.5")).toBe("gpt-5.5-20260423");
-			expect(resolveNormalizedModel("gpt-5.5-high")).toBe("gpt-5.5-20260423");
+		it("keeps GPT-5.5 aliases first-class while preserving fallback routing for unknown GPT-5 names", () => {
+			expect(resolveNormalizedModel("gpt-5.5")).toBe("gpt-5.5");
+			expect(resolveNormalizedModel("gpt-5.5-high")).toBe("gpt-5.5");
 			expect(resolveNormalizedModel("openai/gpt-5.5-pro-high")).toBe(
-				"gpt-5.5-pro-20260423",
+				"gpt-5.5-pro",
 			);
 		});
 

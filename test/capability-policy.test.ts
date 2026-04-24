@@ -45,7 +45,7 @@ describe("capability policy store", () => {
 		expect(boostFromCanonical).toBeGreaterThan(0);
 	});
 
-	it("shares capability buckets with the exact GPT-5.5 release alias", () => {
+	it("shares capability buckets between GPT-5.5 aliases and dated release ids", () => {
 		const store = new CapabilityPolicyStore();
 		store.recordUnsupported("id:acc_future", "gpt-5.5-pro", 1_000);
 

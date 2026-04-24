@@ -52,10 +52,10 @@ describe('Request Transformer Module', () => {
 			expect(normalizeModel('')).toBe('gpt-5.4');
 		});
 
-		it('maps GPT-5.5 aliases to the exact 20260423 release IDs', async () => {
-			expect(normalizeModel('gpt-5.5')).toBe('gpt-5.5-20260423');
-			expect(normalizeModel('gpt-5.5-high')).toBe('gpt-5.5-20260423');
-			expect(normalizeModel('gpt-5.5-pro')).toBe('gpt-5.5-pro-20260423');
+		it('keeps GPT-5.5 aliases canonical before any unsupported-model fallback happens', async () => {
+			expect(normalizeModel('gpt-5.5')).toBe('gpt-5.5');
+			expect(normalizeModel('gpt-5.5-high')).toBe('gpt-5.5');
+			expect(normalizeModel('gpt-5.5-pro')).toBe('gpt-5.5-pro');
 		});
 
 		it('still prioritizes codex detection when model names contain both codex and GPT-5', async () => {
@@ -1638,7 +1638,7 @@ describe('Request Transformer Module', () => {
 			expect(result.reasoning?.effort).toBe('high');
 		});
 
-		it('should use the GPT-5.5 release reasoning defaults for the new general alias', async () => {
+		it('should use the GPT-5.5 reasoning defaults before any unsupported-model fallback', async () => {
 			const body: RequestBody = {
 				model: 'gpt-5.5-high',
 				input: [],
@@ -1648,7 +1648,7 @@ describe('Request Transformer Module', () => {
 				models: {},
 			};
 			const result = await transformRequestBody(body, codexInstructions, userConfig);
-			expect(result.model).toBe('gpt-5.5-20260423');
+			expect(result.model).toBe('gpt-5.5');
 			expect(result.reasoning?.effort).toBe('low');
 			expect(result.text?.verbosity).toBe('medium');
 		});
@@ -2131,7 +2131,7 @@ describe('Request Transformer Module', () => {
 				]);
 			});
 
-			it('uses the GPT-5.5 pro release capability surface for the new alias', async () => {
+			it('uses the GPT-5.5 pro capability surface before any unsupported-model fallback', async () => {
 				const body: RequestBody = {
 					model: 'gpt-5.5-pro',
 					input: [],
@@ -2155,7 +2155,7 @@ describe('Request Transformer Module', () => {
 					codexInstructions,
 					userConfig,
 				);
-				expect(result.model).toBe('gpt-5.5-pro-20260423');
+				expect(result.model).toBe('gpt-5.5-pro');
 				expect(result.reasoning?.effort).toBe('medium');
 				expect(result.text?.verbosity).toBe('medium');
 				expect(result.tools).toEqual([

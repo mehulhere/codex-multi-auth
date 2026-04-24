@@ -143,30 +143,163 @@ function resolveRealCodexBin() {
 	return resolveRealCodexBinFromEnvironment({ moduleUrl: import.meta.url });
 }
 
-function forwardToRealCodex(codexBin, args, env = process.env, cleanup) {
+const CHATGPT_CODEX_UNSUPPORTED_MODEL_PATTERN =
+	/model is not supported when using codex with a chatgpt account/i;
+const NORMALIZED_UNSUPPORTED_MODEL_PATTERN =
+	/model ['"]([^'"]+)['"] is not currently available for this chatgpt account when using codex oauth/i;
+const MODEL_ACCESS_DENIED_PATTERN =
+	/the model [`'"]([^`'"]+)[`'"] does not exist or you do not have access to it/i;
+const DIRECT_UNSUPPORTED_MODEL_PATTERN =
+	/['"]([^'"]+)['"]\s+model is not supported when using codex with a chatgpt account/i;
+const WRAPPER_UNSUPPORTED_MODEL_FALLBACK_CHAIN = {
+	"gpt-5.5": ["gpt-5.4"],
+	"gpt-5.5-pro": ["gpt-5.4"],
+};
+
+function canonicalizeRequestedModelName(model) {
+	if (typeof model !== "string") return "";
+	const normalizedModel = normalizeRequestedModel(model);
+	if (normalizedModel) {
+		return normalizedModel;
+	}
+
+	const stripped = stripProviderPrefix(model).trim().toLowerCase();
+	if (!stripped) {
+		return "";
+	}
+
+	return stripped.replace(/-(none|minimal|low|medium|high|xhigh)$/i, "");
+}
+
+function extractUnsupportedModelFromOutput(output) {
+	if (typeof output !== "string" || output.length === 0) {
+		return undefined;
+	}
+
+	const directMatch = output.match(DIRECT_UNSUPPORTED_MODEL_PATTERN);
+	if (directMatch?.[1]) {
+		return canonicalizeRequestedModelName(directMatch[1]);
+	}
+
+	const normalizedMatch = output.match(NORMALIZED_UNSUPPORTED_MODEL_PATTERN);
+	if (normalizedMatch?.[1]) {
+		return canonicalizeRequestedModelName(normalizedMatch[1]);
+	}
+	const accessDeniedMatch = output.match(MODEL_ACCESS_DENIED_PATTERN);
+	if (accessDeniedMatch?.[1]) {
+		return canonicalizeRequestedModelName(accessDeniedMatch[1]);
+	}
+
+	return undefined;
+}
+
+function resolveUnsupportedModelRetryTarget(
+	requestedModel,
+	output,
+	attemptedModels = [],
+) {
+	if (
+		typeof output !== "string" ||
+		output.length === 0 ||
+		(!CHATGPT_CODEX_UNSUPPORTED_MODEL_PATTERN.test(output) &&
+			!NORMALIZED_UNSUPPORTED_MODEL_PATTERN.test(output) &&
+			!MODEL_ACCESS_DENIED_PATTERN.test(output))
+	) {
+		return undefined;
+	}
+
+	const attempted = new Set(
+		attemptedModels
+			.map((model) => canonicalizeRequestedModelName(model))
+			.filter(Boolean),
+	);
+	const normalizedRequestedModel = canonicalizeRequestedModelName(requestedModel);
+	const blockedModel =
+		extractUnsupportedModelFromOutput(output) ?? normalizedRequestedModel;
+	const fallbackChain =
+		WRAPPER_UNSUPPORTED_MODEL_FALLBACK_CHAIN[blockedModel] ??
+		(normalizedRequestedModel
+			? WRAPPER_UNSUPPORTED_MODEL_FALLBACK_CHAIN[normalizedRequestedModel]
+			: undefined) ??
+		[];
+
+	for (const fallbackModel of fallbackChain) {
+		if (fallbackModel !== blockedModel && !attempted.has(fallbackModel)) {
+			return fallbackModel;
+		}
+	}
+
+	return undefined;
+}
+
+function replaceRequestedModel(args, nextModel) {
+	if (!nextModel) {
+		return [...args];
+	}
+
+	const nextArgs = [...args];
+	for (let i = 0; i < nextArgs.length; i += 1) {
+		const arg = nextArgs[i];
+		if (arg === "--model" && typeof nextArgs[i + 1] === "string") {
+			nextArgs[i + 1] = nextModel;
+			return nextArgs;
+		}
+		if (typeof arg === "string" && arg.startsWith("--model=")) {
+			nextArgs[i] = `--model=${nextModel}`;
+			return nextArgs;
+		}
+	}
+
+	return nextArgs;
+}
+
+function forwardToRealCodexOnce(codexBin, args, env = process.env, cleanup) {
 	return new Promise((resolve) => {
+		let settled = false;
+		let stdout = "";
+		let stderr = "";
 		const finalize = (exitCode) => {
+			if (settled) {
+				return;
+			}
+			settled = true;
 			try {
 				cleanup?.();
 			} catch {
 				// Best-effort cleanup only.
 			}
-			resolve(exitCode);
+			resolve({
+				exitCode,
+				output: `${stdout}\n${stderr}`.trim(),
+			});
 		};
 
 		const command = codexBin.launchWithNode ? process.execPath : codexBin.path;
 		const commandArgs = codexBin.launchWithNode ? [codexBin.path, ...args] : args;
 		const child = spawn(command, commandArgs, {
-			stdio: "inherit",
+			stdio: ["inherit", "pipe", "pipe"],
 			env,
 		});
 
+		child.stdout?.on("data", (chunk) => {
+			const text = typeof chunk === "string" ? chunk : chunk.toString("utf8");
+			stdout += text;
+			process.stdout.write(chunk);
+		});
+		child.stderr?.on("data", (chunk) => {
+			const text = typeof chunk === "string" ? chunk : chunk.toString("utf8");
+			stderr += text;
+			process.stderr.write(chunk);
+		});
+
 		child.once("error", (error) => {
-			console.error(`Failed to launch real Codex CLI: ${String(error)}`);
+			const message = `Failed to launch real Codex CLI: ${String(error)}`;
+			stderr += `${stderr ? "\n" : ""}${message}`;
+			console.error(message);
 			finalize(1);
 		});
 
-		child.once("exit", (code, signal) => {
+		child.once("close", (code, signal) => {
 			if (signal) {
 				const signalNumber = signal === "SIGINT" ? 130 : 1;
 				finalize(signalNumber);
@@ -175,6 +308,58 @@ function forwardToRealCodex(codexBin, args, env = process.env, cleanup) {
 			finalize(typeof code === "number" ? code : 1);
 		});
 	});
+}
+
+async function forwardToRealCodex(codexBin, rawArgs, baseEnv = process.env) {
+	let currentArgs = [...rawArgs];
+	let lastExitCode = 1;
+	const attemptedModels = new Set();
+
+	for (let attempt = 0; attempt < 4; attempt += 1) {
+		const requestedModel = extractRequestedModel(currentArgs);
+		if (requestedModel) {
+			attemptedModels.add(requestedModel);
+		}
+
+		const { args: forwardArgs, requestedModel: compatibilityRequestedModel } =
+			buildForwardArgs(currentArgs);
+		const compatibility = createCompatibilityCodexHome(
+			forwardArgs,
+			compatibilityRequestedModel,
+			baseEnv,
+		);
+		const result = await forwardToRealCodexOnce(
+			codexBin,
+			compatibility.args,
+			compatibility.env,
+			compatibility.cleanup,
+		);
+		lastExitCode = result.exitCode;
+		if (result.exitCode === 0) {
+			return result.exitCode;
+		}
+
+		const fallbackModel = resolveUnsupportedModelRetryTarget(
+			requestedModel,
+			result.output,
+			[...attemptedModels],
+		);
+		if (!fallbackModel) {
+			return result.exitCode;
+		}
+
+		console.error(
+			`codex-multi-auth: model ${requestedModel ?? "requested model"} is unsupported on this ChatGPT Codex surface. Retrying with ${fallbackModel}.`,
+		);
+		attemptedModels.add(fallbackModel);
+		const nextArgs = replaceRequestedModel(currentArgs, fallbackModel);
+		if (JSON.stringify(nextArgs) === JSON.stringify(currentArgs)) {
+			return result.exitCode;
+		}
+		currentArgs = nextArgs;
+	}
+
+	return lastExitCode;
 }
 
 function hasCliAuthCredentialsStoreOverride(args) {
@@ -208,8 +393,8 @@ const SUPPORTED_REASONING_EFFORTS_BY_MODEL = {
 	"gpt-5-codex": ["low", "medium", "high", "xhigh"],
 	"gpt-5.1-codex-max": ["medium", "high", "xhigh"],
 	"gpt-5.1-codex-mini": ["medium", "high"],
-	"gpt-5.5-20260423": ["none", "low", "medium", "high", "xhigh"],
-	"gpt-5.5-pro-20260423": ["medium", "high", "xhigh"],
+	"gpt-5.5": ["none", "low", "medium", "high", "xhigh"],
+	"gpt-5.5-pro": ["medium", "high", "xhigh"],
 	"gpt-5.4": ["none", "low", "medium", "high", "xhigh"],
 	"gpt-5.4-pro": ["medium", "high", "xhigh"],
 	"gpt-5.2-pro": ["medium", "high", "xhigh"],
@@ -233,6 +418,8 @@ const REASONING_FALLBACKS = {
 const KNOWN_REASONING_EFFORTS = new Set(Object.keys(REASONING_FALLBACKS));
 const REQUESTED_MODEL_ALIASES = new Map();
 const DEFAULT_GENERAL_GPT5_MODEL = "gpt-5.4";
+const GPT_5_5_CANONICAL_MODEL = "gpt-5.5";
+const GPT_5_5_PRO_CANONICAL_MODEL = "gpt-5.5-pro";
 const GPT_5_5_RELEASE_MODEL = "gpt-5.5-20260423";
 const GPT_5_5_PRO_RELEASE_MODEL = "gpt-5.5-pro-20260423";
 const GENERAL_GPT5_VERSION_CATALOG = {
@@ -250,8 +437,8 @@ const GENERAL_GPT5_VERSION_CATALOG = {
 		nano: "gpt-5-nano",
 	},
 	5: {
-		base: GPT_5_5_RELEASE_MODEL,
-		pro: GPT_5_5_PRO_RELEASE_MODEL,
+		base: GPT_5_5_CANONICAL_MODEL,
+		pro: GPT_5_5_PRO_CANONICAL_MODEL,
 		mini: "gpt-5-mini",
 		nano: "gpt-5-nano",
 	},
@@ -350,12 +537,21 @@ function renameFileWithRetry(sourcePath, destinationPath, expectedDestinationSta
 }
 
 function seedRequestedModelAliases() {
-	addRequestedModelReasoningAliases("gpt-5.5", GPT_5_5_RELEASE_MODEL);
-	addRequestedModelReasoningAliases(GPT_5_5_RELEASE_MODEL, GPT_5_5_RELEASE_MODEL);
-	addRequestedModelReasoningAliases("gpt-5.5-pro", GPT_5_5_PRO_RELEASE_MODEL);
+	addRequestedModelReasoningAliases(
+		GPT_5_5_CANONICAL_MODEL,
+		GPT_5_5_CANONICAL_MODEL,
+	);
+	addRequestedModelReasoningAliases(
+		GPT_5_5_RELEASE_MODEL,
+		GPT_5_5_CANONICAL_MODEL,
+	);
+	addRequestedModelReasoningAliases(
+		GPT_5_5_PRO_CANONICAL_MODEL,
+		GPT_5_5_PRO_CANONICAL_MODEL,
+	);
 	addRequestedModelReasoningAliases(
 		GPT_5_5_PRO_RELEASE_MODEL,
-		GPT_5_5_PRO_RELEASE_MODEL,
+		GPT_5_5_PRO_CANONICAL_MODEL,
 	);
 	addRequestedModelReasoningAliases("gpt-5.4", "gpt-5.4");
 	addRequestedModelReasoningAliases("gpt-5.4-pro", "gpt-5.4-pro");
@@ -1413,18 +1609,8 @@ async function main() {
 	}
 
 	await autoSyncManagerActiveSelectionIfEnabled();
-	const { args: forwardArgs, requestedModel } = buildForwardArgs(rawArgs);
-	const compatibility = createCompatibilityCodexHome(
-		forwardArgs,
-		requestedModel,
-	);
 	return withForwardedRuntimeObservability(rawArgs, () =>
-		forwardToRealCodex(
-			realCodexBin,
-			compatibility.args,
-			compatibility.env,
-			compatibility.cleanup,
-		),
+		forwardToRealCodex(realCodexBin, rawArgs),
 	);
 }
 

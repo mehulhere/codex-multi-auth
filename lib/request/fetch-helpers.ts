@@ -68,6 +68,8 @@ const CHATGPT_CODEX_UNSUPPORTED_MODEL_PATTERN =
 	/model is not supported when using codex with a chatgpt account/i;
 const NORMALIZED_UNSUPPORTED_MODEL_PATTERN =
 	/the model ['"]([^'"]+)['"] is not currently available for this chatgpt account/i;
+const MODEL_ACCESS_DENIED_PATTERN =
+	/the model [`'"]([^`'"]+)[`'"] does not exist or you do not have access to it/i;
 const MAX_RATE_LIMIT_DELAY_MS = 7 * 24 * 60 * 60 * 1000;
 const RETRY_AFTER_DURATION_PATTERN =
 	/\b(?:try|retry)\s+again\s+in\s+(\d+)\s*(second|minute|hour|day)s?\b/i;
@@ -86,6 +88,10 @@ type ClosableDispatcher = ProxyDispatcher & {
 };
 
 export const DEFAULT_UNSUPPORTED_CODEX_FALLBACK_CHAIN: Record<string, string[]> = {
+	"gpt-5.5": ["gpt-5.4"],
+	"gpt-5.5-pro": ["gpt-5.4"],
+	"gpt-5.5-20260423": ["gpt-5.4"],
+	"gpt-5.5-pro-20260423": ["gpt-5.4"],
 	"gpt-5.3-codex-spark": ["gpt-5-codex", "gpt-5.3-codex", "gpt-5.2-codex"],
 	"gpt-5.3-codex": ["gpt-5-codex", "gpt-5.2-codex"],
 	"gpt-5.2-codex": ["gpt-5-codex"],
@@ -165,13 +171,20 @@ export function extractUnsupportedCodexModelFromText(bodyText: string): string |
 	if (normalizedMatch?.[1]) {
 		return canonicalizeModelName(normalizedMatch[1]);
 	}
+	const accessDeniedMatch = bodyText.match(MODEL_ACCESS_DENIED_PATTERN);
+	if (accessDeniedMatch?.[1]) {
+		return canonicalizeModelName(accessDeniedMatch[1]);
+	}
 	return undefined;
 }
 
 function isUnsupportedCodexModelForChatGpt(status: number, bodyText: string): boolean {
 	if (status !== HTTP_STATUS.BAD_REQUEST) return false;
 	if (!bodyText) return false;
-	return CHATGPT_CODEX_UNSUPPORTED_MODEL_PATTERN.test(bodyText);
+	return (
+		CHATGPT_CODEX_UNSUPPORTED_MODEL_PATTERN.test(bodyText) ||
+		MODEL_ACCESS_DENIED_PATTERN.test(bodyText)
+	);
 }
 
 export function getUnsupportedCodexModelInfo(
@@ -198,7 +211,10 @@ export function getUnsupportedCodexModelInfo(
 		: extractUnsupportedCodexModelFromText(message ?? "");
 	const isUnsupported =
 		code === CHATGPT_CODEX_UNSUPPORTED_MODEL_CODE ||
-		(message ? CHATGPT_CODEX_UNSUPPORTED_MODEL_PATTERN.test(message) : false);
+		(message
+			? CHATGPT_CODEX_UNSUPPORTED_MODEL_PATTERN.test(message) ||
+				MODEL_ACCESS_DENIED_PATTERN.test(message)
+			: false);
 
 	return {
 		isUnsupported,

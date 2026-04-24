@@ -80,6 +80,8 @@ const TOOL_CAPABILITIES = {
 } as const satisfies Record<string, ModelCapabilities>;
 
 export const DEFAULT_MODEL = "gpt-5.4";
+const GPT_5_5_CANONICAL_MODEL = "gpt-5.5";
+const GPT_5_5_PRO_CANONICAL_MODEL = "gpt-5.5-pro";
 const GPT_5_5_RELEASE_MODEL = "gpt-5.5-20260423";
 const GPT_5_5_PRO_RELEASE_MODEL = "gpt-5.5-pro-20260423";
 
@@ -101,8 +103,8 @@ const GENERAL_GPT5_VERSION_CATALOG: Record<
 		nano: "gpt-5-nano",
 	},
 	5: {
-		base: GPT_5_5_RELEASE_MODEL,
-		pro: GPT_5_5_PRO_RELEASE_MODEL,
+		base: GPT_5_5_CANONICAL_MODEL,
+		pro: GPT_5_5_PRO_CANONICAL_MODEL,
 		mini: "gpt-5-mini",
 		nano: "gpt-5-nano",
 	},
@@ -161,15 +163,15 @@ export const MODEL_PROFILES: Record<string, ModelProfile> = {
 		supportedReasoningEfforts: ["medium", "high", "xhigh"],
 		capabilities: TOOL_CAPABILITIES.computerAndCompact,
 	},
-	[GPT_5_5_RELEASE_MODEL]: {
-		normalizedModel: GPT_5_5_RELEASE_MODEL,
+	[GPT_5_5_CANONICAL_MODEL]: {
+		normalizedModel: GPT_5_5_CANONICAL_MODEL,
 		promptFamily: "gpt-5.2",
 		defaultReasoningEffort: "none",
 		supportedReasoningEfforts: ["none", "low", "medium", "high", "xhigh"],
 		capabilities: TOOL_CAPABILITIES.full,
 	},
-	[GPT_5_5_PRO_RELEASE_MODEL]: {
-		normalizedModel: GPT_5_5_PRO_RELEASE_MODEL,
+	[GPT_5_5_PRO_CANONICAL_MODEL]: {
+		normalizedModel: GPT_5_5_PRO_CANONICAL_MODEL,
 		promptFamily: "gpt-5.2",
 		defaultReasoningEffort: "high",
 		supportedReasoningEfforts: ["medium", "high", "xhigh"],
@@ -240,12 +242,15 @@ function addReasoningAliases(alias: string, normalizedModel: string): void {
 }
 
 function addGeneralAliases(): void {
-	addReasoningAliases("gpt-5.5", GPT_5_5_RELEASE_MODEL);
-	addReasoningAliases(GPT_5_5_RELEASE_MODEL, GPT_5_5_RELEASE_MODEL);
-	addReasoningAliases("gpt-5.5-pro", GPT_5_5_PRO_RELEASE_MODEL);
+	addReasoningAliases(GPT_5_5_CANONICAL_MODEL, GPT_5_5_CANONICAL_MODEL);
+	addReasoningAliases(GPT_5_5_RELEASE_MODEL, GPT_5_5_CANONICAL_MODEL);
+	addReasoningAliases(
+		GPT_5_5_PRO_CANONICAL_MODEL,
+		GPT_5_5_PRO_CANONICAL_MODEL,
+	);
 	addReasoningAliases(
 		GPT_5_5_PRO_RELEASE_MODEL,
-		GPT_5_5_PRO_RELEASE_MODEL,
+		GPT_5_5_PRO_CANONICAL_MODEL,
 	);
 	addReasoningAliases("gpt-5.4", "gpt-5.4");
 	addReasoningAliases("gpt-5.4-pro", "gpt-5.4-pro");

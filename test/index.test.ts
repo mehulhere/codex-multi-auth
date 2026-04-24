@@ -3263,6 +3263,79 @@ describe("OpenAIOAuthPlugin fetch handler", () => {
 		expect(JSON.parse(secondInit.body as string).model).toBe("gpt-5-codex");
 	});
 
+	it("forces GPT-5.5 fallback to gpt-5.4 even when strict policy disables generic unsupported fallback", async () => {
+		const configModule = await import("../lib/config.js");
+		const fetchHelpers = await import("../lib/request/fetch-helpers.js");
+
+		vi.mocked(configModule.getUnsupportedCodexPolicy).mockReturnValueOnce(
+			"strict",
+		);
+		vi.mocked(
+			configModule.getFallbackOnUnsupportedCodexModel,
+		).mockReturnValueOnce(false);
+		vi.mocked(fetchHelpers.transformRequestForCodex).mockResolvedValueOnce({
+			updatedInit: {
+				method: "POST",
+				body: JSON.stringify({ model: "gpt-5.5" }),
+			},
+			body: { model: "gpt-5.5" },
+		});
+		vi.mocked(fetchHelpers.handleErrorResponse).mockResolvedValueOnce({
+			response: new Response(
+				JSON.stringify({
+					error: { code: "model_not_supported_with_chatgpt_account" },
+				}),
+				{
+					status: 400,
+				},
+			),
+			rateLimit: undefined,
+			errorBody: {
+				error: {
+					code: "model_not_supported_with_chatgpt_account",
+					message:
+						"The 'gpt-5.5' model is not supported when using Codex with a ChatGPT account.",
+				},
+			},
+		});
+		vi.mocked(fetchHelpers.getUnsupportedCodexModelInfo).mockReturnValueOnce({
+			isUnsupported: true,
+			code: "model_not_supported_with_chatgpt_account",
+			unsupportedModel: "gpt-5.5",
+		});
+		vi.mocked(
+			fetchHelpers.resolveUnsupportedCodexFallbackModel,
+		).mockImplementationOnce((options) =>
+			options.fallbackOnUnsupportedCodexModel ? "gpt-5.4" : undefined,
+		);
+
+		globalThis.fetch = vi
+			.fn()
+			.mockResolvedValueOnce(new Response("bad", { status: 400 }))
+			.mockResolvedValueOnce(
+				new Response(JSON.stringify({ content: "ok" }), { status: 200 }),
+			);
+
+		const { sdk } = await setupPlugin();
+		const response = await sdk.fetch!("https://api.openai.com/v1/chat", {
+			method: "POST",
+			body: JSON.stringify({ model: "gpt-5.5" }),
+		});
+
+		expect(response.status).toBe(200);
+		expect(globalThis.fetch).toHaveBeenCalledTimes(2);
+		const resolveOptions = vi.mocked(
+			fetchHelpers.resolveUnsupportedCodexFallbackModel,
+		).mock.calls[0]?.[0];
+		expect(resolveOptions?.fallbackOnUnsupportedCodexModel).toBe(true);
+		const firstInit = vi.mocked(globalThis.fetch).mock
+			.calls[0]?.[1] as RequestInit;
+		const secondInit = vi.mocked(globalThis.fetch).mock
+			.calls[1]?.[1] as RequestInit;
+		expect(JSON.parse(firstInit.body as string).model).toBe("gpt-5.5");
+		expect(JSON.parse(secondInit.body as string).model).toBe("gpt-5.4");
+	});
+
 	it("restarts account traversal after fallback model switch", async () => {
 		const configModule = await import("../lib/config.js");
 		const fetchHelpers = await import("../lib/request/fetch-helpers.js");

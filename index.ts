@@ -1642,9 +1642,19 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 														blockedModelNormalized.includes(
 															"gpt-5.3-codex-spark",
 														));
+												const shouldForceGpt55Fallback =
+													unsupportedModelInfo.isUnsupported &&
+													(
+														blockedModelNormalized === "gpt-5.5" ||
+														blockedModelNormalized === "gpt-5.5-pro" ||
+														blockedModelNormalized === "gpt-5.5-20260423" ||
+														blockedModelNormalized ===
+															"gpt-5.5-pro-20260423"
+													);
 												const allowUnsupportedFallback =
 													fallbackOnUnsupportedCodexModel ||
-													shouldForceSparkFallback;
+													shouldForceSparkFallback ||
+													shouldForceGpt55Fallback;
 
 												// Entitlements can differ by account/workspace, so try remaining
 												// accounts before degrading the model via fallback.

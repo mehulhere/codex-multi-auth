@@ -793,6 +793,11 @@ describe('createEntitlementErrorResponse', () => {
 					"The model 'gpt-5.3-codex' is not currently available for this ChatGPT account when using Codex OAuth.",
 				),
 			).toBe('gpt-5.3-codex');
+			expect(
+				extractUnsupportedCodexModelFromText(
+					"The model `gpt-5.5` does not exist or you do not have access to it.",
+				),
+			).toBe('gpt-5.5');
 		});
 
 		it('returns unsupported model info from normalized error payload', () => {
@@ -872,6 +877,57 @@ describe('createEntitlementErrorResponse', () => {
 				fallbackToGpt52OnUnsupportedGpt53: false,
 			});
 			expect(legacyEdgeFallback).toBeUndefined();
+		});
+
+		it('resolves GPT-5.5 fallback to GPT-5.4 after ChatGPT unsupported-model errors', () => {
+			const errorBody = {
+				error: {
+					code: 'model_not_supported_with_chatgpt_account',
+					message:
+						"The 'gpt-5.5' model is not supported when using Codex with a ChatGPT account.",
+				},
+			};
+
+			expect(
+				resolveUnsupportedCodexFallbackModel({
+					requestedModel: 'gpt-5.5',
+					errorBody,
+					attemptedModels: ['gpt-5.5'],
+					fallbackOnUnsupportedCodexModel: true,
+					fallbackToGpt52OnUnsupportedGpt53: true,
+				}),
+			).toBe('gpt-5.4');
+
+			expect(
+				resolveUnsupportedCodexFallbackModel({
+					requestedModel: 'gpt-5.5-pro-20260423',
+					errorBody: {
+						error: {
+							code: 'model_not_supported_with_chatgpt_account',
+							message:
+								"The 'gpt-5.5-pro-20260423' model is not supported when using Codex with a ChatGPT account.",
+						},
+					},
+					attemptedModels: ['gpt-5.5-pro-20260423'],
+					fallbackOnUnsupportedCodexModel: true,
+					fallbackToGpt52OnUnsupportedGpt53: true,
+				}),
+			).toBe('gpt-5.4');
+
+			expect(
+				resolveUnsupportedCodexFallbackModel({
+					requestedModel: 'gpt-5.5',
+					errorBody: {
+						error: {
+							message:
+								'The model `gpt-5.5` does not exist or you do not have access to it.',
+						},
+					},
+					attemptedModels: ['gpt-5.5'],
+					fallbackOnUnsupportedCodexModel: true,
+					fallbackToGpt52OnUnsupportedGpt53: true,
+				}),
+			).toBe('gpt-5.4');
 		});
 	});
 
