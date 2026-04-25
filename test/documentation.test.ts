@@ -326,7 +326,7 @@ describe("Documentation Integrity", () => {
 		const help = read(helpPath);
 		const switchCommand = read(switchPath);
 
-		expect(readme).toContain("codex auth fix --live --model gpt-5-codex");
+		expect(readme).toContain("codex auth fix --live --model gpt-5.3-codex");
 		expect(commandRef).toContain(
 			"| `--json` | verify-flagged, verify, why-selected, best, forecast, report, fix, doctor, config explain, debug bundle |",
 		);

@@ -358,7 +358,7 @@ function buildResponsesRequestContext(
 		method: "POST",
 		upstreamPath: URL_PATHS.CODEX_RESPONSES,
 		model,
-		family: getModelFamily(model ?? "gpt-5-codex"),
+		family: getModelFamily(model ?? "gpt-5.3-codex"),
 		stream: parsedBody?.stream === true,
 		sessionKey: resolveSessionKey(headers, parsedBody),
 	};

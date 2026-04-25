@@ -128,11 +128,11 @@ describe('Configuration Parsing', () => {
 			expect(codexMinimalReasoning.summary).toBe('auto');
 		});
 
-		it('should preserve "minimal" effort for GPT-5 general models that still support it', () => {
+		it('should coerce minimal effort on stale bare GPT-5 aliases routed to GPT-5.5', () => {
 			const gpt5MinimalConfig = { reasoningEffort: 'minimal' as const };
 			const gpt5MinimalReasoning = getReasoningConfig('gpt-5', gpt5MinimalConfig);
 
-			expect(gpt5MinimalReasoning.effort).toBe('minimal');
+			expect(gpt5MinimalReasoning.effort).toBe('low');
 		});
 
 		it('should default GPT-5.4 general models to none reasoning', () => {
@@ -160,12 +160,12 @@ describe('Configuration Parsing', () => {
 				expect(detailedReasoning.summary).toBe('detailed');
 			});
 
-			it('should default codex-mini to medium effort', () => {
+			it('should route deprecated codex-mini aliases to the current Codex default', () => {
 				const codexMiniReasoning = getReasoningConfig('gpt-5-codex-mini', {});
-				expect(codexMiniReasoning.effort).toBe('medium');
+				expect(codexMiniReasoning.effort).toBe('high');
 			});
 
-			it('should clamp codex-mini minimal/low to medium', () => {
+			it('should use current Codex reasoning bounds for deprecated codex-mini aliases', () => {
 				const minimal = getReasoningConfig('gpt-5-codex-mini', {
 					reasoningEffort: 'minimal',
 				});
@@ -173,8 +173,8 @@ describe('Configuration Parsing', () => {
 					reasoningEffort: 'low',
 				});
 
-				expect(minimal.effort).toBe('medium');
-				expect(low.effort).toBe('medium');
+				expect(minimal.effort).toBe('low');
+				expect(low.effort).toBe('low');
 			});
 
 		it('should keep codex-mini high effort when requested', () => {
@@ -184,18 +184,18 @@ describe('Configuration Parsing', () => {
 			expect(high.effort).toBe('high');
 		});
 
-		it('should clamp codex-mini xhigh to high', () => {
+		it('should preserve xhigh for deprecated codex-mini aliases routed to current Codex', () => {
 			const xhigh = getReasoningConfig('gpt-5-codex-mini', {
 				reasoningEffort: 'xhigh',
 			});
-			expect(xhigh.effort).toBe('high');
+			expect(xhigh.effort).toBe('xhigh');
 		});
 
-		it('should clamp codex-mini unknown effort to medium (line 263 coverage)', () => {
+		it('should clamp codex-mini unknown effort to the current Codex default', () => {
 			const unknown = getReasoningConfig('gpt-5-codex-mini', {
 				reasoningEffort: 'invalid-effort' as never,
 			});
-			expect(unknown.effort).toBe('medium');
+			expect(unknown.effort).toBe('high');
 		});
 	});
 
@@ -213,7 +213,7 @@ describe('Configuration Parsing', () => {
 
 		it('should handle standard gpt-5 model', () => {
 			const gpt5Reasoning = getReasoningConfig('gpt-5', {});
-			expect(gpt5Reasoning.effort).toBe('medium');
+			expect(gpt5Reasoning.effort).toBe('none');
 		});
 
 		it('should clamp unsupported low effort on GPT-5.4-pro up to medium', () => {

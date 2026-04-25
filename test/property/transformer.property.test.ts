@@ -47,12 +47,12 @@ describe("normalizeModel property tests", () => {
 
   it("handles undefined gracefully", () => {
     const result = normalizeModel(undefined);
-    expect(result).toBe("gpt-5.4");
+    expect(result).toBe("gpt-5.5");
   });
 
   it("handles empty string gracefully", () => {
     const result = normalizeModel("");
-    expect(result).toBe("gpt-5.4");
+    expect(result).toBe("gpt-5.5");
   });
 });
 
@@ -188,15 +188,15 @@ describe("getReasoningConfig property tests", () => {
     );
   });
 
-  it("codex-mini never returns none or minimal effort", () => {
+  it("deprecated codex-mini aliases route to current Codex reasoning", () => {
     fc.assert(
       fc.property(
         fc.constantFrom("gpt-5.1-codex-mini", "codex-mini-latest"),
         arbReasoningEffort,
         (model, effort) => {
           const result = getReasoningConfig(model, { reasoningEffort: effort });
-          expect(["none", "minimal", "low"]).not.toContain(result.effort);
-          expect(["medium", "high"]).toContain(result.effort);
+          expect(["none", "minimal"]).not.toContain(result.effort);
+          expect(["low", "medium", "high", "xhigh"]).toContain(result.effort);
           return true;
         }
       )
@@ -206,7 +206,7 @@ describe("getReasoningConfig property tests", () => {
   it("models without xhigh support downgrade xhigh to high", () => {
     fc.assert(
       fc.property(
-        fc.constantFrom("gpt-5", "gpt-5.1"),
+        fc.constantFrom("gpt-5.1"),
         (model) => {
           const result = getReasoningConfig(model, { reasoningEffort: "xhigh" });
           expect(result.effort).toBe("high");

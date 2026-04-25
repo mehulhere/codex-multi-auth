@@ -702,7 +702,7 @@ describe("codex manager cli commands", () => {
 		confirmMock.mockResolvedValue(true);
 		fetchCodexQuotaSnapshotMock.mockResolvedValue({
 			status: 200,
-			model: "gpt-5-codex",
+			model: "gpt-5.3-codex",
 			primary: {},
 			secondary: {},
 		});
@@ -1710,7 +1710,7 @@ describe("codex manager cli commands", () => {
 				acc_forecast: {
 					updatedAt: expect.any(Number),
 					status: 200,
-					model: "gpt-5-codex",
+					model: "gpt-5.3-codex",
 					planType: undefined,
 					primary: {
 						usedPercent: undefined,
@@ -1754,7 +1754,7 @@ describe("codex manager cli commands", () => {
 		loadQuotaCacheMock.mockResolvedValueOnce(originalQuotaCache);
 		fetchCodexQuotaSnapshotMock.mockResolvedValueOnce({
 			status: 200,
-			model: "gpt-5-codex",
+			model: "gpt-5.3-codex",
 			primary: {
 				usedPercent: 25,
 				windowMinutes: 300,
@@ -1787,7 +1787,7 @@ describe("codex manager cli commands", () => {
 				acc_forecast: {
 					updatedAt: expect.any(Number),
 					status: 200,
-					model: "gpt-5-codex",
+					model: "gpt-5.3-codex",
 					planType: undefined,
 					primary: {
 						usedPercent: 25,
@@ -1831,7 +1831,7 @@ describe("codex manager cli commands", () => {
 		loadQuotaCacheMock.mockResolvedValueOnce(originalQuotaCache);
 		fetchCodexQuotaSnapshotMock.mockResolvedValueOnce({
 			status: 200,
-			model: "gpt-5-codex",
+			model: "gpt-5.3-codex",
 			primary: {
 				usedPercent: 25,
 				windowMinutes: 300,
@@ -1859,7 +1859,7 @@ describe("codex manager cli commands", () => {
 				acc_forecast: {
 					updatedAt: expect.any(Number),
 					status: 200,
-					model: "gpt-5-codex",
+					model: "gpt-5.3-codex",
 					planType: undefined,
 					primary: {
 						usedPercent: 25,
@@ -2904,7 +2904,7 @@ describe("codex manager cli commands", () => {
 				"owner@example.com": {
 					updatedAt: now - 5_000,
 					status: 200,
-					model: "gpt-5-codex",
+					model: "gpt-5.3-codex",
 					primary: {
 						usedPercent: 95,
 						windowMinutes: 300,
@@ -3036,7 +3036,7 @@ describe("codex manager cli commands", () => {
 				"alpha@example.com": {
 					updatedAt: now - 10_000,
 					status: 200,
-					model: "gpt-5-codex",
+					model: "gpt-5.3-codex",
 					primary: {
 						usedPercent: 15,
 						windowMinutes: 300,
@@ -3233,7 +3233,7 @@ describe("codex manager cli commands", () => {
 				acc_live: {
 					updatedAt: expect.any(Number),
 					status: 200,
-					model: "gpt-5-codex",
+					model: "gpt-5.3-codex",
 					planType: undefined,
 					primary: {
 						usedPercent: undefined,
@@ -6307,9 +6307,18 @@ describe("codex manager cli commands", () => {
 				acc_a: {
 					updatedAt: expect.any(Number),
 					status: 200,
-					model: "gpt-5-codex",
-					primary: {},
-					secondary: {},
+					model: "gpt-5.3-codex",
+					planType: undefined,
+					primary: {
+						usedPercent: undefined,
+						windowMinutes: undefined,
+						resetAtMs: undefined,
+					},
+					secondary: {
+						usedPercent: undefined,
+						windowMinutes: undefined,
+						resetAtMs: undefined,
+					},
 				},
 			},
 			byEmail: {},
@@ -6511,12 +6520,12 @@ describe("codex manager cli commands", () => {
 		expect(fetchCodexQuotaSnapshotMock).toHaveBeenNthCalledWith(1, {
 			accountId: "workspace-alpha",
 			accessToken: "access-alpha",
-			model: "gpt-5-codex",
+			model: "gpt-5.3-codex",
 		});
 		expect(fetchCodexQuotaSnapshotMock).toHaveBeenNthCalledWith(2, {
 			accountId: "workspace-beta",
 			accessToken: "access-beta",
-			model: "gpt-5-codex",
+			model: "gpt-5.3-codex",
 		});
 		expect(saveQuotaCacheMock).toHaveBeenCalledTimes(1);
 		expect(saveQuotaCacheMock).toHaveBeenCalledWith({
@@ -9078,8 +9087,8 @@ describe("codex manager cli commands", () => {
 		expect(payload.accounts.enabled).toBe(1);
 		expect(payload.accounts.disabled).toBe(1);
 		expect(payload.modelSelection).toEqual({
-			requested: "gpt-5-codex",
-			normalized: "gpt-5-codex",
+			requested: "gpt-5.3-codex",
+			normalized: "gpt-5.3-codex",
 			remapped: false,
 			promptFamily: "gpt-5-codex",
 			capabilities: {
@@ -9133,8 +9142,8 @@ describe("codex manager cli commands", () => {
 		};
 		expect(payload.modelSelection).toEqual({
 			requested: "gpt-5.4-mini",
-			normalized: "gpt-5-mini",
-			remapped: true,
+			normalized: "gpt-5.4-mini",
+			remapped: false,
 			promptFamily: "gpt-5.2",
 			capabilities: {
 				toolSearch: false,
@@ -9177,7 +9186,7 @@ describe("codex manager cli commands", () => {
 		});
 		fetchCodexQuotaSnapshotMock.mockResolvedValue({
 			status: 200,
-			model: "gpt-5-mini",
+			model: "gpt-5.4-mini",
 			primary: {
 				usedPercent: 10,
 				windowMinutes: 300,
@@ -9208,7 +9217,7 @@ describe("codex manager cli commands", () => {
 			expect(exitCode).toBe(0);
 			expect(fetchCodexQuotaSnapshotMock).toHaveBeenCalled();
 			for (const [request] of fetchCodexQuotaSnapshotMock.mock.calls) {
-				expect(request).toMatchObject({ model: "gpt-5-mini" });
+				expect(request).toMatchObject({ model: "gpt-5.4-mini" });
 			}
 		}
 

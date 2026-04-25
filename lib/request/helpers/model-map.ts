@@ -79,11 +79,15 @@ const TOOL_CAPABILITIES = {
 	},
 } as const satisfies Record<string, ModelCapabilities>;
 
-export const DEFAULT_MODEL = "gpt-5.4";
+export const CURRENT_CODEX_MODEL = "gpt-5.3-codex";
+export const DEFAULT_MODEL = "gpt-5.5";
+const LEGACY_CODEX_MODEL = "gpt-5-codex";
 const GPT_5_5_CANONICAL_MODEL = "gpt-5.5";
 const GPT_5_5_PRO_CANONICAL_MODEL = "gpt-5.5-pro";
-const GPT_5_5_RELEASE_MODEL = "gpt-5.5-20260423";
-const GPT_5_5_PRO_RELEASE_MODEL = "gpt-5.5-pro-20260423";
+const GPT_5_5_RELEASE_MODEL = "gpt-5.5-2026-04-23";
+const GPT_5_5_PRO_RELEASE_MODEL = "gpt-5.5-pro-2026-04-23";
+const GPT_5_5_RELEASE_COMPAT_MODEL = "gpt-5.5-20260423";
+const GPT_5_5_PRO_RELEASE_COMPAT_MODEL = "gpt-5.5-pro-20260423";
 
 const GENERAL_GPT5_VERSION_CATALOG: Record<
 	GeneralGpt5KnownMinor,
@@ -99,8 +103,8 @@ const GENERAL_GPT5_VERSION_CATALOG: Record<
 	4: {
 		base: DEFAULT_MODEL,
 		pro: "gpt-5.4-pro",
-		mini: "gpt-5-mini",
-		nano: "gpt-5-nano",
+		mini: "gpt-5.4-mini",
+		nano: "gpt-5.4-nano",
 	},
 	5: {
 		base: GPT_5_5_CANONICAL_MODEL,
@@ -110,11 +114,11 @@ const GENERAL_GPT5_VERSION_CATALOG: Record<
 	},
 };
 
-const GENERAL_GPT5_STABLE_VARIANTS = GENERAL_GPT5_VERSION_CATALOG[4];
+const GENERAL_GPT5_STABLE_VARIANTS = GENERAL_GPT5_VERSION_CATALOG[5];
 
 const GENERAL_GPT5_GENERIC_VARIANTS: Record<GeneralGpt5Variant, string> = {
 	base: DEFAULT_MODEL,
-	pro: "gpt-5-pro",
+	pro: GPT_5_5_PRO_CANONICAL_MODEL,
 	mini: "gpt-5-mini",
 	nano: "gpt-5-nano",
 };
@@ -128,25 +132,11 @@ const GENERAL_GPT5_GENERIC_VARIANTS: Record<GeneralGpt5Variant, string> = {
  * present in the latest upstream release.
  */
 export const MODEL_PROFILES: Record<string, ModelProfile> = {
-	"gpt-5-codex": {
-		normalizedModel: "gpt-5-codex",
+	[CURRENT_CODEX_MODEL]: {
+		normalizedModel: CURRENT_CODEX_MODEL,
 		promptFamily: "gpt-5-codex",
 		defaultReasoningEffort: "high",
 		supportedReasoningEfforts: ["low", "medium", "high", "xhigh"],
-		capabilities: TOOL_CAPABILITIES.basic,
-	},
-	"gpt-5.1-codex-max": {
-		normalizedModel: "gpt-5.1-codex-max",
-		promptFamily: "codex-max",
-		defaultReasoningEffort: "high",
-		supportedReasoningEfforts: ["medium", "high", "xhigh"],
-		capabilities: TOOL_CAPABILITIES.basic,
-	},
-	"gpt-5.1-codex-mini": {
-		normalizedModel: "gpt-5.1-codex-mini",
-		promptFamily: "gpt-5-codex",
-		defaultReasoningEffort: "medium",
-		supportedReasoningEfforts: ["medium", "high"],
 		capabilities: TOOL_CAPABILITIES.basic,
 	},
 	"gpt-5.4": {
@@ -162,6 +152,20 @@ export const MODEL_PROFILES: Record<string, ModelProfile> = {
 		defaultReasoningEffort: "high",
 		supportedReasoningEfforts: ["medium", "high", "xhigh"],
 		capabilities: TOOL_CAPABILITIES.computerAndCompact,
+	},
+	"gpt-5.4-mini": {
+		normalizedModel: "gpt-5.4-mini",
+		promptFamily: "gpt-5.2",
+		defaultReasoningEffort: "medium",
+		supportedReasoningEfforts: ["medium"],
+		capabilities: TOOL_CAPABILITIES.compactOnly,
+	},
+	"gpt-5.4-nano": {
+		normalizedModel: "gpt-5.4-nano",
+		promptFamily: "gpt-5.2",
+		defaultReasoningEffort: "medium",
+		supportedReasoningEfforts: ["medium"],
+		capabilities: TOOL_CAPABILITIES.compactOnly,
 	},
 	[GPT_5_5_CANONICAL_MODEL]: {
 		normalizedModel: GPT_5_5_CANONICAL_MODEL,
@@ -184,13 +188,6 @@ export const MODEL_PROFILES: Record<string, ModelProfile> = {
 		supportedReasoningEfforts: ["medium", "high", "xhigh"],
 		capabilities: TOOL_CAPABILITIES.basic,
 	},
-	"gpt-5-pro": {
-		normalizedModel: "gpt-5-pro",
-		promptFamily: "gpt-5.2",
-		defaultReasoningEffort: "high",
-		supportedReasoningEfforts: ["high"],
-		capabilities: TOOL_CAPABILITIES.basic,
-	},
 	"gpt-5.2": {
 		normalizedModel: "gpt-5.2",
 		promptFamily: "gpt-5.2",
@@ -203,13 +200,6 @@ export const MODEL_PROFILES: Record<string, ModelProfile> = {
 		promptFamily: "gpt-5.1",
 		defaultReasoningEffort: "none",
 		supportedReasoningEfforts: ["none", "low", "medium", "high"],
-		capabilities: TOOL_CAPABILITIES.basic,
-	},
-	"gpt-5": {
-		normalizedModel: "gpt-5",
-		promptFamily: "gpt-5.2",
-		defaultReasoningEffort: "medium",
-		supportedReasoningEfforts: ["minimal", "low", "medium", "high"],
 		capabilities: TOOL_CAPABILITIES.basic,
 	},
 	"gpt-5-mini": {
@@ -245,6 +235,10 @@ function addGeneralAliases(): void {
 	addReasoningAliases(GPT_5_5_CANONICAL_MODEL, GPT_5_5_CANONICAL_MODEL);
 	addReasoningAliases(GPT_5_5_RELEASE_MODEL, GPT_5_5_CANONICAL_MODEL);
 	addReasoningAliases(
+		GPT_5_5_RELEASE_COMPAT_MODEL,
+		GPT_5_5_CANONICAL_MODEL,
+	);
+	addReasoningAliases(
 		GPT_5_5_PRO_CANONICAL_MODEL,
 		GPT_5_5_PRO_CANONICAL_MODEL,
 	);
@@ -252,37 +246,41 @@ function addGeneralAliases(): void {
 		GPT_5_5_PRO_RELEASE_MODEL,
 		GPT_5_5_PRO_CANONICAL_MODEL,
 	);
+	addReasoningAliases(
+		GPT_5_5_PRO_RELEASE_COMPAT_MODEL,
+		GPT_5_5_PRO_CANONICAL_MODEL,
+	);
 	addReasoningAliases("gpt-5.4", "gpt-5.4");
 	addReasoningAliases("gpt-5.4-pro", "gpt-5.4-pro");
+	addReasoningAliases("gpt-5.4-mini", "gpt-5.4-mini");
+	addReasoningAliases("gpt-5.4-nano", "gpt-5.4-nano");
 	addReasoningAliases("gpt-5.2-pro", "gpt-5.2-pro");
-	addReasoningAliases("gpt-5-pro", "gpt-5-pro");
+	addReasoningAliases("gpt-5-pro", GPT_5_5_PRO_CANONICAL_MODEL);
 	addReasoningAliases("gpt-5.2", "gpt-5.2");
 	addReasoningAliases("gpt-5.1", "gpt-5.1");
-	addReasoningAliases("gpt-5", "gpt-5");
+	addReasoningAliases("gpt-5", DEFAULT_MODEL);
 	addReasoningAliases("gpt-5-mini", "gpt-5-mini");
 	addReasoningAliases("gpt-5-nano", "gpt-5-nano");
 
 	addReasoningAliases("gpt-5.1-chat-latest", "gpt-5.1");
-	addReasoningAliases("gpt-5-chat-latest", "gpt-5");
-	addReasoningAliases("gpt-5.4-mini", "gpt-5-mini");
-	addReasoningAliases("gpt-5.4-nano", "gpt-5-nano");
+	addReasoningAliases("gpt-5-chat-latest", DEFAULT_MODEL);
 }
 
 function addCodexAliases(): void {
-	addReasoningAliases("gpt-5-codex", "gpt-5-codex");
-	addReasoningAliases("gpt-5.3-codex-spark", "gpt-5-codex");
-	addReasoningAliases("gpt-5.3-codex", "gpt-5-codex");
-	addReasoningAliases("gpt-5.2-codex", "gpt-5-codex");
-	addReasoningAliases("gpt-5.1-codex", "gpt-5-codex");
-	addAlias("gpt_5_codex", "gpt-5-codex");
+	addReasoningAliases(CURRENT_CODEX_MODEL, CURRENT_CODEX_MODEL);
+	addReasoningAliases("gpt-5.3-codex-spark", CURRENT_CODEX_MODEL);
+	addReasoningAliases(LEGACY_CODEX_MODEL, CURRENT_CODEX_MODEL);
+	addReasoningAliases("gpt-5.2-codex", CURRENT_CODEX_MODEL);
+	addReasoningAliases("gpt-5.1-codex", CURRENT_CODEX_MODEL);
+	addAlias("gpt_5_codex", CURRENT_CODEX_MODEL);
 
-	addReasoningAliases("codex-max", "gpt-5.1-codex-max");
-	addReasoningAliases("gpt-5.1-codex-max", "gpt-5.1-codex-max");
-	addAlias("codex-max", "gpt-5.1-codex-max");
+	addReasoningAliases("codex-max", CURRENT_CODEX_MODEL);
+	addReasoningAliases("gpt-5.1-codex-max", CURRENT_CODEX_MODEL);
+	addAlias("codex-max", CURRENT_CODEX_MODEL);
 
-	addAlias("codex-mini-latest", "gpt-5.1-codex-mini");
-	addReasoningAliases("gpt-5-codex-mini", "gpt-5.1-codex-mini");
-	addReasoningAliases("gpt-5.1-codex-mini", "gpt-5.1-codex-mini");
+	addAlias("codex-mini-latest", CURRENT_CODEX_MODEL);
+	addReasoningAliases("gpt-5-codex-mini", CURRENT_CODEX_MODEL);
+	addReasoningAliases("gpt-5.1-codex-mini", CURRENT_CODEX_MODEL);
 }
 
 addCodexAliases();
@@ -342,25 +340,25 @@ function resolveCodexCatalogModel(modelId: string): string | undefined {
 		normalized.includes("gpt-5.3-codex-spark") ||
 		normalized.includes("gpt 5.3 codex spark")
 	) {
-		return "gpt-5-codex";
+		return CURRENT_CODEX_MODEL;
 	}
 	if (
 		normalized.includes("gpt-5.3-codex") ||
 		normalized.includes("gpt 5.3 codex")
 	) {
-		return "gpt-5-codex";
+		return CURRENT_CODEX_MODEL;
 	}
 	if (
 		normalized.includes("gpt-5.2-codex") ||
 		normalized.includes("gpt 5.2 codex")
 	) {
-		return "gpt-5-codex";
+		return CURRENT_CODEX_MODEL;
 	}
 	if (
 		normalized.includes("gpt-5.1-codex-max") ||
 		normalized.includes("gpt 5.1 codex max")
 	) {
-		return "gpt-5.1-codex-max";
+		return CURRENT_CODEX_MODEL;
 	}
 	if (
 		normalized.includes("gpt-5.1-codex-mini") ||
@@ -369,7 +367,7 @@ function resolveCodexCatalogModel(modelId: string): string | undefined {
 		normalized.includes("gpt-5-codex-mini") ||
 		normalized.includes("gpt 5 codex mini")
 	) {
-		return "gpt-5.1-codex-mini";
+		return CURRENT_CODEX_MODEL;
 	}
 	if (
 		normalized.includes("gpt-5-codex") ||
@@ -378,7 +376,7 @@ function resolveCodexCatalogModel(modelId: string): string | undefined {
 		normalized.includes("gpt 5.1 codex") ||
 		normalized.includes("codex")
 	) {
-		return "gpt-5-codex";
+		return CURRENT_CODEX_MODEL;
 	}
 
 	return undefined;

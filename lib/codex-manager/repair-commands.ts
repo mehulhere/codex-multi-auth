@@ -137,7 +137,7 @@ export function printFixUsage(): void {
 			"  --dry-run, -n      Preview changes without writing storage",
 			"  --json, -j         Print machine-readable JSON output",
 			"  --live, -l         Run live session probe before deciding health",
-			"  --model, -m        Probe model for live mode (default: gpt-5-codex)",
+			"  --model, -m        Probe model for live mode (default: gpt-5.3-codex)",
 			"",
 			"Behavior:",
 			"  - Refreshes tokens for enabled accounts",
@@ -189,7 +189,7 @@ export function parseFixArgs(args: string[]): ParsedArgsResult<FixCliOptions> {
 		dryRun: false,
 		json: false,
 		live: false,
-		model: "gpt-5-codex",
+		model: "gpt-5.3-codex",
 	};
 
 	for (let i = 0; i < args.length; i += 1) {
@@ -1192,7 +1192,7 @@ export async function runFix(
 		return 1;
 	}
 	const options = parsedArgs.options;
-	const probeModel = resolveNormalizedModel(options.model.trim() || "gpt-5-codex");
+	const probeModel = resolveNormalizedModel(options.model.trim() || "gpt-5.3-codex");
 	const display = DEFAULT_DASHBOARD_DISPLAY_SETTINGS;
 	const quotaCache = options.live ? await loadQuotaCache() : null;
 	const workingQuotaCache = quotaCache ? deps.cloneQuotaCacheData(quotaCache) : null;

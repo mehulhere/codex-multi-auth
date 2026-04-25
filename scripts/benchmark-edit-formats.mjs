@@ -63,7 +63,7 @@ function printUsage() {
     "  --help                           Show this help",
     "",
     "Examples:",
-    "  node scripts/benchmark-edit-formats.mjs --smoke --models=openai/gpt-5-codex",
+    "  node scripts/benchmark-edit-formats.mjs --smoke --models=openai/gpt-5.3-codex",
     "  node scripts/benchmark-edit-formats.mjs --preset=codex-core --warmup-runs=1 --measured-runs=5",
   ].join("\n"));
 }

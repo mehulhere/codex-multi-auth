@@ -124,7 +124,7 @@ function printReportUsage(logInfo: (message: string) => void): void {
 			"  --live, -l         Probe live quota headers via Codex backend",
 			"  --json, -j         Print machine-readable JSON output",
 			"  --explain          Print per-account reasoning in text mode",
-			"  --model, -m        Probe model for live mode (default: gpt-5-codex)",
+			"  --model, -m        Probe model for live mode (default: gpt-5.3-codex)",
 			"  --max-accounts N   Limit how many enabled accounts live mode can consider",
 			"  --max-probes N     Limit how many live quota probes can run",
 			"  --cached-only      Skip refreshes and only use already-usable access tokens",
@@ -138,7 +138,7 @@ function parseReportArgs(args: string[]): ParsedArgsResult<ReportCliOptions> {
 		live: false,
 		json: false,
 		explain: false,
-		model: "gpt-5-codex",
+		model: "gpt-5.3-codex",
 		cachedOnly: false,
 	};
 
@@ -302,7 +302,7 @@ export async function runReportCommand(
 		return 1;
 	}
 	const options = parsedArgs.options;
-	const requestedModel = options.model?.trim() || "gpt-5-codex";
+	const requestedModel = options.model?.trim() || "gpt-5.3-codex";
 	const modelInspection = inspectRequestedModel(requestedModel);
 
 	deps.setStoragePath(null);

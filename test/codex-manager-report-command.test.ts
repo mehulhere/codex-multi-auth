@@ -45,7 +45,7 @@ function createDeps(
 		})),
 		fetchCodexQuotaSnapshot: vi.fn(async () => ({
 			status: 200,
-			model: "gpt-5-codex",
+			model: "gpt-5.3-codex",
 			primary: {},
 			secondary: {},
 		})),
@@ -378,7 +378,7 @@ describe("runReportCommand", () => {
 		expect(deps.fetchCodexQuotaSnapshot).toHaveBeenCalledWith({
 			accountId: "acct-live",
 			accessToken: "access-token-1",
-			model: "gpt-5-codex",
+			model: "gpt-5.3-codex",
 		});
 	});
 

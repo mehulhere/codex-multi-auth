@@ -170,7 +170,7 @@ If browser launch is blocked, use the alternate login paths in [docs/getting-sta
 | Command | What it answers |
 | --- | --- |
 | `codex auth report --live --json` | How do I get the full machine-readable health report? |
-| `codex auth fix --live --model gpt-5-codex` | How do I run live repair probes with a chosen model? |
+| `codex auth fix --live --model gpt-5.3-codex` | How do I run live repair probes with a chosen model? |
 | `codex auth why-selected --json` | Which account does the selector pick now, and why? |
 | `codex auth rotation status` | Is live runtime account rotation enabled for forwarded Codex sessions? |
 

@@ -50,7 +50,7 @@ describe("capability policy store", () => {
 		store.recordUnsupported("id:acc_future", "gpt-5.5-pro", 1_000);
 
 		expect(
-			store.getSnapshot("id:acc_future", "gpt-5.5-pro-20260423"),
+			store.getSnapshot("id:acc_future", "gpt-5.5-pro-2026-04-23"),
 		).toMatchObject({
 			failures: 1,
 			unsupported: 1,

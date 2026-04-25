@@ -20,7 +20,7 @@ export interface CodexQuotaSnapshot {
 	model: string;
 }
 
-const DEFAULT_QUOTA_PROBE_MODELS = ["gpt-5-codex", "gpt-5.3-codex", "gpt-5.2-codex"] as const;
+const DEFAULT_QUOTA_PROBE_MODELS = ["gpt-5.3-codex", "gpt-5.2-codex", "gpt-5-codex"] as const;
 
 /**
  * Parse an HTTP header value and return it as a finite number.

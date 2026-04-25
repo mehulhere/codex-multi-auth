@@ -442,9 +442,27 @@ const MODEL_ACCESS_DENIED_PATTERN =
 	/the model [`'"]([^`'"]+)[`'"] does not exist or you do not have access to it/i;
 const DIRECT_UNSUPPORTED_MODEL_PATTERN =
 	/['"]([^'"]+)['"]\s+model is not supported when using codex with a chatgpt account/i;
+const CURRENT_CODEX_MODEL = "gpt-5.3-codex";
+const LEGACY_CODEX_MODEL = "gpt-5-codex";
 const WRAPPER_UNSUPPORTED_MODEL_FALLBACK_CHAIN = {
+	"gpt-5": ["gpt-5.5"],
+	"gpt-5-pro": ["gpt-5.5-pro"],
+	"gpt-5-chat-latest": ["gpt-5.5"],
 	"gpt-5.5": ["gpt-5.4"],
 	"gpt-5.5-pro": ["gpt-5.4"],
+	"gpt-5.5-2026-04-23": ["gpt-5.4"],
+	"gpt-5.5-pro-2026-04-23": ["gpt-5.4"],
+	"gpt-5.5-20260423": ["gpt-5.4"],
+	"gpt-5.5-pro-20260423": ["gpt-5.4"],
+	"gpt-5.3-codex-spark": [CURRENT_CODEX_MODEL],
+	"codex-max": [CURRENT_CODEX_MODEL],
+	"gpt-5.1-codex-max": [CURRENT_CODEX_MODEL],
+	"codex-mini-latest": [CURRENT_CODEX_MODEL],
+	"gpt-5-codex-mini": [CURRENT_CODEX_MODEL],
+	"gpt-5.1-codex-mini": [CURRENT_CODEX_MODEL],
+	[LEGACY_CODEX_MODEL]: [CURRENT_CODEX_MODEL],
+	"gpt-5.2-codex": [CURRENT_CODEX_MODEL],
+	"gpt-5.1-codex": [CURRENT_CODEX_MODEL],
 };
 
 function canonicalizeRequestedModelName(model) {
@@ -462,6 +480,15 @@ function canonicalizeRequestedModelName(model) {
 	return stripped.replace(/-(none|minimal|low|medium|high|xhigh)$/i, "");
 }
 
+function canonicalizeUnsupportedModelKey(model) {
+	if (typeof model !== "string") return "";
+	const stripped = stripProviderPrefix(model).trim().toLowerCase();
+	if (!stripped) {
+		return "";
+	}
+	return stripped.replace(/-(none|minimal|low|medium|high|xhigh)$/i, "");
+}
+
 function extractUnsupportedModelFromOutput(output) {
 	if (typeof output !== "string" || output.length === 0) {
 		return undefined;
@@ -469,16 +496,16 @@ function extractUnsupportedModelFromOutput(output) {
 
 	const directMatch = output.match(DIRECT_UNSUPPORTED_MODEL_PATTERN);
 	if (directMatch?.[1]) {
-		return canonicalizeRequestedModelName(directMatch[1]);
+		return canonicalizeUnsupportedModelKey(directMatch[1]);
 	}
 
 	const normalizedMatch = output.match(NORMALIZED_UNSUPPORTED_MODEL_PATTERN);
 	if (normalizedMatch?.[1]) {
-		return canonicalizeRequestedModelName(normalizedMatch[1]);
+		return canonicalizeUnsupportedModelKey(normalizedMatch[1]);
 	}
 	const accessDeniedMatch = output.match(MODEL_ACCESS_DENIED_PATTERN);
 	if (accessDeniedMatch?.[1]) {
-		return canonicalizeRequestedModelName(accessDeniedMatch[1]);
+		return canonicalizeUnsupportedModelKey(accessDeniedMatch[1]);
 	}
 
 	return undefined;
@@ -501,10 +528,10 @@ function resolveUnsupportedModelRetryTarget(
 
 	const attempted = new Set(
 		attemptedModels
-			.map((model) => canonicalizeRequestedModelName(model))
+			.map((model) => canonicalizeUnsupportedModelKey(model))
 			.filter(Boolean),
 	);
-	const normalizedRequestedModel = canonicalizeRequestedModelName(requestedModel);
+	const normalizedRequestedModel = canonicalizeUnsupportedModelKey(requestedModel);
 	const blockedModel =
 		extractUnsupportedModelFromOutput(output) ?? normalizedRequestedModel;
 	const fallbackChain =
@@ -531,7 +558,7 @@ function replaceRequestedModel(args, nextModel) {
 	const nextArgs = [...args];
 	for (let i = 0; i < nextArgs.length; i += 1) {
 		const arg = nextArgs[i];
-		if (arg === "--model" && typeof nextArgs[i + 1] === "string") {
+		if ((arg === "--model" || arg === "-m") && typeof nextArgs[i + 1] === "string") {
 			nextArgs[i + 1] = nextModel;
 			return nextArgs;
 		}
@@ -975,18 +1002,16 @@ function hasCliAuthCredentialsStoreOverride(args) {
 // and its GPT-5 normalization helpers.
 // This wrapper runs before the TypeScript build, so it cannot import that source.
 const SUPPORTED_REASONING_EFFORTS_BY_MODEL = {
-	"gpt-5-codex": ["low", "medium", "high", "xhigh"],
-	"gpt-5.1-codex-max": ["medium", "high", "xhigh"],
-	"gpt-5.1-codex-mini": ["medium", "high"],
+	[CURRENT_CODEX_MODEL]: ["low", "medium", "high", "xhigh"],
 	"gpt-5.5": ["none", "low", "medium", "high", "xhigh"],
 	"gpt-5.5-pro": ["medium", "high", "xhigh"],
 	"gpt-5.4": ["none", "low", "medium", "high", "xhigh"],
 	"gpt-5.4-pro": ["medium", "high", "xhigh"],
+	"gpt-5.4-mini": ["medium"],
+	"gpt-5.4-nano": ["medium"],
 	"gpt-5.2-pro": ["medium", "high", "xhigh"],
-	"gpt-5-pro": ["high"],
 	"gpt-5.2": ["none", "low", "medium", "high", "xhigh"],
 	"gpt-5.1": ["none", "low", "medium", "high"],
-	"gpt-5": ["minimal", "low", "medium", "high"],
 	"gpt-5-mini": ["medium"],
 	"gpt-5-nano": ["medium"],
 };
@@ -1002,11 +1027,13 @@ const REASONING_FALLBACKS = {
 
 const KNOWN_REASONING_EFFORTS = new Set(Object.keys(REASONING_FALLBACKS));
 const REQUESTED_MODEL_ALIASES = new Map();
-const DEFAULT_GENERAL_GPT5_MODEL = "gpt-5.4";
+const DEFAULT_GENERAL_GPT5_MODEL = "gpt-5.5";
 const GPT_5_5_CANONICAL_MODEL = "gpt-5.5";
 const GPT_5_5_PRO_CANONICAL_MODEL = "gpt-5.5-pro";
-const GPT_5_5_RELEASE_MODEL = "gpt-5.5-20260423";
-const GPT_5_5_PRO_RELEASE_MODEL = "gpt-5.5-pro-20260423";
+const GPT_5_5_RELEASE_MODEL = "gpt-5.5-2026-04-23";
+const GPT_5_5_PRO_RELEASE_MODEL = "gpt-5.5-pro-2026-04-23";
+const GPT_5_5_RELEASE_COMPAT_MODEL = "gpt-5.5-20260423";
+const GPT_5_5_PRO_RELEASE_COMPAT_MODEL = "gpt-5.5-pro-20260423";
 const GENERAL_GPT5_VERSION_CATALOG = {
 	1: {
 		base: "gpt-5.1",
@@ -1018,8 +1045,8 @@ const GENERAL_GPT5_VERSION_CATALOG = {
 	4: {
 		base: DEFAULT_GENERAL_GPT5_MODEL,
 		pro: "gpt-5.4-pro",
-		mini: "gpt-5-mini",
-		nano: "gpt-5-nano",
+		mini: "gpt-5.4-mini",
+		nano: "gpt-5.4-nano",
 	},
 	5: {
 		base: GPT_5_5_CANONICAL_MODEL,
@@ -1028,10 +1055,10 @@ const GENERAL_GPT5_VERSION_CATALOG = {
 		nano: "gpt-5-nano",
 	},
 };
-const GENERAL_GPT5_STABLE_VARIANTS = GENERAL_GPT5_VERSION_CATALOG[4];
+const GENERAL_GPT5_STABLE_VARIANTS = GENERAL_GPT5_VERSION_CATALOG[5];
 const GENERAL_GPT5_GENERIC_VARIANTS = {
 	base: DEFAULT_GENERAL_GPT5_MODEL,
-	pro: "gpt-5-pro",
+	pro: GPT_5_5_PRO_CANONICAL_MODEL,
 	mini: "gpt-5-mini",
 	nano: "gpt-5-nano",
 };
@@ -1152,6 +1179,10 @@ function seedRequestedModelAliases() {
 		GPT_5_5_CANONICAL_MODEL,
 	);
 	addRequestedModelReasoningAliases(
+		GPT_5_5_RELEASE_COMPAT_MODEL,
+		GPT_5_5_CANONICAL_MODEL,
+	);
+	addRequestedModelReasoningAliases(
 		GPT_5_5_PRO_CANONICAL_MODEL,
 		GPT_5_5_PRO_CANONICAL_MODEL,
 	);
@@ -1159,30 +1190,34 @@ function seedRequestedModelAliases() {
 		GPT_5_5_PRO_RELEASE_MODEL,
 		GPT_5_5_PRO_CANONICAL_MODEL,
 	);
+	addRequestedModelReasoningAliases(
+		GPT_5_5_PRO_RELEASE_COMPAT_MODEL,
+		GPT_5_5_PRO_CANONICAL_MODEL,
+	);
 	addRequestedModelReasoningAliases("gpt-5.4", "gpt-5.4");
 	addRequestedModelReasoningAliases("gpt-5.4-pro", "gpt-5.4-pro");
+	addRequestedModelReasoningAliases("gpt-5.4-mini", "gpt-5.4-mini");
+	addRequestedModelReasoningAliases("gpt-5.4-nano", "gpt-5.4-nano");
 	addRequestedModelReasoningAliases("gpt-5.2-pro", "gpt-5.2-pro");
-	addRequestedModelReasoningAliases("gpt-5-pro", "gpt-5-pro");
+	addRequestedModelReasoningAliases("gpt-5-pro", GPT_5_5_PRO_CANONICAL_MODEL);
 	addRequestedModelReasoningAliases("gpt-5.2", "gpt-5.2");
 	addRequestedModelReasoningAliases("gpt-5.1", "gpt-5.1");
-	addRequestedModelReasoningAliases("gpt-5", "gpt-5");
+	addRequestedModelReasoningAliases("gpt-5", DEFAULT_GENERAL_GPT5_MODEL);
 	addRequestedModelReasoningAliases("gpt-5-mini", "gpt-5-mini");
 	addRequestedModelReasoningAliases("gpt-5-nano", "gpt-5-nano");
 	addRequestedModelReasoningAliases("gpt-5.1-chat-latest", "gpt-5.1");
-	addRequestedModelReasoningAliases("gpt-5-chat-latest", "gpt-5");
-	addRequestedModelReasoningAliases("gpt-5.4-mini", "gpt-5-mini");
-	addRequestedModelReasoningAliases("gpt-5.4-nano", "gpt-5-nano");
-	addRequestedModelReasoningAliases("gpt-5-codex", "gpt-5-codex");
-	addRequestedModelReasoningAliases("gpt-5.3-codex-spark", "gpt-5-codex");
-	addRequestedModelReasoningAliases("gpt-5.3-codex", "gpt-5-codex");
-	addRequestedModelReasoningAliases("gpt-5.2-codex", "gpt-5-codex");
-	addRequestedModelReasoningAliases("gpt-5.1-codex", "gpt-5-codex");
-	addRequestedModelAlias("gpt_5_codex", "gpt-5-codex");
-	addRequestedModelReasoningAliases("codex-max", "gpt-5.1-codex-max");
-	addRequestedModelReasoningAliases("gpt-5.1-codex-max", "gpt-5.1-codex-max");
-	addRequestedModelAlias("codex-mini-latest", "gpt-5.1-codex-mini");
-	addRequestedModelReasoningAliases("gpt-5-codex-mini", "gpt-5.1-codex-mini");
-	addRequestedModelReasoningAliases("gpt-5.1-codex-mini", "gpt-5.1-codex-mini");
+	addRequestedModelReasoningAliases("gpt-5-chat-latest", DEFAULT_GENERAL_GPT5_MODEL);
+	addRequestedModelReasoningAliases(CURRENT_CODEX_MODEL, CURRENT_CODEX_MODEL);
+	addRequestedModelReasoningAliases("gpt-5.3-codex-spark", CURRENT_CODEX_MODEL);
+	addRequestedModelReasoningAliases(LEGACY_CODEX_MODEL, CURRENT_CODEX_MODEL);
+	addRequestedModelReasoningAliases("gpt-5.2-codex", CURRENT_CODEX_MODEL);
+	addRequestedModelReasoningAliases("gpt-5.1-codex", CURRENT_CODEX_MODEL);
+	addRequestedModelAlias("gpt_5_codex", CURRENT_CODEX_MODEL);
+	addRequestedModelReasoningAliases("codex-max", CURRENT_CODEX_MODEL);
+	addRequestedModelReasoningAliases("gpt-5.1-codex-max", CURRENT_CODEX_MODEL);
+	addRequestedModelAlias("codex-mini-latest", CURRENT_CODEX_MODEL);
+	addRequestedModelReasoningAliases("gpt-5-codex-mini", CURRENT_CODEX_MODEL);
+	addRequestedModelReasoningAliases("gpt-5.1-codex-mini", CURRENT_CODEX_MODEL);
 }
 
 seedRequestedModelAliases();
@@ -1233,7 +1268,7 @@ function resolveCodexRequestedModel(normalized) {
 		normalized.includes("gpt 5.1 codex max") ||
 		normalized.includes("codex-max")
 	) {
-		return "gpt-5.1-codex-max";
+		return CURRENT_CODEX_MODEL;
 	}
 	if (
 		normalized.includes("gpt-5.1-codex-mini") ||
@@ -1242,7 +1277,7 @@ function resolveCodexRequestedModel(normalized) {
 		normalized.includes("gpt 5 codex mini") ||
 		normalized.includes("codex-mini-latest")
 	) {
-		return "gpt-5.1-codex-mini";
+		return CURRENT_CODEX_MODEL;
 	}
 	if (
 		normalized.includes("gpt-5.3-codex-spark") ||
@@ -1257,7 +1292,7 @@ function resolveCodexRequestedModel(normalized) {
 		normalized.includes("gpt 5 codex") ||
 		normalized === "codex"
 	) {
-		return "gpt-5-codex";
+		return CURRENT_CODEX_MODEL;
 	}
 
 	return "";
@@ -1346,7 +1381,7 @@ function coerceReasoningEffortForModel(model, effort) {
 function extractRequestedModel(args) {
 	for (let i = 0; i < args.length; i += 1) {
 		const arg = args[i];
-		if (arg === "--model") {
+		if (arg === "--model" || arg === "-m") {
 			const next = args[i + 1];
 			if (typeof next === "string" && next.trim().length > 0) {
 				return next.trim();

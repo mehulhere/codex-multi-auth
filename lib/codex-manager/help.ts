@@ -91,7 +91,7 @@ export function printBestUsage(): void {
 			"Options:",
 			"  --live, -l         Probe live quota headers via Codex backend before switching",
 			"  --json, -j         Print machine-readable JSON output",
-			"  --model, -m        Probe model for live mode (default: gpt-5-codex)",
+			"  --model, -m        Probe model for live mode (default: gpt-5.3-codex)",
 			"",
 			"Behavior:",
 			"  - Chooses the healthiest account using forecast scoring",
@@ -104,7 +104,7 @@ export function parseBestArgs(args: string[]): ParsedBestArgs {
 	const options: BestCliOptions = {
 		live: false,
 		json: false,
-		model: "gpt-5-codex",
+		model: "gpt-5.3-codex",
 		modelProvided: false,
 	};
 

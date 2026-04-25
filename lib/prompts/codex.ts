@@ -172,11 +172,11 @@ async function getLatestReleaseTag(): Promise<string> {
  *
  * Rate limit protection: Only checks GitHub if cache is older than 15 minutes
  *
- * @param normalizedModel - The normalized model name (optional, defaults to "gpt-5-codex")
+ * @param normalizedModel - The normalized model name (optional, defaults to "gpt-5.3-codex")
  * @returns Codex instructions for the specified model family
  */
 export async function getCodexInstructions(
-	normalizedModel = "gpt-5-codex",
+	normalizedModel = "gpt-5.3-codex",
 ): Promise<string> {
 	const modelFamily = getModelFamily(normalizedModel);
 	const now = Date.now();
@@ -370,7 +370,7 @@ function refreshInstructionsInBackground(
  * Prewarm instruction caches for the provided models/families.
  */
 export function prewarmCodexInstructions(models: string[] = []): void {
-	const candidates = models.length > 0 ? models : ["gpt-5-codex", "gpt-5.4", "gpt-5.1"];
+	const candidates = models.length > 0 ? models : ["gpt-5.3-codex", "gpt-5.5", "gpt-5.1"];
 	const prewarmTargets = new Map<string, string>();
 	for (const model of candidates) {
 		const promptFamily = getModelFamily(model);

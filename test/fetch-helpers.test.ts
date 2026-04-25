@@ -813,7 +813,7 @@ describe('createEntitlementErrorResponse', () => {
 			expect(info.unsupportedModel).toBe('gpt-5.3-codex-spark');
 		});
 
-		it('resolves Spark fallback chain to canonical gpt-5-codex first', () => {
+		it('resolves Spark fallback chain to current gpt-5.3-codex first', () => {
 			const errorBody = {
 				error: {
 					code: 'model_not_supported_with_chatgpt_account',
@@ -829,7 +829,7 @@ describe('createEntitlementErrorResponse', () => {
 				fallbackOnUnsupportedCodexModel: true,
 				fallbackToGpt52OnUnsupportedGpt53: true,
 			});
-			expect(first).toBe('gpt-5-codex');
+			expect(first).toBe('gpt-5.3-codex');
 
 			const second = resolveUnsupportedCodexFallbackModel({
 				requestedModel: 'gpt-5.3-codex',
@@ -861,7 +861,7 @@ describe('createEntitlementErrorResponse', () => {
 				fallbackOnUnsupportedCodexModel: true,
 				fallbackToGpt52OnUnsupportedGpt53: false,
 			});
-			expect(canonicalFallback).toBe('gpt-5-codex');
+			expect(canonicalFallback).toBeUndefined();
 
 			const legacyEdgeFallback = resolveUnsupportedCodexFallbackModel({
 				requestedModel: 'gpt-5.3-codex',
@@ -900,15 +900,15 @@ describe('createEntitlementErrorResponse', () => {
 
 			expect(
 				resolveUnsupportedCodexFallbackModel({
-					requestedModel: 'gpt-5.5-pro-20260423',
+					requestedModel: 'gpt-5.5-pro-2026-04-23',
 					errorBody: {
 						error: {
 							code: 'model_not_supported_with_chatgpt_account',
 							message:
-								"The 'gpt-5.5-pro-20260423' model is not supported when using Codex with a ChatGPT account.",
+								"The 'gpt-5.5-pro-2026-04-23' model is not supported when using Codex with a ChatGPT account.",
 						},
 					},
-					attemptedModels: ['gpt-5.5-pro-20260423'],
+					attemptedModels: ['gpt-5.5-pro-2026-04-23'],
 					fallbackOnUnsupportedCodexModel: true,
 					fallbackToGpt52OnUnsupportedGpt53: true,
 				}),
@@ -928,6 +928,40 @@ describe('createEntitlementErrorResponse', () => {
 					fallbackToGpt52OnUnsupportedGpt53: true,
 				}),
 			).toBe('gpt-5.4');
+		});
+
+		it('resolves stale bare GPT-5 and deprecated Codex aliases to current documented models', () => {
+			expect(
+				resolveUnsupportedCodexFallbackModel({
+					requestedModel: 'gpt-5',
+					errorBody: {
+						error: {
+							code: 'model_not_supported_with_chatgpt_account',
+							message:
+								"The 'gpt-5' model is not supported when using Codex with a ChatGPT account.",
+						},
+					},
+					attemptedModels: ['gpt-5'],
+					fallbackOnUnsupportedCodexModel: true,
+					fallbackToGpt52OnUnsupportedGpt53: true,
+				}),
+			).toBe('gpt-5.5');
+
+			expect(
+				resolveUnsupportedCodexFallbackModel({
+					requestedModel: 'gpt-5.1-codex-mini',
+					errorBody: {
+						error: {
+							code: 'model_not_supported_with_chatgpt_account',
+							message:
+								"The 'gpt-5.1-codex-mini' model is not supported when using Codex with a ChatGPT account.",
+						},
+					},
+					attemptedModels: ['gpt-5.1-codex-mini'],
+					fallbackOnUnsupportedCodexModel: true,
+					fallbackToGpt52OnUnsupportedGpt53: true,
+				}),
+			).toBe('gpt-5.3-codex');
 		});
 	});
 
@@ -1488,7 +1522,7 @@ describe('createEntitlementErrorResponse', () => {
 				);
 
 				expect(result).toBeDefined();
-				expect(result?.body.model).toBe('gpt-5-codex');
+				expect(result?.body.model).toBe('gpt-5.3-codex');
 				expect(typeof result?.updatedInit.body).toBe('string');
 			});
 
@@ -1731,7 +1765,7 @@ describe('createEntitlementErrorResponse', () => {
 
 			expect(result).toBeDefined();
 			expect(typeof result?.updatedInit.body).toBe("string");
-			expect(result?.body.model).toBe("gpt-5-codex");
+			expect(result?.body.model).toBe("gpt-5.3-codex");
 		});
 
 		it("adds codex login hint for unauthorized top-level, trimmed, statusText, and fallback messages", async () => {

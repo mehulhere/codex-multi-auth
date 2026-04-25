@@ -374,7 +374,7 @@ function appendQuotaStatusMarkers(
  * {
  *   "plugin": ["codex-multi-auth"],
 
- *   "model": "openai/gpt-5-codex"
+ *   "model": "openai/gpt-5.3-codex"
  * }
  * ```
  */
@@ -1706,6 +1706,9 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 													(
 														blockedModelNormalized === "gpt-5.5" ||
 														blockedModelNormalized === "gpt-5.5-pro" ||
+														blockedModelNormalized === "gpt-5.5-2026-04-23" ||
+														blockedModelNormalized ===
+															"gpt-5.5-pro-2026-04-23" ||
 														blockedModelNormalized === "gpt-5.5-20260423" ||
 														blockedModelNormalized ===
 															"gpt-5.5-pro-20260423"
@@ -1778,7 +1781,7 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 													});
 
 												if (fallbackModel) {
-													const previousModel = model ?? "gpt-5-codex";
+													const previousModel = model ?? "gpt-5.3-codex";
 													const previousModelFamily = modelFamily;
 													attemptedUnsupportedFallbackModels.add(previousModel);
 													attemptedUnsupportedFallbackModels.add(fallbackModel);

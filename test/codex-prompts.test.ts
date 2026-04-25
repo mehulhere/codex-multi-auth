@@ -95,9 +95,11 @@ describe("Codex Prompts Module", () => {
 
 			it("should route GPT-5.4/5.5 era general models through the latest available general prompt family", () => {
 				expect(getModelFamily("gpt-5.5")).toBe("gpt-5.2");
+				expect(getModelFamily("gpt-5.5-pro-2026-04-23")).toBe("gpt-5.2");
 				expect(getModelFamily("gpt-5.5-pro-20260423")).toBe("gpt-5.2");
 				expect(getModelFamily("gpt-5.4")).toBe("gpt-5.2");
 				expect(getModelFamily("gpt-5.4-pro")).toBe("gpt-5.2");
+				expect(getModelFamily("gpt-5.4-mini")).toBe("gpt-5.2");
 				expect(getModelFamily("gpt-5-mini")).toBe("gpt-5.2");
 			});
 
@@ -152,7 +154,7 @@ describe("Codex Prompts Module", () => {
 		});
 
 		describe("GitHub fetch with ETag", () => {
-			it("should fetch from GitHub API for latest release tag", async () => {
+			it("should fetch current Codex prompts for deprecated codex-max aliases", async () => {
 				mockedReadFile.mockRejectedValue(new Error("ENOENT"));
 				mockFetch.mockResolvedValueOnce({
 					ok: true,
@@ -176,7 +178,7 @@ describe("Codex Prompts Module", () => {
 							typeof url === "string" && url.includes("raw.githubusercontent.com"),
 					);
 				expect(
-					rawGitHubUrls.some((url) => url.includes("gpt-5.1-codex-max_prompt.md")),
+					rawGitHubUrls.some((url) => url.includes("gpt_5_codex_prompt.md")),
 				).toBe(true);
 			});
 

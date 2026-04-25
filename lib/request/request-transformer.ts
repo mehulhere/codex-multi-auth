@@ -56,8 +56,8 @@ export {
  * Uses the shared model catalog so request routing, prompt selection, and CLI
  * diagnostics all agree on the same effective model.
  *
- * @param model - Original model name (e.g., "gpt-5-codex-low", "openai/gpt-5-codex")
- * @returns Normalized model name (e.g., "gpt-5-codex", "gpt-5.4", "gpt-5.1-codex-max")
+ * @param model - Original model name (e.g., "gpt-5-codex-low", "openai/gpt-5.3-codex")
+ * @returns Normalized model name (e.g., "gpt-5.3-codex", "gpt-5.5", "gpt-5.4")
  */
 export function normalizeModel(model: string | undefined): string {
 	return resolveNormalizedModel(model);
@@ -945,6 +945,7 @@ export async function transformRequestBody(
 	// This allows per-model options like "gpt-5-codex-low" to work correctly
 	const lookupModel = originalModel || normalizedModel;
 	const modelConfig = getModelConfig(lookupModel, resolvedUserConfig);
+	const normalizedProfile = getModelProfile(normalizedModel);
 
 	// Debug: Log which config was resolved
 	logDebug(
@@ -958,7 +959,7 @@ export async function transformRequestBody(
 	// Normalize model name for API call
 	body.model = normalizedModel;
 	const shouldUseNormalizedReasoningModel =
-		normalizedModel === "gpt-5-codex" &&
+		normalizedProfile.promptFamily === "gpt-5-codex" &&
 		lookupModel.toLowerCase().includes("codex");
 	const reasoningModel = shouldUseNormalizedReasoningModel
 		? normalizedModel

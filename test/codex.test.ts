@@ -6,16 +6,18 @@ describe("Codex Module", () => {
 		it("keeps codex variants on codex prompt families", () => {
 			expect(getModelFamily("gpt-5.3-codex-spark")).toBe("gpt-5-codex");
 			expect(getModelFamily("gpt-5.2-codex-high")).toBe("gpt-5-codex");
-			expect(getModelFamily("gpt-5.1-codex-max-high")).toBe("codex-max");
+			expect(getModelFamily("gpt-5.1-codex-max-high")).toBe("gpt-5-codex");
 			expect(getModelFamily("gpt-5.1-codex-mini-high")).toBe("gpt-5-codex");
 			expect(getModelFamily("codex-mini-latest")).toBe("gpt-5-codex");
 		});
 
 		it("routes GPT-5.4/5.5-era general models through the latest upstream general prompt family", () => {
 			expect(getModelFamily("gpt-5.5")).toBe("gpt-5.2");
+			expect(getModelFamily("gpt-5.5-pro-2026-04-23")).toBe("gpt-5.2");
 			expect(getModelFamily("gpt-5.5-pro-20260423")).toBe("gpt-5.2");
 			expect(getModelFamily("gpt-5.4")).toBe("gpt-5.2");
 			expect(getModelFamily("gpt-5.4-pro")).toBe("gpt-5.2");
+			expect(getModelFamily("gpt-5.4-mini")).toBe("gpt-5.2");
 			expect(getModelFamily("gpt-5")).toBe("gpt-5.2");
 			expect(getModelFamily("gpt-5-mini")).toBe("gpt-5.2");
 			expect(getModelFamily("gpt-5-nano")).toBe("gpt-5.2");

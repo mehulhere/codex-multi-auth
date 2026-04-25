@@ -662,7 +662,7 @@ function getPersistedQuotaViewForAccount(
 	return {
 		updatedAt: cachedEntry?.updatedAt ?? now,
 		status: 429,
-		model: cachedEntry?.model ?? "gpt-5-codex",
+		model: cachedEntry?.model ?? "gpt-5.3-codex",
 		planType: cachedEntry?.planType,
 		primary: {
 			...cachedEntry?.primary,
@@ -751,7 +751,7 @@ function pruneUnsafeQuotaEmailCacheEntry(
 }
 
 const DEFAULT_MENU_QUOTA_REFRESH_TTL_MS = 5 * 60_000;
-const MENU_QUOTA_REFRESH_MODEL = "gpt-5-codex";
+const MENU_QUOTA_REFRESH_MODEL = "gpt-5.3-codex";
 
 interface MenuQuotaProbeTarget {
 	account: AccountMetadataV3;
@@ -2106,7 +2106,7 @@ interface HealthCheckOptions {
 async function runHealthCheck(options: HealthCheckOptions = {}): Promise<void> {
 	const forceRefresh = options.forceRefresh === true;
 	const liveProbe = options.liveProbe === true;
-	const probeModel = options.model?.trim() || "gpt-5-codex";
+	const probeModel = options.model?.trim() || "gpt-5.3-codex";
 	const modelInspection = inspectRequestedModel(probeModel);
 	const display = options.display ?? DEFAULT_DASHBOARD_DISPLAY_SETTINGS;
 	const quotaCache = liveProbe ? await loadQuotaCache() : null;
@@ -2381,7 +2381,7 @@ function printBestUsage(): void {
 			"Options:",
 			"  --live, -l         Probe live quota headers via Codex backend before switching",
 			"  --json, -j         Print machine-readable JSON output",
-			"  --model, -m        Probe model for live mode (default: gpt-5-codex)",
+			"  --model, -m        Probe model for live mode (default: gpt-5.3-codex)",
 			"",
 			"Behavior:",
 			"  - Chooses the healthiest account using forecast scoring",
@@ -2393,7 +2393,7 @@ function parseBestArgs(args: string[]): ParsedArgsResult<BestCliOptions> {
 	const options: BestCliOptions = {
 		live: false,
 		json: false,
-		model: "gpt-5-codex",
+		model: "gpt-5.3-codex",
 		modelProvided: false,
 	};
 

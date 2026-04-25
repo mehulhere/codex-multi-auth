@@ -45,7 +45,7 @@ codex auth status
 ```bash
 codex auth login
 codex auth check
-codex auth forecast --live --model gpt-5-codex
+codex auth forecast --live --model gpt-5.3-codex
 ```
 
 ---

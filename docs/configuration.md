@@ -128,10 +128,11 @@ Some Windows installs expose Codex only as a packaged `shell:AppsFolder` app ent
 
 ## Shipped Templates
 
-The shipped config templates expose first-class GPT-5.5 model aliases:
+The shipped config templates expose first-class current OpenAI model aliases:
 
 - `config/codex-modern.json` includes `gpt-5.5` and `gpt-5.5-pro`
-- `config/codex-legacy.json` includes `gpt-5.5-*` and `gpt-5.5-pro-*` entries
+- `config/codex-modern.json` and `config/codex-legacy.json` expose current documented GPT-5.5, GPT-5.4, and GPT-5.3 Codex model IDs
+- deprecated Codex selectors such as `gpt-5-codex` and `gpt-5.1-codex*` are treated as compatibility aliases and retried on the current documented Codex model when the ChatGPT Codex surface rejects them
 - the wrapper and optional plugin-host runtime try those models directly and only fall back to `gpt-5.4` after a real ChatGPT Codex unsupported-model response
 
 ---

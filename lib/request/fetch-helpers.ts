@@ -88,14 +88,25 @@ type ClosableDispatcher = ProxyDispatcher & {
 };
 
 export const DEFAULT_UNSUPPORTED_CODEX_FALLBACK_CHAIN: Record<string, string[]> = {
+	"gpt-5": ["gpt-5.5"],
+	"gpt-5-pro": ["gpt-5.5-pro"],
+	"gpt-5-chat-latest": ["gpt-5.5"],
 	"gpt-5.5": ["gpt-5.4"],
 	"gpt-5.5-pro": ["gpt-5.4"],
+	"gpt-5.5-2026-04-23": ["gpt-5.4"],
+	"gpt-5.5-pro-2026-04-23": ["gpt-5.4"],
 	"gpt-5.5-20260423": ["gpt-5.4"],
 	"gpt-5.5-pro-20260423": ["gpt-5.4"],
-	"gpt-5.3-codex-spark": ["gpt-5-codex", "gpt-5.3-codex", "gpt-5.2-codex"],
-	"gpt-5.3-codex": ["gpt-5-codex", "gpt-5.2-codex"],
-	"gpt-5.2-codex": ["gpt-5-codex"],
-	"gpt-5.1-codex": ["gpt-5-codex"],
+	"gpt-5.3-codex-spark": ["gpt-5.3-codex", "gpt-5.2-codex"],
+	"gpt-5.3-codex": ["gpt-5.2-codex"],
+	"codex-max": ["gpt-5.3-codex"],
+	"gpt-5.1-codex-max": ["gpt-5.3-codex"],
+	"codex-mini-latest": ["gpt-5.3-codex"],
+	"gpt-5-codex-mini": ["gpt-5.3-codex"],
+	"gpt-5.1-codex-mini": ["gpt-5.3-codex"],
+	"gpt-5-codex": ["gpt-5.3-codex", "gpt-5.2-codex"],
+	"gpt-5.2-codex": ["gpt-5.3-codex"],
+	"gpt-5.1-codex": ["gpt-5.3-codex"],
 };
 
 export interface UnsupportedCodexModelInfo {
@@ -275,9 +286,9 @@ export function shouldFallbackToGpt52OnUnsupportedGpt53(
 		resolveUnsupportedCodexFallbackModel({
 			requestedModel,
 			errorBody,
-			// Skip the canonical `gpt-5-codex` step and probe whether the legacy
-			// gpt-5.2 edge is still active under current policy/toggles.
-			attemptedModels: ["gpt-5-codex"],
+			// Probe whether the legacy gpt-5.2 edge is still active under current
+			// policy/toggles when the current Codex model is blocked.
+			attemptedModels: [],
 			fallbackOnUnsupportedCodexModel: true,
 			fallbackToGpt52OnUnsupportedGpt53: true,
 		}) === "gpt-5.2-codex"
@@ -1134,7 +1145,7 @@ function normalizeErrorPayload(
 								message:
 										`The model '${unsupportedModel}' is not currently available for this ChatGPT account when using Codex OAuth. ` +
 										"This is an account/workspace entitlement gate, not a temporary rate limit. " +
-										"Try 'gpt-5-codex' (canonical), or legacy aliases like 'gpt-5.3-codex'/'gpt-5.2-codex', or enable automatic fallback via " +
+										"Try 'gpt-5.3-codex' (current), or legacy aliases like 'gpt-5-codex'/'gpt-5.2-codex', or enable automatic fallback via " +
 										'unsupportedCodexPolicy: "fallback" (or CODEX_AUTH_UNSUPPORTED_MODEL_POLICY=fallback). ' +
 										"(Legacy: CODEX_AUTH_FALLBACK_UNSUPPORTED_MODEL=1 or fallbackOnUnsupportedCodexModel).",
 								type: "entitlement_error",

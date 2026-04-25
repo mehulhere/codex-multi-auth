@@ -321,7 +321,7 @@ Health and planning:
 
 ```bash
 codex auth check
-codex auth forecast --live --explain --model gpt-5-codex
+codex auth forecast --live --explain --model gpt-5.3-codex
 codex auth report --live --json
 ```
 
@@ -329,7 +329,7 @@ Repair and recovery:
 
 ```bash
 codex auth fix --dry-run
-codex auth fix --live --model gpt-5-codex
+codex auth fix --live --model gpt-5.3-codex
 codex auth doctor --fix
 ```
 

@@ -130,7 +130,7 @@ function printForecastUsage(logInfo: (message: string) => void): void {
 			"  --live, -l         Probe live quota headers via Codex backend",
 			"  --json, -j         Print machine-readable JSON output",
 			"  --explain          Include structured recommendation reasoning",
-			"  --model, -m        Probe model for live mode (default: gpt-5-codex)",
+			"  --model, -m        Probe model for live mode (default: gpt-5.3-codex)",
 		].join("\n"),
 	);
 }
@@ -142,7 +142,7 @@ function parseForecastArgs(
 		live: false,
 		json: false,
 		explain: false,
-		model: "gpt-5-codex",
+		model: "gpt-5.3-codex",
 	};
 
 	for (let i = 0; i < args.length; i += 1) {
@@ -199,7 +199,7 @@ export async function runForecastCommand(
 		return 1;
 	}
 	const options = parsedArgs.options;
-	const requestedModel = options.model?.trim() || "gpt-5-codex";
+	const requestedModel = options.model?.trim() || "gpt-5.3-codex";
 	const probeModel = resolveNormalizedModel(requestedModel);
 	const display = deps.loadDashboardDisplaySettings
 		? (await deps.loadDashboardDisplaySettings().catch(() => null)) ??

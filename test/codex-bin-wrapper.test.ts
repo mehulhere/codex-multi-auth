@@ -2668,7 +2668,7 @@ describe("codex bin wrapper", () => {
 		expect(readFileSync(join(originalHome, ".codex-global-state.json"), "utf8").trim()).toBe('{"last":"shadow"}');
 	});
 
-	it("rewrites unquoted config reasoning effort values for mini compatibility models", () => {
+	it("keeps xhigh config reasoning when deprecated mini aliases route to current Codex", () => {
 		const fixtureRoot = createWrapperFixture();
 		const fakeBin = createCustomFakeCodexBin(fixtureRoot, [
 			"#!/usr/bin/env node",
@@ -2711,9 +2711,8 @@ describe("codex bin wrapper", () => {
 		expect(output).toContain(
 			'FORWARDED:exec status --model gpt-5.1-codex-mini -c cli_auth_credentials_store="file"',
 		);
-		expect(output).toContain("model_reasoning_effort = high");
-		expect(output).toContain("model_reasoning_effort = high # keep comment");
-		expect(output).not.toContain("model_reasoning_effort = xhigh");
+		expect(output).toContain("model_reasoning_effort = xhigh");
+		expect(output).toContain("model_reasoning_effort = xhigh # keep comment");
 	});
 
 	it("downgrades explicit unsupported reasoning overrides before forwarding", () => {
@@ -2747,7 +2746,7 @@ describe("codex bin wrapper", () => {
 		expect(result.stdout).not.toContain('model_reasoning_effort="xhigh"');
 	});
 
-	it("downgrades explicit unsupported reasoning overrides for codex mini variants", () => {
+	it("keeps explicit xhigh reasoning for deprecated mini aliases routed to current Codex", () => {
 		const fixtureRoot = createWrapperFixture();
 		const fakeBin = createFakeCodexBin(fixtureRoot);
 		const originalHome = join(fixtureRoot, "codex-home");
@@ -2771,14 +2770,13 @@ describe("codex bin wrapper", () => {
 			},
 		);
 
-		expect(result.status).toBe(0);
+	expect(result.status).toBe(0);
 	expect(result.stdout).toContain(
-		'FORWARDED:exec status --model gpt-5.1-codex-mini -c model_reasoning_effort="high" -c cli_auth_credentials_store="file"',
+		'FORWARDED:exec status --model gpt-5.1-codex-mini -c model_reasoning_effort="xhigh" -c cli_auth_credentials_store="file"',
 	);
-	expect(result.stdout).not.toContain('model_reasoning_effort="xhigh"');
 	});
 
-	it("coerces reasoning overrides for reasoning-suffixed general-model aliases", () => {
+	it("keeps xhigh overrides for stale bare GPT-5 aliases routed to GPT-5.5", () => {
 		const fixtureRoot = createWrapperFixture();
 		const fakeBin = createFakeCodexBin(fixtureRoot);
 		const originalHome = join(fixtureRoot, "codex-home");
@@ -2805,9 +2803,8 @@ describe("codex bin wrapper", () => {
 
 			expect(result.status).toBe(0);
 			expect(result.stdout).toContain(
-				`FORWARDED:exec status --model ${model} -c model_reasoning_effort="high" -c cli_auth_credentials_store="file"`,
+				`FORWARDED:exec status --model ${model} -c model_reasoning_effort="xhigh" -c cli_auth_credentials_store="file"`,
 			);
-			expect(result.stdout).not.toContain('model_reasoning_effort="xhigh"');
 		}
 	});
 
@@ -2912,6 +2909,106 @@ describe("codex bin wrapper", () => {
 		expect(output).toContain("Retrying with gpt-5.4");
 		expect(output).toContain(
 			'FORWARDED:exec status --model gpt-5.4 -c model_reasoning_effort="low" -c cli_auth_credentials_store="file"',
+		);
+	});
+
+	it("retries stale bare GPT-5 aliases with GPT-5.5 after unsupported-model failures", () => {
+		const fixtureRoot = createWrapperFixture();
+		const stateDir = join(fixtureRoot, "retry-state-bare-gpt5");
+		mkdirSync(stateDir, { recursive: true });
+		const fakeBin = createCustomFakeCodexBin(fixtureRoot, [
+			"const fs = require('node:fs');",
+			"const path = require('node:path');",
+			"const counterPath = path.join(process.env.CODEX_MULTI_AUTH_TEST_STATE_DIR, 'attempt.txt');",
+			"const attempt = fs.existsSync(counterPath) ? Number(fs.readFileSync(counterPath, 'utf8')) : 0;",
+			"fs.writeFileSync(counterPath, String(attempt + 1), 'utf8');",
+			"const args = process.argv.slice(2);",
+			"const modelIndex = args.indexOf('--model');",
+			"const requestedModel = modelIndex >= 0 ? args[modelIndex + 1] : 'unknown-model';",
+			"if (attempt === 0) {",
+			`  console.error("ERROR: {\\\"type\\\":\\\"error\\\",\\\"status\\\":400,\\\"error\\\":{\\\"type\\\":\\\"invalid_request_error\\\",\\\"message\\\":\\\"The '" + requestedModel + "' model is not supported when using Codex with a ChatGPT account.\\\"}}");`,
+			"  process.exit(1);",
+			"}",
+			"console.log(`FORWARDED:${args.join(' ')}`);",
+			"process.exit(0);",
+		]);
+		const originalHome = join(fixtureRoot, "codex-home");
+		mkdirSync(originalHome, { recursive: true });
+		writeFileSync(join(originalHome, "auth.json"), "{}\n", "utf8");
+		writeFileSync(join(originalHome, "config.toml"), "", "utf8");
+
+		const result = runWrapper(
+			fixtureRoot,
+			["exec", "status", "--model", "gpt-5"],
+			{
+				CODEX_MULTI_AUTH_REAL_CODEX_BIN: fakeBin,
+				CODEX_MULTI_AUTH_TEST_STATE_DIR: stateDir,
+				CODEX_HOME: originalHome,
+			},
+		);
+
+		const output = combinedOutput(result);
+		expect(result.status).toBe(0);
+		expect(output).toContain(
+			"The 'gpt-5' model is not supported when using Codex with a ChatGPT account.",
+		);
+		expect(output).toContain("Retrying with gpt-5.5");
+		expect(output).toContain(
+			'FORWARDED:exec status --model gpt-5.5 -c cli_auth_credentials_store="file"',
+		);
+	});
+
+	it("retries legacy Codex aliases with the current Codex model after unsupported-model failures", () => {
+		const fixtureRoot = createWrapperFixture();
+		const stateDir = join(fixtureRoot, "retry-state-legacy-codex");
+		mkdirSync(stateDir, { recursive: true });
+		const fakeBin = createCustomFakeCodexBin(fixtureRoot, [
+			"const fs = require('node:fs');",
+			"const path = require('node:path');",
+			"const counterPath = path.join(process.env.CODEX_MULTI_AUTH_TEST_STATE_DIR, 'attempt.txt');",
+			"const attempt = fs.existsSync(counterPath) ? Number(fs.readFileSync(counterPath, 'utf8')) : 0;",
+			"fs.writeFileSync(counterPath, String(attempt + 1), 'utf8');",
+			"const args = process.argv.slice(2);",
+			"let modelIndex = args.indexOf('--model');",
+			"if (modelIndex < 0) modelIndex = args.indexOf('-m');",
+			"const requestedModel = modelIndex >= 0 ? args[modelIndex + 1] : 'unknown-model';",
+			"if (attempt === 0) {",
+			`  console.error("ERROR: {\\\"type\\\":\\\"error\\\",\\\"status\\\":400,\\\"error\\\":{\\\"type\\\":\\\"invalid_request_error\\\",\\\"message\\\":\\\"The '" + requestedModel + "' model is not supported when using Codex with a ChatGPT account.\\\"}}");`,
+			"  process.exit(1);",
+			"}",
+			"console.log(`FORWARDED:${args.join(' ')}`);",
+			"process.exit(0);",
+		]);
+		const originalHome = join(fixtureRoot, "codex-home");
+		mkdirSync(originalHome, { recursive: true });
+		writeFileSync(join(originalHome, "auth.json"), "{}\n", "utf8");
+		writeFileSync(join(originalHome, "config.toml"), "", "utf8");
+
+		const result = runWrapper(
+			fixtureRoot,
+			[
+				"exec",
+				"status",
+				"-m",
+				"gpt-5-codex",
+				"-c",
+				'model_reasoning_effort="xhigh"',
+			],
+			{
+				CODEX_MULTI_AUTH_REAL_CODEX_BIN: fakeBin,
+				CODEX_MULTI_AUTH_TEST_STATE_DIR: stateDir,
+				CODEX_HOME: originalHome,
+			},
+		);
+
+		const output = combinedOutput(result);
+		expect(result.status).toBe(0);
+		expect(output).toContain(
+			"The 'gpt-5-codex' model is not supported when using Codex with a ChatGPT account.",
+		);
+		expect(output).toContain("Retrying with gpt-5.3-codex");
+		expect(output).toContain(
+			'FORWARDED:exec status -m gpt-5.3-codex -c model_reasoning_effort="xhigh" -c cli_auth_credentials_store="file"',
 		);
 	});
 
