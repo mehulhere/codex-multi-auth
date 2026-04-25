@@ -1,5 +1,6 @@
 import { spawnSync } from "node:child_process";
-import { dirname, resolve } from "node:path";
+import { existsSync } from "node:fs";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const scriptDir = dirname(fileURLToPath(import.meta.url));
@@ -9,11 +10,29 @@ export function getRepoRoot() {
   return repoRoot;
 }
 
+function resolveWindowsNpmShim(command) {
+  if (!/\.(cmd|bat)$/i.test(command)) {
+    return { command, shell: false };
+  }
+
+  const codexScript = join(dirname(command), "node_modules", "codex-multi-auth", "scripts", "codex.js");
+  if (existsSync(codexScript)) {
+    return {
+      command: process.execPath,
+      shell: false,
+      argsPrefix: [codexScript],
+      shimCommand: command,
+    };
+  }
+
+  return { command, shell: true };
+}
+
 export function resolveCodexExecutable() {
   const envOverride = process.env.CODEX_BIN;
   if (envOverride && envOverride.trim().length > 0) {
     const command = envOverride.trim();
-    return { command, shell: /\.cmd$/i.test(command) };
+    return process.platform === "win32" ? resolveWindowsNpmShim(command) : { command, shell: false };
   }
 
   if (process.platform !== "win32") {
@@ -40,12 +59,12 @@ export function resolveCodexExecutable() {
 
   const exactCmd = candidates.find((candidate) => /npm\\Codex\.cmd$/i.test(candidate));
   if (exactCmd) {
-    return { command: exactCmd, shell: true };
+    return resolveWindowsNpmShim(exactCmd);
   }
 
   const anyCmd = candidates.find((candidate) => /\.cmd$/i.test(candidate));
   if (anyCmd) {
-    return { command: anyCmd, shell: true };
+    return resolveWindowsNpmShim(anyCmd);
   }
 
   return { command: candidates[0], shell: false };
@@ -68,7 +87,7 @@ export function parseNdjson(text) {
 }
 
 export function getToolEvents(events) {
-  return events
+  const legacyToolEvents = events
     .filter((event) => event?.type === "tool_use" && event?.part?.type === "tool")
     .map((event) => ({
       tool: event.part.tool,
@@ -83,6 +102,18 @@ export function getToolEvents(events) {
           ? event.part.state.time.end - event.part.state.time.start
           : null,
     }));
+  const execToolEvents = events
+    .filter((event) => event?.type === "item.completed" && event?.item?.type === "command_execution")
+    .map((event) => ({
+      tool: "command_execution",
+      input: { command: event.item.command },
+      output: event.item.aggregated_output,
+      status: event.item.status,
+      start: null,
+      end: null,
+      durationMs: null,
+    }));
+  return [...legacyToolEvents, ...execToolEvents];
 }
 
 export function getSessionDuration(events) {
@@ -100,7 +131,8 @@ export function getSessionDuration(events) {
 
 export function getTokenTotals(events) {
   const stepFinishes = events.filter((event) => event?.type === "step_finish" && event?.part?.tokens);
-  if (stepFinishes.length === 0) {
+  const turnCompletions = events.filter((event) => event?.type === "turn.completed" && event?.usage);
+  if (stepFinishes.length === 0 && turnCompletions.length === 0) {
     return null;
   }
   const total = {
@@ -124,24 +156,44 @@ export function getTokenTotals(events) {
     total.cacheRead += Number(tokens.cache?.read ?? 0);
     total.cacheWrite += Number(tokens.cache?.write ?? 0);
   }
+  for (const event of turnCompletions) {
+    const usage = event.usage ?? {};
+    const input = Number(usage.input_tokens ?? 0);
+    const output = Number(usage.output_tokens ?? 0);
+    const reasoning = Number(usage.reasoning_output_tokens ?? 0);
+    total.total += input + output;
+    total.input += input;
+    total.output += output;
+    total.reasoning += reasoning;
+    total.cacheRead += Number(usage.cached_input_tokens ?? 0);
+  }
   return total;
 }
 
 export function getTextOutput(events) {
-  return events
+  const legacyText = events
     .filter((event) => event?.type === "text" && typeof event?.part?.text === "string")
     .map((event) => event.part.text)
     .join("\n");
+  const execText = events
+    .filter((event) => event?.type === "item.completed" && event?.item?.type === "agent_message" && typeof event.item.text === "string")
+    .map((event) => event.item.text)
+    .join("\n");
+  return [legacyText, execText].filter(Boolean).join("\n");
 }
 
 export function getEventError(events) {
-  const errorEvent = events.find((event) => event?.type === "error");
-  if (!errorEvent) {
+  const lastCompletedIndex = events.findLastIndex((event) => event?.type === "turn.completed");
+  const failureIndex = events.findLastIndex(
+    (event, index) => index > lastCompletedIndex && (event?.type === "error" || event?.type === "turn.failed"),
+  );
+  if (failureIndex < 0) {
     return null;
   }
+  const errorEvent = events[failureIndex];
   return {
-    name: errorEvent.error?.name ?? "UnknownError",
-    message: errorEvent.error?.data?.message ?? errorEvent.error?.message ?? "Unknown error",
+    name: errorEvent.error?.name ?? errorEvent.type ?? "UnknownError",
+    message: errorEvent.error?.data?.message ?? errorEvent.error?.message ?? errorEvent.message ?? "Unknown error",
   };
 }
 
@@ -157,17 +209,30 @@ export function runCodexJson({
   extraEnv,
 }) {
   const startWall = Date.now();
-  const args = ["run", "--format", "json", "--agent", agent, "--model", model];
+  const args = [
+    "exec",
+    "--json",
+    "--model",
+    model,
+    "--skip-git-repo-check",
+    "--sandbox",
+    "danger-full-access",
+    "-c",
+    "approval_policy='never'",
+  ];
   if (variant) {
-    args.push("--variant", variant);
+    args.push("-c", `model_reasoning_effort='${variant}'`);
   }
+  void agent;
   args.push(prompt);
+  const childArgs = [...(executable.argsPrefix ?? []), ...args];
 
-  const child = spawnSync(executable.command, args, {
+  const child = spawnSync(executable.command, childArgs, {
     cwd: cwd ?? repoRoot,
     encoding: "utf8",
     windowsHide: true,
     shell: executable.shell,
+    stdio: ["ignore", "pipe", "pipe"],
     timeout: timeoutMs,
     maxBuffer: 30 * 1024 * 1024,
     env: {
@@ -189,7 +254,11 @@ export function runCodexJson({
   if (child.error && !timedOut) {
     throw child.error;
   }
-  const modelNotFound = /Model not found|ProviderModelNotFoundError/i.test(`${stdout}\n${stderr}`) || /Model not found/i.test(eventError?.message ?? "");
+  const failed = (child.status ?? 1) !== 0 || eventError !== null;
+  const modelNotFound =
+    failed &&
+    (/Model not found|ProviderModelNotFoundError|model is not supported|not supported when using Codex/i.test(`${stdout}\n${stderr}`) ||
+      /Model not found|model is not supported|not supported when using Codex/i.test(eventError?.message ?? ""));
 
   return {
     status: child.status ?? 1,

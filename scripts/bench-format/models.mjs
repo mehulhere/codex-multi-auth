@@ -31,7 +31,7 @@ export function aliasCandidatesForCodexModel(modelId) {
   }
   const tail = codexTail(modelId);
   const candidates = [`openai/${tail}`, `openai-multi/${tail}`];
-  return [...new Set([modelId, ...candidates])];
+  return [...new Set([tail, modelId, ...candidates])];
 }
 
 export function isStableOpenAiCodexModel(modelId) {
@@ -49,10 +49,11 @@ export function isStableOpenAiCodexModel(modelId) {
 
 export function listCodexModels() {
   const executable = resolveCodexExecutable();
-  const child = spawnSync(executable.command, ["models"], {
+  const child = spawnSync(executable.command, [...(executable.argsPrefix ?? []), "models"], {
     encoding: "utf8",
     windowsHide: true,
     shell: executable.shell,
+    stdio: ["ignore", "pipe", "pipe"],
     maxBuffer: 10 * 1024 * 1024,
     timeout: Number.parseInt(process.env.CODEX_MODELS_TIMEOUT_MS ?? "30000", 10),
     killSignal: "SIGKILL",

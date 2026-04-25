@@ -71,6 +71,8 @@ export interface RuntimeRotationProxyOptions {
 interface RequestContext {
 	body: Buffer;
 	headers: Headers;
+	method: "GET" | "POST";
+	upstreamPath: string;
 	model: string | null;
 	family: ModelFamily;
 	stream: boolean;
@@ -129,9 +131,17 @@ const ALLOWED_RESPONSES_PATHS = new Set([
 	`/v1${URL_PATHS.RESPONSES}`,
 	`/v1${URL_PATHS.CODEX_RESPONSES}`,
 ]);
+const ALLOWED_MODELS_PATHS = new Set([
+	URL_PATHS.MODELS,
+	`/v1${URL_PATHS.MODELS}`,
+]);
 
 function isResponsesPath(pathname: string): boolean {
 	return ALLOWED_RESPONSES_PATHS.has(pathname);
+}
+
+function isModelsPath(pathname: string): boolean {
+	return ALLOWED_MODELS_PATHS.has(pathname);
 }
 
 function headersFromIncoming(req: IncomingMessage): Headers {
@@ -332,7 +342,10 @@ function resolveSessionKey(headers: Headers, parsedBody: RequestBody | null): st
 	return null;
 }
 
-function buildRequestContext(req: IncomingMessage, body: Buffer): RequestContext {
+function buildResponsesRequestContext(
+	req: IncomingMessage,
+	body: Buffer,
+): RequestContext {
 	const headers = headersFromIncoming(req);
 	const parsedBody = parseRequestBody(body);
 	const model =
@@ -342,6 +355,8 @@ function buildRequestContext(req: IncomingMessage, body: Buffer): RequestContext
 	return {
 		body,
 		headers,
+		method: "POST",
+		upstreamPath: URL_PATHS.CODEX_RESPONSES,
 		model,
 		family: getModelFamily(model ?? "gpt-5-codex"),
 		stream: parsedBody?.stream === true,
@@ -349,11 +364,28 @@ function buildRequestContext(req: IncomingMessage, body: Buffer): RequestContext
 	};
 }
 
-function buildUpstreamUrl(req: IncomingMessage, upstreamBaseUrl: string): string {
+function buildModelsRequestContext(req: IncomingMessage): RequestContext {
+	return {
+		body: Buffer.alloc(0),
+		headers: headersFromIncoming(req),
+		method: "GET",
+		upstreamPath: URL_PATHS.MODELS,
+		model: null,
+		family: "codex",
+		stream: false,
+		sessionKey: null,
+	};
+}
+
+function buildUpstreamUrl(
+	req: IncomingMessage,
+	upstreamBaseUrl: string,
+	upstreamPath: string,
+): string {
 	const incomingUrl = new URL(req.url ?? "/", "http://127.0.0.1");
 	const upstream = new URL(upstreamBaseUrl);
 	const basePath = upstream.pathname.replace(/\/+$/, "");
-	upstream.pathname = `${basePath}${URL_PATHS.CODEX_RESPONSES}`;
+	upstream.pathname = `${basePath}${upstreamPath}`;
 	upstream.search = incomingUrl.search;
 	return upstream.toString();
 }
@@ -614,7 +646,8 @@ function writeJson(res: ServerResponse, status: number, payload: Record<string, 
 function writeMethodOrPathError(res: ServerResponse): void {
 	writeJson(res, 404, {
 		error: {
-			message: "Runtime rotation proxy only accepts Responses API requests.",
+			message:
+				"Runtime rotation proxy only accepts Responses API and model discovery requests.",
 			code: "runtime_rotation_proxy_not_found",
 		},
 	});
@@ -783,7 +816,11 @@ export async function startRuntimeRotationProxy(
 	): Promise<void> => {
 		try {
 			const incomingUrl = new URL(req.url ?? "/", "http://127.0.0.1");
-			if (req.method !== "POST" || !isResponsesPath(incomingUrl.pathname)) {
+			const isResponsesRequest =
+				req.method === "POST" && isResponsesPath(incomingUrl.pathname);
+			const isModelsRequest =
+				req.method === "GET" && isModelsPath(incomingUrl.pathname);
+			if (!isResponsesRequest && !isModelsRequest) {
 				writeMethodOrPathError(res);
 				return;
 			}
@@ -795,11 +832,17 @@ export async function startRuntimeRotationProxy(
 			}
 
 			status.totalRequests += 1;
-			const context = buildRequestContext(
+			const context = isModelsRequest
+				? buildModelsRequestContext(req)
+				: buildResponsesRequestContext(
+						req,
+						await readRequestBody(req, maxRequestBodyBytes),
+					);
+			const upstreamUrl = buildUpstreamUrl(
 				req,
-				await readRequestBody(req, maxRequestBodyBytes),
+				upstreamBaseUrl,
+				context.upstreamPath,
 			);
-			const upstreamUrl = buildUpstreamUrl(req, upstreamBaseUrl);
 			const attemptedIndexes = new Set<number>();
 			let exhaustionReason: ExhaustionReason = "no-account";
 			const accountAttemptLimit = Math.max(
@@ -871,13 +914,16 @@ export async function startRuntimeRotationProxy(
 				try {
 					status.upstreamRequests += 1;
 					const fetchAbortController = new AbortController();
+					const upstreamRequestInit: RequestInit = {
+						method: context.method,
+						headers: outboundHeaders,
+						signal: fetchAbortController.signal,
+					};
+					if (context.method === "POST") {
+						upstreamRequestInit.body = context.body;
+					}
 					upstream = await withTimeout(
-						fetchImpl(upstreamUrl, {
-							method: "POST",
-							headers: outboundHeaders,
-							body: context.body,
-							signal: fetchAbortController.signal,
-						}),
+						fetchImpl(upstreamUrl, upstreamRequestInit),
 						fetchTimeoutMs,
 						() => fetchAbortController.abort(),
 						`upstream fetch timed out after ${fetchTimeoutMs}ms`,

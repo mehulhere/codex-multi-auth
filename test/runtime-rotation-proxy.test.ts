@@ -133,6 +133,21 @@ async function postResponses(
 	});
 }
 
+async function getModels(
+	proxy: RuntimeRotationProxyServer,
+	path = "/models?client_version=0.125.0",
+	headers: Record<string, string> = {},
+): Promise<Response> {
+	return fetch(`${proxy.baseUrl}${path}`, {
+		method: "GET",
+		headers: {
+			authorization: `Bearer ${DEFAULT_CLIENT_API_KEY}`,
+			"x-api-key": "caller-key",
+			...headers,
+		},
+	});
+}
+
 async function postRawResponses(
 	proxy: RuntimeRotationProxyServer,
 	body: string,
@@ -425,6 +440,65 @@ describe("runtime rotation proxy", () => {
 		});
 		expect(proxy.getStatus()).not.toHaveProperty("lastAccountEmail");
 		expect(JSON.parse(calls[0]?.bodyText ?? "{}")).toEqual(requestBody);
+	});
+
+	it("forwards model discovery requests through managed account auth", async () => {
+		const now = Date.now();
+		const accountManager = new AccountManager(undefined, createStorage(now));
+		const { calls, fetchImpl } = createRecordingFetch(
+			() =>
+				new Response('{"data":[]}\n', {
+					status: HTTP_STATUS.OK,
+					headers: {
+						"content-type": "application/json",
+						"content-encoding": "br",
+						"content-length": "17",
+					},
+				}),
+		);
+		const proxy = await startProxy({ accountManager, fetchImpl });
+
+		const response = await getModels(proxy);
+
+		expect(response.status).toBe(HTTP_STATUS.OK);
+		expect(response.headers.get("content-encoding")).toBeNull();
+		expect(response.headers.get("content-length")).toBeNull();
+		expect(await response.text()).toBe('{"data":[]}\n');
+		expect(calls).toHaveLength(1);
+		expect(calls[0]?.url).toBe(
+			"https://example.test/backend-api/models?client_version=0.125.0",
+		);
+		expect(calls[0]?.headers.get("authorization")).toBe("Bearer access-1");
+		expect(calls[0]?.headers.get("x-api-key")).toBeNull();
+		expect(calls[0]?.headers.get(OPENAI_HEADERS.ACCOUNT_ID)).toBe("acc_1");
+		expect(calls[0]?.bodyText).toBe("");
+		expect(proxy.getStatus()).toMatchObject({
+			totalRequests: 1,
+			upstreamRequests: 1,
+			lastAccountIndex: 0,
+			lastAccountLabel: "Account 1",
+			lastAccountId: "acc_1",
+		});
+	});
+
+	it("rejects unauthenticated model discovery requests", async () => {
+		const now = Date.now();
+		const accountManager = new AccountManager(undefined, createStorage(now));
+		const { calls, fetchImpl } = createRecordingFetch(() =>
+			new Response('{"data":[]}\n', {
+				status: HTTP_STATUS.OK,
+				headers: { "content-type": "application/json" },
+			}),
+		);
+		const proxy = await startProxy({ accountManager, fetchImpl });
+
+		const response = await getModels(proxy, "/models", {
+			authorization: "Bearer caller-token",
+			"x-api-key": "caller-key",
+		});
+
+		expect(response.status).toBe(HTTP_STATUS.UNAUTHORIZED);
+		expect(calls).toHaveLength(0);
 	});
 
 	it("strips decoded upstream content encoding before forwarding to clients", async () => {

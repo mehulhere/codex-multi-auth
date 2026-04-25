@@ -592,6 +592,8 @@ function aggregateSummary({ options, runRecords, failures, startTime, endTime, e
       runDir: options.runDir,
       homeDir: options.homeDir || null,
       CodexCommand: executable.command,
+      CodexArgsPrefix: executable.argsPrefix ?? [],
+      CodexShimCommand: executable.shimCommand ?? null,
       CodexUsesShell: executable.shell,
       keepRawLogs: options.keepRawLogs,
       runCount: measuredRuns.length,
