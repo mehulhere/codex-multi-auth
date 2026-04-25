@@ -1,6 +1,6 @@
 # Runbook: Change Routing or Account-Selection Policy Safely
 
-Use this when changing account selection, quota behavior, retry/failover logic, or forecast/report reasoning.
+Use this when changing account selection, quota behavior, retry/failover logic, runtime rotation proxy behavior, or forecast/report reasoning.
 
 ## Goal
 
@@ -8,14 +8,15 @@ Change policy without breaking request flow, account safety, or diagnostics.
 
 ## Where to Change
 
-- `index.ts` — runtime orchestration
+- `index.ts` - optional plugin-host runtime orchestration
+- `lib/runtime-rotation-proxy.ts` - wrapper/app runtime Responses routing and account rotation
 - `lib/accounts.ts` — account selection inputs, health state, and cooldown readiness data
 - `lib/rotation.ts` — account selection
 - `lib/forecast.ts` — readiness/risk forecasting
 - `lib/request/failure-policy.ts` — retry/failover decisions
 - `lib/request/rate-limit-backoff.ts` — cooldown/backoff behavior
 - `lib/quota-probe.ts` / `lib/quota-cache.ts` — quota-derived decision inputs
-- `test/accounts.test.ts`, `test/rotation.test.ts`, `test/forecast.test.ts`, `test/failure-policy.test.ts`, `test/rate-limit-backoff.test.ts`, `test/codex-manager-cli.test.ts` — policy coverage
+- `test/accounts.test.ts`, `test/rotation.test.ts`, `test/runtime-rotation-proxy.test.ts`, `test/forecast.test.ts`, `test/failure-policy.test.ts`, `test/rate-limit-backoff.test.ts`, `test/codex-manager-cli.test.ts` - policy coverage
 
 ## Safe Workflow
 
@@ -27,6 +28,8 @@ Change policy without breaking request flow, account safety, or diagnostics.
 ## Compatibility Checks
 
 - Do not break existing JSON contract shapes unless the contract is explicitly being revised.
+- Do not expose account emails/tokens or stale decoded upstream encoding headers from the runtime proxy.
+- Keep runtime rotation opt-in and loopback-only unless the release plan explicitly changes those invariants.
 - If recommendation or routing reasoning changes, update the explain/report output tests too.
 - Keep live-probe behavior and storage mutations covered by tests.
 

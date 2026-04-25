@@ -3,7 +3,7 @@
 [![npm version](https://img.shields.io/npm/v/codex-multi-auth.svg)](https://www.npmjs.com/package/codex-multi-auth)
 [![npm downloads](https://img.shields.io/npm/dw/codex-multi-auth.svg)](https://www.npmjs.com/package/codex-multi-auth)
 
-Codex CLI-first multi-account OAuth manager for the official Codex CLI, including the `@openai/codex` npm launcher and native `codex` installs.
+Codex CLI-first multi-account OAuth manager for the official Codex CLI. The installed `codex` wrapper handles `codex auth ...` locally, forwards normal Codex commands to the official runtime, and can optionally route live Responses traffic through a localhost account-rotation proxy.
 
 <img width="1270" height="729" alt="2026-02-28 12_54_58-prompt txt ‎- Notepads" src="https://github.com/user-attachments/assets/0cecb77e-a6d3-432a-ba48-3577db0c7093" />
 
@@ -16,12 +16,15 @@ Codex CLI-first multi-account OAuth manager for the official Codex CLI, includin
 ## What You Get
 
 - Canonical `codex auth ...` workflow for account login, switching, checks, and diagnostics
+- Official Codex CLI forwarding for all non-auth commands
 - Multi-account OAuth pool with health-aware selection and automatic failover
 - Project-scoped account storage under `~/.codex/multi-auth/projects/<project-key>/...`
 - Interactive dashboard for account actions and settings
 - Experimental settings tab for staged sync, backup, and refresh-guard controls
 - Forecast, report, fix, and doctor commands for operational safety
 - Runtime counters, budget/cooldown state, and multi-auth probe visibility in `codex auth status` / `codex auth report`
+- Opt-in runtime Responses proxy for live account rotation inside forwarded Codex CLI/app sessions
+- Reversible packaged Codex app bind and user-level launcher routing helpers
 - Flagged account verification and restore flow
 - Session affinity and live account sync controls
 - Proactive refresh and preemptive quota deferral controls
@@ -36,7 +39,7 @@ Codex CLI-first multi-account OAuth manager for the official Codex CLI, includin
 > [!CAUTION]
 > This project uses OAuth account credentials and is intended for personal development use.
 >
-> By using this plugin, you acknowledge:
+> By using this package, you acknowledge:
 > - This is an independent open-source project, not an official OpenAI product
 > - You are responsible for your own usage and policy compliance
 > - For production/commercial workloads, use the OpenAI Platform API
@@ -214,6 +217,8 @@ If browser launch is blocked, use the alternate login paths in [docs/getting-sta
 | Flagged accounts | `~/.codex/multi-auth/openai-codex-flagged-accounts.json` |
 | Quota cache | `~/.codex/multi-auth/quota-cache.json` |
 | Runtime observability | `~/.codex/multi-auth/runtime-observability.json` |
+| Runtime app helper status | `~/.codex/multi-auth/runtime-rotation-app-helper.json` |
+| Persistent app bind state/logs | `~/.codex/multi-auth/app-bind/` |
 | Logs | `~/.codex/multi-auth/logs/codex-plugin/` |
 | Per-project accounts | `~/.codex/multi-auth/projects/<project-key>/openai-codex-accounts.json` |
 
@@ -254,6 +259,8 @@ codex auth forecast --live
 ```
 
 Responses background mode stays opt-in. Enable `backgroundResponses` in settings or `CODEX_AUTH_BACKGROUND_RESPONSES=1` only for callers that intentionally send `background: true`, because those requests switch from stateless `store=false` routing to stateful `store=true`. See [docs/upgrade.md](docs/upgrade.md) for rollout guidance.
+
+Runtime rotation also stays opt-in. `codex auth rotation enable` persists the setting, starts a localhost-only provider path for future wrapper-launched sessions, and binds supported packaged Codex app installs through a reversible local router. `codex auth rotation disable` turns the setting off and removes the persistent app bind.
 
 ---
 

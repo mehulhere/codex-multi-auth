@@ -1,5 +1,7 @@
 # Master Repository Audit â€” codex-multi-auth
 
+> Historical snapshot: this audit was captured against `codex-multi-auth@1.2.7` before the 2.0 runtime-rotation architecture. Preserve the evidence and findings as historical audit material. For current architecture, use `docs/architecture.md` and `docs/development/ARCHITECTURE.md`.
+
 **Audit Date**: 2026-04-17
 **HEAD**: `1f6da97d06dcc8c268b304e6e45b6baa9a386679`
 **Branch**: `main`

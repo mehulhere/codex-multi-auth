@@ -31,6 +31,8 @@ Optional:
 ```bash
 npm run test:watch
 npm run test:coverage
+npm test -- test/documentation.test.ts
+npm test -- test/runtime-rotation-proxy.test.ts test/codex-bin-wrapper.test.ts
 npm run test:model-matrix:smoke
 npm run bench:edit-formats:smoke
 ```
@@ -56,6 +58,8 @@ npm run bench:edit-formats:smoke
 | Health operations | `check`, `forecast`, `fix`, `doctor`, `report` produce sane output |
 | Storage durability | backup/WAL recovery remains valid |
 | CLI state sync | active account sync with Codex CLI files |
+| Runtime rotation | localhost proxy startup, request forwarding, account rotation, shadow-home sync-back, app-helper status |
+| Packaged app bind | config backup/restore, router startup state, startup entry cleanup |
 | Live updates | account changes picked up without restart |
 | Concurrency race safety | refresh/write races covered by deterministic tests |
 | Windows transient FS handling | retry behavior for `EBUSY`/`EPERM` paths |
@@ -80,6 +84,15 @@ Optional plugin-host smoke:
 <run-your-host-runtime-smoke-command>
 ```
 
+Runtime rotation smoke:
+
+```bash
+codex auth rotation status
+CODEX_MULTI_AUTH_RUNTIME_ROTATION_PROXY=1 codex exec "say hello" --model gpt-5-codex
+```
+
+For live smoke evidence, confirm the official Codex startup/status output uses provider `codex-multi-auth-runtime-proxy` and a localhost Responses URL. Account/quota failures after that point can still prove routing if the provider and localhost path are visible.
+
 * * *
 
 ## Failure-Mode Scenarios
@@ -89,6 +102,9 @@ Optional plugin-host smoke:
 | OAuth callback port conflict | clean error and retry path |
 | Invalid/expired refresh token | account flagged/disabled by policy tools |
 | All accounts rate-limited | forecast/report show wait and recommendation |
+| Runtime rotation pool exhausted | proxy returns `codex_runtime_rotation_pool_exhausted` with `codex auth rotation status` hint |
+| Runtime proxy upstream compression | decoded client bytes are not paired with stale `content-encoding` |
+| Shadow-home sync owner write failure | orphaned lock is removed or retried so later sync-back is not silently skipped |
 | Storage write error | `StorageError` has actionable hint |
 | Unsupported model | policy fallback or strict failure as configured |
 | Stream stalls | stream failover logic engages by policy |
@@ -101,6 +117,7 @@ Before approving a large runtime, manager, or storage refactor, run the narrow s
 
 ```bash
 npm test -- test/index.test.ts test/index-retry.test.ts
+npm test -- test/runtime-rotation-proxy.test.ts test/runtime-rotation-proxy-safe-equal.test.ts test/codex-bin-wrapper.test.ts
 npm test -- test/codex-manager-cli.test.ts
 npm test -- test/storage.test.ts test/storage-async.test.ts test/storage-recovery-paths.test.ts test/paths.test.ts
 ```
@@ -108,6 +125,8 @@ npm test -- test/storage.test.ts test/storage-async.test.ts test/storage-recover
 Key guardrails to watch:
 
 - request invariants stay locked: `stream: true`, `store: false`, and `reasoning.encrypted_content`
+- runtime rotation stays opt-in, loopback-only, and authenticated with local client keys
+- shadow-home cleanup and sync-back remain safe under Windows-style `EBUSY`/`EPERM` failures
 - storage failures still produce actionable `StorageError` hints
 - linked-worktree and forged-path protections remain covered by `test/paths.test.ts`
 

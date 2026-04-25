@@ -9,6 +9,10 @@ This top-level changelog preserves the foundational `0.x` milestones and points 
 
 ## [Unreleased]
 
+### Changed
+
+- aligned active documentation with the 2.x wrapper-first architecture, opt-in runtime Responses proxy, reversible Codex app bind, and historical audit snapshot boundaries
+
 ## [2.0.0] - 2026-04-25
 
 Major release for the official Codex runtime rotation proxy and hardened app/shadow-home runtime path. See [docs/releases/v2.0.0.md](docs/releases/v2.0.0.md) for full details.

@@ -1,6 +1,6 @@
 # Config Templates
 
-These files are example model/provider templates for `codex-multi-auth`.
+These files are optional model/provider templates for host/plugin configurations that still load `codex-multi-auth` directly. The normal wrapper workflow uses `codex auth ...` and does not require these templates.
 
 ## Primary (Codex-named)
 
@@ -12,7 +12,7 @@ These files are example model/provider templates for `codex-multi-auth`.
 
 ## Notes
 
-- These templates are optional for the OAuth account manager flow.
+- These templates are optional for the OAuth account manager flow and the runtime rotation proxy.
 - Core auth commands use `codex auth login`.
 
 ## Defaults Included

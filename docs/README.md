@@ -21,7 +21,7 @@ Public documentation for `codex-multi-auth`.
 | [faq.md](faq.md) | Short answers to common adoption questions |
 | [features.md](features.md) | User-facing capability map |
 | [configuration.md](configuration.md) | Stable defaults, precedence, and environment overrides |
-| [architecture.md](architecture.md) | Public system overview of the wrapper, storage, and optional plugin runtime |
+| [architecture.md](architecture.md) | Public system overview of the wrapper, storage, runtime rotation proxy, app bind, and optional plugin-host path |
 | [privacy.md](privacy.md) | Data handling and local storage behavior |
 
 ---
@@ -38,12 +38,21 @@ Public documentation for `codex-multi-auth`.
 | [releases/v1.2.6.md](releases/v1.2.6.md) | Stable archive |
 | [releases/v1.2.5.md](releases/v1.2.5.md) | Stable archive |
 | [releases/v1.2.4.md](releases/v1.2.4.md) | Stable archive |
+| [releases/v1.2.3.md](releases/v1.2.3.md) | Stable archive |
 | [releases/v1.2.2.md](releases/v1.2.2.md) | Stable archive |
 | [releases/v1.2.1.md](releases/v1.2.1.md) | Stable archive |
 | [releases/v1.2.0.md](releases/v1.2.0.md) | Stable archive |
+| [releases/v1.1.10.md](releases/v1.1.10.md) | Stable archive |
+| [releases/v0.1.9.md](releases/v0.1.9.md) | Pre-1.0 stable archive |
+| [releases/v0.1.8.md](releases/v0.1.8.md) | Pre-1.0 stable archive |
 | [releases/v0.1.7.md](releases/v0.1.7.md) | Pre-1.0 stable archive |
 | [releases/v0.1.6.md](releases/v0.1.6.md) | Pre-1.0 stable archive |
 | [releases/v0.1.5.md](releases/v0.1.5.md) | Pre-1.0 stable archive |
+| [releases/v0.1.4.md](releases/v0.1.4.md) | Pre-1.0 stable archive |
+| [releases/v0.1.3.md](releases/v0.1.3.md) | Pre-1.0 stable archive |
+| [releases/v0.1.2.md](releases/v0.1.2.md) | Pre-1.0 stable archive |
+| [releases/v0.1.1.md](releases/v0.1.1.md) | Pre-1.0 stable archive |
+| [releases/v0.1.0.md](releases/v0.1.0.md) | Pre-1.0 stable archive |
 | [releases/v0.1.0-beta.0.md](releases/v0.1.0-beta.0.md) | Archived prerelease notes |
 | [releases/legacy-pre-0.1-history.md](releases/legacy-pre-0.1-history.md) | Archived pre-0.1 changelog history |
 
@@ -80,6 +89,8 @@ Public documentation for `codex-multi-auth`.
 | --- | --- |
 | [DOCUMENTATION.md](DOCUMENTATION.md) | Documentation governance contract |
 | [development/ARCHITECTURE.md](development/ARCHITECTURE.md) | Runtime architecture and invariants |
+| [audits/README.md](audits/README.md) | Historical audit archive policy |
+| [audits/MASTER_AUDIT.md](audits/MASTER_AUDIT.md) | Historical v1.2.7 audit snapshot; evidence is preserved, not current architecture guidance |
 | [development/GITHUB_DISCOVERABILITY.md](development/GITHUB_DISCOVERABILITY.md) | GitHub-facing metadata and presentation guidance |
 | [development/IA_FINDABILITY_AUDIT_2026-03-01.md](development/IA_FINDABILITY_AUDIT_2026-03-01.md) | IA and findability baseline audit |
 | [development/CONFIG_FIELDS.md](development/CONFIG_FIELDS.md) | Complete field and environment inventory |

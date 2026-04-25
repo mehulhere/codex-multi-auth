@@ -64,6 +64,22 @@ Compatibility guarantees:
 
 ---
 
+## Runtime Rotation Proxy Error Contract
+
+The opt-in localhost Responses proxy returns JSON error payloads with a stable `error.code` field.
+
+| Code | HTTP status | Meaning |
+| --- | --- | --- |
+| `runtime_rotation_proxy_not_found` | `404` | Request path or method is outside the supported Responses/model discovery surface |
+| `runtime_rotation_proxy_unauthorized` | `401` | Local request did not include the per-process proxy client key |
+| `runtime_rotation_proxy_payload_too_large` | `413` | Request body exceeded the proxy safety cap |
+| `codex_runtime_rotation_pool_exhausted` | `429` or `503` | No managed account can currently service the runtime request |
+| `codex_runtime_rotation_proxy_error` | `500` | Proxy failed before forwarding the request |
+
+Pool exhaustion includes a `reason`, `retry_after_ms`, and a hint to run `codex auth rotation status`.
+
+---
+
 ## Options-Object Compatibility Contract
 
 For selected exported helper APIs, options-object forms were added without removing positional signatures.

@@ -24,7 +24,7 @@ codex auth forecast --live
 
 - first setup and verification: [getting-started.md](getting-started.md)
 - quick answers before install: [faq.md](faq.md)
-- understanding the wrapper and optional plugin runtime: [architecture.md](architecture.md)
+- understanding the wrapper, runtime rotation proxy, app bind, and optional plugin-host path: [architecture.md](architecture.md)
 - recovering from login, routing, or state problems: [troubleshooting.md](troubleshooting.md)
 
 ---
@@ -46,6 +46,7 @@ codex auth doctor --fix
 - Canonical package: `codex-multi-auth`
 - Canonical command family: `codex auth ...`
 - Canonical storage root: `~/.codex/multi-auth`
+- Runtime rotation: opt-in through `codex auth rotation enable`
 
 Legacy migration details live in [upgrade.md](upgrade.md).
 

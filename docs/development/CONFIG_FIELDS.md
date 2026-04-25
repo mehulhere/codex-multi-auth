@@ -39,6 +39,8 @@ Used only for host plugin mode through the host runtime config file.
 
 ## `pluginConfig` Fields
 
+`pluginConfig` is the persisted compatibility name for runtime settings. These fields are used by the wrapper/account manager, runtime rotation proxy, and optional plugin-host path depending on feature area.
+
 ### Core UX
 
 | Key | Default |
@@ -48,6 +50,8 @@ Used only for host plugin mode through the host runtime config file.
 | `codexTuiV2` | `true` |
 | `codexTuiColorProfile` | `truecolor` |
 | `codexTuiGlyphMode` | `ascii` |
+
+`codexRuntimeRotationProxy` enables the wrapper/app local Responses proxy path. It remains disabled by default and can also be overridden per process with `CODEX_MULTI_AUTH_RUNTIME_ROTATION_PROXY`.
 
 ### Fast Session
 
@@ -202,6 +206,15 @@ Upgrade note:
 | `CODEX_MULTI_AUTH_CONFIG_PATH` | Alternate config file input |
 | `CODEX_MODE` | Toggle Codex mode |
 | `CODEX_MULTI_AUTH_RUNTIME_ROTATION_PROXY` | Toggle opt-in localhost Responses proxy for forwarded Codex sessions (`1`/`true` to enable, `0`/`false` to disable) |
+| `CODEX_MULTI_AUTH_APP_ROTATION_IDLE_MS` | Override idle timeout for the wrapper-launched Codex app runtime helper |
+| `CODEX_MULTI_AUTH_APP_ROTATION_OWNER_PID` | Internal owner PID used by the wrapper-launched app helper |
+| `CODEX_MULTI_AUTH_REAL_CODEX_HOME` | Internal original Codex home pointer used by runtime rotation helpers |
+| `CODEX_MULTI_AUTH_APP_BIND_INSTALL` | Opt out/in of packaged Codex app bind self-heal during install/update or rotation enable |
+| `CODEX_MULTI_AUTH_APP_BIND` | Legacy/manual app-bind install override consumed by postinstall |
+| `CODEX_MULTI_AUTH_APP_BIND_CODEX_HOME` | Override Codex home used by packaged app bind helpers |
+| `CODEX_MULTI_AUTH_APP_LAUNCHER_INSTALL` | Opt out/in of user-level app launcher routing during rotation enable |
+| `CODEX_MULTI_AUTH_APP_LAUNCHER_WINDOWS_DESKTOP_DIR` | Override Windows desktop shortcut search root for launcher routing |
+| `CODEX_MULTI_AUTH_APP_LAUNCHER_MACOS_DIR` | Override macOS managed wrapper app install directory |
 | `CODEX_TUI_V2` | Toggle TUI v2 |
 | `CODEX_TUI_COLOR_PROFILE` | TUI color profile |
 | `CODEX_TUI_GLYPHS` | TUI glyph mode |
@@ -210,6 +223,28 @@ Upgrade note:
 | `CODEX_MULTI_AUTH_SYNC_CODEX_CLI` | Toggle Codex CLI state sync |
 | `CODEX_MULTI_AUTH_REAL_CODEX_BIN` | Force official Codex binary path |
 | `CODEX_MULTI_AUTH_BYPASS` | Bypass local auth handling |
+| `CODEX_MULTI_AUTH_FORCE_FILE_AUTH_STORE` | Opt out of wrapper-injected official Codex file-backed auth store when set to `0` |
+| `CODEX_MULTI_AUTH_AUTO_SYNC_ON_STARTUP` | Opt out of best-effort active-account sync around forwarded Codex launches when set to `0` |
+| `CODEX_MULTI_AUTH_CAPTURE_FORWARD_OUTPUT` | Force or disable capture of forwarded Codex output for unsupported-model fallback handling |
+| `CODEX_MULTI_AUTH_WINDOWS_BATCH_SHIM_GUARD` | Install Windows shim guards when enabled |
+| `CODEX_MULTI_AUTH_PWSH_PROFILE_GUARD` | Install PowerShell profile guard when enabled |
+| `CODEX_MULTI_AUTH_OVERWRITE_CUSTOM_BATCH_SHIM` | Allow Windows shim guard to overwrite custom shims when set to `1` |
+
+* * *
+
+## Runtime Rotation Architecture Fields
+
+Runtime rotation is split between persisted config, wrapper-only process env, and app-bind helper env.
+
+| Layer | Primary controls |
+| --- | --- |
+| Persisted settings | `pluginConfig.codexRuntimeRotationProxy` |
+| Per-process override | `CODEX_MULTI_AUTH_RUNTIME_ROTATION_PROXY` |
+| Wrapper app helper | `CODEX_MULTI_AUTH_APP_ROTATION_IDLE_MS`, internal owner/original-home env |
+| Packaged app bind | `CODEX_MULTI_AUTH_APP_BIND_INSTALL`, `CODEX_MULTI_AUTH_APP_BIND_CODEX_HOME` |
+| User launcher routing | `CODEX_MULTI_AUTH_APP_LAUNCHER_INSTALL`, launcher directory overrides |
+
+The proxy provider id is `codex-multi-auth-runtime-proxy`. It is generated through `lib/runtime-constants.ts` and the TOML rewrite helpers in `lib/runtime/config-toml.ts`.
 
 * * *
 
@@ -219,6 +254,8 @@ Upgrade note:
 - Cross-process refresh coordination relies on lease/state files; avoid manually editing those files while the CLI is running.
 - Live account sync combines `fs.watch` with polling fallback to handle Windows watcher edge cases.
 - Backup/WAL artifacts may exist briefly during writes and recovery; they are part of normal safety behavior.
+- Runtime rotation shadow-home sync uses a lock directory and state metadata to avoid overwriting newer official Codex state after concurrent helper sessions.
+- If shadow-home lock owner metadata cannot be written, the wrapper removes the orphaned lock before surfacing the failure so later sync-back attempts are not skipped silently.
 
 * * *
 

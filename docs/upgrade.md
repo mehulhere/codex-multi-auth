@@ -77,6 +77,25 @@ For maintainer/debug flows, see advanced/internal controls in [development/CONFI
 
 ---
 
+## Runtime Rotation Upgrade Note
+
+The 2.x line adds the runtime rotation proxy and packaged app bind, but both remain opt-in.
+
+- Existing installs keep forwarding non-auth `codex` commands normally unless `codexRuntimeRotationProxy` or `CODEX_MULTI_AUTH_RUNTIME_ROTATION_PROXY=1` is enabled.
+- `codex auth rotation enable` persists the setting and attempts to bind supported packaged Codex app installs through a reversible localhost router.
+- `codex auth rotation disable` turns the setting off and removes the persistent app bind.
+- Set `CODEX_MULTI_AUTH_APP_BIND_INSTALL=0` before enabling rotation if you only want wrapper-launched CLI/app sessions routed and do not want the packaged app bind installed.
+- Official Codex app binaries are not patched.
+
+Validate after enabling:
+
+```bash
+codex auth rotation status
+codex auth forecast --live
+```
+
+---
+
 ## Responses Background Mode Upgrade Note
 
 `backgroundResponses` and `CODEX_AUTH_BACKGROUND_RESPONSES=1` are opt-in compatibility controls for callers that intentionally send Responses API `background: true`.

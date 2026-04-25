@@ -1,6 +1,8 @@
 # Settings Reference
 
-Reference for dashboard display settings and backend `pluginConfig` values available from `codex auth login` -> `Settings`.
+Reference for dashboard display settings and runtime `pluginConfig` values available from `codex auth login` -> `Settings`.
+
+`pluginConfig` is the persisted compatibility name for runtime settings. It covers wrapper/runtime rotation behavior and optional plugin-host behavior.
 
 ---
 
@@ -140,6 +142,7 @@ Named backup behavior:
 
 | Key | Default | Effect |
 | --- | --- | --- |
+| `codexRuntimeRotationProxy` | `false` | Enable the opt-in localhost Responses proxy for forwarded official Codex CLI/app sessions |
 | `preemptiveQuotaEnabled` | `true` | Defer requests before remaining quota is critically low |
 | `preemptiveQuotaRemainingPercent5h` | `5` | 5-hour quota threshold |
 | `preemptiveQuotaRemainingPercent7d` | `5` | 7-day quota threshold |
@@ -186,7 +189,9 @@ Common operator overrides:
 - `CODEX_MULTI_AUTH_CONFIG_PATH`
 - `CODEX_MODE`
 - `CODEX_MULTI_AUTH_RUNTIME_ROTATION_PROXY`
+- `CODEX_MULTI_AUTH_APP_ROTATION_IDLE_MS`
 - `CODEX_MULTI_AUTH_APP_BIND_INSTALL`
+- `CODEX_MULTI_AUTH_APP_LAUNCHER_INSTALL`
 - `CODEX_TUI_V2`
 - `CODEX_TUI_COLOR_PROFILE`
 - `CODEX_TUI_GLYPHS`

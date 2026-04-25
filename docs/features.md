@@ -28,6 +28,21 @@ User-facing capability map for `codex-multi-auth`.
 
 ---
 
+## Rotate Live Codex Runtime Requests
+
+Runtime rotation is the current 2.x architecture addition. It is opt-in and local-only.
+
+| Capability | What it gives you | Primary entry |
+| --- | --- | --- |
+| Local Responses proxy | Routes forwarded official Codex Responses/model traffic through a loopback provider named `codex-multi-auth-runtime-proxy` | `codex auth rotation enable` |
+| Per-request account rotation | Moves to another managed account on quota, auth refresh, network, or server failure before streaming response bytes | runtime proxy |
+| Shadow `CODEX_HOME` launch | Keeps temporary provider config isolated from normal official Codex state for wrapper-launched CLI sessions | `codex` wrapper |
+| Runtime status telemetry | Shows setting state, app helper state, app bind state, account waits, cooldowns, and last-account proxy metadata | `codex auth rotation status` |
+| Reversible desktop app bind | Lets packaged Codex app launches use the same local router without patching official app files | `codex auth rotation bind-app` |
+| Launcher routing helper | Retargets supported user-level app shortcuts or creates a managed macOS wrapper app | `codex-multi-auth-app-launcher` |
+
+---
+
 ## Recover From Local State Problems
 
 | Capability | What it gives you | Primary entry |
@@ -63,7 +78,7 @@ Manual/non-TTY login accepts the full callback URL on stdin, so automation and h
 
 ---
 
-## Optional Plugin Runtime
+## Optional Plugin-Host Runtime
 
 Some users only need the wrapper and `codex auth ...` commands. If you also run the plugin-host path, `codex-multi-auth` can use the same account pool for:
 

@@ -8,7 +8,7 @@ Runtime configuration is resolved from unified settings, optional override files
 
 | Layer | Path | Purpose |
 | --- | --- | --- |
-| Unified settings | `~/.codex/multi-auth/settings.json` | Dashboard display and backend `pluginConfig` |
+| Unified settings | `~/.codex/multi-auth/settings.json` | Dashboard display and runtime `pluginConfig` |
 | Optional config override | `CODEX_MULTI_AUTH_CONFIG_PATH=<path>` | External config file source |
 | Root override | `CODEX_MULTI_AUTH_DIR=<path>` | Re-home settings/accounts/cache/log directories |
 
@@ -44,7 +44,7 @@ Runtime configuration is resolved from unified settings, optional override files
 
 ## Resolution Precedence
 
-Plugin runtime config source selection is resolved in this order:
+Runtime config source selection is resolved in this order. The persisted object is still named `pluginConfig` for compatibility with earlier releases.
 
 1. Unified settings `pluginConfig` from `settings.json` (when present and valid).
 2. Fallback file config from `CODEX_MULTI_AUTH_CONFIG_PATH` (or legacy compatibility path) when unified settings are absent/invalid.
@@ -61,10 +61,13 @@ These are safe for most operators and frequently used in day-to-day workflows.
 
 | Variable | Effect |
 | --- | --- |
-| `CODEX_MULTI_AUTH_DIR` | Override root directory for plugin-managed runtime files |
+| `CODEX_MULTI_AUTH_DIR` | Override root directory for multi-auth-managed runtime files |
 | `CODEX_MULTI_AUTH_CONFIG_PATH` | Load configuration from alternate path |
 | `CODEX_MODE=0/1` | Disable or enable Codex mode |
 | `CODEX_MULTI_AUTH_RUNTIME_ROTATION_PROXY=0/1` | Opt in to live Codex Responses routing through the localhost account-rotation proxy |
+| `CODEX_MULTI_AUTH_APP_ROTATION_IDLE_MS=<ms>` | Override idle shutdown for the wrapper-launched Codex app helper |
+| `CODEX_MULTI_AUTH_APP_BIND_INSTALL=0/1` | Opt out/in of packaged Codex app bind self-heal during install/update or rotation enable |
+| `CODEX_MULTI_AUTH_APP_LAUNCHER_INSTALL=0/1` | Opt out/in of supported user-level launcher routing during rotation enable |
 | `CODEX_TUI_V2=0/1` | Disable or enable TUI v2 |
 | `CODEX_TUI_COLOR_PROFILE=truecolor|ansi256|ansi16` | Color profile selection |
 | `CODEX_TUI_GLYPHS=ascii|unicode|auto` | Glyph mode selection |
@@ -105,7 +108,7 @@ Keep these enabled for most environments:
 
 `codexRuntimeRotationProxy` is disabled by default. When enabled through settings, `codex auth rotation enable`, or `CODEX_MULTI_AUTH_RUNTIME_ROTATION_PROXY=1`, the `codex` wrapper starts a localhost-only Responses proxy for forwarded official Codex sessions, including CLI request commands, `codex app-server`, and `codex app` launches through the wrapper. The wrapper writes a temporary shadow `CODEX_HOME/config.toml` that selects a custom provider named `codex-multi-auth-runtime-proxy`, launches the official Codex surface against that provider, and removes the shadow home after the owning process exits.
 
-The proxy preserves request bodies and streaming responses, replaces outbound auth headers with the selected managed account, and rotates to another account before response bytes are streamed when it sees rate limits, server errors, network failures, or refresh failures. If every account is unavailable, the proxy returns a structured pool-exhaustion error that points to `codex auth rotation status`.
+The proxy preserves request bodies and streaming responses, replaces outbound auth headers with the selected managed account, and rotates to another account before response bytes are streamed when it sees rate limits, server errors, network failures, or refresh failures. It removes hop-by-hop headers, private account metadata headers, and stale decoded `content-encoding` from client responses. If every account is unavailable, the proxy returns a structured pool-exhaustion error that points to `codex auth rotation status`.
 
 For `codex app` launches that go through the wrapper, the wrapper automatically starts a small internal helper so rotation can keep working if the desktop app launcher detaches. The helper stores only local runtime status, uses the same per-session proxy client key as the CLI path, and exits after an idle timeout.
 
@@ -123,7 +126,7 @@ The shipped config templates expose first-class GPT-5.5 model aliases:
 
 - `config/codex-modern.json` includes `gpt-5.5` and `gpt-5.5-pro`
 - `config/codex-legacy.json` includes `gpt-5.5-*` and `gpt-5.5-pro-*` entries
-- the wrapper and plugin now try those models directly and only fall back to `gpt-5.4` after a real ChatGPT Codex unsupported-model response
+- the wrapper and optional plugin-host runtime try those models directly and only fall back to `gpt-5.4` after a real ChatGPT Codex unsupported-model response
 
 ---
 

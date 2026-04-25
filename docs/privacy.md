@@ -20,14 +20,19 @@
 | Accounts | `~/.codex/multi-auth/openai-codex-accounts.json` | Primary saved account pool |
 | Flagged accounts | `~/.codex/multi-auth/openai-codex-flagged-accounts.json` | Accounts with hard auth failures |
 | Quota cache | `~/.codex/multi-auth/quota-cache.json` | Cached quota snapshots |
+| Runtime observability | `~/.codex/multi-auth/runtime-observability.json` | Local request counters and last-account metadata for status/report output |
+| Runtime app helper status | `~/.codex/multi-auth/runtime-rotation-app-helper.json` | Local helper status for wrapper-launched Codex app sessions |
+| Persistent app bind state/logs | `~/.codex/multi-auth/app-bind/` | Reversible packaged-app router state, backup metadata, and local router log |
 | Logs | `~/.codex/multi-auth/logs/codex-plugin/` | Optional diagnostics |
 | Prompt/cache files | `~/.codex/multi-auth/cache/` | Cached prompt/template metadata |
-| Codex CLI state | `~/.codex/accounts.json`, `~/.codex/auth.json` | Official Codex CLI files |
+| Codex CLI state | `~/.codex/accounts.json`, `~/.codex/auth.json`, `~/.codex/config.toml` | Official Codex CLI files |
 
-If `CODEX_MULTI_AUTH_DIR` is set, plugin-owned paths move under that root.
+If `CODEX_MULTI_AUTH_DIR` is set, multi-auth-owned paths move under that root.
 If `CODEX_MULTI_AUTH_CONFIG_PATH` is set, configuration file loading uses that path.
 For cleanup, apply the same deletions to resolved override roots (including
 Windows override locations).
+
+Runtime rotation uses loopback-only local HTTP listeners. The per-session proxy and persistent app router forward requests to the official Codex backend with the selected managed account token, but the project does not operate a remote telemetry service.
 
 ---
 
@@ -59,6 +64,9 @@ rm -f ~/.codex/multi-auth/settings.json
 rm -f ~/.codex/multi-auth/openai-codex-accounts.json
 rm -f ~/.codex/multi-auth/openai-codex-flagged-accounts.json
 rm -f ~/.codex/multi-auth/quota-cache.json
+rm -f ~/.codex/multi-auth/runtime-observability.json
+rm -f ~/.codex/multi-auth/runtime-rotation-app-helper.json
+rm -rf ~/.codex/multi-auth/app-bind
 rm -rf ~/.codex/multi-auth/logs/codex-plugin
 rm -rf ~/.codex/multi-auth/cache
 # Override-root cleanup examples (if overrides are set):
@@ -73,6 +81,9 @@ Remove-Item "$HOME\.codex\multi-auth\settings.json" -Force -ErrorAction Silently
 Remove-Item "$HOME\.codex\multi-auth\openai-codex-accounts.json" -Force -ErrorAction SilentlyContinue
 Remove-Item "$HOME\.codex\multi-auth\openai-codex-flagged-accounts.json" -Force -ErrorAction SilentlyContinue
 Remove-Item "$HOME\.codex\multi-auth\quota-cache.json" -Force -ErrorAction SilentlyContinue
+Remove-Item "$HOME\.codex\multi-auth\runtime-observability.json" -Force -ErrorAction SilentlyContinue
+Remove-Item "$HOME\.codex\multi-auth\runtime-rotation-app-helper.json" -Force -ErrorAction SilentlyContinue
+Remove-Item "$HOME\.codex\multi-auth\app-bind" -Recurse -Force -ErrorAction SilentlyContinue
 Remove-Item "$HOME\.codex\multi-auth\logs\codex-plugin" -Recurse -Force -ErrorAction SilentlyContinue
 Remove-Item "$HOME\.codex\multi-auth\cache" -Recurse -Force -ErrorAction SilentlyContinue
 # Override-root cleanup examples (if overrides are set):

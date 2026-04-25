@@ -45,6 +45,8 @@ For user-facing behavior changes, review these files at minimum:
 - `README.md`
 - `docs/getting-started.md`
 - `docs/features.md`
+- `docs/architecture.md`
+- `docs/development/ARCHITECTURE.md`
 - affected `docs/reference/*` files
 
 ---

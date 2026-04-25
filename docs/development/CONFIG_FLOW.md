@@ -30,7 +30,7 @@ If legacy config exists, compatibility load and migration path still apply.
 
 ## 3) Runtime Value Precedence
 
-For plugin runtime values:
+For runtime values stored in `pluginConfig`:
 
 1. Unified settings `pluginConfig` (if present and valid)
 2. Fallback file from `CODEX_MULTI_AUTH_CONFIG_PATH` or legacy compatibility path (only when unified config is missing/invalid)
@@ -59,12 +59,25 @@ For dashboard display values:
 1. Wrapper receives `codex` or `codex-multi-auth`.
 2. Normalize alias args (`multi auth`, `multi-auth`, `multiauth`).
 3. If command belongs to auth manager scope, run local manager.
-4. Otherwise forward invocation to official Codex CLI binary.
-5. Direct `codex-multi-auth ...` invocations route through the same routing entrypoint.
+4. Otherwise discover and forward to the official Codex CLI binary.
+5. For forwarded request-bearing commands, check whether runtime rotation is enabled.
+6. Direct `codex-multi-auth ...` invocations route through the same routing entrypoint.
 
 * * *
 
-## 6) Request Handling Flow (Plugin)
+## 6) Runtime Rotation Flow
+
+1. Resolve `CODEX_MULTI_AUTH_RUNTIME_ROTATION_PROXY`; if unset, read `pluginConfig.codexRuntimeRotationProxy`.
+2. If disabled or the forwarded command is help/non-requesting, forward directly to official Codex.
+3. If enabled, start a loopback Responses proxy with a per-process client token.
+4. Create a temporary shadow `CODEX_HOME` and rewrite `config.toml` to use `codex-multi-auth-runtime-proxy`.
+5. Forward official Codex with the shadow home.
+6. Proxy request handling selects/refreshed managed accounts and rotates on rate limit, auth, network, or server failure before streaming starts.
+7. On process exit, sync refreshed official Codex state files back and remove the shadow home.
+
+* * *
+
+## 7) Request Handling Flow (Plugin Host)
 
 1. Transform request for Codex backend compatibility.
 2. Resolve account candidate set (health, cooldown, quota, affinity).
@@ -74,7 +87,7 @@ For dashboard display values:
 
 * * *
 
-## 7) Unsupported Model / Entitlement Flow
+## 8) Unsupported Model / Entitlement Flow
 
 1. Detect unsupported model or entitlement failures.
 2. Record in entitlement cache.
@@ -84,7 +97,7 @@ For dashboard display values:
 
 * * *
 
-## 8) Live Runtime Sync Flow
+## 9) Live Runtime Sync Flow
 
 1. File watcher detects account-file updates.
 2. Debounce and reload in-memory account manager.
@@ -92,13 +105,14 @@ For dashboard display values:
 
 * * *
 
-## 9) Debugging Effective Config
+## 10) Debugging Effective Config
 
 Use:
 
 ```bash
 codex auth status
 codex auth report --json
+codex auth rotation status
 ```
 
 Check files:

@@ -28,17 +28,22 @@ Override root:
 | Flagged accounts | `~/.codex/multi-auth/openai-codex-flagged-accounts.json` |
 | Flagged accounts backup | `~/.codex/multi-auth/openai-codex-flagged-accounts.json.bak` |
 | Quota cache | `~/.codex/multi-auth/quota-cache.json` |
+| Runtime observability | `~/.codex/multi-auth/runtime-observability.json` |
+| Runtime app helper status | `~/.codex/multi-auth/runtime-rotation-app-helper.json` |
+| Persistent app bind directory | `~/.codex/multi-auth/app-bind/` |
 | Logs | `~/.codex/multi-auth/logs/codex-plugin/` |
 | Cache | `~/.codex/multi-auth/cache/` |
 | Codex CLI accounts | `~/.codex/accounts.json` |
 | Codex CLI auth | `~/.codex/auth.json` |
+| Codex CLI config | `~/.codex/config.toml` |
 
 Ownership note:
 
 - `~/.codex/multi-auth/*` is managed by this project.
-- `~/.codex/accounts.json` and `~/.codex/auth.json` are managed by official Codex CLI.
+- `~/.codex/accounts.json`, `~/.codex/auth.json`, and `~/.codex/config.toml` are managed by official Codex CLI.
 - The `codex` wrapper preserves that official CLI file-backed auth layout by forwarding non-auth commands with `-c cli_auth_credentials_store="file"`, unless the caller already set `cli_auth_credentials_store` explicitly.
 - Set `CODEX_MULTI_AUTH_FORCE_FILE_AUTH_STORE=0` to opt out of that wrapper-injected file-store override and leave the downstream CLI auth store untouched.
+- Runtime rotation may create a temporary shadow `CODEX_HOME` under the operating-system temp directory while a forwarded Codex command is running. The wrapper syncs refreshed official state files back to the original Codex home before cleanup.
 
 Compatibility note:
 
@@ -91,6 +96,23 @@ Examples:
 
 - `~/DevTools/config/codex/`
 - older pre-`~/.codex/multi-auth` custom roots
+
+---
+
+## Runtime Rotation Paths
+
+Runtime rotation adds local state only when enabled or when a helper has recently run.
+
+| Path | Purpose |
+| --- | --- |
+| `~/.codex/multi-auth/runtime-observability.json` | request counters, last selected runtime account metadata, and cooldown context for status/report commands |
+| `~/.codex/multi-auth/runtime-rotation-app-helper.json` | wrapper-launched `codex app` helper state, idle timeout, request count, and last-account metadata |
+| `~/.codex/multi-auth/app-bind/runtime-rotation-app-bind.json` | persistent packaged-app bind state |
+| `~/.codex/multi-auth/app-bind/codex-config-backup.json` | backup metadata for restoring the real Codex `config.toml` |
+| `~/.codex/multi-auth/app-bind/runtime-rotation-app-bind-status.json` | persistent app router status |
+| `~/.codex/multi-auth/app-bind/runtime-rotation-app-router.log` | persistent app router log |
+
+The app bind writes a provider entry to the real `~/.codex/config.toml` only after taking a backup. `codex auth rotation disable` and `codex auth rotation unbind-app` restore the backup and remove the router startup entry.
 
 ---
 

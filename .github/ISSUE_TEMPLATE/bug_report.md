@@ -28,6 +28,7 @@ Describe the observed result.
 
 - `codex --version`:
 - `codex auth status` output summary:
+- `codex auth rotation status` output summary, if runtime rotation is involved:
 - `npm ls -g codex-multi-auth`:
 - OS:
 - Node.js:

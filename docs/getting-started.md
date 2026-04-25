@@ -130,6 +130,23 @@ codex auth forecast --live
 
 ---
 
+## Optional Runtime Rotation
+
+Normal setup does not require runtime rotation. Enable it only when you want forwarded official Codex CLI/app sessions to use the local account-rotation proxy between Responses requests:
+
+```bash
+codex auth rotation enable
+codex auth rotation status
+```
+
+To turn it off and restore the packaged app bind if one was installed:
+
+```bash
+codex auth rotation disable
+```
+
+---
+
 ## Project-Scoped Accounts
 
 By default, account data lives under `~/.codex/multi-auth`.

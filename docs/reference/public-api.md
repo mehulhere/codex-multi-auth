@@ -16,6 +16,10 @@ Stable APIs are covered by semver compatibility guarantees and must remain backw
   - `OpenAIOAuthPlugin`
   - `OpenAIAuthPlugin`
   - default export (alias of `OpenAIOAuthPlugin`)
+- Installed binaries:
+  - `codex`
+  - `codex-multi-auth`
+  - `codex-multi-auth-app-launcher`
 - Supported package subpath entrypoints:
   - `codex-multi-auth/auth`
   - `codex-multi-auth/storage`
@@ -25,6 +29,7 @@ Stable APIs are covered by semver compatibility guarantees and must remain backw
 - CLI surface:
   - `codex auth ...` command family
   - documented flags and aliases in `reference/commands.md`
+  - opt-in `codex auth rotation ...` command family for runtime Responses proxy and app bind management
 - Persistent user-facing config and storage contracts documented in:
   - `reference/settings.md`
   - `reference/storage-paths.md`
@@ -93,6 +98,22 @@ The request-transform layer intentionally preserves and/or normalizes modern Res
 These SSE compatibility fields are synthesized only when the corresponding content is present in the response stream.
 
 These behaviors are compatibility guarantees for the current release line because they protect caller intent while keeping the plugin stateless against the ChatGPT Codex backend.
+
+---
+
+## Runtime Rotation Contract Notes
+
+Runtime rotation is a CLI/runtime feature, not a library transport API.
+
+- It is disabled by default.
+- `codex auth rotation enable` persists `pluginConfig.codexRuntimeRotationProxy=true`.
+- `CODEX_MULTI_AUTH_RUNTIME_ROTATION_PROXY=1` enables the proxy for the current process without persisting the setting.
+- The local provider id is `codex-multi-auth-runtime-proxy`.
+- The proxy accepts only authenticated loopback requests for Responses API and model discovery paths.
+- The packaged app bind is reversible and must not patch official app binaries.
+- Client responses must not expose account emails, tokens, private account headers, hop-by-hop headers, or stale decoded `content-encoding`.
+
+These details are documented for operator expectations. Internal helper process arguments, shadow-home lock filenames, router status file shape, and retry timing are implementation details unless they are explicitly documented in `reference/commands.md` or `reference/storage-paths.md`.
 
 ---
 

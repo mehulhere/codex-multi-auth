@@ -24,7 +24,19 @@ Not for the ChatGPT-authenticated multi-account workflow in this repository. If 
 
 ## Is the plugin runtime required?
 
-No. Many users only need the wrapper and `codex auth ...` commands. The plugin runtime is optional and uses the same account pool for advanced request handling.
+No. Many users only need the wrapper and `codex auth ...` commands. The plugin-host runtime is optional and uses the same account pool for advanced host request handling.
+
+---
+
+## Is runtime rotation required?
+
+No. Runtime rotation is opt-in. Enable it with `codex auth rotation enable` only when you want forwarded Codex CLI/app sessions to route Responses requests through the local account-rotation proxy.
+
+---
+
+## Does runtime rotation patch the Codex app?
+
+No. The packaged app bind updates user-level Codex config and startup/router metadata and keeps a backup for restore. Official app binaries are not patched.
 
 ---
 

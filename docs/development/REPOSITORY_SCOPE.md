@@ -8,9 +8,9 @@ Ownership map for source paths and documentation paths.
 
 | Path | Purpose |
 | --- | --- |
-| `index.ts` | Plugin-host runtime entry |
-| `lib/` | Core runtime, auth, storage, UI, policies |
-| `scripts/` | CLI wrappers, repo hygiene, and helper scripts |
+| `scripts/` | Installed wrapper, official Codex forwarder, runtime app/router helpers, repo hygiene |
+| `index.ts` | Optional plugin-host runtime entry |
+| `lib/` | Core auth, storage, account manager, runtime proxy, app bind, UI, policies |
 | `docs/` | User docs + references + maintainer docs |
 | `test/` | Unit/integration/property tests |
 | `config/` | Plugin-host config examples |
@@ -24,9 +24,13 @@ Ownership map for source paths and documentation paths.
 
 | Area | Primary files |
 | --- | --- |
+| CLI wrapper and forwarding | `scripts/codex.js`, `scripts/codex-routing.js`, `scripts/codex-bin-resolver.js` |
 | CLI auth manager | `lib/codex-manager.ts` |
-| Settings hub | `lib/codex-manager/settings-hub.ts` |
+| Settings hub | `lib/codex-manager/settings-hub.ts`, `lib/codex-manager/settings-hub/` |
 | OAuth flow/server | `lib/auth/*` |
+| Runtime rotation proxy | `lib/runtime-rotation-proxy.ts`, `lib/runtime/config-toml.ts`, `lib/runtime-constants.ts` |
+| Runtime app bind/router | `lib/runtime/app-bind.ts`, `scripts/codex-app-router.js`, `scripts/codex-app-launcher.js` |
+| Runtime observability | `lib/runtime/runtime-observability.ts`, `lib/codex-manager/commands/status.ts`, `lib/codex-manager/commands/report.ts`, `lib/codex-manager/commands/rotation.ts` |
 | Storage and paths | `lib/storage.ts`, `lib/storage/paths.ts`, `lib/runtime-paths.ts` |
 | Worktree resolution | `lib/storage/paths.ts` (`resolveProjectStorageIdentityRoot`) |
 | Unified settings | `lib/unified-settings.ts`, `lib/dashboard-settings.ts`, `lib/config.ts` |
@@ -34,6 +38,7 @@ Ownership map for source paths and documentation paths.
 | Quota runtime | `lib/quota-probe.ts`, `lib/quota-cache.ts`, `lib/preemptive-quota-scheduler.ts` |
 | Resilience | `lib/live-account-sync.ts`, `lib/session-affinity.ts`, `lib/refresh-guardian.ts`, `lib/refresh-lease.ts` |
 | Request pipeline | `lib/request/*`, `index.ts` |
+| Optional plugin-host entry | `index.ts` |
 | UI system | `lib/ui/*` |
 | Repo hygiene | `scripts/repo-hygiene.js` |
 
@@ -81,4 +86,5 @@ When adding a new feature:
 3. Update user docs (`docs/features.md` + relevant guides).
 4. Update references if command/setting/path changed.
 5. Update architecture/config flow docs for cross-cutting behavior.
-6. Update `docs/upgrade.md` and any npm-script references when command flow/build steps changed.
+6. Update runtime-rotation docs when forwarded Codex, shadow-home, proxy, app bind, or launcher behavior changes.
+7. Update `docs/upgrade.md` and any npm-script references when command flow/build steps changed.
