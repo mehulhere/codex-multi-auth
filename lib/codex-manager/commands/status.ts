@@ -8,6 +8,17 @@ import {
 	recommendForecastAccount,
 } from "../../forecast.js";
 import type { ModelFamily } from "../../prompts/codex.js";
+import {
+	findQuotaCacheEntryForAccount,
+	isQuotaCacheEntryExhausted,
+} from "../../quota-readiness.js";
+import type { QuotaCacheData } from "../../quota-cache.js";
+import type { AppBindRouterStatus } from "../../runtime/app-bind.js";
+import {
+	resolveAccountCurrentMarkers,
+	resolveRuntimeCurrentAccount,
+	type RuntimeAccountSignal,
+} from "../../runtime/runtime-current-account.js";
 import type { RuntimeObservabilitySnapshot } from "../../runtime/runtime-observability.js";
 import type { AccountStorageV3, StorageHealthSummary } from "../../storage.js";
 
@@ -28,6 +39,9 @@ export interface StatusCommandDeps {
 		family: ModelFamily,
 	) => string | null;
 	loadRuntimeObservabilitySnapshot?: () => Promise<RuntimeObservabilitySnapshot | null>;
+	loadAppBindStatus?: () => Promise<AppBindRouterStatus | null>;
+	loadAppHelperStatus?: () => RuntimeAccountSignal | null;
+	loadQuotaCache?: () => Promise<QuotaCacheData | null>;
 	inspectStorageHealth?: () => Promise<StorageHealthSummary>;
 	getNow?: () => number;
 	logInfo?: (message: string) => void;
@@ -124,6 +138,18 @@ export async function runStatusCommand(
 		logInfo(`Storage health: ${storageHealth.state}`);
 	}
 	const runtimeSnapshot = await deps.loadRuntimeObservabilitySnapshot?.();
+	const appBindStatus = await deps.loadAppBindStatus?.();
+	const appHelperStatus = deps.loadAppHelperStatus?.() ?? null;
+	const quotaCache = (await deps.loadQuotaCache?.()) ?? null;
+	const runtimeCurrent = resolveRuntimeCurrentAccount(
+		storage,
+		{
+			runtimeSnapshot,
+			appBindStatus,
+			appHelperStatus,
+		},
+		{ now },
+	);
 	if (runtimeSnapshot) {
 		const runtimeMetrics = runtimeSnapshot.runtimeMetrics;
 		const poolCooldown =
@@ -152,6 +178,11 @@ export async function runStatusCommand(
 			logInfo(`Last request trace: ${runtimeSnapshot.currentRequestId}`);
 		}
 	}
+	if (runtimeCurrent) {
+		logInfo(
+			`Runtime in use: account ${runtimeCurrent.index + 1} (${runtimeCurrent.source})`,
+		);
+	}
 	logInfo("");
 
 	for (let i = 0; i < storage.accounts.length; i += 1) {
@@ -159,10 +190,21 @@ export async function runStatusCommand(
 		if (!account) continue;
 		const label = formatAccountLabel(account, i);
 		const markers: string[] = [];
-		if (i === activeIndex) markers.push("current");
+		markers.push(...resolveAccountCurrentMarkers(i, activeIndex, runtimeCurrent));
 		if (account.enabled === false) markers.push("disabled");
 		const rateLimit = deps.formatRateLimitEntry(account, now, "codex");
 		if (rateLimit) markers.push("rate-limited");
+		const quotaEntry = findQuotaCacheEntryForAccount(
+			quotaCache,
+			account,
+			storage.accounts,
+		);
+		if (quotaEntry?.status === 429 && !markers.includes("rate-limited")) {
+			markers.push("rate-limited");
+		}
+		if (isQuotaCacheEntryExhausted(quotaEntry)) {
+			markers.push("quota-exhausted");
+		}
 		const cooldown = formatCooldown(account, now);
 		if (cooldown) markers.push(`cooldown:${cooldown}`);
 		const markerLabel = markers.length > 0 ? ` [${markers.join(", ")}]` : "";

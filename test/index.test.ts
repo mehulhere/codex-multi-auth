@@ -6,6 +6,10 @@ const { showRuntimeToastMock } = vi.hoisted(() => ({
 	showRuntimeToastMock: vi.fn(),
 }));
 
+const { loadQuotaCacheMock } = vi.hoisted(() => ({
+	loadQuotaCacheMock: vi.fn(async () => ({ byAccountId: {}, byEmail: {} })),
+}));
+
 const {
 	configureRateLimitBackoffMock,
 	getRateLimitBackoffMock,
@@ -199,6 +203,10 @@ vi.mock("../lib/auto-update-checker.js", () => ({
 	checkAndNotify: vi.fn(async () => {}),
 }));
 
+vi.mock("../lib/quota-cache.js", () => ({
+	loadQuotaCache: loadQuotaCacheMock,
+}));
+
 vi.mock("../lib/context-overflow.js", () => ({
 	handleContextOverflow: vi.fn(async () => ({ handled: false })),
 }));
@@ -255,6 +263,8 @@ beforeEach(() => {
 	getRateLimitMaxBackoffMsMock.mockImplementation(() => 60000);
 	getRateLimitShortRetryThresholdConfigMock.mockReset();
 	getRateLimitShortRetryThresholdConfigMock.mockImplementation(() => 5000);
+	loadQuotaCacheMock.mockReset();
+	loadQuotaCacheMock.mockResolvedValue({ byAccountId: {}, byEmail: {} });
 });
 
 vi.mock("../lib/runtime/toast.js", async () => {
@@ -1079,6 +1089,33 @@ describe("OpenAIOAuthPlugin", () => {
 			const result = await plugin.tool["codex-list"].execute();
 			expect(result).toContain("cooldown");
 		});
+
+		it("shows cached quota exhaustion instead of ok", async () => {
+			mockStorage.accounts = [
+				{
+					refreshToken: "r1",
+					email: "user@example.com",
+					accountId: "acc-exhausted",
+				},
+			];
+			loadQuotaCacheMock.mockResolvedValueOnce({
+				byAccountId: {
+					"acc-exhausted": {
+						updatedAt: Date.now(),
+						status: 200,
+						model: "gpt-5-codex",
+						primary: { usedPercent: 100, windowMinutes: 300 },
+						secondary: { usedPercent: 100, windowMinutes: 10080 },
+					},
+				},
+				byEmail: {},
+			});
+
+			const result = await plugin.tool["codex-list"].execute();
+
+			expect(result).toContain("quota-exhausted");
+			expect(result).not.toMatch(/\bok\b/);
+		});
 	});
 
 	describe("codex-switch tool", () => {
@@ -1146,6 +1183,32 @@ describe("OpenAIOAuthPlugin", () => {
 			const result = await plugin.tool["codex-status"].execute();
 			expect(result).toContain("Account Status");
 			expect(result).toContain("Active index by model family");
+		});
+
+		it("shows cached quota exhaustion in status details", async () => {
+			mockStorage.accounts = [
+				{
+					refreshToken: "r1",
+					email: "user@example.com",
+					accountId: "acc-exhausted",
+				},
+			];
+			loadQuotaCacheMock.mockResolvedValueOnce({
+				byAccountId: {
+					"acc-exhausted": {
+						updatedAt: Date.now(),
+						status: 200,
+						model: "gpt-5-codex",
+						primary: { usedPercent: 100, windowMinutes: 300 },
+						secondary: { usedPercent: 100, windowMinutes: 10080 },
+					},
+				},
+				byEmail: {},
+			});
+
+			const result = await plugin.tool["codex-status"].execute();
+
+			expect(result).toContain("quota-exhausted");
 		});
 	});
 

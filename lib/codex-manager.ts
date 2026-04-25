@@ -120,12 +120,20 @@ import {
 	getRateLimitResetTimeForFamily,
 	resolveActiveIndex,
 } from "./runtime/account-status.js";
+import { isQuotaCacheEntryExhausted } from "./quota-readiness.js";
 import {
 	loadQuotaCache,
 	type QuotaCacheData,
 	type QuotaCacheEntry,
 	saveQuotaCache,
 } from "./quota-cache.js";
+import {
+	isDisplayCurrentAccount,
+	readAppRuntimeHelperAccountSignal,
+	resolveAccountCurrentMarkers,
+	resolveRuntimeCurrentAccount,
+	type RuntimeCurrentAccountSelection,
+} from "./runtime/runtime-current-account.js";
 import {
 	type CodexQuotaSnapshot,
 	fetchCodexQuotaSnapshot,
@@ -632,6 +640,9 @@ function formatCompactQuotaSnapshot(snapshot: CodexQuotaSnapshot): string {
 	if (snapshot.status === 429) {
 		parts.push("rate-limited");
 	}
+	if (isQuotaCacheEntryExhausted(snapshot)) {
+		parts.push("quota-exhausted");
+	}
 	if (parts.length > 0) {
 		return parts.join(" | ");
 	}
@@ -653,6 +664,9 @@ function formatAccountQuotaSummary(entry: QuotaCacheEntry): string {
 	);
 	if (entry.status === 429) {
 		parts.push("rate-limited");
+	}
+	if (isQuotaCacheEntryExhausted(entry)) {
+		parts.push("quota-exhausted");
 	}
 	if (parts.length > 0) {
 		return parts.join(" | ");
@@ -989,10 +1003,9 @@ function hasLikelyInvalidRefreshToken(
 
 function mapAccountStatus(
 	account: AccountMetadataV3,
-	index: number,
-	activeIndex: number,
+	isCurrentAccount: boolean,
 	now: number,
-	persistedQuotaStatus?: number,
+	persistedQuotaEntry?: QuotaCacheEntry | null,
 ): ExistingAccountInfo["status"] {
 	if (account.enabled === false) return "disabled";
 	if (
@@ -1001,10 +1014,13 @@ function mapAccountStatus(
 	) {
 		return "cooldown";
 	}
-	if (persistedQuotaStatus === 429) return "rate-limited";
+	if (persistedQuotaEntry && isQuotaCacheEntryExhausted(persistedQuotaEntry)) {
+		return "quota-exhausted";
+	}
+	if (persistedQuotaEntry?.status === 429) return "rate-limited";
 	const rateLimit = formatRateLimitEntry(account, now, "codex");
 	if (rateLimit) return "rate-limited";
-	if (index === activeIndex) return "active";
+	if (isCurrentAccount) return "active";
 	return "ok";
 }
 
@@ -1051,6 +1067,7 @@ function accountStatusSortBucket(
 			return 0;
 		case "unknown":
 			return 1;
+		case "quota-exhausted":
 		case "cooldown":
 		case "rate-limited":
 			return 2;
@@ -1066,7 +1083,7 @@ function accountStatusSortBucket(
 function accountReadinessSortBucket(account: ExistingAccountInfo): number {
 	const statusBucket = accountStatusSortBucket(account.status);
 	if (statusBucket >= 2) return statusBucket;
-	return account.quotaRateLimited ? 2 : statusBucket;
+	return account.quotaRateLimited || account.quotaExhausted ? 2 : statusBucket;
 }
 
 function compareReadyFirstAccounts(
@@ -1140,6 +1157,7 @@ function toExistingAccountInfo(
 	storage: AccountStorageV3,
 	quotaCache: QuotaCacheData | null,
 	displaySettings: DashboardDisplaySettings,
+	runtimeCurrent: RuntimeCurrentAccountSelection | null = null,
 ): ExistingAccountInfo[] {
 	const now = Date.now();
 	const activeIndex = resolveActiveIndex(storage, "codex");
@@ -1153,6 +1171,17 @@ function toExistingAccountInfo(
 			now,
 			emailFallbackState,
 		);
+		const currentMarkers = resolveAccountCurrentMarkers(
+			index,
+			activeIndex,
+			runtimeCurrent,
+		);
+		const isCurrentAccount = isDisplayCurrentAccount(
+			index,
+			activeIndex,
+			runtimeCurrent,
+		);
+		const quotaExhausted = entry ? isQuotaCacheEntryExhausted(entry) : false;
 		return {
 			index,
 			sourceIndex: index,
@@ -1161,7 +1190,7 @@ function toExistingAccountInfo(
 			email: account.email,
 			addedAt: account.addedAt,
 			lastUsed: account.lastUsed,
-			status: mapAccountStatus(account, index, activeIndex, now, entry?.status),
+			status: mapAccountStatus(account, isCurrentAccount, now, entry),
 			quotaSummary:
 				(displaySettings.menuShowQuotaSummary ?? true) && entry
 					? formatAccountQuotaSummary(entry)
@@ -1173,7 +1202,11 @@ function toExistingAccountInfo(
 			),
 			quota7dResetAtMs: entry?.secondary.resetAtMs,
 			quotaRateLimited: entry?.status === 429,
-			isCurrentAccount: index === activeIndex,
+			quotaExhausted,
+			isCurrentAccount,
+			isDefaultAccount: index === activeIndex,
+			isRuntimeCurrentAccount: runtimeCurrent?.index === index,
+			currentMarkers,
 			enabled: account.enabled !== false,
 			showStatusBadge: displaySettings.menuShowStatusBadge ?? true,
 			showCurrentBadge: displaySettings.menuShowCurrentBadge ?? true,
@@ -1201,7 +1234,28 @@ function toExistingAccountInfo(
 		quickSwitchNumber: quickSwitchUsesVisibleRows
 			? displayIndex + 1
 			: (account.sourceIndex ?? displayIndex) + 1,
-	}));
+		}));
+}
+
+async function loadRuntimeCurrentSelectionForStorage(
+	storage: AccountStorageV3,
+	now = Date.now(),
+): Promise<RuntimeCurrentAccountSelection | null> {
+	const [runtimeSnapshot, appBindStatus] = await Promise.all([
+		loadPersistedRuntimeObservabilitySnapshot().catch(() => null),
+		getAppBindStatus()
+			.then((status) => (status.running ? status.router : null))
+			.catch(() => null),
+	]);
+	return resolveRuntimeCurrentAccount(
+		storage,
+		{
+			runtimeSnapshot,
+			appBindStatus,
+			appHelperStatus: readAppRuntimeHelperAccountSignal(),
+		},
+		{ now },
+	);
 }
 
 function activeAccountMatchesCodexCliState(
@@ -2787,9 +2841,17 @@ async function runAuthLogin(args: string[]): Promise<number> {
 				}
 				const flaggedStorage = await loadFlaggedAccounts();
 				await syncCodexCliActiveSelectionIfDrifted(currentStorage);
+				const runtimeCurrent = await loadRuntimeCurrentSelectionForStorage(
+					currentStorage,
+				);
 
 				const menuResult = await promptLoginMode(
-					toExistingAccountInfo(currentStorage, quotaCache, displaySettings),
+					toExistingAccountInfo(
+						currentStorage,
+						quotaCache,
+						displaySettings,
+						runtimeCurrent,
+					),
 					{
 						flaggedCount: flaggedStorage.accounts.length,
 						statusMessage: showFetchStatus
@@ -3398,6 +3460,12 @@ export async function runCodexMultiAuthCli(rawArgs: string[]): Promise<number> {
 			formatRateLimitEntry,
 			loadRuntimeObservabilitySnapshot:
 				loadPersistedRuntimeObservabilitySnapshot,
+			loadAppBindStatus: async () =>
+				getAppBindStatus()
+					.then((status) => (status.running ? status.router : null))
+					.catch(() => null),
+			loadAppHelperStatus: readAppRuntimeHelperAccountSignal,
+			loadQuotaCache,
 		});
 	}
 	if (command === "switch") {
@@ -3451,6 +3519,9 @@ export async function runCodexMultiAuthCli(rawArgs: string[]): Promise<number> {
 			bindCodexApp: bindCodexAppRuntimeRotation,
 			unbindCodexApp: unbindCodexAppRuntimeRotation,
 			getCodexAppBindStatus: getAppBindStatus,
+			loadRuntimeObservabilitySnapshot:
+				loadPersistedRuntimeObservabilitySnapshot,
+			loadQuotaCache,
 		});
 	}
 	if (command === "why-selected") {

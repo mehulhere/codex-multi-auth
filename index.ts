@@ -143,6 +143,11 @@ import {
 	fetchCodexQuotaSnapshot,
 	formatQuotaSnapshotLine,
 } from "./lib/quota-probe.js";
+import { loadQuotaCache, type QuotaCacheEntry } from "./lib/quota-cache.js";
+import {
+	findQuotaCacheEntryForAccount,
+	isQuotaCacheEntryExhausted,
+} from "./lib/quota-readiness.js";
 import {
 	detectErrorType,
 	getRecoveryToastContent,
@@ -239,6 +244,11 @@ import { runBrowserOAuthFlow } from "./lib/runtime/browser-oauth-flow.js";
 import { handleRuntimeEvent } from "./lib/runtime/event-handler.js";
 import { hydrateRuntimeEmails } from "./lib/runtime/hydrate-emails.js";
 import { buildLoginMenuAccounts } from "./lib/runtime/login-menu-accounts.js";
+import {
+	resolveAccountCurrentMarkers,
+	resolveRuntimeCurrentAccount,
+	type AccountCurrentMarker,
+} from "./lib/runtime/runtime-current-account.js";
 import { ensureLiveAccountSyncEntry } from "./lib/runtime/live-sync-entry.js";
 import { applyLoaderRuntimeSetup } from "./lib/runtime/loader-setup.js";
 import { buildManualOAuthFlow } from "./lib/runtime/manual-oauth-flow.js";
@@ -248,7 +258,10 @@ import {
 	ensureRefreshGuardianState,
 	ensureSessionAffinityState,
 } from "./lib/runtime/runtime-services.js";
-import { mutateRuntimeObservabilitySnapshot } from "./lib/runtime/runtime-observability.js";
+import {
+	getRuntimeObservabilitySnapshot,
+	mutateRuntimeObservabilitySnapshot,
+} from "./lib/runtime/runtime-observability.js";
 import { applyAccountStorageScopeFromConfig } from "./lib/runtime/storage-scope.js";
 import { showRuntimeToast } from "./lib/runtime/toast.js";
 import { createRuntimeSessionRecoveryHook } from "./lib/runtime/session-recovery.js";
@@ -302,6 +315,25 @@ import {
 	paintUiText,
 } from "./lib/ui/format.js";
 import { setUiRuntimeOptions } from "./lib/ui/runtime.js";
+
+function currentMarkerLabel(marker: AccountCurrentMarker): string {
+	return marker === "in-use" ? "in use" : marker;
+}
+
+function appendQuotaStatusMarkers(
+	statuses: string[],
+	quotaEntry: QuotaCacheEntry | null,
+): void {
+	if (
+		quotaEntry?.status === 429 &&
+		!statuses.some((status) => status.startsWith("rate-limited"))
+	) {
+		statuses.push("rate-limited");
+	}
+	if (isQuotaCacheEntryExhausted(quotaEntry)) {
+		statuses.push("quota-exhausted");
+	}
+}
 
 /**
  * OpenAI Codex OAuth authentication plugin for Codex CLI host runtime
@@ -2890,11 +2922,17 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 
 								const now = Date.now();
 								const activeIndex = resolveActiveIndex(workingStorage, "codex");
+								const runtimeCurrent = resolveRuntimeCurrentAccount(
+									workingStorage,
+									{ runtimeSnapshot: getRuntimeObservabilitySnapshot() },
+									{ now },
+								);
 								const existingAccounts = buildLoginMenuAccounts(
 									workingStorage.accounts,
 									{
 										now,
 										activeIndex,
+										runtimeCurrent,
 										formatRateLimitEntry: (account, currentNow) =>
 											formatRateLimitEntry(account, currentNow, formatWaitTime),
 									},
@@ -3410,6 +3448,12 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 
 					const now = Date.now();
 					const activeIndex = resolveActiveIndex(storage, "codex");
+					const runtimeCurrent = resolveRuntimeCurrentAccount(
+						storage,
+						{ runtimeSnapshot: getRuntimeObservabilitySnapshot() },
+						{ now },
+					);
+					const quotaCache = await loadQuotaCache().catch(() => null);
 					if (ui.v2Enabled) {
 						const lines: string[] = [
 							...formatUiHeader(ui, "Codex accounts"),
@@ -3422,8 +3466,19 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 						storage.accounts.forEach((account, index) => {
 							const label = formatAccountLabel(account, index);
 							const badges: string[] = [];
-							if (index === activeIndex)
-								badges.push(formatUiBadge(ui, "current", "accent"));
+							for (const marker of resolveAccountCurrentMarkers(
+								index,
+								activeIndex,
+								runtimeCurrent,
+							)) {
+								badges.push(
+									formatUiBadge(
+										ui,
+										currentMarkerLabel(marker),
+										marker === "current" ? "accent" : "muted",
+									),
+								);
+							}
 							if (account.enabled === false)
 								badges.push(formatUiBadge(ui, "disabled", "danger"));
 							const rateLimit = formatRateLimitEntry(
@@ -3433,6 +3488,17 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 							);
 							if (rateLimit)
 								badges.push(formatUiBadge(ui, "rate-limited", "warning"));
+							const quotaEntry = findQuotaCacheEntryForAccount(
+								quotaCache,
+								account,
+								storage.accounts,
+							);
+							if (quotaEntry?.status === 429 && !rateLimit) {
+								badges.push(formatUiBadge(ui, "rate-limited", "warning"));
+							}
+							if (isQuotaCacheEntryExhausted(quotaEntry)) {
+								badges.push(formatUiBadge(ui, "quota-exhausted", "warning"));
+							}
 							if (
 								typeof account.coolingDownUntil === "number" &&
 								account.coolingDownUntil > now
@@ -3471,7 +3537,7 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 						columns: [
 							{ header: "#", width: 3 },
 							{ header: "Label", width: 42 },
-							{ header: "Status", width: 20 },
+							{ header: "Status", width: 32 },
 						],
 					};
 
@@ -3489,8 +3555,20 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 							now,
 							formatWaitTime,
 						);
-						if (index === activeIndex) statuses.push("active");
+						const quotaEntry = findQuotaCacheEntryForAccount(
+							quotaCache,
+							account,
+							storage.accounts,
+						);
+						statuses.push(
+							...resolveAccountCurrentMarkers(
+								index,
+								activeIndex,
+								runtimeCurrent,
+							).map(currentMarkerLabel),
+						);
 						if (rateLimit) statuses.push("rate-limited");
+						appendQuotaStatusMarkers(statuses, quotaEntry);
 						if (
 							typeof account.coolingDownUntil === "number" &&
 							account.coolingDownUntil > now
@@ -3648,6 +3726,12 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 
 					const now = Date.now();
 					const activeIndex = resolveActiveIndex(storage, "codex");
+					const runtimeCurrent = resolveRuntimeCurrentAccount(
+						storage,
+						{ runtimeSnapshot: getRuntimeObservabilitySnapshot() },
+						{ now },
+					);
+					const quotaCache = await loadQuotaCache().catch(() => null);
 					if (ui.v2Enabled) {
 						const lines: string[] = [
 							...formatUiHeader(ui, "Account status"),
@@ -3659,15 +3743,35 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 						storage.accounts.forEach((account, index) => {
 							const label = formatAccountLabel(account, index);
 							const badges: string[] = [];
-							if (index === activeIndex)
-								badges.push(formatUiBadge(ui, "active", "accent"));
+							for (const marker of resolveAccountCurrentMarkers(
+								index,
+								activeIndex,
+								runtimeCurrent,
+							)) {
+								badges.push(
+									formatUiBadge(
+										ui,
+										currentMarkerLabel(marker),
+										marker === "current" ? "accent" : "muted",
+									),
+								);
+							}
 							if (account.enabled === false)
 								badges.push(formatUiBadge(ui, "disabled", "danger"));
 							const rateLimit =
 								formatRateLimitEntry(account, now, formatWaitTime) ?? "none";
 							const cooldown = formatCooldown(account, now) ?? "none";
+							const quotaEntry = findQuotaCacheEntryForAccount(
+								quotaCache,
+								account,
+								storage.accounts,
+							);
 							if (rateLimit !== "none")
 								badges.push(formatUiBadge(ui, "rate-limited", "warning"));
+							if (quotaEntry?.status === 429 && rateLimit === "none")
+								badges.push(formatUiBadge(ui, "rate-limited", "warning"));
+							if (isQuotaCacheEntryExhausted(quotaEntry))
+								badges.push(formatUiBadge(ui, "quota-exhausted", "warning"));
 							if (cooldown !== "none")
 								badges.push(formatUiBadge(ui, "cooldown", "warning"));
 							if (badges.length === 0)
@@ -3730,8 +3834,8 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 						columns: [
 							{ header: "#", width: 3 },
 							{ header: "Label", width: 42 },
-							{ header: "Active", width: 6 },
-							{ header: "Rate Limit", width: 16 },
+							{ header: "Current", width: 10 },
+							{ header: "Rate Limit", width: 30 },
 							{ header: "Cooldown", width: 16 },
 							{ header: "Last Used", width: 16 },
 						],
@@ -3745,9 +3849,30 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 
 					storage.accounts.forEach((account, index) => {
 						const label = formatAccountLabel(account, index);
-						const active = index === activeIndex ? "Yes" : "No";
+						const active =
+							resolveAccountCurrentMarkers(index, activeIndex, runtimeCurrent)
+								.map(currentMarkerLabel)
+								.join(", ") || "No";
 						const rateLimit =
 							formatRateLimitEntry(account, now, formatWaitTime) ?? "None";
+						const quotaEntry = findQuotaCacheEntryForAccount(
+							quotaCache,
+							account,
+							storage.accounts,
+						);
+						const quotaStatuses: string[] = [];
+						if (quotaEntry?.status === 429 && rateLimit === "None") {
+							quotaStatuses.push("rate-limited");
+						}
+						if (isQuotaCacheEntryExhausted(quotaEntry)) {
+							quotaStatuses.push("quota-exhausted");
+						}
+						const rateLimitDisplay =
+							rateLimit !== "None"
+								? [rateLimit, ...quotaStatuses].join(", ")
+								: quotaStatuses.length > 0
+									? quotaStatuses.join(", ")
+									: "None";
 						const cooldown = formatCooldown(account, now) ?? "No";
 						const lastUsed =
 							typeof account.lastUsed === "number" && account.lastUsed > 0
@@ -3760,7 +3885,7 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 									String(index + 1),
 									label,
 									active,
-									rateLimit,
+									rateLimitDisplay,
 									cooldown,
 									lastUsed,
 								],

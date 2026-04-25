@@ -67,4 +67,39 @@ describe("buildLoginMenuAccounts", () => {
 			}),
 		]);
 	});
+
+	it("marks runtime in-use account separately from stored active account", () => {
+		const result = buildLoginMenuAccounts(
+			[
+				{ email: "selected@example.com", enabled: true },
+				{ email: "runtime@example.com", enabled: true },
+			],
+			{
+				now: 1_000,
+				activeIndex: 0,
+				runtimeCurrent: {
+					index: 1,
+					source: "runtime-observability",
+					matchedBy: "index",
+					updatedAt: 1_000,
+				},
+				formatRateLimitEntry: () => null,
+			},
+		);
+
+		expect(result[0]).toMatchObject({
+			email: "selected@example.com",
+			status: "ok",
+			isCurrentAccount: false,
+			isDefaultAccount: true,
+			currentMarkers: ["selected"],
+		});
+		expect(result[1]).toMatchObject({
+			email: "runtime@example.com",
+			status: "active",
+			isCurrentAccount: true,
+			isRuntimeCurrentAccount: true,
+			currentMarkers: ["in-use"],
+		});
+	});
 });

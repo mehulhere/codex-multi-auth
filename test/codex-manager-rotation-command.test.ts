@@ -66,6 +66,53 @@ function createAppBindResult(message: string, status = createAppBindStatus()): A
 	return { message, status };
 }
 
+function createRuntimeSnapshot(now: number, index: number, accountId: string) {
+	return {
+		version: 1,
+		updatedAt: now,
+		currentRequestId: null,
+		responsesRequests: 1,
+		authRefreshRequests: 0,
+		diagnosticProbeRequests: 0,
+		poolExhaustionCooldownUntil: null,
+		serverBurstCooldownUntil: null,
+		lastAccountIndex: index,
+		lastAccountId: accountId,
+		lastAccountLabel: `Account ${index + 1}`,
+		lastAccountUpdatedAt: now,
+		runtimeMetrics: {
+			startedAt: now - 1_000,
+			totalRequests: 1,
+			successfulRequests: 1,
+			failedRequests: 0,
+			responsesRequests: 1,
+			authRefreshRequests: 0,
+			diagnosticProbeRequests: 0,
+			outboundRequestAttemptBudget: null,
+			outboundRequestAttemptsConsumed: 0,
+			requestAttemptBudgetExhaustions: 0,
+			poolExhaustionFastFails: 0,
+			serverBurstFastFails: 0,
+			rateLimitedResponses: 0,
+			serverErrors: 0,
+			networkErrors: 0,
+			userAborts: 0,
+			authRefreshFailures: 0,
+			emptyResponseRetries: 0,
+			accountRotations: 1,
+			sameAccountRetries: 0,
+			streamFailoverAttempts: 0,
+			streamFailoverCandidatesConsidered: 0,
+			lastStreamFailoverCandidateCount: 0,
+			streamFailoverRecoveries: 0,
+			streamFailoverCrossAccountRecoveries: 0,
+			cumulativeLatencyMs: 10,
+			lastRequestAt: now,
+			lastError: null,
+		},
+	};
+}
+
 async function createTempRoot(prefix: string): Promise<string> {
 	const root = await mkdtemp(join(tmpdir(), prefix));
 	tempRoots.push(root);
@@ -223,6 +270,65 @@ describe("codex auth rotation command", () => {
 		expect(setStoragePathMock).toHaveBeenNthCalledWith(
 			2,
 			"/mock/openai-codex-accounts.json",
+		);
+	});
+
+	it("prints runtime in-use and quota-exhausted markers in status rows", async () => {
+		const now = Date.now();
+		const storage: AccountStorageV3 = {
+			version: 3,
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0 },
+			accounts: [
+				{
+					email: "selected@example.com",
+					accountId: "acc_selected",
+					refreshToken: "refresh-selected",
+					addedAt: now - 2_000,
+					lastUsed: now - 2_000,
+				},
+				{
+					email: "runtime@example.com",
+					accountId: "acc_runtime",
+					refreshToken: "refresh-runtime",
+					addedAt: now - 1_000,
+					lastUsed: now - 1_000,
+				},
+			],
+		};
+		const { deps, infos } = createDeps({ storage, now });
+		deps.loadRuntimeObservabilitySnapshot = vi.fn(async () =>
+			createRuntimeSnapshot(now, 1, "acc_runtime"),
+		);
+		deps.loadQuotaCache = vi.fn(async () => ({
+			byAccountId: {
+				acc_runtime: {
+					updatedAt: now,
+					status: 200,
+					model: "gpt-5-codex",
+					primary: {
+						usedPercent: 100,
+						windowMinutes: 300,
+						resetAtMs: now + 1_000,
+					},
+					secondary: {
+						usedPercent: 100,
+						windowMinutes: 10080,
+						resetAtMs: now + 2_000,
+					},
+				},
+			},
+			byEmail: {},
+		}));
+
+		await expect(runRotationCommand(["status"], deps)).resolves.toBe(0);
+
+		const output = infos.join("\n");
+		expect(output).toContain(
+			"Account 1 (selected@example.com, id:lected) [selected]",
+		);
+		expect(output).toContain(
+			"Account 2 (runtime@example.com, id:untime) [in-use, quota-exhausted]",
 		);
 	});
 
