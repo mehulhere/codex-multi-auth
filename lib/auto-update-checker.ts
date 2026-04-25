@@ -105,7 +105,7 @@ function sleepSync(ms: number): void {
 
 function getCurrentVersion(): string {
   try {
-    const packageJsonPath = join(import.meta.dirname ?? __dirname, "..", "package.json");
+    const packageJsonPath = join(getPackageRoot(), "package.json");
     const packageJson = JSON.parse(readFileSync(packageJsonPath, "utf8")) as { version: string };
     return packageJson.version;
   } catch (error) {
@@ -297,12 +297,37 @@ export function isAutoUpdateEnabled(env: NodeJS.ProcessEnv = process.env): boole
 	return !isCiOrTestEnvironment(env);
 }
 
-function getPackageRoot(): string {
+function getModuleDir(): string {
 	const moduleDir =
 		typeof import.meta.dirname === "string"
 			? import.meta.dirname
 			: dirname(fileURLToPath(import.meta.url));
+	return moduleDir;
+}
+
+export function resolvePackageRootFromModuleDir(moduleDir: string): string {
+	let current = moduleDir;
+	for (let depth = 0; depth < 8; depth++) {
+		const packageJsonPath = join(current, "package.json");
+		try {
+			if (existsSync(packageJsonPath)) {
+				const packageJson = JSON.parse(readFileSync(packageJsonPath, "utf8")) as {
+					name?: string;
+				};
+				if (packageJson.name === PACKAGE_NAME) return current;
+			}
+		} catch {
+			// Keep walking; malformed or unreadable package metadata should not break startup.
+		}
+		const parent = dirname(current);
+		if (parent === current) break;
+		current = parent;
+	}
 	return join(moduleDir, "..");
+}
+
+function getPackageRoot(): string {
+	return resolvePackageRootFromModuleDir(getModuleDir());
 }
 
 export function isUpdateablePackageInstall(
@@ -316,37 +341,55 @@ function resolveNpmCommand(platform: NodeJS.Platform): string {
 	return platform === "win32" ? "npm.cmd" : "npm";
 }
 
+function quoteCmdArg(value: string): string {
+	return `"${value.replace(/"/g, '""')}"`;
+}
+
+function resolveUpdateSpawn(options: {
+	command: string;
+	platform: NodeJS.Platform;
+}): { command: string; args: string[] } {
+	const args = ["update", "-g", PACKAGE_NAME];
+	if (options.platform !== "win32") {
+		return { command: options.command, args };
+	}
+	return {
+		command: process.env.ComSpec || "cmd.exe",
+		args: [
+			"/d",
+			"/s",
+			"/c",
+			[options.command, ...args].map(quoteCmdArg).join(" "),
+		],
+	};
+}
+
 async function runUpdateCommand(options: {
 	command: string;
 	env: NodeJS.ProcessEnv;
 	platform: NodeJS.Platform;
 	timeoutMs: number;
 }): Promise<{ ok: boolean; exitCode: number | null; error: string | null }> {
-	const args = ["update", "-g", PACKAGE_NAME];
 	return new Promise((resolve) => {
 		let settled = false;
-		const child = spawn(options.command, args, {
-			env: {
-				...process.env,
-				...options.env,
-				[AUTO_UPDATE_ENV_NAME]: "0",
-			},
-			stdio: "ignore",
-			windowsHide: options.platform === "win32",
+		let child: ReturnType<typeof spawn> | null = null;
+		const updateSpawn = resolveUpdateSpawn({
+			command: options.command,
+			platform: options.platform,
 		});
-		const finish = (result: {
+		function finish(result: {
 			ok: boolean;
 			exitCode: number | null;
 			error: string | null;
-		}) => {
+		}) {
 			if (settled) return;
 			settled = true;
 			clearTimeout(timeout);
 			resolve(result);
-		};
+		}
 		const timeout = setTimeout(() => {
 			try {
-				child.kill();
+				child?.kill();
 			} catch {
 				// Best effort timeout cleanup.
 			}
@@ -356,6 +399,24 @@ async function runUpdateCommand(options: {
 				error: `Auto-update timed out after ${options.timeoutMs}ms`,
 			});
 		}, options.timeoutMs);
+		try {
+			child = spawn(updateSpawn.command, updateSpawn.args, {
+				env: {
+					...process.env,
+					...options.env,
+					[AUTO_UPDATE_ENV_NAME]: "0",
+				},
+				stdio: "ignore",
+				windowsHide: options.platform === "win32",
+			});
+		} catch (error) {
+			finish({
+				ok: false,
+				exitCode: null,
+				error: error instanceof Error ? error.message : String(error),
+			});
+			return;
+		}
 		child.once("error", (error) => {
 			finish({
 				ok: false,

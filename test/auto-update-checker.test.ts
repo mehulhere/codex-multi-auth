@@ -22,13 +22,14 @@ describe("auto-update-checker", () => {
 	let autoUpdateIfAvailable: typeof import("../lib/auto-update-checker.js").autoUpdateIfAvailable;
 	let isAutoUpdateEnabled: typeof import("../lib/auto-update-checker.js").isAutoUpdateEnabled;
 	let isUpdateablePackageInstall: typeof import("../lib/auto-update-checker.js").isUpdateablePackageInstall;
+	let resolvePackageRootFromModuleDir: typeof import("../lib/auto-update-checker.js").resolvePackageRootFromModuleDir;
 	let logger: {
 		debug: ReturnType<typeof vi.fn>;
 		info: ReturnType<typeof vi.fn>;
 		warn: ReturnType<typeof vi.fn>;
 	};
 
-	const mockPackageJson = { version: "4.12.0" };
+	const mockPackageJson = { name: "codex-multi-auth", version: "4.12.0" };
 
 	beforeEach(async () => {
 		vi.resetModules();
@@ -64,6 +65,7 @@ describe("auto-update-checker", () => {
 		autoUpdateIfAvailable = module.autoUpdateIfAvailable;
 		isAutoUpdateEnabled = module.isAutoUpdateEnabled;
 		isUpdateablePackageInstall = module.isUpdateablePackageInstall;
+		resolvePackageRootFromModuleDir = module.resolvePackageRootFromModuleDir;
 	});
 
 	afterEach(() => {
@@ -645,6 +647,20 @@ describe("auto-update-checker", () => {
 			expect(isUpdateablePackageInstall("C:/work/codex-multi-auth")).toBe(false);
 		});
 
+		it("resolves the package root above built dist modules", () => {
+			vi.mocked(fs.existsSync).mockImplementation((path: unknown) =>
+				String(path)
+					.replace(/\\/g, "/")
+					.endsWith("/node_modules/codex-multi-auth/package.json"),
+			);
+
+			expect(
+				resolvePackageRootFromModuleDir(
+					"C:/prefix/node_modules/codex-multi-auth/dist/lib",
+				).replace(/\\/g, "/"),
+			).toBe("C:/prefix/node_modules/codex-multi-auth");
+		});
+
 		it("skips without network work when disabled", async () => {
 			const result = await autoUpdateIfAvailable({
 				env: { CODEX_MULTI_AUTH_AUTO_UPDATE: "0" },
@@ -694,6 +710,58 @@ describe("auto-update-checker", () => {
 					stdio: "ignore",
 				}),
 			);
+		});
+
+		it("runs Windows npm updates through cmd.exe", async () => {
+			vi.mocked(globalThis.fetch).mockResolvedValue({
+				ok: true,
+				json: async () => ({ version: "5.0.0" }),
+			} as Response);
+			mockUpdateProcess(0);
+
+			const result = await autoUpdateIfAvailable({
+				env: { CODEX_MULTI_AUTH_AUTO_UPDATE: "1" },
+				forceCheck: true,
+				forceInstall: true,
+				npmCommand: "npm.cmd",
+				platform: "win32",
+			});
+
+			expect(result.reason).toBe("updated");
+			expect(childProcess.spawn).toHaveBeenCalledWith(
+				expect.stringMatching(/(?:cmd|cmd\.exe)$/i),
+				[
+					"/d",
+					"/s",
+					"/c",
+					"\"npm.cmd\" \"update\" \"-g\" \"codex-multi-auth\"",
+				],
+				expect.objectContaining({
+					stdio: "ignore",
+					windowsHide: true,
+				}),
+			);
+		});
+
+		it("reports synchronous update spawn failures without throwing", async () => {
+			vi.mocked(globalThis.fetch).mockResolvedValue({
+				ok: true,
+				json: async () => ({ version: "5.0.0" }),
+			} as Response);
+			vi.mocked(childProcess.spawn).mockImplementation(() => {
+				throw new Error("spawn EINVAL");
+			});
+
+			const result = await autoUpdateIfAvailable({
+				env: { CODEX_MULTI_AUTH_AUTO_UPDATE: "1" },
+				forceCheck: true,
+				forceInstall: true,
+				npmCommand: "npm",
+				platform: "linux",
+			});
+
+			expect(result.reason).toBe("update-failed");
+			expect(result.error).toBe("spawn EINVAL");
 		});
 
 		it("reports npm update failures without throwing", async () => {
