@@ -6,6 +6,18 @@ const { showRuntimeToastMock } = vi.hoisted(() => ({
 	showRuntimeToastMock: vi.fn(),
 }));
 
+const { loadQuotaCacheMock } = vi.hoisted(() => ({
+	loadQuotaCacheMock: vi.fn(async () => ({ byAccountId: {}, byEmail: {} })),
+}));
+
+const {
+	getAppBindStatusMock,
+	readAppRuntimeHelperAccountSignalMock,
+} = vi.hoisted(() => ({
+	getAppBindStatusMock: vi.fn(async () => ({ running: false, router: null })),
+	readAppRuntimeHelperAccountSignalMock: vi.fn(() => null),
+}));
+
 const {
 	configureRateLimitBackoffMock,
 	getRateLimitBackoffMock,
@@ -199,6 +211,24 @@ vi.mock("../lib/auto-update-checker.js", () => ({
 	checkAndNotify: vi.fn(async () => {}),
 }));
 
+vi.mock("../lib/runtime/app-bind.js", () => ({
+	getAppBindStatus: getAppBindStatusMock,
+}));
+
+vi.mock("../lib/runtime/runtime-current-account.js", async () => {
+	const actual = await vi.importActual<
+		typeof import("../lib/runtime/runtime-current-account.js")
+	>("../lib/runtime/runtime-current-account.js");
+	return {
+		...actual,
+		readAppRuntimeHelperAccountSignal: readAppRuntimeHelperAccountSignalMock,
+	};
+});
+
+vi.mock("../lib/quota-cache.js", () => ({
+	loadQuotaCache: loadQuotaCacheMock,
+}));
+
 vi.mock("../lib/context-overflow.js", () => ({
 	handleContextOverflow: vi.fn(async () => ({ handled: false })),
 }));
@@ -255,6 +285,16 @@ beforeEach(() => {
 	getRateLimitMaxBackoffMsMock.mockImplementation(() => 60000);
 	getRateLimitShortRetryThresholdConfigMock.mockReset();
 	getRateLimitShortRetryThresholdConfigMock.mockImplementation(() => 5000);
+	loadQuotaCacheMock.mockReset();
+	loadQuotaCacheMock.mockResolvedValue({ byAccountId: {}, byEmail: {} });
+	getAppBindStatusMock.mockReset();
+	getAppBindStatusMock.mockResolvedValue({ running: false, router: null });
+	readAppRuntimeHelperAccountSignalMock.mockReset();
+	readAppRuntimeHelperAccountSignalMock.mockReturnValue(null);
+});
+
+afterEach(() => {
+	vi.useRealTimers();
 });
 
 vi.mock("../lib/runtime/toast.js", async () => {
@@ -1056,6 +1096,46 @@ describe("OpenAIOAuthPlugin", () => {
 			expect(result).toContain("Account 2");
 		});
 
+		it("uses app-bind telemetry for runtime in-use badges", async () => {
+			const now = 1_700_000_000_000;
+			vi.useFakeTimers();
+			vi.setSystemTime(now);
+			mockStorage.accounts = [
+				{
+					refreshToken: "r1",
+					email: "selected@example.com",
+					accountId: "acc-selected",
+				},
+				{
+					refreshToken: "r2",
+					email: "runtime@example.com",
+					accountId: "acc-runtime",
+				},
+			];
+			mockStorage.activeIndexByFamily = { codex: 0 };
+			getAppBindStatusMock.mockResolvedValueOnce({
+				running: true,
+				router: {
+					state: "running",
+					pid: process.pid,
+					baseUrl: "http://127.0.0.1:1234",
+					totalRequests: 1,
+					lastAccountIndex: 1,
+					lastAccountLabel: "Account 2",
+					lastAccountEmail: "runtime@example.com",
+					lastAccountId: "acc-runtime",
+					updatedAt: now,
+					lastError: null,
+				},
+			});
+
+			const result = await plugin.tool["codex-list"].execute();
+
+			expect(result).toContain("selected");
+			expect(result).toContain("in use");
+			expect(result).not.toContain("runtime@example.com                            ok");
+		});
+
 		it("shows rate-limited status", async () => {
 			mockStorage.accounts = [
 				{
@@ -1078,6 +1158,36 @@ describe("OpenAIOAuthPlugin", () => {
 			];
 			const result = await plugin.tool["codex-list"].execute();
 			expect(result).toContain("cooldown");
+		});
+
+		it("shows cached quota exhaustion instead of ok", async () => {
+			const now = Date.now();
+			mockStorage.accounts = [
+				{
+					refreshToken: "r1",
+					email: "user@example.com",
+					accountId: "acc-exhausted",
+					rateLimitResetTimes: { codex: now + 60_000 },
+				},
+			];
+			loadQuotaCacheMock.mockResolvedValueOnce({
+				byAccountId: {
+					"acc-exhausted": {
+						updatedAt: now,
+						status: 200,
+						model: "gpt-5-codex",
+						primary: { usedPercent: 100, windowMinutes: 300 },
+						secondary: { usedPercent: 100, windowMinutes: 10080 },
+					},
+				},
+				byEmail: {},
+			});
+
+			const result = await plugin.tool["codex-list"].execute();
+
+			expect(result).toContain("quota-exhausted");
+			expect(result).toContain("rate-limited");
+			expect(result).not.toMatch(/\bok\b/);
 		});
 	});
 
@@ -1146,6 +1256,103 @@ describe("OpenAIOAuthPlugin", () => {
 			const result = await plugin.tool["codex-status"].execute();
 			expect(result).toContain("Account Status");
 			expect(result).toContain("Active index by model family");
+		});
+
+		it("shows cached quota exhaustion in status details", async () => {
+			const now = Date.now();
+			mockStorage.accounts = [
+				{
+					refreshToken: "r1",
+					email: "user@example.com",
+					accountId: "acc-exhausted",
+					rateLimitResetTimes: { codex: now + 60_000 },
+				},
+			];
+			loadQuotaCacheMock.mockResolvedValueOnce({
+				byAccountId: {
+					"acc-exhausted": {
+						updatedAt: now,
+						status: 200,
+						model: "gpt-5-codex",
+						primary: { usedPercent: 100, windowMinutes: 300 },
+						secondary: { usedPercent: 100, windowMinutes: 10080 },
+					},
+				},
+				byEmail: {},
+			});
+
+			const result = await plugin.tool["codex-status"].execute();
+
+			expect(result).toContain("quota-exhausted");
+			expect(result).toContain("60s, quota-exhausted");
+			expect(result).not.toContain("60s, rate-limited");
+		});
+
+		it("does not duplicate rate-limited label when a wait time is already shown", async () => {
+			const now = 1_700_000_000_000;
+			vi.useFakeTimers();
+			vi.setSystemTime(now);
+			mockStorage.accounts = [
+				{
+					refreshToken: "r1",
+					email: "user@example.com",
+					accountId: "acc-rate-limited",
+					rateLimitResetTimes: { codex: now + 60_000 },
+				},
+			];
+			loadQuotaCacheMock.mockResolvedValueOnce({
+				byAccountId: {
+					"acc-rate-limited": {
+						updatedAt: now,
+						status: 429,
+						model: "gpt-5-codex",
+						primary: { usedPercent: 20, windowMinutes: 300 },
+						secondary: { usedPercent: 30, windowMinutes: 10080 },
+					},
+				},
+				byEmail: {},
+			});
+
+			const result = await plugin.tool["codex-status"].execute();
+
+			expect(result).toContain("60s");
+			expect(result).not.toContain("60s, rate-limited");
+		});
+
+		it("falls back to app-helper telemetry when app-bind is transiently running without router status", async () => {
+			const now = 1_700_000_000_000;
+			vi.useFakeTimers();
+			vi.setSystemTime(now);
+			mockStorage.accounts = [
+				{
+					refreshToken: "r1",
+					email: "selected@example.com",
+					accountId: "acc-selected",
+				},
+				{
+					refreshToken: "r2",
+					email: "runtime@example.com",
+					accountId: "acc-runtime",
+				},
+			];
+			mockStorage.activeIndexByFamily = { codex: 0 };
+			getAppBindStatusMock.mockResolvedValueOnce({
+				running: true,
+				router: null,
+			});
+			readAppRuntimeHelperAccountSignalMock.mockReturnValueOnce({
+				source: "app-helper",
+				lastAccountIndex: 1,
+				lastAccountEmail: "runtime@example.com",
+				lastAccountId: "acc-runtime",
+				updatedAt: now,
+			});
+
+			const result = await plugin.tool["codex-status"].execute();
+
+			expect(result).toContain("selected");
+			expect(result).toContain("in use");
+			expect(result).not.toContain("runtime@example.com                            No");
 		});
 	});
 

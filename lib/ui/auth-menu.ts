@@ -6,10 +6,12 @@ import { getUiRuntimeOptions } from "./runtime.js";
 import { select, type MenuItem } from "./select.js";
 import { paintUiText, formatUiBadge, quotaToneFromLeftPercent } from "./format.js";
 import { UI_COPY, formatCheckFlaggedLabel } from "./copy.js";
+import type { AccountCurrentMarker } from "../runtime/runtime-current-account.js";
 
 export type AccountStatus =
 	| "active"
 	| "ok"
+	| "quota-exhausted"
 	| "rate-limited"
 	| "cooldown"
 	| "disabled"
@@ -33,7 +35,11 @@ export interface AccountInfo {
 	quota7dLeftPercent?: number;
 	quota7dResetAtMs?: number;
 	quotaRateLimited?: boolean;
+	quotaExhausted?: boolean;
 	isCurrentAccount?: boolean;
+	isDefaultAccount?: boolean;
+	isRuntimeCurrentAccount?: boolean;
+	currentMarkers?: AccountCurrentMarker[];
 	enabled?: boolean;
 	showStatusBadge?: boolean;
 	showCurrentBadge?: boolean;
@@ -125,6 +131,8 @@ function statusBadge(status: AccountStatus | undefined): string {
 				return withTone("active", "success");
 			case "ok":
 				return withTone("ok", "success");
+			case "quota-exhausted":
+				return withTone("quota-exhausted", "warning");
 			case "rate-limited":
 				return withTone("rate-limited", "warning");
 			case "cooldown":
@@ -145,6 +153,8 @@ function statusBadge(status: AccountStatus | undefined): string {
 			return withTone("active", "success");
 		case "ok":
 			return withTone("ok", "success");
+		case "quota-exhausted":
+			return withTone("quota-exhausted", "warning");
 		case "rate-limited":
 			return withTone("rate-limited", "warning");
 		case "cooldown":
@@ -188,6 +198,7 @@ function accountRowColor(account: AccountInfo): MenuItem<AuthMenuAction>["color"
 		case "active":
 		case "ok":
 			return "green";
+		case "quota-exhausted":
 		case "rate-limited":
 		case "cooldown":
 			return "yellow";
@@ -205,6 +216,7 @@ function statusTone(status: AccountStatus | undefined): "success" | "warning" | 
 		case "active":
 		case "ok":
 			return "success";
+		case "quota-exhausted":
 		case "rate-limited":
 		case "cooldown":
 			return "warning";
@@ -219,6 +231,11 @@ function statusTone(status: AccountStatus | undefined): "success" | "warning" | 
 
 function statusText(status: AccountStatus | undefined): string {
 	return status ?? "unknown";
+}
+
+function currentMarkerLabel(marker: AccountCurrentMarker): string {
+	if (marker === "in-use") return "in use";
+	return marker;
 }
 
 function normalizeQuotaPercent(value: number | undefined): number | null {
@@ -339,6 +356,9 @@ function formatQuotaSummary(account: AccountInfo, ui: ReturnType<typeof getUiRun
 	}
 	if (account.quotaRateLimited || summary.toLowerCase().includes("rate-limited")) {
 		segments.push(ui.v2Enabled ? paintUiText(ui, "rate-limited", "danger") : `${ANSI.red}rate-limited${ANSI.reset}`);
+	}
+	if (account.quotaExhausted || summary.toLowerCase().includes("quota-exhausted")) {
+		segments.push(ui.v2Enabled ? paintUiText(ui, "quota-exhausted", "danger") : `${ANSI.red}quota-exhausted${ANSI.reset}`);
 	}
 
 	if (segments.length === 0) {
@@ -486,8 +506,16 @@ export async function showAuthMenu(
 		} else {
 			items.push(
 				...visibleAccounts.map((account) => {
-					const currentBadge = account.isCurrentAccount && account.showCurrentBadge !== false
-						? (ui.v2Enabled ? ` ${formatUiBadge(ui, "current", "accent")}` : ` ${ANSI.cyan}[current]${ANSI.reset}`)
+					const currentMarkers = account.currentMarkers ??
+						(account.isCurrentAccount ? ["current" as const] : []);
+					const currentBadge = account.showCurrentBadge !== false
+						? currentMarkers
+								.map((marker) =>
+									ui.v2Enabled
+										? ` ${formatUiBadge(ui, currentMarkerLabel(marker), marker === "current" ? "accent" : "muted")}`
+										: ` ${ANSI.cyan}[${currentMarkerLabel(marker)}]${ANSI.reset}`,
+								)
+								.join("")
 						: "";
 					const badge = account.showStatusBadge === false ? "" : statusBadge(account.status);
 					const statusSuffix = badge ? ` ${badge}` : "";

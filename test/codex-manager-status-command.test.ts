@@ -227,6 +227,126 @@ describe("runStatusCommand", () => {
 			"Last runtime account: Account 2 (acct_2)",
 		);
 	});
+
+	it("marks runtime in-use separately from stored selected in account rows", async () => {
+		const deps = createStatusDeps({
+			loadAccounts: vi.fn(async () => ({
+				version: 3,
+				activeIndex: 0,
+				activeIndexByFamily: { codex: 0 },
+				accounts: [
+					{
+						email: "selected@example.com",
+						accountId: "acc_selected",
+						refreshToken: "refresh-selected",
+						addedAt: 1,
+						lastUsed: 1,
+					},
+					{
+						email: "runtime@example.com",
+						accountId: "acc_runtime",
+						refreshToken: "refresh-runtime",
+						addedAt: 2,
+						lastUsed: 2,
+					},
+				],
+			})),
+			loadRuntimeObservabilitySnapshot: vi.fn(async () =>
+				createRuntimeSnapshot({
+					lastAccountIndex: 1,
+					lastAccountId: "acc_runtime",
+					lastAccountLabel: "Account 2",
+					lastAccountUpdatedAt: 1_999,
+				}),
+			),
+		});
+
+		await runStatusCommand(deps);
+
+		expect(deps.logInfo).toHaveBeenCalledWith(
+			expect.stringContaining(
+				"1. Account 1 (selected@example.com, id:lected) [selected]",
+			),
+		);
+		expect(deps.logInfo).toHaveBeenCalledWith(
+			expect.stringContaining(
+				"2. Account 2 (runtime@example.com, id:untime) [in-use]",
+			),
+		);
+	});
+
+	it("uses live app-helper account signal when persisted runtime snapshot is absent", async () => {
+		const deps = createStatusDeps({
+			loadAccounts: vi.fn(async () => ({
+				version: 3,
+				activeIndex: 0,
+				activeIndexByFamily: { codex: 0 },
+				accounts: [
+					{
+						email: "selected@example.com",
+						accountId: "acc_selected",
+						refreshToken: "refresh-selected",
+					},
+					{
+						email: "helper@example.com",
+						accountId: "acc_helper",
+						refreshToken: "refresh-helper",
+					},
+				],
+			})),
+			loadRuntimeObservabilitySnapshot: vi.fn(async () => null),
+			loadAppHelperStatus: vi.fn(() => ({
+				source: "app-helper",
+				lastAccountIndex: 1,
+				lastAccountId: "acc_helper",
+				lastAccountLabel: "Account 2",
+				lastAccountUpdatedAt: 1_999,
+				updatedAt: 1_999,
+			})),
+		});
+
+		await runStatusCommand(deps);
+
+		expect(deps.logInfo).toHaveBeenCalledWith(
+			"Runtime in use: account 2 (app-helper)",
+		);
+		expect(deps.logInfo).toHaveBeenCalledWith(
+			expect.stringContaining(
+				"2. Account 2 (helper@example.com, id:helper) [in-use]",
+			),
+		);
+	});
+
+	it("marks cached zero quota as exhausted instead of ok", async () => {
+		const deps = createStatusDeps({
+			loadQuotaCache: vi.fn(async () => ({
+				byAccountId: {},
+				byEmail: {
+					"one@example.com": {
+						updatedAt: 2_000,
+						status: 200,
+						model: "gpt-5-codex",
+						primary: {
+							usedPercent: 100,
+							windowMinutes: 300,
+							resetAtMs: 3_000,
+						},
+						secondary: {
+							usedPercent: 100,
+							windowMinutes: 10080,
+							resetAtMs: 4_000,
+						},
+					},
+				},
+			})),
+		});
+
+		await runStatusCommand(deps);
+
+		expect(deps.logInfo).toHaveBeenCalledWith(
+			expect.stringContaining("1. Account 1 (one@example.com) [current, quota-exhausted]"),
+		);
+	});
 });
 
 describe("runFeaturesCommand", () => {

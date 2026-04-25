@@ -145,6 +145,25 @@ export function shouldAutoBindCodexAppOnInstall(options) {
 	);
 }
 
+/**
+ * @param {{
+ *   env?: NodeJS.ProcessEnv,
+ *   rotationEnabled: boolean,
+ * }} options
+ */
+export function shouldAutoInstallCodexAppLauncherOnInstall(options) {
+	const env = options.env ?? process.env;
+	if (isCiEnvironment(env)) return false;
+
+	const installOverride = readOptionalBoolean(
+		env.CODEX_MULTI_AUTH_APP_LAUNCHER_INSTALL,
+	);
+	if (installOverride !== null) return installOverride;
+
+	if (!isGlobalNpmInstall(env)) return false;
+	return options.rotationEnabled;
+}
+
 async function loadConfigModule() {
 	try {
 		return await import("../dist/lib/config.js");
@@ -177,9 +196,13 @@ async function loadAppBindModule() {
 	}
 }
 
-function resolveRotationEnabled(configModule) {
+/**
+ * @param {unknown} configModule
+ * @param {NodeJS.ProcessEnv} [env]
+ */
+export function resolveRotationEnabled(configModule, env = process.env) {
 	const envOverride = readOptionalBoolean(
-		process.env.CODEX_MULTI_AUTH_RUNTIME_ROTATION_PROXY,
+		env.CODEX_MULTI_AUTH_RUNTIME_ROTATION_PROXY,
 	);
 	if (envOverride !== null) return envOverride;
 	if (
@@ -187,7 +210,7 @@ function resolveRotationEnabled(configModule) {
 		typeof configModule.loadPluginConfig !== "function" ||
 		typeof configModule.getCodexRuntimeRotationProxy !== "function"
 	) {
-		return false;
+		return true;
 	}
 	return (
 		configModule.getCodexRuntimeRotationProxy(configModule.loadPluginConfig()) ===
@@ -195,28 +218,107 @@ function resolveRotationEnabled(configModule) {
 	);
 }
 
-async function main() {
+function defaultPostinstallLog(message) {
+	console.error(`codex-multi-auth: ${message}`);
+}
+
+/**
+ * @param {boolean} rotationEnabled
+ */
+async function maybeBindCodexAppOnInstall(rotationEnabled) {
 	const appBindModule = await loadAppBindModule();
 	if (!appBindModule || typeof appBindModule.bindCodexAppRuntimeRotation !== "function") {
-		return 0;
+		return;
 	}
 
-	const configModule = await loadConfigModule();
-	const rotationEnabled = resolveRotationEnabled(configModule);
 	const currentStatus =
 		typeof appBindModule.getAppBindStatus === "function"
 			? await appBindModule.getAppBindStatus().catch(() => null)
 			: null;
 	const appDetected = hasCodexDesktopApp() || currentStatus?.bound === true;
 	if (!shouldAutoBindCodexAppOnInstall({ rotationEnabled, appDetected })) {
-		return 0;
+		return;
 	}
 
 	const result = await appBindModule.bindCodexAppRuntimeRotation();
 	if (result?.message) {
 		console.error(`codex-multi-auth: ${result.message}`);
 	}
+}
+
+/**
+ * @param {boolean} rotationEnabled
+ * @param {(message: string) => void} [log]
+ */
+export async function maybeInstallCodexAppLauncherOnInstall(
+	rotationEnabled,
+	log = defaultPostinstallLog,
+) {
+	if (!shouldAutoInstallCodexAppLauncherOnInstall({ rotationEnabled })) {
+		return;
+	}
+
+	try {
+		const launcherModule = await import("./codex-app-launcher.js");
+		if (typeof launcherModule.installCodexAppLauncher !== "function") {
+			return;
+		}
+		await launcherModule.installCodexAppLauncher({
+			log,
+		});
+	} catch (error) {
+		log(
+			`app launcher postinstall skipped: ${error instanceof Error ? error.message : String(error)}`,
+		);
+	}
+}
+
+/**
+ * @param {{
+ *   loadConfigModule?: () => Promise<unknown>,
+ *   bindCodexApp?: (rotationEnabled: boolean) => Promise<void>,
+ *   installLauncher?: (rotationEnabled: boolean) => Promise<void>,
+ *   log?: (message: string) => void,
+ *   env?: NodeJS.ProcessEnv,
+ * }} [deps]
+ */
+export async function runPostinstallSelfHeal(deps = {}) {
+	const loadConfig = deps.loadConfigModule ?? loadConfigModule;
+	const bindCodexApp = deps.bindCodexApp ?? maybeBindCodexAppOnInstall;
+	const log = deps.log ?? defaultPostinstallLog;
+	const installLauncher =
+		deps.installLauncher ??
+		((rotationEnabled) =>
+			maybeInstallCodexAppLauncherOnInstall(rotationEnabled, log));
+	const configModule = await loadConfig();
+	const rotationEnabled = resolveRotationEnabled(configModule, deps.env);
+
+	try {
+		await bindCodexApp(rotationEnabled);
+	} catch (error) {
+		log(
+			`app bind postinstall skipped: ${error instanceof Error ? error.message : String(error)}`,
+		);
+	}
+
+	try {
+		await installLauncher(rotationEnabled);
+	} catch (error) {
+		log(
+			`app launcher postinstall skipped: ${error instanceof Error ? error.message : String(error)}`,
+		);
+	}
 	return 0;
+}
+
+async function main() {
+	return runPostinstallSelfHeal();
+}
+
+function normalizePostinstallExitCode(exitCode) {
+	return Number.isInteger(exitCode) && exitCode >= 0 && exitCode <= 255
+		? exitCode
+		: 0;
 }
 
 const isDirectRun = (() => {
@@ -228,10 +330,14 @@ const isDirectRun = (() => {
 })();
 
 if (isDirectRun) {
-	main().catch((error) => {
-		console.error(
-			`codex-multi-auth: app bind postinstall skipped: ${error instanceof Error ? error.message : String(error)}`,
-		);
-		process.exitCode = 0;
-	});
+	main()
+		.then((exitCode) => {
+			process.exitCode = normalizePostinstallExitCode(exitCode);
+		})
+		.catch((error) => {
+			defaultPostinstallLog(
+				`postinstall self-heal skipped: ${error instanceof Error ? error.message : String(error)}`,
+			);
+			process.exitCode = 0;
+		});
 }

@@ -8,6 +8,7 @@ import {
 	type AccountStatus,
 } from "./ui/auth-menu.js";
 import { UI_COPY } from "./ui/copy.js";
+import type { AccountCurrentMarker } from "./runtime/runtime-current-account.js";
 
 /**
  * Detect if running in host Desktop/TUI mode where readline prompts don't work.
@@ -68,7 +69,11 @@ export interface ExistingAccountInfo {
 	quota7dLeftPercent?: number;
 	quota7dResetAtMs?: number;
 	quotaRateLimited?: boolean;
+	quotaExhausted?: boolean;
 	isCurrentAccount?: boolean;
+	isDefaultAccount?: boolean;
+	isRuntimeCurrentAccount?: boolean;
+	currentMarkers?: AccountCurrentMarker[];
 	enabled?: boolean;
 	showStatusBadge?: boolean;
 	showCurrentBadge?: boolean;

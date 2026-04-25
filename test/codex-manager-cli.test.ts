@@ -22,6 +22,10 @@ const saveQuotaCacheMock = vi.fn();
 const loadPluginConfigMock = vi.fn();
 const savePluginConfigMock = vi.fn();
 const getPluginConfigExplainReportMock = vi.fn();
+const loadPersistedRuntimeObservabilitySnapshotMock = vi.fn();
+const bindCodexAppRuntimeRotationMock = vi.fn();
+const getAppBindStatusMock = vi.fn();
+const unbindCodexAppRuntimeRotationMock = vi.fn();
 const selectMock = vi.fn();
 const confirmMock = vi.fn(async () => true);
 const planOcChatgptSyncMock = vi.fn();
@@ -95,6 +99,17 @@ vi.mock("../lib/auth/browser.js", () => ({
 
 vi.mock("../lib/auth/server.js", () => ({
 	startLocalOAuthServer: vi.fn(),
+}));
+
+vi.mock("../lib/runtime/runtime-observability.js", () => ({
+	loadPersistedRuntimeObservabilitySnapshot:
+		loadPersistedRuntimeObservabilitySnapshotMock,
+}));
+
+vi.mock("../lib/runtime/app-bind.js", () => ({
+	bindCodexAppRuntimeRotation: bindCodexAppRuntimeRotationMock,
+	getAppBindStatus: getAppBindStatusMock,
+	unbindCodexAppRuntimeRotation: unbindCodexAppRuntimeRotationMock,
 }));
 
 vi.mock("../lib/cli.js", () => ({
@@ -673,6 +688,10 @@ describe("codex manager cli commands", () => {
 		loadPluginConfigMock.mockReset();
 		savePluginConfigMock.mockReset();
 		selectMock.mockReset();
+		loadPersistedRuntimeObservabilitySnapshotMock.mockReset();
+		bindCodexAppRuntimeRotationMock.mockReset();
+		getAppBindStatusMock.mockReset();
+		unbindCodexAppRuntimeRotationMock.mockReset();
 		confirmMock.mockReset();
 		planOcChatgptSyncMock.mockReset();
 		applyOcChatgptSyncMock.mockReset();
@@ -806,6 +825,16 @@ describe("codex manager cli commands", () => {
 		});
 		loadPluginConfigMock.mockReturnValue({});
 		savePluginConfigMock.mockResolvedValue(undefined);
+		loadPersistedRuntimeObservabilitySnapshotMock.mockResolvedValue(null);
+		bindCodexAppRuntimeRotationMock.mockResolvedValue({
+			message: "Codex app bind unavailable in tests",
+			status: { router: null },
+		});
+		getAppBindStatusMock.mockResolvedValue({ router: null });
+		unbindCodexAppRuntimeRotationMock.mockResolvedValue({
+			message: "Codex app unbind unavailable in tests",
+			status: { router: null },
+		});
 		getPluginConfigExplainReportMock.mockReturnValue({
 			configPath: "/mock/settings.json",
 			storageKind: "unified",
@@ -6977,6 +7006,229 @@ describe("codex manager cli commands", () => {
 		expect(firstCallAccounts[1]?.isCurrentAccount).toBe(true);
 	});
 
+	it("marks runtime in-use account separately from stored selected account", async () => {
+		const now = Date.now();
+		loadAccountsMock.mockResolvedValue({
+			version: 3,
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0 },
+			accounts: [
+				{
+					email: "selected@example.com",
+					accountId: "acc_selected",
+					refreshToken: "refresh-selected",
+					accessToken: "access-selected",
+					expiresAt: now + 3_600_000,
+					addedAt: now - 2_000,
+					lastUsed: now - 2_000,
+					enabled: true,
+				},
+				{
+					email: "runtime@example.com",
+					accountId: "acc_runtime",
+					refreshToken: "refresh-runtime",
+					accessToken: "access-runtime",
+					expiresAt: now + 3_600_000,
+					addedAt: now - 1_000,
+					lastUsed: now - 1_000,
+					enabled: true,
+				},
+			],
+		});
+		loadDashboardDisplaySettingsMock.mockResolvedValue(
+			createReadyFirstMenuSettings({ menuSortEnabled: false }),
+		);
+		loadPersistedRuntimeObservabilitySnapshotMock.mockResolvedValue({
+			version: 1,
+			updatedAt: now,
+			currentRequestId: null,
+			responsesRequests: 1,
+			authRefreshRequests: 0,
+			diagnosticProbeRequests: 0,
+			poolExhaustionCooldownUntil: null,
+			serverBurstCooldownUntil: null,
+			lastAccountIndex: 1,
+			lastAccountId: "acc_runtime",
+			lastAccountLabel: "Account 2",
+			lastAccountUpdatedAt: now,
+			runtimeMetrics: {},
+		});
+		promptLoginModeMock.mockResolvedValueOnce({ mode: "cancel" });
+
+		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+		const exitCode = await runCodexMultiAuthCli(["auth", "login"]);
+
+		expect(exitCode).toBe(0);
+		const firstCallAccounts = promptLoginModeMock.mock.calls[0]?.[0] as Array<{
+			email?: string;
+			status?: string;
+			isCurrentAccount?: boolean;
+			isDefaultAccount?: boolean;
+			isRuntimeCurrentAccount?: boolean;
+			currentMarkers?: string[];
+		}>;
+		expect(firstCallAccounts[0]).toMatchObject({
+			email: "selected@example.com",
+			status: "ok",
+			isCurrentAccount: false,
+			isDefaultAccount: true,
+			currentMarkers: ["selected"],
+		});
+		expect(firstCallAccounts[1]).toMatchObject({
+			email: "runtime@example.com",
+			status: "active",
+			isCurrentAccount: true,
+			isRuntimeCurrentAccount: true,
+			currentMarkers: ["in-use"],
+		});
+	});
+
+	it("does not mark runtime in-use when helper and app-bind telemetry are unavailable", async () => {
+		const now = Date.now();
+		loadAccountsMock.mockResolvedValue({
+			version: 3,
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0 },
+			accounts: [
+				{
+					email: "selected@example.com",
+					accountId: "acc_selected",
+					refreshToken: "refresh-selected",
+					accessToken: "access-selected",
+					expiresAt: now + 3_600_000,
+					addedAt: now - 2_000,
+					lastUsed: now - 2_000,
+					enabled: true,
+				},
+				{
+					email: "runtime@example.com",
+					accountId: "acc_runtime",
+					refreshToken: "refresh-runtime",
+					accessToken: "access-runtime",
+					expiresAt: now + 3_600_000,
+					addedAt: now - 1_000,
+					lastUsed: now - 1_000,
+					enabled: true,
+				},
+			],
+		});
+		loadDashboardDisplaySettingsMock.mockResolvedValue(
+			createReadyFirstMenuSettings({ menuSortEnabled: false }),
+		);
+		loadPersistedRuntimeObservabilitySnapshotMock.mockResolvedValue(null);
+		getAppBindStatusMock.mockResolvedValue({ running: false, router: null });
+		promptLoginModeMock.mockResolvedValueOnce({ mode: "cancel" });
+
+		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+		const exitCode = await runCodexMultiAuthCli(["auth", "login"]);
+
+		expect(exitCode).toBe(0);
+		const firstCallAccounts = promptLoginModeMock.mock.calls[0]?.[0] as Array<{
+			email?: string;
+			status?: string;
+			isCurrentAccount?: boolean;
+			isDefaultAccount?: boolean;
+			isRuntimeCurrentAccount?: boolean;
+			currentMarkers?: string[];
+		}>;
+		expect(firstCallAccounts[0]).toMatchObject({
+			email: "selected@example.com",
+			status: "active",
+			isCurrentAccount: true,
+			isDefaultAccount: true,
+			isRuntimeCurrentAccount: false,
+			currentMarkers: ["current"],
+		});
+		expect(firstCallAccounts[0]?.currentMarkers).not.toContain("in-use");
+		expect(firstCallAccounts[1]).toMatchObject({
+			email: "runtime@example.com",
+			status: "ok",
+			isCurrentAccount: false,
+			isRuntimeCurrentAccount: false,
+			currentMarkers: [],
+		});
+	});
+
+	it("ignores stale runtime snapshots after the account list changes", async () => {
+		const now = 2_000_000_000;
+		vi.spyOn(Date, "now").mockReturnValue(now);
+		loadAccountsMock.mockResolvedValue({
+			version: 3,
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0 },
+			accounts: [
+				{
+					email: "selected@example.com",
+					accountId: "acc_selected",
+					refreshToken: "refresh-selected",
+					accessToken: "access-selected",
+					expiresAt: now + 3_600_000,
+					addedAt: now - 1_000,
+					lastUsed: now - 1_000,
+					enabled: true,
+				},
+				{
+					email: "runtime@example.com",
+					accountId: "acc_runtime",
+					refreshToken: "refresh-runtime",
+					accessToken: "access-runtime",
+					expiresAt: now + 3_600_000,
+					addedAt: now - 86_400_000,
+					lastUsed: now - 86_400_000,
+					enabled: true,
+				},
+			],
+		});
+		loadDashboardDisplaySettingsMock.mockResolvedValue(
+			createReadyFirstMenuSettings({ menuSortEnabled: false }),
+		);
+		loadPersistedRuntimeObservabilitySnapshotMock.mockResolvedValue({
+			version: 1,
+			updatedAt: now - 25 * 60 * 60 * 1000,
+			currentRequestId: null,
+			responsesRequests: 1,
+			authRefreshRequests: 0,
+			diagnosticProbeRequests: 0,
+			poolExhaustionCooldownUntil: null,
+			serverBurstCooldownUntil: null,
+			lastAccountIndex: 1,
+			lastAccountId: "acc_runtime",
+			lastAccountLabel: "Account 2",
+			lastAccountUpdatedAt: now - 25 * 60 * 60 * 1000,
+			runtimeMetrics: {},
+		});
+		promptLoginModeMock.mockResolvedValueOnce({ mode: "cancel" });
+
+		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+		const exitCode = await runCodexMultiAuthCli(["auth", "login"]);
+
+		expect(exitCode).toBe(0);
+		const firstCallAccounts = promptLoginModeMock.mock.calls[0]?.[0] as Array<{
+			email?: string;
+			status?: string;
+			isCurrentAccount?: boolean;
+			isDefaultAccount?: boolean;
+			isRuntimeCurrentAccount?: boolean;
+			currentMarkers?: string[];
+		}>;
+		expect(firstCallAccounts[0]).toMatchObject({
+			email: "selected@example.com",
+			status: "active",
+			isCurrentAccount: true,
+			isDefaultAccount: true,
+			isRuntimeCurrentAccount: false,
+			currentMarkers: ["current"],
+		});
+		expect(firstCallAccounts[1]).toMatchObject({
+			email: "runtime@example.com",
+			status: "ok",
+			isCurrentAccount: false,
+			isRuntimeCurrentAccount: false,
+			currentMarkers: [],
+		});
+		expect(firstCallAccounts[1]?.currentMarkers).not.toContain("in-use");
+	});
+
 	it("keeps ready accounts ahead of degraded limit rows in ready-first sorting", async () => {
 		const now = Date.now();
 		loadAccountsMock.mockResolvedValue({
@@ -7145,7 +7397,7 @@ describe("codex manager cli commands", () => {
 		expect(firstCallAccounts[2]?.quotaRateLimited).toBe(true);
 	});
 
-	it("keeps exhausted weekly quota below balanced ready accounts in ready-first sorting", async () => {
+	it("keeps exhausted quota below balanced ready accounts in ready-first sorting", async () => {
 		const now = Date.now();
 		loadAccountsMock.mockResolvedValue({
 			version: 3,
@@ -7185,7 +7437,7 @@ describe("codex manager cli commands", () => {
 					status: 200,
 					model: "gpt-5-codex",
 					primary: {
-						usedPercent: 0,
+						usedPercent: 100,
 						windowMinutes: 300,
 						resetAtMs: now + 1_000,
 					},
@@ -7220,6 +7472,8 @@ describe("codex manager cli commands", () => {
 		expect(exitCode).toBe(0);
 		const firstCallAccounts = promptLoginModeMock.mock.calls[0]?.[0] as Array<{
 			email?: string;
+			status?: string;
+			quotaExhausted?: boolean;
 			quota5hLeftPercent?: number;
 			quota7dLeftPercent?: number;
 		}>;
@@ -7229,10 +7483,12 @@ describe("codex manager cli commands", () => {
 		]);
 		expect(
 			firstCallAccounts.map((account) => account.quota5hLeftPercent),
-		).toEqual([80, 100]);
+		).toEqual([80, 0]);
 		expect(
 			firstCallAccounts.map((account) => account.quota7dLeftPercent),
 		).toEqual([80, 0]);
+		expect(firstCallAccounts[1]?.status).toBe("quota-exhausted");
+		expect(firstCallAccounts[1]?.quotaExhausted).toBe(true);
 	});
 
 	it("treats missing quota windows as the lowest ready-first floor", async () => {

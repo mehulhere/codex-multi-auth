@@ -1,3 +1,9 @@
+import {
+	isDisplayCurrentAccount,
+	resolveAccountCurrentMarkers,
+	type RuntimeCurrentAccountSelection,
+} from "./runtime-current-account.js";
+
 type LoginMenuAccount = {
 	accountId?: string;
 	accountLabel?: string;
@@ -7,6 +13,9 @@ type LoginMenuAccount = {
 	lastUsed?: number;
 	status: "active" | "ok" | "rate-limited" | "cooldown" | "disabled";
 	isCurrentAccount: boolean;
+	isDefaultAccount: boolean;
+	isRuntimeCurrentAccount: boolean;
+	currentMarkers: ReturnType<typeof resolveAccountCurrentMarkers>;
 	enabled: boolean;
 };
 
@@ -24,6 +33,7 @@ export function buildLoginMenuAccounts(
 	deps: {
 		now: number;
 		activeIndex: number;
+		runtimeCurrent?: RuntimeCurrentAccountSelection | null;
 		formatRateLimitEntry: (
 			account: {
 				rateLimitResetTimes?: Record<string, number | undefined>;
@@ -33,6 +43,11 @@ export function buildLoginMenuAccounts(
 	},
 ): LoginMenuAccount[] {
 	return accounts.map((account, index) => {
+		const isCurrent = isDisplayCurrentAccount(
+			index,
+			deps.activeIndex,
+			deps.runtimeCurrent ?? null,
+		);
 		let status: LoginMenuAccount["status"];
 		if (account.enabled === false) {
 			status = "disabled";
@@ -43,7 +58,7 @@ export function buildLoginMenuAccounts(
 			status = "cooldown";
 		} else if (deps.formatRateLimitEntry(account, deps.now)) {
 			status = "rate-limited";
-		} else if (index === deps.activeIndex) {
+		} else if (isCurrent) {
 			status = "active";
 		} else {
 			status = "ok";
@@ -57,7 +72,14 @@ export function buildLoginMenuAccounts(
 			addedAt: account.addedAt,
 			lastUsed: account.lastUsed,
 			status,
-			isCurrentAccount: index === deps.activeIndex,
+			isCurrentAccount: isCurrent,
+			isDefaultAccount: index === deps.activeIndex,
+			isRuntimeCurrentAccount: deps.runtimeCurrent?.index === index,
+			currentMarkers: resolveAccountCurrentMarkers(
+				index,
+				deps.activeIndex,
+				deps.runtimeCurrent ?? null,
+			),
 			enabled: account.enabled !== false,
 		};
 	});

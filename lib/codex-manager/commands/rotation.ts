@@ -8,6 +8,18 @@ import {
 	type AppBindStatus,
 } from "../../runtime/app-bind.js";
 import { APP_RUNTIME_HELPER_STATUS_FILE } from "../../runtime-constants.js";
+import {
+	findQuotaCacheEntryForAccount,
+	isQuotaCacheEntryExhausted,
+} from "../../quota-readiness.js";
+import type { QuotaCacheData } from "../../quota-cache.js";
+import type { RuntimeObservabilitySnapshot } from "../../runtime/runtime-observability.js";
+import {
+	appRuntimeHelperStatusToSignal as appRuntimeHelperStatusToRuntimeSignal,
+	resolveAccountCurrentMarkers,
+	resolveRuntimeCurrentAccount,
+} from "../../runtime/runtime-current-account.js";
+import { isRateLimitedMarker } from "../rate-limit-markers.js";
 import type { PluginConfig } from "../../types.js";
 import type { AccountStorageV3 } from "../../storage.js";
 
@@ -39,6 +51,8 @@ export interface RotationCommandDeps {
 	bindCodexApp?: () => Promise<AppBindResult>;
 	unbindCodexApp?: () => Promise<AppBindResult>;
 	getCodexAppBindStatus?: () => Promise<AppBindStatus>;
+	loadRuntimeObservabilitySnapshot?: () => Promise<RuntimeObservabilitySnapshot | null>;
+	loadQuotaCache?: () => Promise<QuotaCacheData | null>;
 	getNow?: () => number;
 	logInfo?: (message: string) => void;
 	logError?: (message: string) => void;
@@ -55,9 +69,9 @@ function printRotationUsage(logInfo: (message: string) => void): void {
 			"  codex auth rotation unbind-app",
 			"",
 			"Behavior:",
-			"  - Enables an opt-in localhost Responses proxy for live Codex runtime account rotation",
-			"  - Binds the packaged Codex desktop app to the same localhost router when enabled",
-			"  - Env override: CODEX_MULTI_AUTH_RUNTIME_ROTATION_PROXY=1",
+			"  - Runtime rotation is enabled by default for request-bearing Codex sessions",
+			"  - Binds the packaged Codex desktop app to the same localhost router when enabled or repaired",
+			"  - Use CODEX_MULTI_AUTH_RUNTIME_ROTATION_PROXY=0 to disable the proxy for the current process without changing persistent settings",
 		].join("\n"),
 	);
 }
@@ -150,8 +164,10 @@ function formatHelperLastAccount(status: AppRuntimeHelperStatus): string | null 
 	return null;
 }
 
-function formatAppRuntimeHelperStatus(now: number): string {
-	const status = readAppRuntimeHelperStatus();
+function formatAppRuntimeHelperStatus(
+	now: number,
+	status = readAppRuntimeHelperStatus(),
+): string {
 	if (!status) return "Codex app helper: not running";
 	if (status.kind !== "codex-app-runtime-rotation-helper") {
 		return "Codex app helper: not running";
@@ -178,17 +194,22 @@ function shouldAutoBindCodexApp(env: NodeJS.ProcessEnv = process.env): boolean {
 	return !new Set(["0", "false", "no"]).has(override);
 }
 
-async function printCodexAppBindStatus(deps: RotationCommandDeps): Promise<void> {
+async function printCodexAppBindStatus(
+	deps: RotationCommandDeps,
+): Promise<AppBindStatus | null> {
 	const logInfo = deps.logInfo ?? console.log;
 	if (!deps.getCodexAppBindStatus) {
 		logInfo("Codex app bind: unavailable");
-		return;
+		return null;
 	}
 	try {
-		logInfo(formatAppBindStatus(await deps.getCodexAppBindStatus()));
+		const status = await deps.getCodexAppBindStatus();
+		logInfo(formatAppBindStatus(status));
+		return status;
 	} catch (error) {
 		const message = error instanceof Error ? error.message : String(error);
 		logInfo(`Codex app bind: unavailable (${message})`);
+		return null;
 	}
 }
 
@@ -217,8 +238,9 @@ async function printRotationStatus(deps: RotationCommandDeps): Promise<number> {
 		`Stored setting: ${config.codexRuntimeRotationProxy === true ? "enabled" : "disabled"}`,
 	);
 	logInfo(`Env override: ${formatEnvOverride()}`);
-	logInfo(formatAppRuntimeHelperStatus(now));
-	await printCodexAppBindStatus(deps);
+	const helperStatus = readAppRuntimeHelperStatus();
+	logInfo(formatAppRuntimeHelperStatus(now, helperStatus));
+	const appBindStatus = await printCodexAppBindStatus(deps);
 	logInfo(`Storage: ${storagePath}`);
 
 	if (!storage || storage.accounts.length === 0) {
@@ -227,12 +249,29 @@ async function printRotationStatus(deps: RotationCommandDeps): Promise<number> {
 	}
 
 	const activeIndex = deps.resolveActiveIndex(storage);
+	const [runtimeSnapshot, quotaCache] = await Promise.all([
+		deps.loadRuntimeObservabilitySnapshot
+			? deps.loadRuntimeObservabilitySnapshot().catch(() => null)
+			: Promise.resolve(null),
+		deps.loadQuotaCache
+			? deps.loadQuotaCache().catch(() => null)
+			: Promise.resolve(null),
+	]);
+	const runtimeCurrent = resolveRuntimeCurrentAccount(
+		storage,
+		{
+			runtimeSnapshot,
+			appBindStatus: appBindStatus?.running ? appBindStatus.router : null,
+			appHelperStatus: appRuntimeHelperStatusToRuntimeSignal(helperStatus),
+		},
+		{ now },
+	);
 	logInfo(`Accounts: ${storage.accounts.length}`);
 	for (let index = 0; index < storage.accounts.length; index += 1) {
 		const account = storage.accounts[index];
 		if (!account) continue;
 		const markers: string[] = [];
-		if (index === activeIndex) markers.push("current");
+		markers.push(...resolveAccountCurrentMarkers(index, activeIndex, runtimeCurrent));
 		if (account.enabled === false) markers.push("disabled");
 		const cooldown = formatCooldown(account, now);
 		if (cooldown) markers.push(`cooldown:${cooldown}`);
@@ -242,6 +281,20 @@ async function printRotationStatus(deps: RotationCommandDeps): Promise<number> {
 		if (rateLimitResetTimes.length > 0) {
 			const waitMs = Math.min(...rateLimitResetTimes) - now;
 			markers.push(`rate-limited:${formatWaitTime(waitMs)}`);
+		}
+		const quotaEntry = findQuotaCacheEntryForAccount(
+			quotaCache,
+			account,
+			storage.accounts,
+		);
+		if (
+			quotaEntry?.status === 429 &&
+			!markers.some((marker) => isRateLimitedMarker(marker))
+		) {
+			markers.push("rate-limited");
+		}
+		if (isQuotaCacheEntryExhausted(quotaEntry, now)) {
+			markers.push("quota-exhausted");
 		}
 		const markerLabel = markers.length > 0 ? ` [${markers.join(", ")}]` : "";
 		logInfo(`${index + 1}. ${formatAccountLabel(account, index)}${markerLabel}`);
