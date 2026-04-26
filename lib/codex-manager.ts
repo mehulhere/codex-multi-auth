@@ -18,6 +18,7 @@ import {
 	redactOAuthUrlForLog,
 	REDIRECT_URI,
 } from "./auth/auth.js";
+import { runDeviceAuthFlow } from "./auth/device-auth.js";
 import {
 	copyTextToClipboard,
 	isBrowserLaunchSuppressed,
@@ -1432,8 +1433,16 @@ function isReadlineClosedError(error: unknown): boolean {
 	);
 }
 
-type OAuthSignInMode = "browser" | "manual" | "restore-backup" | "cancel";
+type OAuthSignInMode =
+	| "browser"
+	| "manual"
+	| "device"
+	| "restore-backup"
+	| "cancel";
 type BackupRestoreMode = "latest" | "manual" | "back";
+type SignInFlowOptions = {
+	timeoutMs?: number;
+};
 
 export function formatBackupSavedAt(mtimeMs: number): string {
 	return new Date(mtimeMs).toLocaleString(undefined, {
@@ -1967,6 +1976,23 @@ async function runOAuthFlow(
 		};
 	}
 	return exchangeAuthorizationCode(code, pkce.verifier, REDIRECT_URI);
+}
+
+async function runSignInFlow(
+	forceNewLogin: boolean,
+	signInMode: Extract<OAuthSignInMode, "browser" | "manual" | "device">,
+	options: SignInFlowOptions = {},
+): Promise<TokenResult> {
+	if (signInMode === "device") {
+		// OpenAI owns the device-code account picker; there is no force-new-login
+		// equivalent to pass through for this mode.
+		// TODO: Thread a manager-level AbortSignal when login cancellation exists.
+		return runDeviceAuthFlow({
+			log: console.log,
+			timeoutMs: options.timeoutMs,
+		});
+	}
+	return runOAuthFlow(forceNewLogin, signInMode);
 }
 
 async function persistAccountPool(
@@ -2934,12 +2960,14 @@ async function runAuthLogin(args: string[]): Promise<number> {
 			const latestNamedBackup = namedBackups[0] ?? null;
 			const preferManualMode =
 				loginOptions.manual || isBrowserLaunchSuppressed();
-			const signInMode = preferManualMode
-				? "manual"
-				: await promptOAuthSignInMode(
-						latestNamedBackup,
-						onboardingBackupDiscoveryWarning,
-					);
+			const signInMode: OAuthSignInMode = loginOptions.deviceAuth
+				? "device"
+				: preferManualMode
+					? "manual"
+					: await promptOAuthSignInMode(
+							latestNamedBackup,
+							onboardingBackupDiscoveryWarning,
+						);
 			if (signInMode === "cancel") {
 				if (existingCount > 0) {
 					console.log(
@@ -3035,11 +3063,15 @@ async function runAuthLogin(args: string[]): Promise<number> {
 				continue loginFlow;
 			}
 
-			if (signInMode !== "browser" && signInMode !== "manual") {
+			if (
+				signInMode !== "browser" &&
+				signInMode !== "manual" &&
+				signInMode !== "device"
+			) {
 				continue;
 			}
 
-			const tokenResult = await runOAuthFlow(forceNewLogin, signInMode);
+			const tokenResult = await runSignInFlow(forceNewLogin, signInMode);
 			if (tokenResult.type !== "success") {
 				if (isOAuthCancellation(tokenResult)) {
 					if (existingCount > 0) {

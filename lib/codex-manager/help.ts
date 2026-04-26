@@ -4,7 +4,7 @@ export function printUsage(): void {
 			"Codex Multi-Auth CLI",
 			"",
 			"Start here:",
-			"  codex auth login [--manual|--no-browser]",
+			"  codex auth login [--device-auth|--manual|--no-browser]",
 			"  codex auth status",
 			"  codex auth check",
 			"",
@@ -40,6 +40,7 @@ export function printUsage(): void {
 
 export type AuthLoginOptions = {
 	manual: boolean;
+	deviceAuth: boolean;
 };
 
 export type ParsedAuthLoginArgs =
@@ -50,11 +51,20 @@ export type ParsedAuthLoginArgs =
 export function parseAuthLoginArgs(args: string[]): ParsedAuthLoginArgs {
 	const options: AuthLoginOptions = {
 		manual: false,
+		deviceAuth: false,
 	};
+	const manualFlags: string[] = [];
 
 	for (const arg of args) {
 		if (arg === "--manual" || arg === "--no-browser") {
 			options.manual = true;
+			if (!manualFlags.includes(arg)) {
+				manualFlags.push(arg);
+			}
+			continue;
+		}
+		if (arg === "--device-auth") {
+			options.deviceAuth = true;
 			continue;
 		}
 		if (arg === "--help" || arg === "-h") {
@@ -64,6 +74,16 @@ export function parseAuthLoginArgs(args: string[]): ParsedAuthLoginArgs {
 			ok: false,
 			reason: "error",
 			message: `Unknown login option: ${arg}`,
+		};
+	}
+
+	if (options.deviceAuth && options.manual) {
+		const conflict =
+			manualFlags.length > 0 ? manualFlags.join(" or ") : "--manual";
+		return {
+			ok: false,
+			reason: "error",
+			message: `Cannot combine --device-auth with ${conflict}`,
 		};
 	}
 
