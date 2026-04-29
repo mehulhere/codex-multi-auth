@@ -25,8 +25,8 @@
 
 - Use `getCodexMultiAuthDir()` for global local governance files.
 - Use existing project identity helpers for project-aware data.
-- Use temp-file plus rename writes with Windows retry behavior following
-  existing storage/runtime patterns.
+- Use temp-file plus rename writes with Windows retry behavior for JSON
+  documents, and serialize JSONL ledger appends through a local sidecar lock.
 - Keep runtime enforcement out of core data-model PRs until
   `feat/runtime-policy-integration`.
 - Filter runtime account candidates before selection, then pass safe boosts
