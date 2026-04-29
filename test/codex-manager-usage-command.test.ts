@@ -70,13 +70,15 @@ const rows: UsageLedgerRow[] = [
 describe("usage command", () => {
 	it("prints text summaries by default", async () => {
 		const logInfo = vi.fn();
+		const readRows = vi.fn(async () => rows);
 		const exitCode = await runUsageCommand([], {
 			logInfo,
 			summarizeUsage: async () => makeSummary(),
-			readRows: async () => rows,
+			readRows,
 		});
 
 		expect(exitCode).toBe(0);
+		expect(readRows).not.toHaveBeenCalled();
 		expect(String(logInfo.mock.calls[0]?.[0])).toContain(
 			"Usage summary by model",
 		);
@@ -99,18 +101,21 @@ describe("usage command", () => {
 		};
 		expect(payload.command).toBe("usage");
 		expect(payload.rows[0]?.id).toBe("row-1");
-		expect(payload.summary.totals.requests).toBe(2);
+		expect(payload.summary.totals.requests).toBe(1);
+		expect(payload.summary.totals.totalTokens).toBe(rows[0]?.tokens.totalTokens);
 	});
 
 	it("prints csv output", async () => {
 		const logInfo = vi.fn();
+		const readRows = vi.fn(async () => rows);
 		const exitCode = await runUsageCommand(["--csv", "--by", "day"], {
 			logInfo,
 			summarizeUsage: async (query) => makeSummary({ by: query.by }),
-			readRows: async () => rows,
+			readRows,
 		});
 
 		expect(exitCode).toBe(0);
+		expect(readRows).not.toHaveBeenCalled();
 		const output = String(logInfo.mock.calls[0]?.[0]);
 		expect(output).toContain("key,requests,successes");
 		expect(output).toContain("gpt-5.3-codex,2,1,1");
@@ -119,15 +124,17 @@ describe("usage command", () => {
 	it("writes rendered output to a file", async () => {
 		const writeFile = vi.fn(async () => undefined);
 		const logInfo = vi.fn();
+		const readRows = vi.fn(async () => rows);
 		const exitCode = await runUsageCommand(["--out", "usage.txt"], {
 			logInfo,
 			writeFile,
 			getCwd: () => "/workspace",
 			summarizeUsage: async () => makeSummary(),
-			readRows: async () => rows,
+			readRows,
 		});
 
 		expect(exitCode).toBe(0);
+		expect(readRows).not.toHaveBeenCalled();
 		expect(writeFile).toHaveBeenCalledWith(
 			expect.stringContaining("usage.txt"),
 			expect.stringContaining("Usage summary by model"),
@@ -165,6 +172,22 @@ describe("usage command", () => {
 		expect(exitCode).toBe(1);
 		expect(String(logError.mock.calls[0]?.[0])).toContain(
 			"Cannot combine --json and --csv",
+		);
+	});
+
+	it("reports ledger read failures without uncaught rejections", async () => {
+		const logError = vi.fn();
+		const exitCode = await runUsageCommand(["--json"], {
+			logError,
+			logInfo: vi.fn(),
+			readRows: async () => {
+				throw new Error("read failed");
+			},
+		});
+
+		expect(exitCode).toBe(1);
+		expect(String(logError.mock.calls[0]?.[0])).toContain(
+			"Failed to read usage ledger: read failed",
 		);
 	});
 });

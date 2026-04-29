@@ -4,6 +4,7 @@ import { sleep } from "../../utils.js";
 import {
 	readUsageLedgerRows,
 	rotateUsageLedger,
+	summarizeUsageRows,
 	summarizeUsageLedger,
 	type UsageLedgerRow,
 	type UsageSummary,
@@ -30,6 +31,7 @@ type ParsedArgsResult<T> =
 
 export interface UsageCommandDeps {
 	summarizeUsage?: typeof summarizeUsageLedger;
+	summarizeRows?: typeof summarizeUsageRows;
 	readRows?: typeof readUsageLedgerRows;
 	rotateLedger?: typeof rotateUsageLedger;
 	logInfo?: (message: string) => void;
@@ -359,10 +361,23 @@ export async function runUsageCommand(
 	}
 	const options = parsed.options;
 	const query = { since: options.since, by: options.by };
-	const [summary, rows] = await Promise.all([
-		(deps.summarizeUsage ?? summarizeUsageLedger)(query),
-		(deps.readRows ?? readUsageLedgerRows)(query),
-	]);
+	let summary: UsageSummary;
+	let rows: UsageLedgerRow[] = [];
+	try {
+		if (options.json) {
+			rows = await (deps.readRows ?? readUsageLedgerRows)(query);
+			summary = (deps.summarizeRows ?? summarizeUsageRows)(rows, query);
+		} else {
+			summary = await (deps.summarizeUsage ?? summarizeUsageLedger)(query);
+		}
+	} catch (error) {
+		logError(
+			`Failed to read usage ledger: ${
+				error instanceof Error ? error.message : String(error)
+			}`,
+		);
+		return 1;
+	}
 	const rendered = options.json
 		? rowsToJsonPayload(summary, rows)
 		: options.csv
