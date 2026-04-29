@@ -46,3 +46,4 @@ export * from "./routing-profiles.js";
 export * from "./budget-guard.js";
 export * from "./model-capability-matrix.js";
 export * from "./policy/runtime-policy.js";
+export * from "./local-bridge.js";
