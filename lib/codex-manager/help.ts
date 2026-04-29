@@ -23,6 +23,7 @@ export function printUsage(): void {
 			"",
 			"Diagnostics:",
 			"  codex auth usage [--since <time|duration>] [--by <group>] [--json|--csv] [--out <path>]",
+			"  codex auth budget limit|check|list ...",
 			"  codex auth rotation <enable|disable|status|bind-app|unbind-app>",
 			"  codex auth rotation reset-rate-limits [--all | --account <idx>] [--dry-run] [--json]",
 			"  codex auth why-selected [--now | --last] [--json]",

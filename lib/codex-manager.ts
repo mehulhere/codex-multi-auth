@@ -37,6 +37,7 @@ import {
 	runBestCommand,
 } from "./codex-manager/commands/best.js";
 import { runAccountCommand } from "./codex-manager/commands/account.js";
+import { runBudgetCommand } from "./codex-manager/commands/budget.js";
 import { runCheckCommand } from "./codex-manager/commands/check.js";
 import { runConfigExplainCommand } from "./codex-manager/commands/config-explain.js";
 import { saveAccountsWithRetry } from "./codex-manager/forecast-report-shared.js";
@@ -3461,6 +3462,9 @@ export async function runCodexMultiAuthCli(rawArgs: string[]): Promise<number> {
 			setStoragePath,
 			loadAccounts,
 		});
+	}
+	if (command === "budget") {
+		return runBudgetCommand(rest);
 	}
 	if (command === "report") {
 		return runReportCommand(rest, {
