@@ -7,6 +7,19 @@ This repository's current stable release line is `2.x`.
 Current stable release notes live in `docs/releases/`.
 This top-level changelog preserves the foundational `0.x` milestones and points older iteration history to `docs/releases/legacy-pre-0.1-history.md`.
 
+## [2.1.1] - 2026-04-29
+
+Patch release for the local governance command router and bridge token JSON
+output. See [docs/releases/v2.1.1.md](docs/releases/v2.1.1.md) for full
+details.
+
+### Fixed
+
+- route all `codex auth` local governance and bridge subcommands through the
+  multi-auth wrapper instead of falling through to the official Codex CLI
+- return valid JSON for `codex auth bridge token list --json` when no local
+  bridge tokens are configured
+
 ## [2.1.0] - 2026-04-29
 
 Stable release for local usage governance and the local bridge. See [docs/releases/v2.1.0.md](docs/releases/v2.1.0.md) for full details.

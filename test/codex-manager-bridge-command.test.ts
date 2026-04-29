@@ -47,4 +47,51 @@ describe("bridge command", () => {
 		expect(listOutput).toContain("OpenCode active");
 		expect(listOutput).not.toContain(token);
 	});
+
+	it("prints valid json for an empty token list", async () => {
+		const logInfo = vi.fn();
+		expect(
+			await runBridgeCommand(["token", "list", "--json"], {
+				logInfo,
+				logError: vi.fn(),
+			}),
+		).toBe(0);
+
+		const output = logInfo.mock.calls.map((call) => String(call[0])).join("\n");
+		expect(JSON.parse(output)).toEqual({
+			command: "bridge token list",
+			tokens: [],
+		});
+	});
+
+	it("omits token hashes from bridge token json output", async () => {
+		const logInfo = vi.fn();
+		expect(
+			await runBridgeCommand(["token", "create", "--label", "Env", "--json"], {
+				logInfo,
+				logError: vi.fn(),
+			}),
+		).toBe(0);
+
+		const created = JSON.parse(String(logInfo.mock.calls[0]?.[0])) as {
+			plainToken?: string;
+			token?: Record<string, unknown>;
+		};
+		expect(created.plainToken).toMatch(/^cma_local_/);
+		expect(created.token?.tokenHash).toBeUndefined();
+
+		logInfo.mockClear();
+		expect(
+			await runBridgeCommand(["token", "list", "--json"], {
+				logInfo,
+				logError: vi.fn(),
+			}),
+		).toBe(0);
+		const listed = JSON.parse(String(logInfo.mock.calls[0]?.[0])) as {
+			tokens?: Array<Record<string, unknown>>;
+		};
+		expect(listed.tokens).toHaveLength(1);
+		expect(listed.tokens?.[0]?.tokenHash).toBeUndefined();
+		expect(JSON.stringify(listed)).not.toContain(created.plainToken);
+	});
 });
