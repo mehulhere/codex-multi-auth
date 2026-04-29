@@ -42,3 +42,4 @@ export * from "./codex-cli/writer.js";
 export * from "./codex-cli/observability.js";
 export * from "./usage/index.js";
 export * from "./account-policy.js";
+export * from "./routing-profiles.js";
