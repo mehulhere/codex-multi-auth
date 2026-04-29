@@ -1,7 +1,8 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { promises as fs } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { removeWithRetry } from "./helpers/remove-with-retry.js";
 
 describe("account policy store", () => {
 	let tempDir: string;
@@ -11,15 +12,20 @@ describe("account policy store", () => {
 		originalDir = process.env.CODEX_MULTI_AUTH_DIR;
 		tempDir = await fs.mkdtemp(join(tmpdir(), "codex-account-policy-"));
 		process.env.CODEX_MULTI_AUTH_DIR = tempDir;
+		vi.resetModules();
 	});
 
 	afterEach(async () => {
+		const { resetAccountPolicyWriteQueueForTests } = await import(
+			"../lib/account-policy.js"
+		);
+		resetAccountPolicyWriteQueueForTests();
 		if (originalDir === undefined) {
 			delete process.env.CODEX_MULTI_AUTH_DIR;
 		} else {
 			process.env.CODEX_MULTI_AUTH_DIR = originalDir;
 		}
-		await fs.rm(tempDir, { recursive: true, force: true });
+		await removeWithRetry(tempDir, { recursive: true, force: true });
 	});
 
 	it("stores policy rows by hashed account identity", async () => {
