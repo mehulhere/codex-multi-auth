@@ -449,7 +449,6 @@ describe("OpenAIAuthPlugin rate-limit retry", () => {
 		process.env.CODEX_AUTH_RATE_LIMIT_TOAST_DEBOUNCE_MS = "0";
 		process.env.CODEX_AUTH_PREWARM = "0";
 
-		vi.useFakeTimers();
 		originalFetch = globalThis.fetch;
 		globalThis.fetch = vi.fn(async () => new Response("ok", { status: 200 })) as any;
 	});
@@ -693,6 +692,7 @@ describe("OpenAIAuthPlugin rate-limit retry", () => {
 	});
 
 	it("keeps the total request cap when empty-response retries and server-error rotation combine", async () => {
+		vi.useFakeTimers();
 		const logger = await import("../lib/logger.js");
 		const logWarnSpy = vi.spyOn(logger, "logWarn").mockImplementation(() => {});
 
