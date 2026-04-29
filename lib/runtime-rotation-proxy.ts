@@ -865,6 +865,7 @@ export async function startRuntimeRotationProxy(
 			const requestStartedAt = now();
 			let policyDecision: RuntimePolicyDecision | null = null;
 			let projectKey: string | null = null;
+			let policyError: string | null = null;
 			try {
 				const policyState = await loadRuntimePolicyState();
 				projectKey = policyState.project.projectKey;
@@ -875,7 +876,8 @@ export async function startRuntimeRotationProxy(
 					now: requestStartedAt,
 				});
 			} catch (error) {
-				status.lastError = error instanceof Error ? error.message : String(error);
+				policyError = error instanceof Error ? error.message : String(error);
+				status.lastError = policyError;
 			}
 			usageRecorder = createRuntimeUsageRecorder({
 				source: "runtime-proxy",
@@ -885,6 +887,20 @@ export async function startRuntimeRotationProxy(
 				requestId: context.sessionKey,
 				startedAt: requestStartedAt,
 			});
+			if (policyError) {
+				await usageRecorder.record({
+					outcome: "failure",
+					statusCode: HTTP_STATUS.SERVICE_UNAVAILABLE,
+					errorCode: "runtime_policy_unavailable",
+				});
+				writeJson(res, HTTP_STATUS.SERVICE_UNAVAILABLE, {
+					error: {
+						message: "Runtime policy could not be loaded for this local request.",
+						code: "runtime_policy_unavailable",
+					},
+				});
+				return;
+			}
 			if (policyDecision && !policyDecision.allowed) {
 				await usageRecorder.record({
 					outcome: "blocked",
