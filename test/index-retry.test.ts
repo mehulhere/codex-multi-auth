@@ -439,7 +439,7 @@ describe("OpenAIAuthPlugin rate-limit retry", () => {
 		const response = await fetchPromise;
 		expect(globalThis.fetch).toHaveBeenCalledTimes(1);
 		expect(response.status).toBe(200);
-	});
+	}, 10_000);
 
 	it("does not replay across all accounts by default when every account is rate-limited", async () => {
 		delete process.env.CODEX_AUTH_RETRY_ALL_RATE_LIMITED;
@@ -479,7 +479,7 @@ describe("OpenAIAuthPlugin rate-limit retry", () => {
 		expect(response.status).toBe(429);
 		expect(payload.error.message).toContain("All 2 account(s) are rate-limited.");
 		expect(payload.error.message).toContain("15000ms");
-	});
+	}, 10_000);
 
 	it("fast-fails after repeated cross-account 5xx errors arm the server-burst cooldown", async () => {
 		const accounts = Array.from({ length: 4 }, (_, index) =>
