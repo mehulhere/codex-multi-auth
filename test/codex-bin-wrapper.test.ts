@@ -776,6 +776,40 @@ describe("codex bin wrapper", () => {
 		);
 	});
 
+	it("does not repair local session index for failed forwarded runs", () => {
+		const fixtureRoot = createWrapperFixture();
+		const codexHome = join(fixtureRoot, "codex-home");
+		const sessionId = "019ddf58-f831-7e12-bf4a-fae1ed000001";
+		const fakeBin = createCustomFakeCodexBin(fixtureRoot, [
+			"const { mkdirSync, writeFileSync } = require('node:fs');",
+			"const { join } = require('node:path');",
+			`const sessionId = ${JSON.stringify(sessionId)};`,
+			"const codexHome = process.env.CODEX_HOME;",
+			"const sessionDir = join(codexHome, 'sessions', '2026', '05', '01');",
+			"mkdirSync(sessionDir, { recursive: true });",
+			"writeFileSync(",
+			"  join(sessionDir, `rollout-2026-05-01T01-05-00-${sessionId}.jsonl`),",
+			"  [",
+			"    JSON.stringify({ timestamp: '2026-04-30T17:05:00.000Z', type: 'session_meta', payload: { id: sessionId } }),",
+			"    JSON.stringify({ timestamp: '2026-04-30T17:05:01.000Z', type: 'event_msg', payload: { type: 'user_message', message: 'PARTIAL_FAILED_SESSION' } }),",
+			"    '',",
+			"  ].join('\\n'),",
+			"  'utf8',",
+			");",
+			"console.error('FAILED_FORWARD');",
+			"process.exit(1);",
+		]);
+		const result = runWrapper(fixtureRoot, ["exec", "status"], {
+			CODEX_HOME: codexHome,
+			CODEX_MULTI_AUTH_REAL_CODEX_BIN: fakeBin,
+			CODEX_MULTI_AUTH_RUNTIME_ROTATION_PROXY: "0",
+		});
+
+		expect(result.status).toBe(1);
+		expect(result.stderr).toContain("FAILED_FORWARD");
+		expect(existsSync(join(codexHome, "session_index.jsonl"))).toBe(false);
+	});
+
 	it("forwards non-auth commands to native codex executables", () => {
 		const fixtureRoot = createWrapperFixture();
 		const fakeBin = createFakeNativeCodexBin(fixtureRoot);

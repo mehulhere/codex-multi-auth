@@ -3,6 +3,7 @@
 import { spawn } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
 import {
+	appendFileSync,
 	chmodSync,
 	copyFileSync,
 	cpSync,
@@ -1018,9 +1019,9 @@ async function forwardToRealCodex(codexBin, rawArgs, baseEnv = process.env) {
 							"1"),
 			},
 		);
-		repairCodexSessionIndex(resolveCodexHomeDir(baseEnv));
 		lastExitCode = result.exitCode;
 		if (result.exitCode === 0) {
+			repairCodexSessionIndex(resolveCodexHomeDir(baseEnv));
 			return result.exitCode;
 		}
 
@@ -3387,6 +3388,7 @@ function parseRolloutIndexEntry(rolloutPath) {
 	let id = idFromName;
 	let threadName = "";
 	let updatedAt = null;
+	let hasSessionMeta = false;
 	for (const line of lines) {
 		let record;
 		try {
@@ -3399,6 +3401,7 @@ function parseRolloutIndexEntry(rolloutPath) {
 		}
 		if (record?.type === "session_meta" && typeof record.payload?.id === "string") {
 			id = record.payload.id;
+			hasSessionMeta = true;
 		}
 		if (!threadName && record?.type === "event_msg") {
 			const message = record.payload?.message;
@@ -3416,6 +3419,9 @@ function parseRolloutIndexEntry(rolloutPath) {
 	}
 	if (!threadName) {
 		threadName = "Codex session";
+	}
+	if (!hasSessionMeta) {
+		return null;
 	}
 	if (threadName.length > 80) {
 		threadName = `${threadName.slice(0, 77)}...`;
@@ -3459,12 +3465,12 @@ function repairCodexSessionIndex(codexHome) {
 	}
 	if (additions.length === 0) return;
 	additions.sort((a, b) => a.updated_at.localeCompare(b.updated_at));
-	const nextLines = [
-		...existingLines,
-		...additions.map((entry) => JSON.stringify(entry)),
-	];
 	try {
-		writeFileSync(indexPath, `${nextLines.join("\n")}\n`, "utf8");
+		appendFileSync(
+			indexPath,
+			`${additions.map((entry) => JSON.stringify(entry)).join("\n")}\n`,
+			"utf8",
+		);
 	} catch {
 		// Best-effort repair only; forwarding must not fail because indexing did.
 	}
