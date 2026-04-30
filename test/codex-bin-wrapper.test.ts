@@ -758,9 +758,7 @@ describe("codex bin wrapper", () => {
 
 		expect(result.status).toBe(0);
 		expect(result.stdout).toContain("FORWARDED_INDEX_REPAIR");
-		expect(result.stdout).toContain(
-			"RUST_LOG=info,codex_core::session=off,rmcp::transport::streamable_http_client=off",
-		);
+		expect(result.stdout).toContain("RUST_LOG=info");
 		expect(result.stdout).not.toContain("failed to record rollout items");
 		expect(result.stderr).toContain("VISIBLE_STDERR");
 		expect(result.stderr).not.toContain("failed to record rollout items");

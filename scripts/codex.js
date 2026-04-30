@@ -805,18 +805,16 @@ function filterKnownForwardedCodexStderr(text) {
 	return filtered.join("\n");
 }
 
-function withKnownForwardedCodexLogSilencers(env) {
-	const silencers = [
-		"codex_core::session=off",
-		"rmcp::transport::streamable_http_client=off",
-	];
-	const currentRustLog = (env.RUST_LOG ?? "").trim();
+function withCiKnownForwardedCodexLogSilencers(env) {
+	if ((env.CODEX_CI ?? "").trim() !== "1") {
+		return env;
+	}
+	if ((env.RUST_LOG ?? "").trim().length > 0) {
+		return env;
+	}
 	return {
 		...env,
-		RUST_LOG:
-			currentRustLog.length > 0
-				? `${currentRustLog},${silencers.join(",")}`
-				: silencers.join(","),
+		RUST_LOG: "codex_core::session=off",
 	};
 }
 
@@ -884,7 +882,7 @@ function forwardToRealCodexOnce(
 		};
 		try {
 			const childEnv = captureOutput
-				? withKnownForwardedCodexLogSilencers(env)
+				? withCiKnownForwardedCodexLogSilencers(env)
 				: env;
 			child = spawn(command, commandArgs, {
 				stdio: proxyAppServerAccountRead
