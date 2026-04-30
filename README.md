@@ -359,8 +359,9 @@ codex-multi-auth doctor --json
 
 ## Release Notes
 
-- Current stable: [docs/releases/v2.1.2.md](docs/releases/v2.1.2.md)
-- Previous stable: [docs/releases/v2.1.1.md](docs/releases/v2.1.1.md)
+- Current stable: [docs/releases/v2.1.3.md](docs/releases/v2.1.3.md)
+- Previous stable: [docs/releases/v2.1.2.md](docs/releases/v2.1.2.md)
+- Earlier stable: [docs/releases/v2.1.1.md](docs/releases/v2.1.1.md)
 - Earlier stable: [docs/releases/v2.1.0.md](docs/releases/v2.1.0.md)
 - Earlier stable: [docs/releases/v1.3.2.md](docs/releases/v1.3.2.md)
 - Stable archive: [docs/releases/v1.3.1.md](docs/releases/v1.3.1.md)

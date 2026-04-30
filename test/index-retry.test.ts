@@ -419,6 +419,7 @@ vi.mock("../lib/auto-update-checker.js", () => ({
 
 describe("OpenAIAuthPlugin rate-limit retry", () => {
 	const envKeys = [
+		"CODEX_AUTH_FAILOVER_MODE",
 		"CODEX_AUTH_RETRY_ALL_RATE_LIMITED",
 		"CODEX_AUTH_RETRY_ALL_MAX_WAIT_MS",
 		"CODEX_AUTH_RETRY_ALL_MAX_RETRIES",
@@ -442,6 +443,7 @@ describe("OpenAIAuthPlugin rate-limit retry", () => {
 
 		for (const key of envKeys) originalEnv[key] = process.env[key];
 
+		process.env.CODEX_AUTH_FAILOVER_MODE = "balanced";
 		process.env.CODEX_AUTH_RETRY_ALL_RATE_LIMITED = "1";
 		process.env.CODEX_AUTH_RETRY_ALL_MAX_WAIT_MS = "5000";
 		process.env.CODEX_AUTH_RETRY_ALL_MAX_RETRIES = "1";

@@ -7,6 +7,29 @@ This repository's current stable release line is `2.x`.
 Current stable release notes live in `docs/releases/`.
 This top-level changelog preserves the foundational `0.x` milestones and points older iteration history to `docs/releases/legacy-pre-0.1-history.md`.
 
+## [2.1.3] - 2026-05-01
+
+Patch release for Codex Desktop app-bind history visibility and merged-main
+runtime session repair. See [docs/releases/v2.1.3.md](docs/releases/v2.1.3.md)
+for full details.
+
+### Fixed
+
+- repaired successful wrapper-launched session index writes when official Codex
+  emits rollout-store noise for missing thread entries
+- serialized concurrent local session-index repair using the existing
+  shadow-home lock and atomic index replacement
+- kept failed forwarded runs from writing synthetic session-index entries
+- resolved app-bind status paths from the active status state before printing
+  Desktop history and speed-control guidance
+
+### Documentation
+
+- documented the Codex Desktop history workaround:
+  `codex auth rotation unbind-app` or `codex auth rotation disable`
+- documented Codex-owned model speed control through
+  `model_reasoning_effort`
+
 ## [2.1.2] - 2026-04-30
 
 Patch release for conflict-free installs alongside the official Codex CLI.
