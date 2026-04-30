@@ -792,5 +792,18 @@ export function formatAppBindStatus(status: AppBindStatus): string {
 	} else if (status.router?.lastAccountIndex !== null && status.router?.lastAccountIndex !== undefined) {
 		parts.push(`lastAccount=Account ${status.router.lastAccountIndex + 1}`);
 	}
-	return `Codex app bind: ${parts.join(", ")}`;
+	return [
+		`Codex app bind: ${parts.join(", ")}`,
+		[
+			"Note: Codex Desktop may hide history while the app bind selects the",
+			"codex-multi-auth-runtime-proxy provider; use `codex auth rotation",
+			"unbind-app` or `codex auth rotation disable` to restore the original",
+			"Codex provider/config.",
+		].join(" "),
+		[
+			"Model speed/reasoning controls stay in Codex config/CLI flags; set",
+			"`model_reasoning_effort` in ~/.codex/config.toml or pass",
+			"`-c model_reasoning_effort=<level>` for wrapper-launched CLI sessions.",
+		].join(" "),
+	].join("\n");
 }

@@ -74,6 +74,8 @@ npm i -g codex-multi-auth
 | Forwarded Codex session does not show the local provider | Command is help/non-requesting, rotation is disabled, or the official CLI was not launched through the wrapper | Check `where codex`, then run `codex-multi-auth rotation status` |
 | Pool exhausted error from the proxy | Every managed account is unavailable for that model/family | Run `codex-multi-auth rotation status`, then `codex-multi-auth forecast --live` |
 | Packaged app still uses normal Codex routing | App bind was not installed or was removed | Run `codex-multi-auth rotation bind-app`, then reopen the app |
+| Codex Desktop history disappears after app bind | Current Codex Desktop builds can filter local threads by the active provider, and app bind switches the real config to `codex-multi-auth-runtime-proxy` | The data is normally still under `~/.codex`; run `codex-multi-auth rotation unbind-app` or `codex-multi-auth rotation disable` to restore the original provider/config before browsing old history |
+| Model speed controls are not visible with rotation | Speed/reasoning controls remain owned by Codex config or CLI flags; the app bind only routes Responses traffic | Set `model_reasoning_effort` in `~/.codex/config.toml` or pass `-c model_reasoning_effort=<level>` for wrapper-launched CLI sessions |
 | App bind needs to be removed | You want the official app config restored | Run `codex-multi-auth rotation unbind-app` or `codex-multi-auth rotation disable` |
 
 The runtime proxy is loopback-only and default-on. It routes Responses traffic only for forwarded request-bearing official Codex sessions and supported app launches.

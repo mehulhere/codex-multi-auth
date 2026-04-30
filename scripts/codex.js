@@ -579,6 +579,9 @@ function shouldCaptureForwardedCodexOutput(env = process.env) {
 	if (override === "0") {
 		return false;
 	}
+	if ((env.CODEX_CI ?? "").trim() === "1") {
+		return true;
+	}
 	// Windows child processes can report undefined isTTY; treat that as non-TTY so retry capture remains available.
 	return process.stdout.isTTY !== true || process.stderr.isTTY !== true;
 }
@@ -764,6 +767,59 @@ function rewriteAppServerAccountReadResponseLine(line, pendingAuthRequestMethods
 	})}${lineEnding}`;
 }
 
+function filterKnownForwardedCodexStderr(text) {
+	if (typeof text !== "string" || text.length === 0) {
+		return "";
+	}
+	const lines = text.split(/\r?\n/);
+	const filtered = [];
+	for (let index = 0; index < lines.length; index += 1) {
+		const line = lines[index];
+		if (
+			/ERROR codex_core::session: failed to record rollout items: thread\s*$/.test(
+				line,
+			) &&
+			/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12} not found$/i.test(
+				lines[index + 1] ?? "",
+			)
+		) {
+			index += 1;
+			continue;
+		}
+		if (
+			/ERROR rmcp::transport::streamable_http_client: fail to delete session:\s*$/.test(
+				line,
+			) &&
+			/^unexpected server response: DELETE returned HTTP 404 session_id="/.test(
+				lines[index + 1] ?? "",
+			)
+		) {
+			index += 1;
+			while (index + 1 < lines.length && !/"\s*$/.test(lines[index])) {
+				index += 1;
+			}
+			continue;
+		}
+		filtered.push(line);
+	}
+	return filtered.join("\n");
+}
+
+function withKnownForwardedCodexLogSilencers(env) {
+	const silencers = [
+		"codex_core::session=off",
+		"rmcp::transport::streamable_http_client=off",
+	];
+	const currentRustLog = (env.RUST_LOG ?? "").trim();
+	return {
+		...env,
+		RUST_LOG:
+			currentRustLog.length > 0
+				? `${currentRustLog},${silencers.join(",")}`
+				: silencers.join(","),
+	};
+}
+
 function forwardToRealCodexOnce(
 	codexBin,
 	args,
@@ -794,6 +850,21 @@ function forwardToRealCodexOnce(
 			} catch {
 				// Best-effort cleanup only.
 			}
+			if (captureOutput && stdout.length > 0) {
+				const filteredStdout = filterKnownForwardedCodexStderr(stdout);
+				if (filteredStdout.length > 0) {
+					process.stdout.write(filteredStdout);
+				}
+			}
+			if (captureOutput && stderr.length > 0) {
+				const filteredStderr = filterKnownForwardedCodexStderr(stderr);
+				if (filteredStderr.trim().length > 0) {
+					process.stderr.write(filteredStderr);
+					if (!filteredStderr.endsWith("\n")) {
+						process.stderr.write("\n");
+					}
+				}
+			}
 			resolve({
 				exitCode,
 				// No-capture output stays empty by design so retry parsing cannot
@@ -812,13 +883,16 @@ function forwardToRealCodexOnce(
 			finalize(1);
 		};
 		try {
+			const childEnv = captureOutput
+				? withKnownForwardedCodexLogSilencers(env)
+				: env;
 			child = spawn(command, commandArgs, {
 				stdio: proxyAppServerAccountRead
 					? ["pipe", "pipe", "pipe"]
 					: captureOutput
 						? ["inherit", "pipe", "pipe"]
 						: "inherit",
-				env,
+				env: childEnv,
 			});
 		} catch (error) {
 			failLaunch(error);
@@ -883,12 +957,10 @@ function forwardToRealCodexOnce(
 			child.stdout?.on("data", (chunk) => {
 				const text = typeof chunk === "string" ? chunk : chunk.toString("utf8");
 				stdout += text;
-				process.stdout.write(chunk);
 			});
 			child.stderr?.on("data", (chunk) => {
 				const text = typeof chunk === "string" ? chunk : chunk.toString("utf8");
 				stderr += text;
-				process.stderr.write(chunk);
 			});
 		}
 
@@ -946,6 +1018,7 @@ async function forwardToRealCodex(codexBin, rawArgs, baseEnv = process.env) {
 							"1"),
 			},
 		);
+		repairCodexSessionIndex(resolveCodexHomeDir(baseEnv));
 		lastExitCode = result.exitCode;
 		if (result.exitCode === 0) {
 			return result.exitCode;
@@ -3271,6 +3344,130 @@ function normalizeExitCode(value) {
 		return parsed;
 	}
 	return 1;
+}
+
+function extractRolloutIdFromFilename(fileName) {
+	const match = fileName.match(
+		/^rollout-\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.jsonl$/i,
+	);
+	return match?.[1] ?? null;
+}
+
+function collectRolloutFiles(rootDir, results = []) {
+	let entries = [];
+	try {
+		entries = readdirSync(rootDir, { withFileTypes: true });
+	} catch {
+		return results;
+	}
+	for (const entry of entries) {
+		const entryPath = join(rootDir, entry.name);
+		if (entry.isDirectory()) {
+			collectRolloutFiles(entryPath, results);
+			continue;
+		}
+		if (entry.isFile() && extractRolloutIdFromFilename(entry.name)) {
+			results.push(entryPath);
+		}
+	}
+	return results;
+}
+
+function parseRolloutIndexEntry(rolloutPath) {
+	const fileName = basename(rolloutPath);
+	const idFromName = extractRolloutIdFromFilename(fileName);
+	if (!idFromName) return null;
+	let content = "";
+	try {
+		content = readFileSync(rolloutPath, "utf8");
+	} catch {
+		return null;
+	}
+	const lines = content.split(/\r?\n/).filter(Boolean);
+	let id = idFromName;
+	let threadName = "";
+	let updatedAt = null;
+	for (const line of lines) {
+		let record;
+		try {
+			record = JSON.parse(line);
+		} catch {
+			continue;
+		}
+		if (typeof record?.timestamp === "string") {
+			updatedAt = record.timestamp;
+		}
+		if (record?.type === "session_meta" && typeof record.payload?.id === "string") {
+			id = record.payload.id;
+		}
+		if (!threadName && record?.type === "event_msg") {
+			const message = record.payload?.message;
+			if (typeof message === "string" && message.trim().length > 0) {
+				threadName = message.trim();
+			}
+		}
+	}
+	if (!updatedAt) {
+		try {
+			updatedAt = statSync(rolloutPath).mtime.toISOString();
+		} catch {
+			updatedAt = new Date().toISOString();
+		}
+	}
+	if (!threadName) {
+		threadName = "Codex session";
+	}
+	if (threadName.length > 80) {
+		threadName = `${threadName.slice(0, 77)}...`;
+	}
+	return { id, thread_name: threadName, updated_at: updatedAt };
+}
+
+function repairCodexSessionIndex(codexHome) {
+	if (!codexHome || typeof codexHome !== "string") return;
+	const sessionsDir = join(codexHome, "sessions");
+	if (!existsSync(sessionsDir)) return;
+	const indexPath = join(codexHome, "session_index.jsonl");
+	const seen = new Set();
+	let existingLines = [];
+	if (existsSync(indexPath)) {
+		try {
+			existingLines = readFileSync(indexPath, "utf8")
+				.split(/\r?\n/)
+				.filter(Boolean);
+			for (const line of existingLines) {
+				try {
+					const entry = JSON.parse(line);
+					if (typeof entry?.id === "string") {
+						seen.add(entry.id);
+					}
+				} catch {
+					// Preserve unparsable existing lines.
+				}
+			}
+		} catch {
+			return;
+		}
+	}
+
+	const additions = [];
+	for (const rolloutPath of collectRolloutFiles(sessionsDir)) {
+		const entry = parseRolloutIndexEntry(rolloutPath);
+		if (!entry || seen.has(entry.id)) continue;
+		seen.add(entry.id);
+		additions.push(entry);
+	}
+	if (additions.length === 0) return;
+	additions.sort((a, b) => a.updated_at.localeCompare(b.updated_at));
+	const nextLines = [
+		...existingLines,
+		...additions.map((entry) => JSON.stringify(entry)),
+	];
+	try {
+		writeFileSync(indexPath, `${nextLines.join("\n")}\n`, "utf8");
+	} catch {
+		// Best-effort repair only; forwarding must not fail because indexing did.
+	}
 }
 
 const WINDOWS_SHIM_MARKER = "codex-multi-auth windows shim guardian v1";

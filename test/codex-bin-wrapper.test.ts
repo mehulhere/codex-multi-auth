@@ -716,6 +716,66 @@ describe("codex bin wrapper", () => {
 		expect(result.stdout).toContain("FORWARDED:--version");
 	});
 
+	it("repairs local session index and suppresses known Codex rollout-store noise", () => {
+		const fixtureRoot = createWrapperFixture();
+		const codexHome = join(fixtureRoot, "codex-home");
+		const sessionId = "019ddf47-2c01-7c73-9f81-ab0cd9c1d5b7";
+		const marker = "Reply exactly: INDEX_REPAIR_SMOKE";
+		const fakeBin = createCustomFakeCodexBin(fixtureRoot, [
+			"const { mkdirSync, writeFileSync } = require('node:fs');",
+			"const { join } = require('node:path');",
+			`const sessionId = ${JSON.stringify(sessionId)};`,
+			`const marker = ${JSON.stringify(marker)};`,
+			"const codexHome = process.env.CODEX_HOME;",
+			"const sessionDir = join(codexHome, 'sessions', '2026', '05', '01');",
+			"mkdirSync(sessionDir, { recursive: true });",
+			"writeFileSync(",
+			"  join(sessionDir, `rollout-2026-05-01T00-44-32-${sessionId}.jsonl`),",
+			"  [",
+			"    JSON.stringify({ timestamp: '2026-04-30T16:44:34.000Z', type: 'session_meta', payload: { id: sessionId } }),",
+			"    JSON.stringify({ timestamp: '2026-04-30T16:44:35.000Z', type: 'event_msg', payload: { type: 'user_message', message: marker } }),",
+			"    JSON.stringify({ timestamp: '2026-04-30T16:44:36.000Z', type: 'event_msg', payload: { type: 'task_complete', last_agent_message: 'INDEX_REPAIR_SMOKE' } }),",
+			"    '',",
+			"  ].join('\\n'),",
+			"  'utf8',",
+			");",
+			"process.stderr.write(`2026-04-30T16:44:37.000000Z ERROR codex_core::session: failed to record rollout items: thread \\n${sessionId} not found\\n`);",
+			"process.stderr.write('2026-04-30T16:44:38.000000Z ERROR rmcp::transport::streamable_http_client: fail to delete session: \\n');",
+			"process.stderr.write('unexpected server response: DELETE returned HTTP 404 session_id=\"eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpZC\\n');",
+			"process.stderr.write('I6IjQ5MjBhNmQwLWY1OWQtNDBmNC04ZTU1LWNmNmU2ZDBjODQxNiJ9.fake\"\\n');",
+			"process.stderr.write('VISIBLE_STDERR\\n');",
+			"process.stdout.write(`2026-04-30T16:44:39.000000Z ERROR codex_core::session: failed to record rollout items: thread \\n${sessionId} not found\\n`);",
+			"console.log(`RUST_LOG=${process.env.RUST_LOG ?? ''}`);",
+			"console.log('FORWARDED_INDEX_REPAIR');",
+			"process.exit(0);",
+		]);
+		const result = runWrapper(fixtureRoot, ["exec", "status"], {
+			CODEX_HOME: codexHome,
+			CODEX_MULTI_AUTH_REAL_CODEX_BIN: fakeBin,
+			CODEX_MULTI_AUTH_RUNTIME_ROTATION_PROXY: "0",
+			RUST_LOG: "info",
+		});
+
+		expect(result.status).toBe(0);
+		expect(result.stdout).toContain("FORWARDED_INDEX_REPAIR");
+		expect(result.stdout).toContain(
+			"RUST_LOG=info,codex_core::session=off,rmcp::transport::streamable_http_client=off",
+		);
+		expect(result.stdout).not.toContain("failed to record rollout items");
+		expect(result.stderr).toContain("VISIBLE_STDERR");
+		expect(result.stderr).not.toContain("failed to record rollout items");
+		expect(result.stderr).not.toContain(`${sessionId} not found`);
+		expect(result.stderr).not.toContain("fail to delete session");
+		expect(result.stderr).not.toContain("DELETE returned HTTP 404");
+		expect(readFileSync(join(codexHome, "session_index.jsonl"), "utf8")).toContain(
+			JSON.stringify({
+				id: sessionId,
+				thread_name: marker,
+				updated_at: "2026-04-30T16:44:36.000Z",
+			}),
+		);
+	});
+
 	it("forwards non-auth commands to native codex executables", () => {
 		const fixtureRoot = createWrapperFixture();
 		const fakeBin = createFakeNativeCodexBin(fixtureRoot);
