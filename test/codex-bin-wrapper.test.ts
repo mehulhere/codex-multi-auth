@@ -716,6 +716,160 @@ describe("codex bin wrapper", () => {
 		expect(result.stdout).toContain("FORWARDED:--version");
 	});
 
+	it("repairs local session index and suppresses known Codex rollout-store noise", () => {
+		const fixtureRoot = createWrapperFixture();
+		const codexHome = join(fixtureRoot, "codex-home");
+		const sessionId = "019ddf47-2c01-7c73-9f81-ab0cd9c1d5b7";
+		const marker = "Reply exactly: INDEX_REPAIR_SMOKE";
+		const fakeBin = createCustomFakeCodexBin(fixtureRoot, [
+			"const { mkdirSync, writeFileSync } = require('node:fs');",
+			"const { join } = require('node:path');",
+			`const sessionId = ${JSON.stringify(sessionId)};`,
+			`const marker = ${JSON.stringify(marker)};`,
+			"const codexHome = process.env.CODEX_HOME;",
+			"const sessionDir = join(codexHome, 'sessions', '2026', '05', '01');",
+			"mkdirSync(sessionDir, { recursive: true });",
+			"writeFileSync(",
+			"  join(sessionDir, `rollout-2026-05-01T00-44-32-${sessionId}.jsonl`),",
+			"  [",
+			"    JSON.stringify({ timestamp: '2026-04-30T16:44:34.000Z', type: 'session_meta', payload: { id: sessionId } }),",
+			"    JSON.stringify({ timestamp: '2026-04-30T16:44:35.000Z', type: 'event_msg', payload: { type: 'user_message', message: marker } }),",
+			"    JSON.stringify({ timestamp: '2026-04-30T16:44:36.000Z', type: 'event_msg', payload: { type: 'task_complete', last_agent_message: 'INDEX_REPAIR_SMOKE' } }),",
+			"    '',",
+			"  ].join('\\n'),",
+			"  'utf8',",
+			");",
+			"process.stderr.write(`2026-04-30T16:44:37.000000Z ERROR codex_core::session: failed to record rollout items: thread \\n${sessionId} not found\\n`);",
+			"process.stderr.write('2026-04-30T16:44:38.000000Z ERROR rmcp::transport::streamable_http_client: fail to delete session: \\n');",
+			"process.stderr.write('unexpected server response: DELETE returned HTTP 404 session_id=\"eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpZC\\n');",
+			"process.stderr.write('I6IjQ5MjBhNmQwLWY1OWQtNDBmNC04ZTU1LWNmNmU2ZDBjODQxNiJ9.fake\"\\n');",
+			"process.stderr.write('VISIBLE_STDERR\\n');",
+			"process.stdout.write(`2026-04-30T16:44:39.000000Z ERROR codex_core::session: failed to record rollout items: thread \\n${sessionId} not found\\n`);",
+			"console.log(`RUST_LOG=${process.env.RUST_LOG ?? ''}`);",
+			"console.log('FORWARDED_INDEX_REPAIR');",
+			"process.exit(0);",
+		]);
+		const result = runWrapper(fixtureRoot, ["exec", "status"], {
+			CODEX_HOME: codexHome,
+			CODEX_MULTI_AUTH_REAL_CODEX_BIN: fakeBin,
+			CODEX_MULTI_AUTH_RUNTIME_ROTATION_PROXY: "0",
+			RUST_LOG: "info",
+		});
+
+		expect(result.status).toBe(0);
+		expect(result.stdout).toContain("FORWARDED_INDEX_REPAIR");
+		expect(result.stdout).toContain("RUST_LOG=info");
+		expect(result.stdout).not.toContain("failed to record rollout items");
+		expect(result.stderr).toContain("VISIBLE_STDERR");
+		expect(result.stderr).not.toContain("failed to record rollout items");
+		expect(result.stderr).not.toContain(`${sessionId} not found`);
+		expect(result.stderr).not.toContain("fail to delete session");
+		expect(result.stderr).not.toContain("DELETE returned HTTP 404");
+		expect(readFileSync(join(codexHome, "session_index.jsonl"), "utf8")).toContain(
+			JSON.stringify({
+				id: sessionId,
+				thread_name: marker,
+				updated_at: "2026-04-30T16:44:36.000Z",
+			}),
+		);
+	});
+
+	it("does not repair local session index for failed forwarded runs", () => {
+		const fixtureRoot = createWrapperFixture();
+		const codexHome = join(fixtureRoot, "codex-home");
+		const sessionId = "019ddf58-f831-7e12-bf4a-fae1ed000001";
+		const fakeBin = createCustomFakeCodexBin(fixtureRoot, [
+			"const { mkdirSync, writeFileSync } = require('node:fs');",
+			"const { join } = require('node:path');",
+			`const sessionId = ${JSON.stringify(sessionId)};`,
+			"const codexHome = process.env.CODEX_HOME;",
+			"const sessionDir = join(codexHome, 'sessions', '2026', '05', '01');",
+			"mkdirSync(sessionDir, { recursive: true });",
+			"writeFileSync(",
+			"  join(sessionDir, `rollout-2026-05-01T01-05-00-${sessionId}.jsonl`),",
+			"  [",
+			"    JSON.stringify({ timestamp: '2026-04-30T17:05:00.000Z', type: 'session_meta', payload: { id: sessionId } }),",
+			"    JSON.stringify({ timestamp: '2026-04-30T17:05:01.000Z', type: 'event_msg', payload: { type: 'user_message', message: 'PARTIAL_FAILED_SESSION' } }),",
+			"    '',",
+			"  ].join('\\n'),",
+			"  'utf8',",
+			");",
+			"console.error('FAILED_FORWARD');",
+			"process.exit(1);",
+		]);
+		const result = runWrapper(fixtureRoot, ["exec", "status"], {
+			CODEX_HOME: codexHome,
+			CODEX_MULTI_AUTH_REAL_CODEX_BIN: fakeBin,
+			CODEX_MULTI_AUTH_RUNTIME_ROTATION_PROXY: "0",
+		});
+
+		expect(result.status).toBe(1);
+		expect(result.stderr).toContain("FAILED_FORWARD");
+		expect(existsSync(join(codexHome, "session_index.jsonl"))).toBe(false);
+	});
+
+	it("serializes concurrent local session index repairs", async () => {
+		const fixtureRoot = createWrapperFixture();
+		const codexHome = join(fixtureRoot, "codex-home");
+		const readyDir = join(fixtureRoot, "ready");
+		const firstSessionId = "019ddf58-f831-7e12-bf4a-fae1ed000101";
+		const secondSessionId = "019ddf58-f831-7e12-bf4a-fae1ed000102";
+		const fakeBin = createCustomFakeCodexBin(fixtureRoot, [
+			"const { mkdirSync, readdirSync, writeFileSync } = require('node:fs');",
+			"const { join } = require('node:path');",
+			"const sessionId = process.env.CODEX_MULTI_AUTH_TEST_SESSION_ID;",
+			"const marker = process.env.CODEX_MULTI_AUTH_TEST_MARKER;",
+			"const codexHome = process.env.CODEX_HOME;",
+			"const readyDir = process.env.CODEX_MULTI_AUTH_TEST_READY_DIR;",
+			"const sessionDir = join(codexHome, 'sessions', '2026', '05', '01');",
+			"mkdirSync(sessionDir, { recursive: true });",
+			"mkdirSync(readyDir, { recursive: true });",
+			"writeFileSync(",
+			"  join(sessionDir, `rollout-2026-05-01T01-06-00-${sessionId}.jsonl`),",
+			"  [",
+			"    JSON.stringify({ timestamp: '2026-04-30T17:06:00.000Z', type: 'session_meta', payload: { id: sessionId } }),",
+			"    JSON.stringify({ timestamp: '2026-04-30T17:06:01.000Z', type: 'event_msg', payload: { type: 'user_message', message: marker } }),",
+			"    '',",
+			"  ].join('\\n'),",
+			"  'utf8',",
+			");",
+			"writeFileSync(join(readyDir, `${sessionId}.ready`), '1', 'utf8');",
+			"const deadline = Date.now() + 3000;",
+			"while (Date.now() < deadline && readdirSync(readyDir).filter((entry) => entry.endsWith('.ready')).length < 2) {",
+			"  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 20);",
+			"}",
+			"console.log(`FORWARDED_CONCURRENT:${sessionId}`);",
+			"process.exit(0);",
+		]);
+
+		const [first, second] = await Promise.all([
+			runWrapperAsync(fixtureRoot, ["exec", "status"], {
+				CODEX_HOME: codexHome,
+				CODEX_MULTI_AUTH_REAL_CODEX_BIN: fakeBin,
+				CODEX_MULTI_AUTH_RUNTIME_ROTATION_PROXY: "0",
+				CODEX_MULTI_AUTH_TEST_READY_DIR: readyDir,
+				CODEX_MULTI_AUTH_TEST_SESSION_ID: firstSessionId,
+				CODEX_MULTI_AUTH_TEST_MARKER: "FIRST_CONCURRENT_SESSION",
+			}),
+			runWrapperAsync(fixtureRoot, ["exec", "status"], {
+				CODEX_HOME: codexHome,
+				CODEX_MULTI_AUTH_REAL_CODEX_BIN: fakeBin,
+				CODEX_MULTI_AUTH_RUNTIME_ROTATION_PROXY: "0",
+				CODEX_MULTI_AUTH_TEST_READY_DIR: readyDir,
+				CODEX_MULTI_AUTH_TEST_SESSION_ID: secondSessionId,
+				CODEX_MULTI_AUTH_TEST_MARKER: "SECOND_CONCURRENT_SESSION",
+			}),
+		]);
+
+		expect(first.status).toBe(0);
+		expect(second.status).toBe(0);
+		const index = readFileSync(join(codexHome, "session_index.jsonl"), "utf8");
+		expect(index).toContain(firstSessionId);
+		expect(index).toContain("FIRST_CONCURRENT_SESSION");
+		expect(index).toContain(secondSessionId);
+		expect(index).toContain("SECOND_CONCURRENT_SESSION");
+	});
+
 	it("forwards non-auth commands to native codex executables", () => {
 		const fixtureRoot = createWrapperFixture();
 		const fakeBin = createFakeNativeCodexBin(fixtureRoot);
