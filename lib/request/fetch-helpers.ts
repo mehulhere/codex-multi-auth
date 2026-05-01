@@ -337,7 +337,6 @@ export function isWorkspaceDisabledError(
 
         if (status === 402) {
                 return (
-                        normalizedCode === "deactivated_workspace" ||
                         normalizedTokens.includes("deactivated_workspace") ||
                         /\bdeactivated_workspace\b/i.test(bodyText)
                 );

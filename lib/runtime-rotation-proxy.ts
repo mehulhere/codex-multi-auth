@@ -1212,8 +1212,7 @@ export async function startRuntimeRotationProxy(
 
 			if (
 				transientAttempts >= transientAttemptLimit &&
-				attemptedIndexes.size < accountCount &&
-				exhaustionReason !== "deactivated"
+				attemptedIndexes.size < accountCount
 			) {
 				exhaustionReason = "budget";
 			} else if (

@@ -21,6 +21,10 @@ function resolveCliVersion() {
 	return "";
 }
 
+/**
+ * @param {string[]} args
+ * @returns {string[]}
+ */
 function normalizeStandaloneArgs(args) {
 	if (args[0] === "auth") return args;
 	const firstArg = args[0] ?? "";
