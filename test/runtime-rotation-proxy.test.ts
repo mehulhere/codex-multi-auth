@@ -940,6 +940,27 @@ describe("runtime rotation proxy", () => {
 		expect(accountManager.getAccountByIndex(1)?.enabled).toBe(true);
 	});
 
+	it("forwards unrelated 403 errors without disabling the account", async () => {
+		const now = Date.now();
+		const accountManager = new AccountManager(undefined, createStorage(now, 2));
+		const { calls, fetchImpl } = createRecordingFetch(() =>
+			new Response(JSON.stringify({ error: { code: "permission_denied" } }), {
+				status: HTTP_STATUS.FORBIDDEN,
+				headers: { "content-type": "application/json" },
+			}),
+		);
+		const proxy = await startProxy({ accountManager, fetchImpl });
+
+		const response = await postResponses(proxy, { model: "gpt-5-codex" });
+		const payload = (await response.json()) as { error: { code: string } };
+
+		expect(response.status).toBe(HTTP_STATUS.FORBIDDEN);
+		expect(payload.error.code).toBe("permission_denied");
+		expect(calls).toHaveLength(1);
+		expect(accountManager.getAccountByIndex(0)?.enabled).toBe(true);
+		expect(accountManager.getAccountByIndex(1)?.enabled).toBe(true);
+	});
+
 	it("persists cooldowns so a restarted proxy avoids limited accounts", async () => {
 		const now = Date.now();
 		const persisted: AccountStorageV3[] = [];
