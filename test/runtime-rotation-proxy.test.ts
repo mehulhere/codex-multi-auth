@@ -167,6 +167,21 @@ async function postThreadGoal(
 	});
 }
 
+async function getThreadGoal(
+	proxy: RuntimeRotationProxyServer,
+	path = "/thread/goal/get",
+	headers: Record<string, string> = {},
+): Promise<Response> {
+	return fetch(`${proxy.baseUrl}${path}`, {
+		method: "GET",
+		headers: {
+			authorization: `Bearer ${DEFAULT_CLIENT_API_KEY}`,
+			"x-api-key": "caller-key",
+			...headers,
+		},
+	});
+}
+
 async function postRawResponses(
 	proxy: RuntimeRotationProxyServer,
 	body: string,
@@ -614,6 +629,33 @@ describe("runtime rotation proxy", () => {
 		expect(calls.map((call) => call.url)).toEqual([
 			"https://example.test/backend-api/codex/thread/goal/set",
 			"https://example.test/backend-api/codex/thread/goal/get",
+		]);
+	});
+
+	it("keys blocked GET thread goal fallbacks by query thread id", async () => {
+		const now = Date.now();
+		const accountManager = new AccountManager(undefined, createStorage(now));
+		const { calls, fetchImpl } = createRecordingFetch(
+			() =>
+				new Response("<html>blocked</html>", {
+					status: HTTP_STATUS.FORBIDDEN,
+					headers: { "content-type": "text/html" },
+				}),
+		);
+		const proxy = await startProxy({ accountManager, fetchImpl });
+
+		await postThreadGoal(
+			proxy,
+			{ threadId: "thread-1", goal: "ship it" },
+			"/thread/goal/set",
+		);
+		const response = await getThreadGoal(proxy, "/thread/goal/get?thread_id=thread-1");
+
+		expect(response.status).toBe(HTTP_STATUS.OK);
+		expect(await response.json()).toEqual({ goal: "ship it" });
+		expect(calls.map((call) => call.url)).toEqual([
+			"https://example.test/backend-api/codex/thread/goal/set",
+			"https://example.test/backend-api/codex/thread/goal/get?thread_id=thread-1",
 		]);
 	});
 

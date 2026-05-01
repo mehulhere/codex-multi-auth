@@ -336,6 +336,11 @@ function readStringRecordValue(record: Record<string, unknown>, key: string): st
 		: null;
 }
 
+function readStringSearchParam(searchParams: URLSearchParams, key: string): string | null {
+	const value = searchParams.get(key);
+	return value && value.trim().length > 0 ? value.trim() : null;
+}
+
 function resolveSessionKey(headers: Headers, parsedBody: RequestBody | null): string | null {
 	const headerKey =
 		headers.get(OPENAI_HEADERS.SESSION_ID) ??
@@ -404,11 +409,15 @@ function buildThreadGoalRequestContext(
 ): RequestContext {
 	const headers = headersFromIncoming(req);
 	const parsedBody = parseRequestBody(body);
-	const sessionKey = parsedBody
+	const searchParams = new URL(req.url ?? "/", "http://127.0.0.1").searchParams;
+	const queryThreadKey =
+		readStringSearchParam(searchParams, "thread_id") ??
+		readStringSearchParam(searchParams, "threadId");
+	const bodyThreadKey = parsedBody
 		? (readStringRecordValue(parsedBody, "thread_id") ??
-			readStringRecordValue(parsedBody, "threadId") ??
-			resolveSessionKey(headers, parsedBody))
-		: resolveSessionKey(headers, null);
+			readStringRecordValue(parsedBody, "threadId"))
+		: null;
+	const sessionKey = bodyThreadKey ?? queryThreadKey ?? resolveSessionKey(headers, parsedBody);
 	return {
 		body,
 		headers,
