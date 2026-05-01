@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { CapabilityPolicyStore } from "../lib/capability-policy.js";
+import { resolveEntitlementAccountKey } from "../lib/entitlement-cache.js";
 import { buildModelCapabilityMatrix } from "../lib/model-capability-matrix.js";
 import type { AccountStorageV3 } from "../lib/storage.js";
 
@@ -21,6 +22,18 @@ function storage(): AccountStorageV3 {
 }
 
 describe("model capability matrix", () => {
+	it("returns default normalized models without entries when storage is missing", () => {
+		const matrix = buildModelCapabilityMatrix({
+			storage: null,
+			models: [],
+			now: 100,
+		});
+
+		expect(matrix.generatedAt).toBe(100);
+		expect(matrix.models.length).toBeGreaterThan(0);
+		expect(matrix.entries).toEqual([]);
+	});
+
 	it("builds model/account availability from existing model profiles", () => {
 		const matrix = buildModelCapabilityMatrix({
 			storage: storage(),
@@ -68,6 +81,47 @@ describe("model capability matrix", () => {
 			"capability policy has unsupported failures",
 		);
 		expect(matrix.entries[0]?.reasons).toContain("quota cache is rate-limited");
+	});
+
+	it("marks disabled and entitlement-blocked accounts unavailable", () => {
+		const baseStorage = storage();
+		baseStorage.accounts[0] = {
+			...baseStorage.accounts[0]!,
+			enabled: false,
+		};
+		const entitlementKey = resolveEntitlementAccountKey({
+			accountId: "acct_1",
+			email: "owner@example.com",
+			index: 0,
+		});
+		const matrix = buildModelCapabilityMatrix({
+			storage: baseStorage,
+			models: ["gpt-5.3-codex"],
+			entitlements: {
+				accounts: {
+					[entitlementKey]: [
+						{
+							model: "gpt-5.3-codex",
+							blockedUntil: 200,
+							reason: "plan-entitlement",
+							updatedAt: 100,
+						},
+					],
+				},
+			},
+			now: 100,
+		});
+
+		expect(matrix.entries[0]).toMatchObject({
+			available: false,
+			entitlementBlocked: true,
+			entitlementReason: "plan-entitlement",
+			entitlementWaitMs: 100,
+		});
+		expect(matrix.entries[0]?.reasons).toContain("account disabled");
+		expect(matrix.entries[0]?.reasons).toContain(
+			"entitlement blocked: plan-entitlement",
+		);
 	});
 });
 

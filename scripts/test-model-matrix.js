@@ -110,6 +110,7 @@ function printUsage() {
 			"  --plugin=dist|package          Load plugin from local dist URI or package name (default: dist)",
 			"  --max-cases=N                  Hard cap number of cases per scenario",
 			"  --report-json=PATH             Write JSON report to PATH (relative to repo root)",
+			"  --strict-capabilities          Fail unsupported account/model capabilities instead of skipping them",
 			"  --no-restore                   Keep generated local config files after run",
 			"  -h, --help                     Show help",
 		].join("\n"),
@@ -180,18 +181,67 @@ export function resolveMatrixTimeoutMs(smoke = false) {
 	return parsedTimeout;
 }
 
-function hasCompletedSuccessfully(output, token) {
+function parseNdjsonEvents(output) {
+	const events = [];
+	for (const line of output.split(/\r?\n/)) {
+		const trimmed = line.trim();
+		if (!trimmed.startsWith("{")) {
+			continue;
+		}
+		try {
+			events.push(JSON.parse(trimmed));
+		} catch {
+			// Ignore wrapper noise and partial lines.
+		}
+	}
+	return events;
+}
+
+function findLastIndex(items, predicate) {
+	for (let index = items.length - 1; index >= 0; index -= 1) {
+		if (predicate(items[index], index)) {
+			return index;
+		}
+	}
+	return -1;
+}
+
+function hasTerminalFailure(events) {
+	const lastCompletedIndex = findLastIndex(
+		events,
+		(event) =>
+			event?.type === "turn.completed" || event?.type === "response.completed",
+	);
 	return (
-		output.includes(token) ||
-		output.includes('"type":"turn.completed"') ||
-		output.includes('"type":"response.completed"')
+		findLastIndex(
+			events,
+			(event, index) =>
+				index > lastCompletedIndex &&
+				(event?.type === "error" ||
+					event?.type === "turn.failed" ||
+					event?.type === "response.failed" ||
+					event?.type === "response.error" ||
+					event?.type === "response.incomplete"),
+		) >= 0
 	);
 }
 
-function getSmokeSkipReason(exitCode, output) {
-	if (exitCode === 124) {
-		return "timed-out";
+function hasCompletedSuccessfully(output, token) {
+	const events = parseNdjsonEvents(output);
+	if (events.length > 0) {
+		if (hasTerminalFailure(events)) {
+			return false;
+		}
+		return events.some(
+			(event) =>
+				event?.type === "turn.completed" ||
+				event?.type === "response.completed",
+		);
 	}
+	return output.includes(token);
+}
+
+function getCapabilitySkipReason(exitCode, output, smoke) {
 	if (/not supported when using codex with a chatgpt account/i.test(output)) {
 		return "unsupported-model";
 	}
@@ -201,14 +251,26 @@ function getSmokeSkipReason(exitCode, output) {
 	) {
 		return "unsupported-reasoning";
 	}
+	if (smoke && exitCode === 124) {
+		return "timed-out";
+	}
 	return null;
 }
 
-function finalizeModelCaseResult(caseInfo, exitCode, output, token, smoke) {
+function finalizeModelCaseResult(
+	caseInfo,
+	exitCode,
+	output,
+	token,
+	{ smoke, strictCapabilities } = {},
+) {
 	const hasToken = output.includes(token);
 	const completed = hasCompletedSuccessfully(output, token);
 	const ok = exitCode === 0 && completed;
-	const skipReason = !ok && smoke ? getSmokeSkipReason(exitCode, output) : null;
+	const skipReason =
+		!ok && strictCapabilities !== true
+			? getCapabilitySkipReason(exitCode, output, smoke === true)
+			: null;
 
 	return {
 		...caseInfo,
@@ -228,8 +290,12 @@ export function __finalizeModelCaseResultForTests(
 	output,
 	token,
 	smoke = false,
+	strictCapabilities = false,
 ) {
-	return finalizeModelCaseResult(caseInfo, exitCode, output, token, smoke);
+	return finalizeModelCaseResult(caseInfo, exitCode, output, token, {
+		smoke,
+		strictCapabilities,
+	});
 }
 
 function stopCodexServersInternal() {
@@ -361,7 +427,10 @@ function executeModelCase(caseInfo, index) {
 			124,
 			`Timed out after ${timeoutMs}ms`,
 			token,
-			caseInfo.smoke === true,
+			{
+				smoke: caseInfo.smoke === true,
+				strictCapabilities: caseInfo.strictCapabilities === true,
+			},
 		);
 	}
 
@@ -373,7 +442,10 @@ function executeModelCase(caseInfo, index) {
 		exitCode,
 		combinedOutput,
 		token,
-		caseInfo.smoke === true,
+		{
+			smoke: caseInfo.smoke === true,
+			strictCapabilities: caseInfo.strictCapabilities === true,
+		},
 	);
 }
 
@@ -451,6 +523,7 @@ async function runScenario(scenario, options) {
 		(caseInfo) => ({
 			...caseInfo,
 			smoke: options.smoke,
+			strictCapabilities: options.strictCapabilities,
 		}),
 	);
 	console.log(`\n=== ${scenario.toUpperCase()} (${cases.length} cases) ===`);
@@ -492,6 +565,7 @@ async function main() {
 	const scenarioValue =
 		parseArgValue(args, "--scenario") ?? (smoke ? "modern" : "all");
 	const pluginMode = parseArgValue(args, "--plugin") ?? "dist";
+	const strictCapabilities = args.includes("--strict-capabilities");
 	const noRestore = args.includes("--no-restore");
 	const maxCasesRaw = parseArgValue(args, "--max-cases");
 	const maxCases = maxCasesRaw ? Number.parseInt(maxCasesRaw, 10) : 0;
@@ -539,6 +613,7 @@ async function main() {
 				smoke,
 				maxCases,
 				pluginRef,
+				strictCapabilities,
 			});
 			allResults.push(
 				...scenarioResults.map((item) => ({ ...item, scenario })),

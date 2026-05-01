@@ -150,7 +150,33 @@ describe("test-model-matrix script helpers", () => {
 		);
 	});
 
-	it("downgrades unsupported smoke failures to skipped cases", async () => {
+	it("does not treat echoed prompt tokens as success after a terminal JSON failure", async () => {
+		const mod = await import("../scripts/test-model-matrix.js");
+		expect(
+			mod.__finalizeModelCaseResultForTests(
+				{ model: "gpt-5.2" },
+				0,
+				[
+					'{"type":"thread.started"}',
+					'{"type":"turn.started"}',
+					"MODEL_MATRIX_OK_8",
+					'{"type":"turn.failed","error":{"message":"model execution failed"}}',
+				].join("\n"),
+				"MODEL_MATRIX_OK_8",
+				false,
+				true,
+			),
+		).toEqual(
+			expect.objectContaining({
+				ok: false,
+				hasToken: true,
+				completed: false,
+				skipped: false,
+			}),
+		);
+	});
+
+	it("downgrades unsupported capability failures to skipped cases", async () => {
 		const mod = await import("../scripts/test-model-matrix.js");
 		expect(
 			mod.__finalizeModelCaseResultForTests(
@@ -170,6 +196,21 @@ describe("test-model-matrix script helpers", () => {
 
 		expect(
 			mod.__finalizeModelCaseResultForTests(
+				{ model: "gpt-5.5-pro" },
+				1,
+				"{\"type\":\"turn.failed\",\"error\":{\"message\":\"The 'gpt-5.5-pro' model is not supported when using Codex with a ChatGPT account.\"}}",
+				"MODEL_MATRIX_OK_12",
+			),
+		).toEqual(
+			expect.objectContaining({
+				ok: false,
+				skipped: true,
+				skipReason: "unsupported-model",
+			}),
+		);
+
+		expect(
+			mod.__finalizeModelCaseResultForTests(
 				{ model: "gpt-5.2" },
 				124,
 				"Timed out after 15000ms",
@@ -181,6 +222,42 @@ describe("test-model-matrix script helpers", () => {
 				ok: false,
 				skipped: true,
 				skipReason: "timed-out",
+			}),
+		);
+	});
+
+	it("keeps strict capability and full timeout failures red", async () => {
+		const mod = await import("../scripts/test-model-matrix.js");
+
+		expect(
+			mod.__finalizeModelCaseResultForTests(
+				{ model: "gpt-5.5-pro" },
+				1,
+				"{\"type\":\"turn.failed\",\"error\":{\"message\":\"The 'gpt-5.5-pro' model is not supported when using Codex with a ChatGPT account.\"}}",
+				"MODEL_MATRIX_OK_13",
+				false,
+				true,
+			),
+		).toEqual(
+			expect.objectContaining({
+				ok: false,
+				skipped: false,
+				skipReason: null,
+			}),
+		);
+
+		expect(
+			mod.__finalizeModelCaseResultForTests(
+				{ model: "gpt-5.2" },
+				124,
+				"Timed out after 120000ms",
+				"MODEL_MATRIX_OK_14",
+			),
+		).toEqual(
+			expect.objectContaining({
+				ok: false,
+				skipped: false,
+				skipReason: null,
 			}),
 		);
 	});
