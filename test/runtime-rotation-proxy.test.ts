@@ -1046,6 +1046,7 @@ describe("runtime rotation proxy", () => {
 			};
 		});
 		const accountManager = new AccountManager(undefined, storage);
+		vi.spyOn(accountManager, "saveToDiskDebounced").mockImplementation(() => undefined);
 		const { calls, fetchImpl } = createRecordingFetch((_call, attempt) =>
 			textEventStream(`data: refreshed-${attempt}\n\n`),
 		);
@@ -1100,6 +1101,7 @@ describe("runtime rotation proxy", () => {
 				expires: now + 7_200_000,
 			});
 		const accountManager = new AccountManager(undefined, storage);
+		vi.spyOn(accountManager, "saveToDiskDebounced").mockImplementation(() => undefined);
 		const originalCommit = accountManager.commitRefreshedAuth.bind(accountManager);
 		let releaseCommit: (() => void) | undefined;
 		const commitBlocked = new Promise<void>((resolve) => {
