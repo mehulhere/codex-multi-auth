@@ -951,6 +951,7 @@ export async function startRuntimeRotationProxy(
 				Math.min(accountCount, maxRuntimeAccountAttempts),
 			);
 			let transientAttempts = 0;
+			let transientExhaustionReason: ExhaustionReason | null = null;
 
 			while (
 				attemptedIndexes.size < accountCount &&
@@ -987,6 +988,7 @@ export async function startRuntimeRotationProxy(
 					exhaustionReason = "auth-failure";
 					if (!refreshed.retryable) continue;
 					transientAttempts += 1;
+					transientExhaustionReason = "auth-failure";
 					status.retries += 1;
 					status.rotations += 1;
 					continue;
@@ -1003,6 +1005,7 @@ export async function startRuntimeRotationProxy(
 					);
 					exhaustionReason = "auth-failure";
 					transientAttempts += 1;
+					transientExhaustionReason = "auth-failure";
 					status.retries += 1;
 					status.rotations += 1;
 					continue;
@@ -1048,6 +1051,7 @@ export async function startRuntimeRotationProxy(
 					accountManager.saveToDiskDebounced();
 					exhaustionReason = "network-error";
 					transientAttempts += 1;
+					transientExhaustionReason = "network-error";
 					status.retries += 1;
 					status.rotations += 1;
 					continue;
@@ -1072,6 +1076,7 @@ export async function startRuntimeRotationProxy(
 					accountManager.saveToDiskDebounced();
 					exhaustionReason = "rate-limit";
 					transientAttempts += 1;
+					transientExhaustionReason = "rate-limit";
 					status.retries += 1;
 					status.rotations += 1;
 					continue;
@@ -1123,6 +1128,7 @@ export async function startRuntimeRotationProxy(
 					accountManager.saveToDiskDebounced();
 					exhaustionReason = "auth-failure";
 					transientAttempts += 1;
+					transientExhaustionReason = "auth-failure";
 					status.retries += 1;
 					status.rotations += 1;
 					continue;
@@ -1140,6 +1146,7 @@ export async function startRuntimeRotationProxy(
 					accountManager.saveToDiskDebounced();
 					exhaustionReason = "server-error";
 					transientAttempts += 1;
+					transientExhaustionReason = "server-error";
 					status.retries += 1;
 					status.rotations += 1;
 					continue;
@@ -1209,6 +1216,11 @@ export async function startRuntimeRotationProxy(
 				exhaustionReason !== "deactivated"
 			) {
 				exhaustionReason = "budget";
+			} else if (
+				exhaustionReason === "deactivated" &&
+				transientExhaustionReason
+			) {
+				exhaustionReason = transientExhaustionReason;
 			}
 
 			await usageRecorder?.record({

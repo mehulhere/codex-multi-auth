@@ -828,6 +828,40 @@ describe("runtime rotation proxy", () => {
 		).toEqual(["acc_2"]);
 	});
 
+	it("disables a 403 workspace-disabled account and retries another account", async () => {
+		const now = Date.now();
+		const accountManager = new AccountManager(undefined, createStorage(now, 2));
+		const { calls, fetchImpl } = createRecordingFetch((_call, attempt) => {
+			if (attempt === 1) {
+				return new Response(
+					JSON.stringify({ error: { code: "workspace_disabled" } }),
+					{
+						status: HTTP_STATUS.FORBIDDEN,
+						headers: { "content-type": "application/json" },
+					},
+				);
+			}
+			return textEventStream("data: recovered\n\n");
+		});
+		const proxy = await startProxy({ accountManager, fetchImpl });
+
+		const response = await postResponses(proxy, { model: "gpt-5-codex" });
+
+		expect(response.status).toBe(HTTP_STATUS.OK);
+		expect(await response.text()).toBe("data: recovered\n\n");
+		expect(calls.map((call) => call.headers.get(OPENAI_HEADERS.ACCOUNT_ID))).toEqual([
+			"acc_1",
+			"acc_2",
+		]);
+		expect(accountManager.getAccountByIndex(0)?.enabled).toBe(false);
+		expect(accountManager.getAccountByIndex(1)?.enabled).toBe(true);
+		expect(proxy.getStatus()).toMatchObject({
+			retries: 1,
+			rotations: 1,
+			lastAccountIndex: 1,
+		});
+	});
+
 	it("returns pool exhaustion after all accounts are deactivated", async () => {
 		const now = Date.now();
 		const accountManager = new AccountManager(undefined, createStorage(now, 6));
@@ -851,6 +885,38 @@ describe("runtime rotation proxy", () => {
 		expect(accountManager.getAccountsSnapshot().every((account) => account.enabled === false)).toBe(
 			true,
 		);
+	});
+
+	it("reports a transient exhaustion reason when deactivated skips also occurred", async () => {
+		const now = Date.now();
+		const accountManager = new AccountManager(undefined, createStorage(now, 3));
+		const { calls, fetchImpl } = createRecordingFetch((_call, attempt) => {
+			if (attempt === 2) {
+				return new Response("upstream failed", { status: 503 });
+			}
+			return new Response(
+				JSON.stringify({ error: { code: "deactivated_workspace" } }),
+				{
+					status: 402,
+					headers: { "content-type": "application/json" },
+				},
+			);
+		});
+		const proxy = await startProxy({ accountManager, fetchImpl });
+
+		const response = await postResponses(proxy, { model: "gpt-5-codex" });
+		const payload = (await response.json()) as { error: { reason: string } };
+
+		expect(response.status).toBe(HTTP_STATUS.SERVICE_UNAVAILABLE);
+		expect(payload.error.reason).toBe("server-error");
+		expect(calls.map((call) => call.headers.get(OPENAI_HEADERS.ACCOUNT_ID))).toEqual([
+			"acc_1",
+			"acc_2",
+			"acc_3",
+		]);
+		expect(accountManager.getAccountByIndex(0)?.enabled).toBe(false);
+		expect(accountManager.getAccountByIndex(1)?.cooldownReason).toBe("server-error");
+		expect(accountManager.getAccountByIndex(2)?.enabled).toBe(false);
 	});
 
 	it("forwards unrelated 402 errors without disabling the account", async () => {
