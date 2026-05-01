@@ -148,6 +148,15 @@ function runQuiet(command, commandArgs) {
 	}
 }
 
+function runQuietWindowsTaskkill(pid) {
+	runQuiet("cmd.exe", [
+		"/d",
+		"/s",
+		"/c",
+		`taskkill /F /T /PID ${pid} >NUL 2>NUL`,
+	]);
+}
+
 export function registerSpawnedCodex(pid) {
 	if (!Number.isInteger(pid) || pid <= 0) return;
 	spawnedCodexPids.add(pid);
@@ -228,7 +237,7 @@ function stopCodexServersInternal() {
 	spawnedCodexPids.clear();
 	for (const pid of tracked) {
 		if (process.platform === "win32") {
-			runQuiet("taskkill", ["/F", "/T", "/PID", String(pid)]);
+			runQuietWindowsTaskkill(pid);
 			continue;
 		}
 		runQuiet("kill", ["-9", String(pid)]);
