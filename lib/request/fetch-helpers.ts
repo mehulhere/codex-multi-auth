@@ -329,13 +329,12 @@ export function isWorkspaceDisabledError(
         bodyText: string,
 ): boolean {
         const normalizedCode = typeof code === "string" ? code.trim().toLowerCase() : "";
-        const haystack = `${normalizedCode} ${bodyText}`.toLowerCase();
-        const normalizedTokens = normalizedCode
-                .split(/[^a-z0-9_]+/i)
-                .map((token) => token.trim())
-                .filter((token) => token.length > 0);
 
         if (status === 402) {
+                const normalizedTokens = normalizedCode
+                        .split(/[^a-z0-9_]+/i)
+                        .map((token) => token.trim())
+                        .filter((token) => token.length > 0);
                 return (
                         normalizedTokens.includes("deactivated_workspace") ||
                         /\bdeactivated_workspace\b/i.test(bodyText)
@@ -345,6 +344,12 @@ export function isWorkspaceDisabledError(
         if (status !== 403) {
                 return false;
         }
+
+        const haystack = `${normalizedCode} ${bodyText}`.toLowerCase();
+        const normalizedTokens = normalizedCode
+                .split(/[^a-z0-9_]+/i)
+                .map((token) => token.trim())
+                .filter((token) => token.length > 0);
 
 		const disabledPatterns = [
 				/workspace.*(?:disabled|expired|deactivated|terminated)/i,

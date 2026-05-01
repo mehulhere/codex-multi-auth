@@ -862,6 +862,60 @@ describe("runtime rotation proxy", () => {
 		});
 	});
 
+	it("records a concurrent deactivation failure once for the account", async () => {
+		const now = Date.now();
+		const accountManager = new AccountManager(undefined, createStorage(now, 1));
+		const recordFailureSpy = vi.spyOn(accountManager, "recordFailure");
+		let disabledCalls = 0;
+		let releaseDisabledCalls: (() => void) | null = null;
+		const allDisabledCallsArrived = new Promise<void>((resolve) => {
+			releaseDisabledCalls = resolve;
+		});
+		const { calls, fetchImpl } = createRecordingFetch(async (call) => {
+			if (call.headers.get(OPENAI_HEADERS.ACCOUNT_ID) === "acc_1") {
+				disabledCalls += 1;
+				if (disabledCalls === 2) releaseDisabledCalls?.();
+				await allDisabledCallsArrived;
+				return new Response(
+					JSON.stringify({ error: { code: "deactivated_workspace" } }),
+					{
+						status: 402,
+						headers: { "content-type": "application/json" },
+					},
+				);
+			}
+			return textEventStream("data: recovered\n\n");
+		});
+		const proxy = await startProxy({ accountManager, fetchImpl });
+		const body = {
+			model: "gpt-5-codex",
+			stream: true,
+			metadata: { session_id: "thread-concurrent-deactivated" },
+		};
+
+		const responses = await Promise.all([postResponses(proxy, body), postResponses(proxy, body)]);
+		const payloads = (await Promise.all(responses.map((response) => response.json()))) as Array<{
+			error: { reason: string };
+		}>;
+
+		expect(responses.map((response) => response.status)).toEqual([
+			HTTP_STATUS.SERVICE_UNAVAILABLE,
+			HTTP_STATUS.SERVICE_UNAVAILABLE,
+		]);
+		expect(payloads.map((payload) => payload.error.reason)).toEqual([
+			"deactivated",
+			"deactivated",
+		]);
+		expect(calls.map((call) => call.headers.get(OPENAI_HEADERS.ACCOUNT_ID))).toEqual([
+			"acc_1",
+			"acc_1",
+		]);
+		expect(
+			recordFailureSpy.mock.calls.filter(([account]) => account.index === 0),
+		).toHaveLength(1);
+		expect(accountManager.getAccountByIndex(0)?.enabled).toBe(false);
+	});
+
 	it("returns pool exhaustion after all accounts are deactivated", async () => {
 		const now = Date.now();
 		const accountManager = new AccountManager(undefined, createStorage(now, 6));

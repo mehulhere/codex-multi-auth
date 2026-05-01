@@ -247,13 +247,13 @@ describe("test-model-matrix script helpers", () => {
 			expect(spawnSync).toHaveBeenNthCalledWith(
 				1,
 				"cmd.exe",
-				["/d", "/s", "/c", "taskkill /F /T /PID 1001 >NUL 2>NUL"],
+				["/d", "/s", "/c", "taskkill /F /T /PID 1001"],
 				expect.objectContaining({ windowsHide: true, stdio: "ignore" }),
 			);
 			expect(spawnSync).toHaveBeenNthCalledWith(
 				2,
 				"cmd.exe",
-				["/d", "/s", "/c", "taskkill /F /T /PID 2002 >NUL 2>NUL"],
+				["/d", "/s", "/c", "taskkill /F /T /PID 2002"],
 				expect.objectContaining({ windowsHide: true, stdio: "ignore" }),
 			);
 		} finally {

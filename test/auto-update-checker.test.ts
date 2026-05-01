@@ -894,7 +894,7 @@ describe("auto-update-checker", () => {
 					"/d",
 					"/s",
 					"/c",
-					"taskkill /PID 1234 /T /F >NUL 2>NUL",
+					"taskkill /PID 1234 /T /F",
 				],
 				expect.objectContaining({ stdio: "ignore", windowsHide: true }),
 			);

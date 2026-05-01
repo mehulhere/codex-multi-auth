@@ -1086,19 +1086,24 @@ export async function startRuntimeRotationProxy(
 					const bodyText = await readErrorBody(upstream);
 					const errorCode = extractErrorCodeFromBody(bodyText);
 					if (isWorkspaceDisabledError(upstream.status, errorCode, bodyText)) {
+						const accountWasEnabled =
+							accountManager.getAccountByIndex(refreshed.account.index)?.enabled !==
+							false;
 						accountManager.refundToken(
 							refreshed.account,
 							context.family,
 							context.model,
 						);
-						accountManager.recordFailure(
-							refreshed.account,
-							context.family,
-							context.model,
-						);
-						accountManager.setAccountEnabled(refreshed.account.index, false);
+						if (accountWasEnabled) {
+							accountManager.recordFailure(
+								refreshed.account,
+								context.family,
+								context.model,
+							);
+							accountManager.setAccountEnabled(refreshed.account.index, false);
+							accountManager.saveToDiskDebounced();
+						}
 						sessionAffinityStore?.forgetSession(context.sessionKey);
-						accountManager.saveToDiskDebounced();
 						exhaustionReason = "deactivated";
 						status.retries += 1;
 						status.rotations += 1;

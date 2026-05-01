@@ -542,7 +542,7 @@ function taskkillProcessTree(pid: number): Promise<boolean> {
 					"/d",
 					"/s",
 					"/c",
-					`taskkill /PID ${pid} /T /F >NUL 2>NUL`,
+					`taskkill /PID ${pid} /T /F`,
 				],
 				{
 					stdio: "ignore",

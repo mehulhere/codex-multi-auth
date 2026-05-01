@@ -153,7 +153,7 @@ function runQuietWindowsTaskkill(pid) {
 		"/d",
 		"/s",
 		"/c",
-		`taskkill /F /T /PID ${pid} >NUL 2>NUL`,
+		`taskkill /F /T /PID ${pid}`,
 	]);
 }
 
