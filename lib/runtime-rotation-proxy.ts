@@ -34,6 +34,7 @@ import {
 	loadRuntimePolicyState,
 	type RuntimePolicyDecision,
 } from "./policy/runtime-policy.js";
+import { isWorkspaceDisabledError } from "./request/fetch-helpers.js";
 import { SessionAffinityStore } from "./session-affinity.js";
 import type { OAuthAuthDetails, RequestBody, TokenResult } from "./types.js";
 import { isRecord } from "./utils.js";
@@ -91,6 +92,7 @@ type ExhaustionReason =
 	| "network-error"
 	| "auth-failure"
 	| "budget"
+	| "deactivated"
 	| "no-account";
 type RuntimeProxyHttpError = Error & {
 	statusCode: number;
@@ -637,6 +639,26 @@ async function readErrorBody(response: Response): Promise<string> {
 	}
 }
 
+function extractErrorCodeFromBody(bodyText: string): string | null {
+	if (!bodyText.trim()) return null;
+	try {
+		const parsed = JSON.parse(bodyText) as unknown;
+		if (!isRecord(parsed)) return null;
+		const directCode = parsed.code;
+		if (typeof directCode === "string" && directCode.trim()) {
+			return directCode.trim();
+		}
+		const maybeError = parsed.error;
+		if (!isRecord(maybeError)) return null;
+		const nestedCode = maybeError.code;
+		return typeof nestedCode === "string" && nestedCode.trim()
+			? nestedCode.trim()
+			: null;
+	} catch {
+		return null;
+	}
+}
+
 function getQuotaWindowWaitMs(headers: Headers, prefix: string, now: number): number {
 	const resetAfterSeconds = Number.parseInt(
 		headers.get(`${prefix}-reset-after-seconds`) ?? "",
@@ -1013,12 +1035,18 @@ export async function startRuntimeRotationProxy(
 			);
 			const attemptedIndexes = new Set<number>();
 			let exhaustionReason: ExhaustionReason = "no-account";
-			const accountAttemptLimit = Math.max(
+			const accountCount = accountManager.getAccountCount();
+			const transientAttemptLimit = Math.max(
 				1,
-				Math.min(accountManager.getAccountCount(), maxRuntimeAccountAttempts),
+				Math.min(accountCount, maxRuntimeAccountAttempts),
 			);
+			let transientAttempts = 0;
+			let transientExhaustionReason: ExhaustionReason | null = null;
 
-			while (attemptedIndexes.size < accountAttemptLimit) {
+			while (
+				attemptedIndexes.size < accountCount &&
+				transientAttempts < transientAttemptLimit
+			) {
 				const selected = chooseAccount({
 					accountManager,
 					sessionAffinityStore,
@@ -1049,6 +1077,8 @@ export async function startRuntimeRotationProxy(
 					accountManager.refundToken(selected, context.family, context.model);
 					exhaustionReason = "auth-failure";
 					if (!refreshed.retryable) continue;
+					transientAttempts += 1;
+					transientExhaustionReason = "auth-failure";
 					status.retries += 1;
 					status.rotations += 1;
 					continue;
@@ -1064,6 +1094,8 @@ export async function startRuntimeRotationProxy(
 						"auth-failure",
 					);
 					exhaustionReason = "auth-failure";
+					transientAttempts += 1;
+					transientExhaustionReason = "auth-failure";
 					status.retries += 1;
 					status.rotations += 1;
 					continue;
@@ -1108,6 +1140,8 @@ export async function startRuntimeRotationProxy(
 					);
 					accountManager.saveToDiskDebounced();
 					exhaustionReason = "network-error";
+					transientAttempts += 1;
+					transientExhaustionReason = "network-error";
 					status.retries += 1;
 					status.rotations += 1;
 					continue;
@@ -1131,9 +1165,50 @@ export async function startRuntimeRotationProxy(
 					);
 					accountManager.saveToDiskDebounced();
 					exhaustionReason = "rate-limit";
+					transientAttempts += 1;
+					transientExhaustionReason = "rate-limit";
 					status.retries += 1;
 					status.rotations += 1;
 					continue;
+				}
+
+				if (upstream.status === 402 || upstream.status === HTTP_STATUS.FORBIDDEN) {
+					const bodyText = await readErrorBody(upstream);
+					const errorCode = extractErrorCodeFromBody(bodyText);
+					if (isWorkspaceDisabledError(upstream.status, errorCode, bodyText)) {
+						const accountWasEnabled =
+							accountManager.getAccountByIndex(refreshed.account.index)?.enabled !==
+							false;
+						accountManager.refundToken(
+							refreshed.account,
+							context.family,
+							context.model,
+						);
+						if (accountWasEnabled) {
+							accountManager.recordFailure(
+								refreshed.account,
+								context.family,
+								context.model,
+							);
+							accountManager.setAccountEnabled(refreshed.account.index, false);
+							accountManager.saveToDiskDebounced();
+						}
+						sessionAffinityStore?.forgetSession(context.sessionKey);
+						exhaustionReason = "deactivated";
+						status.retries += 1;
+						status.rotations += 1;
+						continue;
+					}
+
+					res.writeHead(upstream.status, responseHeadersForClient(upstream.headers));
+					res.end(bodyText);
+					await usageRecorder.record({
+						outcome: "failure",
+						statusCode: upstream.status,
+						errorCode,
+						account: refreshed.account,
+					});
+					return;
 				}
 
 				if (upstream.status === HTTP_STATUS.UNAUTHORIZED) {
@@ -1147,6 +1222,8 @@ export async function startRuntimeRotationProxy(
 					);
 					accountManager.saveToDiskDebounced();
 					exhaustionReason = "auth-failure";
+					transientAttempts += 1;
+					transientExhaustionReason = "auth-failure";
 					status.retries += 1;
 					status.rotations += 1;
 					continue;
@@ -1163,6 +1240,8 @@ export async function startRuntimeRotationProxy(
 					);
 					accountManager.saveToDiskDebounced();
 					exhaustionReason = "server-error";
+					transientAttempts += 1;
+					transientExhaustionReason = "server-error";
 					status.retries += 1;
 					status.rotations += 1;
 					continue;
@@ -1283,10 +1362,15 @@ export async function startRuntimeRotationProxy(
 			}
 
 			if (
-				attemptedIndexes.size >= accountAttemptLimit &&
-				accountAttemptLimit < accountManager.getAccountCount()
+				transientAttempts >= transientAttemptLimit &&
+				attemptedIndexes.size < accountCount
 			) {
 				exhaustionReason = "budget";
+			} else if (
+				exhaustionReason === "deactivated" &&
+				transientExhaustionReason
+			) {
+				exhaustionReason = transientExhaustionReason;
 			}
 
 			await usageRecorder?.record({

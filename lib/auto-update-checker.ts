@@ -537,8 +537,13 @@ function taskkillProcessTree(pid: number): Promise<boolean> {
 		timeout.unref?.();
 		try {
 			const killer = spawn(
-				"taskkill",
-				["/PID", String(pid), "/T", "/F"],
+				"cmd.exe",
+				[
+					"/d",
+					"/s",
+					"/c",
+					`taskkill /PID ${pid} /T /F`,
+				],
 				{
 					stdio: "ignore",
 					windowsHide: true,

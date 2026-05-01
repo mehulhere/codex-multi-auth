@@ -889,8 +889,13 @@ describe("auto-update-checker", () => {
 			await flushUpdateStartup();
 			await vi.advanceTimersByTimeAsync(25);
 			expect(childProcess.spawn).toHaveBeenLastCalledWith(
-				"taskkill",
-				["/PID", "1234", "/T", "/F"],
+				"cmd.exe",
+				[
+					"/d",
+					"/s",
+					"/c",
+					"taskkill /PID 1234 /T /F",
+				],
 				expect.objectContaining({ stdio: "ignore", windowsHide: true }),
 			);
 			killer.emit("exit", 0, null);
