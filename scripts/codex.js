@@ -2886,8 +2886,7 @@ async function createRuntimeRotationAppHelperContext(
 
 	const cleanup = async ({ exitCode } = {}) => {
 		const livedMs = Date.now() - startedAt;
-		const exitedSuccessfully = exitCode === 0 || exitCode === null || exitCode === undefined;
-		if (exitedSuccessfully && (options.detachOnExit === true || livedMs < detachGraceMs)) {
+		if (exitCode === 0 && (options.detachOnExit === true || livedMs < detachGraceMs)) {
 			helper.stdout?.destroy();
 			helper.stderr?.destroy();
 			helper.unref();

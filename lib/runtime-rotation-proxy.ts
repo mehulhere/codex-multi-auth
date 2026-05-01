@@ -109,6 +109,7 @@ const DEFAULT_QUOTA_REMAINING_THRESHOLD = 10;
 const DEFAULT_AUTH_FAILURE_COOLDOWN_MS = 30_000;
 const DEFAULT_MAX_RUNTIME_ACCOUNT_ATTEMPTS = 4;
 const MAX_REQUEST_BODY_BYTES = 64 * 1024 * 1024;
+const MAX_THREAD_GOAL_FALLBACKS = 512;
 const HOP_BY_HOP_HEADERS = new Set([
 	"connection",
 	"content-length",
@@ -343,6 +344,33 @@ function readStringSearchParam(searchParams: URLSearchParams, key: string): stri
 
 function isThreadGoalFallbackStatus(status: number): boolean {
 	return status === HTTP_STATUS.FORBIDDEN;
+}
+
+function setThreadGoalFallback(
+	fallbacks: Map<string, string | null>,
+	key: string,
+	goal: string | null,
+): void {
+	if (fallbacks.has(key)) {
+		fallbacks.delete(key);
+	}
+	fallbacks.set(key, goal);
+	while (fallbacks.size > MAX_THREAD_GOAL_FALLBACKS) {
+		const oldestKey = fallbacks.keys().next().value;
+		if (typeof oldestKey !== "string") break;
+		fallbacks.delete(oldestKey);
+	}
+}
+
+function getThreadGoalFallback(
+	fallbacks: Map<string, string | null>,
+	key: string,
+): string | null {
+	if (!fallbacks.has(key)) return null;
+	const goal = fallbacks.get(key) ?? null;
+	fallbacks.delete(key);
+	fallbacks.set(key, goal);
+	return goal;
 }
 
 function resolveSessionKey(headers: Headers, parsedBody: RequestBody | null): string | null {
@@ -942,7 +970,7 @@ export async function startRuntimeRotationProxy(
 				operation: isModelsRequest
 					? "models"
 					: isThreadGoalRequest
-						? "responses"
+						? "thread-goal"
 						: "responses",
 				model: context.model,
 				projectKey,
@@ -1169,12 +1197,12 @@ export async function startRuntimeRotationProxy(
 						account: refreshed.account,
 					});
 					if (context.upstreamPath.endsWith("/set")) {
-						threadGoalFallbacks.set(fallbackKey, goal);
+						setThreadGoalFallback(threadGoalFallbacks, fallbackKey, goal);
 						writeJson(res, HTTP_STATUS.OK, { ok: true, goal });
 						return;
 					}
 					writeJson(res, HTTP_STATUS.OK, {
-						goal: threadGoalFallbacks.get(fallbackKey) ?? null,
+						goal: getThreadGoalFallback(threadGoalFallbacks, fallbackKey),
 					});
 					return;
 				}

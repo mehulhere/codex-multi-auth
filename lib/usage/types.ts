@@ -8,6 +8,7 @@ export type UsageLedgerSource =
 export type UsageLedgerOperation =
 	| "responses"
 	| "models"
+	| "thread-goal"
 	| "auth-refresh"
 	| "diagnostic"
 	| "unknown";

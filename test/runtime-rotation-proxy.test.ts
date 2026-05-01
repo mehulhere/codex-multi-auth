@@ -765,6 +765,42 @@ describe("runtime rotation proxy", () => {
 		).toHaveLength(2);
 	});
 
+	it("evicts oldest local thread goal fallbacks when capacity is exceeded", async () => {
+		const now = Date.now();
+		const accountManager = new AccountManager(undefined, createStorage(now, 600));
+		const { fetchImpl } = createRecordingFetch(
+			() =>
+				new Response("<html>blocked</html>", {
+					status: HTTP_STATUS.FORBIDDEN,
+					headers: { "content-type": "text/html" },
+				}),
+		);
+		const proxy = await startProxy({ accountManager, fetchImpl });
+
+		for (let index = 0; index < 513; index += 1) {
+			const response = await postThreadGoal(
+				proxy,
+				{ threadId: `thread-${index}`, goal: `goal-${index}` },
+				"/thread/goal/set",
+			);
+			expect(response.status).toBe(HTTP_STATUS.OK);
+		}
+
+		const evicted = await postThreadGoal(
+			proxy,
+			{ threadId: "thread-0" },
+			"/thread/goal/get",
+		);
+		const retained = await postThreadGoal(
+			proxy,
+			{ threadId: "thread-512" },
+			"/thread/goal/get",
+		);
+
+		expect(await evicted.json()).toEqual({ goal: null });
+		expect(await retained.json()).toEqual({ goal: "goal-512" });
+	});
+
 	it("rejects unauthenticated model discovery requests", async () => {
 		const now = Date.now();
 		const accountManager = new AccountManager(undefined, createStorage(now));

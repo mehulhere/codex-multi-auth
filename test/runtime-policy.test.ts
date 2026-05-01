@@ -165,4 +165,54 @@ describe("runtime policy", () => {
 		});
 		expect(recorder.hasRecorded()).toBe(true);
 	});
+
+	it("records thread goal usage as a distinct operation", async () => {
+		const append = vi.fn<typeof appendUsageLedgerRow>().mockResolvedValue({
+			version: 1,
+			id: "row-1",
+			createdAt: 100,
+			source: "runtime-proxy",
+			operation: "thread-goal",
+			outcome: "failure",
+			model: null,
+			projectKey: "project-a",
+			account: null,
+			requestId: "thread-1",
+			statusCode: 403,
+			errorCode: "thread_goal_upstream_blocked",
+			durationMs: 0,
+			tokens: {
+				inputTokens: 0,
+				outputTokens: 0,
+				cachedInputTokens: 0,
+				reasoningTokens: 0,
+				totalTokens: 0,
+			},
+			costUsd: 0,
+		});
+		const recorder = createRuntimeUsageRecorder({
+			source: "runtime-proxy",
+			operation: "thread-goal",
+			model: null,
+			projectKey: "project-a",
+			requestId: "thread-1",
+			startedAt: 100,
+			append,
+		});
+
+		await recorder.record({
+			outcome: "failure",
+			statusCode: 403,
+			errorCode: "thread_goal_upstream_blocked",
+		});
+
+		expect(append.mock.calls[0]?.[0]).toMatchObject({
+			source: "runtime-proxy",
+			operation: "thread-goal",
+			outcome: "failure",
+			requestId: "thread-1",
+			statusCode: 403,
+			errorCode: "thread_goal_upstream_blocked",
+		});
+	});
 });
