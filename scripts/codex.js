@@ -2021,15 +2021,26 @@ function materializeSqliteSidecarPlaceholder(sourceSidecarPath, destinationSidec
 			throw error;
 		}
 		symlinkSync(sourceSidecarPath, destinationSidecarPath, "file");
+		return true;
 	} catch (error) {
-		if (error?.code !== "EEXIST") {
-			warnSkippedSqliteShadowHomeSidecarPlaceholder(error, destinationSidecarPath);
+		if (error?.code === "EEXIST") {
+			return true;
 		}
+		warnSkippedSqliteShadowHomeSidecarPlaceholder(error, destinationSidecarPath);
+		return false;
 	}
 }
 
 function materializeFileIntoShadowHome(sourcePath, destinationPath) {
 	try {
+		if (
+			(process.env.CODEX_MULTI_AUTH_TEST_FORCE_SHADOW_SQLITE_SIDECAR_LINK_FAILURE ??
+				""
+			).trim() === "1" &&
+			isSqliteSidecarFile(basename(sourcePath))
+		) {
+			throw new Error("simulated SQLite sidecar link failure");
+		}
 		if (linkFileIntoShadowHome(sourcePath, destinationPath)) {
 			return true;
 		}
@@ -2049,14 +2060,28 @@ function materializeSqliteSidecarsIntoShadowHome(sourcePath, destinationPath) {
 		}
 		if (existsSync(sourceSidecarPath)) {
 			if (!materializeFileIntoShadowHome(sourceSidecarPath, destinationSidecarPath)) {
-				materializeSqliteSidecarPlaceholder(
+				if (!materializeSqliteSidecarPlaceholder(
 					sourceSidecarPath,
 					destinationSidecarPath,
-				);
+				)) {
+					return false;
+				}
 			}
 			continue;
 		}
-		materializeSqliteSidecarPlaceholder(sourceSidecarPath, destinationSidecarPath);
+		if (!materializeSqliteSidecarPlaceholder(sourceSidecarPath, destinationSidecarPath)) {
+			return false;
+		}
+	}
+	return true;
+}
+
+function removeSqliteShadowHomeMaterialization(destinationPath) {
+	for (const path of [destinationPath, `${destinationPath}-wal`, `${destinationPath}-shm`]) {
+		try {
+			rmSync(path, { force: true });
+		} catch {
+		}
 	}
 }
 
@@ -2282,8 +2307,13 @@ function createShadowHomeMirror(
 						copyFileSync(sourcePath, destinationPath);
 						tightenFile(destinationPath);
 					} else if (shouldMaterializeFile) {
+						if (isSqliteSidecarFile(name)) {
+							continue;
+						}
 						if (materializeFileIntoShadowHome(sourcePath, destinationPath) && isSqliteMainFile(name)) {
-							materializeSqliteSidecarsIntoShadowHome(sourcePath, destinationPath);
+							if (!materializeSqliteSidecarsIntoShadowHome(sourcePath, destinationPath)) {
+								removeSqliteShadowHomeMaterialization(destinationPath);
+							}
 						}
 					} else {
 						mirrorFileIntoShadowHome(sourcePath, destinationPath, tightenFile);

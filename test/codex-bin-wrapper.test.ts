@@ -1068,9 +1068,7 @@ describe("codex bin wrapper", () => {
 			'const cacheShmPath = path.join(process.env.CODEX_HOME ?? "", "plugin_cache.sqlite-shm");',
 			'console.log(`CACHE_SQLITE_MIRRORED:${fs.existsSync(cachePath)}`);',
 			'console.log(`CACHE_WAL_MIRRORED:${fs.existsSync(cacheWalPath)}`);',
-			'let cacheShmPlaceholder = "false";',
-			'try { cacheShmPlaceholder = String(fs.lstatSync(cacheShmPath).isSymbolicLink()); } catch { cacheShmPlaceholder = process.platform === "win32" ? "skipped" : "false"; }',
-			'console.log(`CACHE_SHM_PLACEHOLDER:${cacheShmPlaceholder}`);',
+			'console.log(`CACHE_SHM_MIRRORED:${fs.existsSync(cacheShmPath)}`);',
 			'const logPath = path.join(process.env.CODEX_HOME ?? "", "logs_2.sqlite");',
 			'const logWalPath = path.join(process.env.CODEX_HOME ?? "", "logs_2.sqlite-wal");',
 			'const logShmPath = path.join(process.env.CODEX_HOME ?? "", "logs_2.sqlite-shm");',
@@ -1176,6 +1174,7 @@ describe("codex bin wrapper", () => {
 		writeFileSync(join(originalHome, "LOGS_3.sqlite"), "upper log\n", "utf8");
 		writeFileSync(join(originalHome, "plugin_cache.sqlite"), "cache\n", "utf8");
 		writeFileSync(join(originalHome, "plugin_cache.sqlite-wal"), "cache wal\n", "utf8");
+		writeFileSync(join(originalHome, "plugin_cache.sqlite-shm"), "cache shm\n", "utf8");
 		writeFileSync(
 			join(originalHome, "config.toml"),
 			[
@@ -1228,7 +1227,7 @@ describe("codex bin wrapper", () => {
 		expect(output).toContain("GLOBAL_STATE_TMP_ISOLATED:true");
 		expect(output).toContain("CACHE_SQLITE_MIRRORED:true");
 		expect(output).toContain("CACHE_WAL_MIRRORED:true");
-		expect(output).toMatch(/^CACHE_SHM_PLACEHOLDER:(?:true|skipped)$/m);
+		expect(output).toContain("CACHE_SHM_MIRRORED:true");
 		expect(output).toContain("LOG_SQLITE_MIRRORED:false");
 		expect(output).toContain("LOG_WAL_MIRRORED:false");
 		expect(output).toContain("LOG_SHM_MIRRORED:false");
@@ -1368,10 +1367,57 @@ describe("codex bin wrapper", () => {
 			"#!/usr/bin/env node",
 			'const fs = require("node:fs");',
 			'const path = require("node:path");',
+			'const cachePath = path.join(process.env.CODEX_HOME ?? "", "plugin_cache.sqlite");',
+			'const cacheWalPath = path.join(process.env.CODEX_HOME ?? "", "plugin_cache.sqlite-wal");',
 			'const cacheShmPath = path.join(process.env.CODEX_HOME ?? "", "plugin_cache.sqlite-shm");',
-			'let cacheShmPlaceholder = "false";',
-			'try { cacheShmPlaceholder = String(fs.lstatSync(cacheShmPath).isSymbolicLink()); } catch { cacheShmPlaceholder = "false"; }',
-			'console.log(`CACHE_SHM_PLACEHOLDER:${cacheShmPlaceholder}`);',
+			'console.log(`CACHE_SQLITE_MIRRORED:${fs.existsSync(cachePath)}`);',
+			'console.log(`CACHE_WAL_MIRRORED:${fs.existsSync(cacheWalPath)}`);',
+			'console.log(`CACHE_SHM_MIRRORED:${fs.existsSync(cacheShmPath)}`);',
+			"process.exit(0);",
+		]);
+		const originalHome = join(fixtureRoot, "codex-home");
+		const markerPath = join(fixtureRoot, "proxy-marker.txt");
+		mkdirSync(originalHome, { recursive: true });
+		writeFileSync(join(originalHome, "plugin_cache.sqlite"), "cache\n", "utf8");
+		writeFileSync(join(originalHome, "plugin_cache.sqlite-wal"), "cache wal\n", "utf8");
+		writeFileSync(join(originalHome, "plugin_cache.sqlite-shm"), "cache shm\n", "utf8");
+
+		const result = runWrapper(fixtureRoot, ["exec", "status"], {
+			CODEX_MULTI_AUTH_REAL_CODEX_BIN: fakeBin,
+			CODEX_HOME: originalHome,
+			CODEX_MULTI_AUTH_RUNTIME_ROTATION_PROXY: "1",
+			CODEX_MULTI_AUTH_TEST_PROXY_BASE_URL: "http://127.0.0.1:4567",
+			CODEX_MULTI_AUTH_TEST_PROXY_MARKER: markerPath,
+			CODEX_MULTI_AUTH_TEST_FORCE_SHADOW_SQLITE_SIDECAR_LINK_FAILURE: "1",
+			CODEX_MULTI_AUTH_TEST_FORCE_SHADOW_SIDECAR_PLACEHOLDER_FAILURE: "1",
+			OPENAI_API_KEY: undefined,
+		});
+
+		const output = combinedOutput(result);
+		expect(result.status).toBe(0);
+		expect(output).toContain("CACHE_SQLITE_MIRRORED:false");
+		expect(output).toContain("CACHE_WAL_MIRRORED:false");
+		expect(output).toContain("CACHE_SHM_MIRRORED:false");
+		expect(output).toContain(
+			"codex-multi-auth: skipped SQLite shadow-home sidecar placeholder for",
+		);
+		expect(output).toContain("plugin_cache.sqlite-wal");
+		expect(output).toContain("simulated SQLite sidecar placeholder failure");
+	});
+
+	it("removes sqlite materialization when a missing sidecar placeholder fails", () => {
+		const fixtureRoot = createWrapperFixture();
+		createRuntimeRotationProxyFixtureModule(fixtureRoot);
+		const fakeBin = createCustomFakeCodexBin(fixtureRoot, [
+			"#!/usr/bin/env node",
+			'const fs = require("node:fs");',
+			'const path = require("node:path");',
+			'const cachePath = path.join(process.env.CODEX_HOME ?? "", "plugin_cache.sqlite");',
+			'const cacheWalPath = path.join(process.env.CODEX_HOME ?? "", "plugin_cache.sqlite-wal");',
+			'const cacheShmPath = path.join(process.env.CODEX_HOME ?? "", "plugin_cache.sqlite-shm");',
+			'console.log(`CACHE_SQLITE_MIRRORED:${fs.existsSync(cachePath)}`);',
+			'console.log(`CACHE_WAL_MIRRORED:${fs.existsSync(cacheWalPath)}`);',
+			'console.log(`CACHE_SHM_MIRRORED:${fs.existsSync(cacheShmPath)}`);',
 			"process.exit(0);",
 		]);
 		const originalHome = join(fixtureRoot, "codex-home");
@@ -1392,7 +1438,9 @@ describe("codex bin wrapper", () => {
 
 		const output = combinedOutput(result);
 		expect(result.status).toBe(0);
-		expect(output).toContain("CACHE_SHM_PLACEHOLDER:false");
+		expect(output).toContain("CACHE_SQLITE_MIRRORED:false");
+		expect(output).toContain("CACHE_WAL_MIRRORED:false");
+		expect(output).toContain("CACHE_SHM_MIRRORED:false");
 		expect(output).toContain(
 			"codex-multi-auth: skipped SQLite shadow-home sidecar placeholder for",
 		);
