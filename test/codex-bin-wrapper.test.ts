@@ -945,8 +945,12 @@ describe("codex bin wrapper", () => {
 			'console.log(`MEMORY_EXISTS:${fs.existsSync(path.join(process.env.CODEX_HOME ?? "", "memories", "user.md"))}`);',
 			'console.log(`INSTRUCTION_EXISTS:${fs.existsSync(path.join(process.env.CODEX_HOME ?? "", "instructions", "profile.md"))}`);',
 			'const statePath = path.join(process.env.CODEX_HOME ?? "", "state_5.sqlite");',
+			'const stateWalPath = path.join(process.env.CODEX_HOME ?? "", "state_5.sqlite-wal");',
+			'const stateShmPath = path.join(process.env.CODEX_HOME ?? "", "state_5.sqlite-shm");',
 			'const originalStatePath = path.join(process.env.ORIGINAL_CODEX_HOME ?? "", "state_5.sqlite");',
 			'console.log(`ROOT_STATE_MIRRORED:${fs.existsSync(statePath)}`);',
+			'console.log(`ROOT_STATE_WAL_MIRRORED:${fs.existsSync(stateWalPath)}`);',
+			'console.log(`ROOT_STATE_SHM_MIRRORED:${fs.existsSync(stateShmPath)}`);',
 			'fs.writeFileSync(statePath, "shadow-only\\n", "utf8");',
 			'console.log(`ROOT_STATE_ISOLATED:${!fs.readFileSync(originalStatePath, "utf8").includes("shadow-only")}`);',
 			'fs.writeFileSync(path.join(process.env.CODEX_HOME ?? "", "new-root-state.json"), "new\\n", "utf8");',
@@ -988,7 +992,9 @@ describe("codex bin wrapper", () => {
 			"instruction\n",
 			"utf8",
 		);
-		writeFileSync(join(originalHome, "state_5.sqlite"), "state\n", "utf8");
+		writeFileSync(join(originalHome, "state_5.sqlite"), "not a sqlite database\n", "utf8");
+		writeFileSync(join(originalHome, "state_5.sqlite-wal"), "original wal\n", "utf8");
+		writeFileSync(join(originalHome, "state_5.sqlite-shm"), "original shm\n", "utf8");
 		writeFileSync(
 			join(originalHome, "config.toml"),
 			[
@@ -1028,6 +1034,8 @@ describe("codex bin wrapper", () => {
 		expect(output).toContain("MEMORY_EXISTS:true");
 		expect(output).toContain("INSTRUCTION_EXISTS:true");
 		expect(output).toContain("ROOT_STATE_MIRRORED:false");
+		expect(output).toContain("ROOT_STATE_WAL_MIRRORED:false");
+		expect(output).toContain("ROOT_STATE_SHM_MIRRORED:false");
 		expect(output).toContain("ROOT_STATE_ISOLATED:true");
 		const apiKeyMatch = output.match(/^OPENAI_API_KEY:([0-9a-f]{64})$/m);
 		expect(apiKeyMatch?.[1]).toBeTruthy();
@@ -1067,7 +1075,15 @@ describe("codex bin wrapper", () => {
 		expect(
 			readFileSync(join(originalHome, "sessions", "runtime-session.jsonl"), "utf8"),
 		).toBe("runtime\n");
-		expect(readFileSync(join(originalHome, "state_5.sqlite"), "utf8")).toBe("state\n");
+		expect(readFileSync(join(originalHome, "state_5.sqlite"), "utf8")).toBe(
+			"not a sqlite database\n",
+		);
+		expect(readFileSync(join(originalHome, "state_5.sqlite-wal"), "utf8")).toBe(
+			"original wal\n",
+		);
+		expect(readFileSync(join(originalHome, "state_5.sqlite-shm"), "utf8")).toBe(
+			"original shm\n",
+		);
 		expect(readFileSync(join(originalHome, "new-root-state.json"), "utf8")).toBe(
 			"new\n",
 		);

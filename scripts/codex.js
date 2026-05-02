@@ -1906,24 +1906,28 @@ function shouldMaterializeFileIntoShadowHome(name) {
 	return isSqliteMainFile(name) || isSqliteSidecarFile(name);
 }
 
+function warnSkippedSqliteShadowHomeMaterialization() {
+	if (!warnedShadowHomeSqliteLinkFailure) {
+		warnedShadowHomeSqliteLinkFailure = true;
+		console.error(
+			"codex-multi-auth: skipped SQLite shadow-home materialization because linking failed; refusing to copy active SQLite state.",
+		);
+	}
+}
+
 function materializeFileIntoShadowHome(sourcePath, destinationPath) {
 	try {
 		if (linkFileIntoShadowHome(sourcePath, destinationPath)) {
 			return true;
 		}
 		if (existsSync(sourcePath)) {
-			linkSync(sourcePath, destinationPath);
-			return true;
+			warnSkippedSqliteShadowHomeMaterialization();
+			return false;
 		}
 		symlinkSync(sourcePath, destinationPath, "file");
 		return true;
 	} catch {
-		if (!warnedShadowHomeSqliteLinkFailure) {
-			warnedShadowHomeSqliteLinkFailure = true;
-			console.error(
-				"codex-multi-auth: skipped SQLite shadow-home materialization because linking failed; refusing to copy active SQLite state.",
-			);
-		}
+		warnSkippedSqliteShadowHomeMaterialization();
 	}
 	return false;
 }
@@ -1942,6 +1946,7 @@ function materializeSqliteSidecarsIntoShadowHome(sourcePath, destinationPath) {
 		try {
 			symlinkSync(sourceSidecarPath, destinationSidecarPath, "file");
 		} catch {
+			warnSkippedSqliteShadowHomeMaterialization();
 		}
 	}
 }
