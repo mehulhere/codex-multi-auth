@@ -944,6 +944,12 @@ describe("codex bin wrapper", () => {
 			'console.log(`SKILL_EXISTS:${fs.existsSync(path.join(process.env.CODEX_HOME ?? "", "skills", "skill.txt"))}`);',
 			'console.log(`MEMORY_EXISTS:${fs.existsSync(path.join(process.env.CODEX_HOME ?? "", "memories", "user.md"))}`);',
 			'console.log(`INSTRUCTION_EXISTS:${fs.existsSync(path.join(process.env.CODEX_HOME ?? "", "instructions", "profile.md"))}`);',
+			'console.log(`MULTI_AUTH_MIRRORED:${fs.existsSync(path.join(process.env.CODEX_HOME ?? "", "multi-auth"))}`);',
+			'const authTmpPath = path.join(process.env.CODEX_HOME ?? "", "auth.json.1772056142508.3nwgwa.tmp");',
+			'const originalAuthTmpPath = path.join(process.env.ORIGINAL_CODEX_HOME ?? "", "auth.json.1772056142508.3nwgwa.tmp");',
+			'console.log(`AUTH_TMP_MIRRORED:${fs.existsSync(authTmpPath)}`);',
+			'fs.writeFileSync(authTmpPath, "shadow-auth-tmp\\n", "utf8");',
+			'console.log(`AUTH_TMP_ISOLATED:${!fs.readFileSync(originalAuthTmpPath, "utf8").includes("shadow-auth-tmp")}`);',
 			'const cachePath = path.join(process.env.CODEX_HOME ?? "", "plugin_cache.sqlite");',
 			'const cacheWalPath = path.join(process.env.CODEX_HOME ?? "", "plugin_cache.sqlite-wal");',
 			'const cacheShmPath = path.join(process.env.CODEX_HOME ?? "", "plugin_cache.sqlite-shm");',
@@ -996,11 +1002,24 @@ describe("codex bin wrapper", () => {
 		mkdirSync(join(originalHome, "skills"), { recursive: true });
 		mkdirSync(join(originalHome, "memories"), { recursive: true });
 		mkdirSync(join(originalHome, "instructions"), { recursive: true });
+		mkdirSync(join(originalHome, "multi-auth", "runtime-shadow-homes", "stale"), {
+			recursive: true,
+		});
 		writeFileSync(join(originalHome, "sessions", "resume.jsonl"), "resume\n", "utf8");
 		writeFileSync(join(originalHome, "plugins", "plugin.txt"), "plugin\n", "utf8");
 		writeFileSync(join(originalHome, "skills", "skill.txt"), "skill\n", "utf8");
 		writeFileSync(join(originalHome, "memories", "user.md"), "memory\n", "utf8");
+		writeFileSync(
+			join(originalHome, "multi-auth", "runtime-shadow-homes", "stale", "payload.txt"),
+			"stale shadow\n",
+			"utf8",
+		);
 		writeFileSync(join(originalHome, "auth.json"), '{"token":"original"}\n', "utf8");
+		writeFileSync(
+			join(originalHome, "auth.json.1772056142508.3nwgwa.tmp"),
+			"original auth tmp\n",
+			"utf8",
+		);
 		writeFileSync(
 			join(originalHome, "accounts.json"),
 			'{"accounts":["original"]}\n',
@@ -1063,6 +1082,9 @@ describe("codex bin wrapper", () => {
 		expect(output).toContain("SKILL_EXISTS:true");
 		expect(output).toContain("MEMORY_EXISTS:true");
 		expect(output).toContain("INSTRUCTION_EXISTS:true");
+		expect(output).toContain("MULTI_AUTH_MIRRORED:false");
+		expect(output).toContain("AUTH_TMP_MIRRORED:false");
+		expect(output).toContain("AUTH_TMP_ISOLATED:true");
 		expect(output).toContain("CACHE_SQLITE_MIRRORED:true");
 		expect(output).toContain("CACHE_WAL_MIRRORED:true");
 		expect(output).toMatch(/^CACHE_SHM_PLACEHOLDER:(?:true|skipped)$/m);
@@ -1124,6 +1146,12 @@ describe("codex bin wrapper", () => {
 		expect(readFileSync(join(originalHome, "state_5.sqlite-shm"), "utf8")).toBe(
 			"original shm\n",
 		);
+		expect(
+			readFileSync(
+				join(originalHome, "auth.json.1772056142508.3nwgwa.tmp"),
+				"utf8",
+			),
+		).toBe("original auth tmp\n");
 		expect(readFileSync(join(originalHome, "logs_2.sqlite"), "utf8")).toBe(
 			"original log\n",
 		);

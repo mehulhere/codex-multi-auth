@@ -41,6 +41,7 @@ const RUNTIME_ROTATION_SHADOW_HOME_OMIT_STATE_FILES = new Set([
 	"auth.json",
 	"accounts.json",
 ]);
+const RUNTIME_ROTATION_SHADOW_HOME_OMIT_ROOT_DIRS = new Set(["multi-auth"]);
 const SHADOW_HOME_STATE_FILE_SET = new Set(SHADOW_HOME_STATE_FILES);
 const SHADOW_HOME_CONFIG_FILE = "config.toml";
 const SHADOW_HOME_SYNC_LOCK_DIR = ".codex-multi-auth-shadow-sync.lock";
@@ -1899,12 +1900,31 @@ function isSqliteSidecarFile(name) {
 	return /\.sqlite-(?:shm|wal)$/i.test(name);
 }
 
+function normalizeRuntimeShadowHomeEntryName(name) {
+	return process.platform === "win32" || process.platform === "darwin"
+		? name.toLowerCase()
+		: name;
+}
+
 function isCodexRuntimeLocalSqliteFile(name) {
-	const normalizedName =
-		process.platform === "win32" || process.platform === "darwin"
-			? name.toLowerCase()
-			: name;
+	const normalizedName = normalizeRuntimeShadowHomeEntryName(name);
 	return /^(?:state|logs)_\d+\.sqlite(?:-(?:shm|wal))?$/.test(normalizedName);
+}
+
+function isCodexRuntimeTransientStateFile(name) {
+	const normalizedName = normalizeRuntimeShadowHomeEntryName(name);
+	return /^(?:auth|accounts)\.json\.\d+\.[a-z0-9]+\.tmp$/.test(
+		normalizedName,
+	);
+}
+
+function isRuntimeRotationShadowHomeOmittedEntry(name) {
+	const normalizedName = normalizeRuntimeShadowHomeEntryName(name);
+	return (
+		RUNTIME_ROTATION_SHADOW_HOME_OMIT_ROOT_DIRS.has(normalizedName) ||
+		isCodexRuntimeLocalSqliteFile(name) ||
+		isCodexRuntimeTransientStateFile(name)
+	);
 }
 
 function shouldMaterializeFileIntoShadowHome(name) {
@@ -2398,9 +2418,9 @@ function createRuntimeRotationProxyCodexHome(
 			shadowCodexHome,
 			tightenShadowHomePermissions,
 			{
-				skipMirrorPredicate: isCodexRuntimeLocalSqliteFile,
+				skipMirrorPredicate: isRuntimeRotationShadowHomeOmittedEntry,
 				skipSyncBackNames: RUNTIME_ROTATION_SHADOW_HOME_OMIT_STATE_FILES,
-				skipSyncBackPredicate: isCodexRuntimeLocalSqliteFile,
+				skipSyncBackPredicate: isRuntimeRotationShadowHomeOmittedEntry,
 			},
 		);
 		omitRuntimeRotationShadowHomeStateFiles(shadowCodexHome);
