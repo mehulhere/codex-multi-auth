@@ -1206,6 +1206,16 @@ export async function startRuntimeRotationProxy(
 						const goal =
 							typeof parsedGoalBody?.goal === "string" ? parsedGoalBody.goal : null;
 						if (!fallbackKey) {
+							if (context.upstreamPath.endsWith("/get")) {
+								writeJson(res, HTTP_STATUS.OK, { goal: null });
+								await usageRecorder.record({
+									outcome: "failure",
+									statusCode: upstream.status,
+									errorCode: "thread_goal_session_key_required",
+									account: refreshed.account,
+								});
+								return;
+							}
 							await usageRecorder.record({
 								outcome: "failure",
 								statusCode: HTTP_STATUS.BAD_REQUEST,
@@ -1238,6 +1248,16 @@ export async function startRuntimeRotationProxy(
 						return;
 					}
 
+					if (isThreadGoalRequest && context.upstreamPath.endsWith("/get")) {
+						writeJson(res, HTTP_STATUS.OK, { goal: null });
+						await usageRecorder.record({
+							outcome: "failure",
+							statusCode: upstream.status,
+							errorCode,
+							account: refreshed.account,
+						});
+						return;
+					}
 					res.writeHead(upstream.status, responseHeadersForClient(upstream.headers));
 					res.end(bodyText);
 					await usageRecorder.record({
@@ -1286,6 +1306,16 @@ export async function startRuntimeRotationProxy(
 				}
 
 				if (isThreadGoalRequest && upstream.status >= 400) {
+					if (context.upstreamPath.endsWith("/get")) {
+						writeJson(res, HTTP_STATUS.OK, { goal: null });
+						await usageRecorder.record({
+							outcome: "failure",
+							statusCode: upstream.status,
+							errorCode: "thread_goal_upstream_error",
+							account: refreshed.account,
+						});
+						return;
+					}
 					const forwarded = await forwardStreamingResponse(
 						upstream,
 						res,
@@ -1375,15 +1405,19 @@ export async function startRuntimeRotationProxy(
 			await usageRecorder?.record({
 				outcome: "failure",
 				statusCode: normalizeExhaustionStatus(exhaustionReason),
-				errorCode: exhaustionReason,
+				errorCode: isThreadGoalRequest && context.upstreamPath.endsWith("/get") ? "thread_goal_pool_exhausted" : exhaustionReason,
 			});
-			writePoolExhausted({
-				res,
-				accountManager,
-				family: context.family,
-				model: context.model,
-				reason: exhaustionReason,
-			});
+			if (isThreadGoalRequest && context.upstreamPath.endsWith("/get")) {
+				writeJson(res, HTTP_STATUS.OK, { goal: null });
+			} else {
+				writePoolExhausted({
+					res,
+					accountManager,
+					family: context.family,
+					model: context.model,
+					reason: exhaustionReason,
+				});
+			}
 		} catch (error) {
 			status.lastError = error instanceof Error ? error.message : String(error);
 			if (!res.headersSent) {
