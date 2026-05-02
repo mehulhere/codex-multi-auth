@@ -90,7 +90,7 @@ const shadowHomeCleanupRetryMarkerDir =
 let warnedInvalidRuntimeRotationProxyEnv = false;
 let warnedPendingAccountReadIdOverflow = false;
 let warnedShadowHomeSqliteLinkFailure = false;
-let warnedShadowHomeSqliteSidecarPlaceholderFailure = false;
+const warnedShadowHomeSqliteSidecarPlaceholderFailures = new Set();
 
 async function loadRuntimeConstants() {
 	const fallback = {
@@ -1916,12 +1916,31 @@ function warnSkippedSqliteShadowHomeMaterialization() {
 	}
 }
 
-function warnSkippedSqliteShadowHomeSidecarPlaceholder(error) {
-	if (!warnedShadowHomeSqliteSidecarPlaceholderFailure) {
-		warnedShadowHomeSqliteSidecarPlaceholderFailure = true;
+function warnSkippedSqliteShadowHomeSidecarPlaceholder(error, destinationPath) {
+	if (!warnedShadowHomeSqliteSidecarPlaceholderFailures.has(destinationPath)) {
+		warnedShadowHomeSqliteSidecarPlaceholderFailures.add(destinationPath);
 		console.error(
-			`codex-multi-auth: skipped SQLite shadow-home sidecar placeholder because linking failed: ${error instanceof Error ? error.message : String(error)}`,
+			`codex-multi-auth: skipped SQLite shadow-home sidecar placeholder for ${destinationPath} because linking failed: ${error instanceof Error ? error.message : String(error)}`,
 		);
+	}
+}
+
+function materializeSqliteSidecarPlaceholder(sourceSidecarPath, destinationSidecarPath) {
+	try {
+		if (
+			(process.env.CODEX_MULTI_AUTH_TEST_FORCE_SHADOW_SIDECAR_PLACEHOLDER_FAILURE ??
+				""
+			).trim() === "1"
+		) {
+			const error = new Error("simulated SQLite sidecar placeholder failure");
+			error.code = "EPERM";
+			throw error;
+		}
+		symlinkSync(sourceSidecarPath, destinationSidecarPath, "file");
+	} catch (error) {
+		if (error?.code !== "EEXIST") {
+			warnSkippedSqliteShadowHomeSidecarPlaceholder(error, destinationSidecarPath);
+		}
 	}
 }
 
@@ -1945,16 +1964,15 @@ function materializeSqliteSidecarsIntoShadowHome(sourcePath, destinationPath) {
 			continue;
 		}
 		if (existsSync(sourceSidecarPath)) {
-			materializeFileIntoShadowHome(sourceSidecarPath, destinationSidecarPath);
+			if (!materializeFileIntoShadowHome(sourceSidecarPath, destinationSidecarPath)) {
+				materializeSqliteSidecarPlaceholder(
+					sourceSidecarPath,
+					destinationSidecarPath,
+				);
+			}
 			continue;
 		}
-		try {
-			symlinkSync(sourceSidecarPath, destinationSidecarPath, "file");
-		} catch (error) {
-			if (error?.code !== "EEXIST") {
-				warnSkippedSqliteShadowHomeSidecarPlaceholder(error);
-			}
-		}
+		materializeSqliteSidecarPlaceholder(sourceSidecarPath, destinationSidecarPath);
 	}
 }
 

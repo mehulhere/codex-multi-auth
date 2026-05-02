@@ -1127,6 +1127,45 @@ describe("codex bin wrapper", () => {
 		).toBe('{"last":"runtime"}');
 	});
 
+	it("warns when sqlite sidecar placeholder materialization fails", () => {
+		const fixtureRoot = createWrapperFixture();
+		createRuntimeRotationProxyFixtureModule(fixtureRoot);
+		const fakeBin = createCustomFakeCodexBin(fixtureRoot, [
+			"#!/usr/bin/env node",
+			'const fs = require("node:fs");',
+			'const path = require("node:path");',
+			'const cacheShmPath = path.join(process.env.CODEX_HOME ?? "", "plugin_cache.sqlite-shm");',
+			'let cacheShmPlaceholder = "false";',
+			'try { cacheShmPlaceholder = String(fs.lstatSync(cacheShmPath).isSymbolicLink()); } catch { cacheShmPlaceholder = "false"; }',
+			'console.log(`CACHE_SHM_PLACEHOLDER:${cacheShmPlaceholder}`);',
+			"process.exit(0);",
+		]);
+		const originalHome = join(fixtureRoot, "codex-home");
+		const markerPath = join(fixtureRoot, "proxy-marker.txt");
+		mkdirSync(originalHome, { recursive: true });
+		writeFileSync(join(originalHome, "plugin_cache.sqlite"), "cache\n", "utf8");
+		writeFileSync(join(originalHome, "plugin_cache.sqlite-wal"), "cache wal\n", "utf8");
+
+		const result = runWrapper(fixtureRoot, ["exec", "status"], {
+			CODEX_MULTI_AUTH_REAL_CODEX_BIN: fakeBin,
+			CODEX_HOME: originalHome,
+			CODEX_MULTI_AUTH_RUNTIME_ROTATION_PROXY: "1",
+			CODEX_MULTI_AUTH_TEST_PROXY_BASE_URL: "http://127.0.0.1:4567",
+			CODEX_MULTI_AUTH_TEST_PROXY_MARKER: markerPath,
+			CODEX_MULTI_AUTH_TEST_FORCE_SHADOW_SIDECAR_PLACEHOLDER_FAILURE: "1",
+			OPENAI_API_KEY: undefined,
+		});
+
+		const output = combinedOutput(result);
+		expect(result.status).toBe(0);
+		expect(output).toContain("CACHE_SHM_PLACEHOLDER:false");
+		expect(output).toContain(
+			"codex-multi-auth: skipped SQLite shadow-home sidecar placeholder for",
+		);
+		expect(output).toContain("plugin_cache.sqlite-shm");
+		expect(output).toContain("simulated SQLite sidecar placeholder failure");
+	});
+
 	it("inserts the runtime model provider before TOML array tables", () => {
 		const fixtureRoot = createWrapperFixture();
 		createRuntimeRotationProxyFixtureModule(fixtureRoot);
