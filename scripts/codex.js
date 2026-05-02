@@ -1899,12 +1899,12 @@ function isSqliteSidecarFile(name) {
 	return /\.sqlite-(?:shm|wal)$/i.test(name);
 }
 
-function isCodexThreadStateFile(name) {
+function isCodexRuntimeLocalSqliteFile(name) {
 	const normalizedName =
 		process.platform === "win32" || process.platform === "darwin"
 			? name.toLowerCase()
 			: name;
-	return /^state_\d+\.sqlite(?:-(?:shm|wal))?$/.test(normalizedName);
+	return /^(?:state|logs)_\d+\.sqlite(?:-(?:shm|wal))?$/.test(normalizedName);
 }
 
 function shouldMaterializeFileIntoShadowHome(name) {
@@ -2398,9 +2398,9 @@ function createRuntimeRotationProxyCodexHome(
 			shadowCodexHome,
 			tightenShadowHomePermissions,
 			{
-				skipMirrorPredicate: isCodexThreadStateFile,
+				skipMirrorPredicate: isCodexRuntimeLocalSqliteFile,
 				skipSyncBackNames: RUNTIME_ROTATION_SHADOW_HOME_OMIT_STATE_FILES,
-				skipSyncBackPredicate: isCodexThreadStateFile,
+				skipSyncBackPredicate: isCodexRuntimeLocalSqliteFile,
 			},
 		);
 		omitRuntimeRotationShadowHomeStateFiles(shadowCodexHome);

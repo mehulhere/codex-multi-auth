@@ -952,6 +952,17 @@ describe("codex bin wrapper", () => {
 			'let cacheShmPlaceholder = "false";',
 			'try { cacheShmPlaceholder = String(fs.lstatSync(cacheShmPath).isSymbolicLink()); } catch { cacheShmPlaceholder = process.platform === "win32" ? "skipped" : "false"; }',
 			'console.log(`CACHE_SHM_PLACEHOLDER:${cacheShmPlaceholder}`);',
+			'const logPath = path.join(process.env.CODEX_HOME ?? "", "logs_2.sqlite");',
+			'const logWalPath = path.join(process.env.CODEX_HOME ?? "", "logs_2.sqlite-wal");',
+			'const logShmPath = path.join(process.env.CODEX_HOME ?? "", "logs_2.sqlite-shm");',
+			'const originalLogPath = path.join(process.env.ORIGINAL_CODEX_HOME ?? "", "logs_2.sqlite");',
+			'console.log(`LOG_SQLITE_MIRRORED:${fs.existsSync(logPath)}`);',
+			'console.log(`LOG_WAL_MIRRORED:${fs.existsSync(logWalPath)}`);',
+			'console.log(`LOG_SHM_MIRRORED:${fs.existsSync(logShmPath)}`);',
+			'fs.writeFileSync(logPath, "shadow-log\\n", "utf8");',
+			'fs.writeFileSync(logWalPath, "shadow-log-wal\\n", "utf8");',
+			'fs.writeFileSync(logShmPath, "shadow-log-shm\\n", "utf8");',
+			'console.log(`LOG_SQLITE_ISOLATED:${!fs.readFileSync(originalLogPath, "utf8").includes("shadow-log")}`);',
 			'fs.appendFileSync(cachePath, "shadow-cache\\n", "utf8");',
 			'fs.appendFileSync(cacheWalPath, "shadow-wal\\n", "utf8");',
 			'const upperStatePath = path.join(process.env.CODEX_HOME ?? "", "STATE_6.sqlite");',
@@ -1009,6 +1020,9 @@ describe("codex bin wrapper", () => {
 		writeFileSync(join(originalHome, "state_5.sqlite-wal"), "original wal\n", "utf8");
 		writeFileSync(join(originalHome, "state_5.sqlite-shm"), "original shm\n", "utf8");
 		writeFileSync(join(originalHome, "STATE_6.sqlite"), "upper state\n", "utf8");
+		writeFileSync(join(originalHome, "logs_2.sqlite"), "original log\n", "utf8");
+		writeFileSync(join(originalHome, "logs_2.sqlite-wal"), "original log wal\n", "utf8");
+		writeFileSync(join(originalHome, "logs_2.sqlite-shm"), "original log shm\n", "utf8");
 		writeFileSync(join(originalHome, "plugin_cache.sqlite"), "cache\n", "utf8");
 		writeFileSync(join(originalHome, "plugin_cache.sqlite-wal"), "cache wal\n", "utf8");
 		writeFileSync(
@@ -1052,6 +1066,10 @@ describe("codex bin wrapper", () => {
 		expect(output).toContain("CACHE_SQLITE_MIRRORED:true");
 		expect(output).toContain("CACHE_WAL_MIRRORED:true");
 		expect(output).toMatch(/^CACHE_SHM_PLACEHOLDER:(?:true|skipped)$/m);
+		expect(output).toContain("LOG_SQLITE_MIRRORED:false");
+		expect(output).toContain("LOG_WAL_MIRRORED:false");
+		expect(output).toContain("LOG_SHM_MIRRORED:false");
+		expect(output).toContain("LOG_SQLITE_ISOLATED:true");
 		expect(output).toContain(
 			`UPPER_STATE_MIRRORED:${process.platform === "win32" || process.platform === "darwin" ? "false" : "true"}`,
 		);
@@ -1105,6 +1123,15 @@ describe("codex bin wrapper", () => {
 		);
 		expect(readFileSync(join(originalHome, "state_5.sqlite-shm"), "utf8")).toBe(
 			"original shm\n",
+		);
+		expect(readFileSync(join(originalHome, "logs_2.sqlite"), "utf8")).toBe(
+			"original log\n",
+		);
+		expect(readFileSync(join(originalHome, "logs_2.sqlite-wal"), "utf8")).toBe(
+			"original log wal\n",
+		);
+		expect(readFileSync(join(originalHome, "logs_2.sqlite-shm"), "utf8")).toBe(
+			"original log shm\n",
 		);
 		if (process.platform === "win32" || process.platform === "darwin") {
 			expect(readFileSync(join(originalHome, "STATE_6.sqlite"), "utf8")).toBe(
