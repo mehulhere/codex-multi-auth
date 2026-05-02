@@ -1890,23 +1890,60 @@ function mirrorFileIntoShadowHome(sourcePath, destinationPath, tightenFile) {
 	tightenFile(destinationPath);
 }
 
+function isSqliteMainFile(name) {
+	return /\.sqlite$/i.test(name);
+}
+
+function isSqliteSidecarFile(name) {
+	return /\.sqlite-(?:shm|wal)$/i.test(name);
+}
+
+function isCodexThreadStateFile(name) {
+	return /^state_\d+\.sqlite(?:-(?:shm|wal))?$/i.test(name);
+}
+
 function shouldMaterializeFileIntoShadowHome(name) {
-	return /\.sqlite(?:-(?:shm|wal))?$/i.test(name);
+	return isSqliteMainFile(name) || isSqliteSidecarFile(name);
 }
 
 function materializeFileIntoShadowHome(sourcePath, destinationPath) {
 	try {
-		linkSync(sourcePath, destinationPath);
+		if (linkFileIntoShadowHome(sourcePath, destinationPath)) {
+			return true;
+		}
+		if (existsSync(sourcePath)) {
+			linkSync(sourcePath, destinationPath);
+			return true;
+		}
+		symlinkSync(sourcePath, destinationPath, "file");
 		return true;
 	} catch {
 		if (!warnedShadowHomeSqliteLinkFailure) {
 			warnedShadowHomeSqliteLinkFailure = true;
 			console.error(
-				"codex-multi-auth: skipped SQLite shadow-home materialization because hard-linking failed; refusing to copy active SQLite state.",
+				"codex-multi-auth: skipped SQLite shadow-home materialization because linking failed; refusing to copy active SQLite state.",
 			);
 		}
 	}
 	return false;
+}
+
+function materializeSqliteSidecarsIntoShadowHome(sourcePath, destinationPath) {
+	for (const suffix of ["-wal", "-shm"]) {
+		const sourceSidecarPath = `${sourcePath}${suffix}`;
+		const destinationSidecarPath = `${destinationPath}${suffix}`;
+		if (existsSync(destinationSidecarPath)) {
+			continue;
+		}
+		if (existsSync(sourceSidecarPath)) {
+			materializeFileIntoShadowHome(sourceSidecarPath, destinationSidecarPath);
+			continue;
+		}
+		try {
+			symlinkSync(sourceSidecarPath, destinationSidecarPath, "file");
+		} catch {
+		}
+	}
 }
 
 function collectShadowHomeSyncFileNames(shadowCodexHome, syncFileNames) {
@@ -2020,7 +2057,11 @@ function syncAdditionalShadowHomeFiles(
 	skipSyncBackNames = new Set(),
 ) {
 	for (const name of names) {
-		if (SHADOW_HOME_STATE_FILE_SET.has(name) || skipSyncBackNames.has(name)) {
+		if (
+			SHADOW_HOME_STATE_FILE_SET.has(name) ||
+			skipSyncBackNames.has(name) ||
+			isCodexThreadStateFile(name)
+		) {
 			continue;
 		}
 		const shadowPath = join(shadowCodexHome, name);
@@ -2056,6 +2097,7 @@ function createShadowHomeMirror(
 ) {
 	const syncFileNames = new Set(SHADOW_HOME_STATE_FILES);
 	const skipSyncBackNames = new Set(options.skipSyncBackNames ?? []);
+	const skipMirrorNames = new Set(options.skipMirrorNames ?? []);
 	const originalFileStates = new Map();
 	const copiedDirectoryNames = new Set();
 	const rememberSyncFile = (name) => {
@@ -2077,7 +2119,8 @@ function createShadowHomeMirror(
 			if (
 				name === SHADOW_HOME_CONFIG_FILE ||
 				name === SHADOW_HOME_SYNC_STATE_FILE ||
-				name === SHADOW_HOME_SYNC_LOCK_DIR
+				name === SHADOW_HOME_SYNC_LOCK_DIR ||
+				skipMirrorNames.has(name)
 			) {
 				continue;
 			}
@@ -2112,7 +2155,9 @@ function createShadowHomeMirror(
 						copyFileSync(sourcePath, destinationPath);
 						tightenFile(destinationPath);
 					} else if (shouldMaterializeFile) {
-						materializeFileIntoShadowHome(sourcePath, destinationPath);
+						if (materializeFileIntoShadowHome(sourcePath, destinationPath) && isSqliteMainFile(name)) {
+							materializeSqliteSidecarsIntoShadowHome(sourcePath, destinationPath);
+						}
 					} else {
 						mirrorFileIntoShadowHome(sourcePath, destinationPath, tightenFile);
 					}
@@ -2316,6 +2361,11 @@ function createRuntimeRotationProxyCodexHome(
 			shadowCodexHome,
 			tightenShadowHomePermissions,
 			{
+				skipMirrorNames: new Set(
+					existsSync(originalCodexHome)
+						? readdirSync(originalCodexHome).filter(isCodexThreadStateFile)
+						: [],
+				),
 				skipSyncBackNames: RUNTIME_ROTATION_SHADOW_HOME_OMIT_STATE_FILES,
 			},
 		);

@@ -945,9 +945,10 @@ describe("codex bin wrapper", () => {
 			'console.log(`MEMORY_EXISTS:${fs.existsSync(path.join(process.env.CODEX_HOME ?? "", "memories", "user.md"))}`);',
 			'console.log(`INSTRUCTION_EXISTS:${fs.existsSync(path.join(process.env.CODEX_HOME ?? "", "instructions", "profile.md"))}`);',
 			'const statePath = path.join(process.env.CODEX_HOME ?? "", "state_5.sqlite");',
-			'console.log(`ROOT_STATE_SYMLINK:${fs.lstatSync(statePath).isSymbolicLink()}`);',
-			'fs.appendFileSync(statePath, "shadow\\n", "utf8");',
-			'console.log(`ROOT_STATE_REALTIME:${fs.readFileSync(path.join(process.env.ORIGINAL_CODEX_HOME ?? "", "state_5.sqlite"), "utf8").includes("shadow")}`);',
+			'const originalStatePath = path.join(process.env.ORIGINAL_CODEX_HOME ?? "", "state_5.sqlite");',
+			'console.log(`ROOT_STATE_MIRRORED:${fs.existsSync(statePath)}`);',
+			'fs.writeFileSync(statePath, "shadow-only\\n", "utf8");',
+			'console.log(`ROOT_STATE_ISOLATED:${!fs.readFileSync(originalStatePath, "utf8").includes("shadow-only")}`);',
 			'fs.writeFileSync(path.join(process.env.CODEX_HOME ?? "", "new-root-state.json"), "new\\n", "utf8");',
 			'fs.writeFileSync(path.join(process.env.CODEX_HOME ?? "", "sessions", "runtime-session.jsonl"), "runtime\\n", "utf8");',
 			'fs.writeFileSync(path.join(process.env.CODEX_HOME ?? "", "auth.json"), \'{"token":"proxy-scoped"}\\n\', "utf8");',
@@ -1026,8 +1027,8 @@ describe("codex bin wrapper", () => {
 		expect(output).toContain("SKILL_EXISTS:true");
 		expect(output).toContain("MEMORY_EXISTS:true");
 		expect(output).toContain("INSTRUCTION_EXISTS:true");
-		expect(output).toContain("ROOT_STATE_SYMLINK:false");
-		expect(output).toContain("ROOT_STATE_REALTIME:true");
+		expect(output).toContain("ROOT_STATE_MIRRORED:false");
+		expect(output).toContain("ROOT_STATE_ISOLATED:true");
 		const apiKeyMatch = output.match(/^OPENAI_API_KEY:([0-9a-f]{64})$/m);
 		expect(apiKeyMatch?.[1]).toBeTruthy();
 		expect(output).toContain(
@@ -1066,9 +1067,7 @@ describe("codex bin wrapper", () => {
 		expect(
 			readFileSync(join(originalHome, "sessions", "runtime-session.jsonl"), "utf8"),
 		).toBe("runtime\n");
-		expect(readFileSync(join(originalHome, "state_5.sqlite"), "utf8")).toContain(
-			"shadow",
-		);
+		expect(readFileSync(join(originalHome, "state_5.sqlite"), "utf8")).toBe("state\n");
 		expect(readFileSync(join(originalHome, "new-root-state.json"), "utf8")).toBe(
 			"new\n",
 		);
