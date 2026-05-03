@@ -2081,6 +2081,7 @@ function removeSqliteShadowHomeMaterialization(destinationPath) {
 		try {
 			rmSync(path, { force: true });
 		} catch {
+			// Best-effort cleanup; keep removing the remaining SQLite siblings.
 		}
 	}
 }
