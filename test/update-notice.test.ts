@@ -1,4 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 
 vi.mock("node:fs", () => ({
 	readFileSync: vi.fn(),
@@ -24,6 +26,7 @@ describe("update-notice", () => {
 
 	const packageRoot = "/tmp/node_modules/codex-multi-auth";
 	const packageJsonPath = `${packageRoot}/package.json`;
+	const actualPackageJsonPath = `${resolve(dirname(fileURLToPath(import.meta.url)), "..").replace(/\\/g, "/")}/package.json`;
 	const cacheFilePath = "/tmp/codex-cache/update-check-cache.json";
 	const mockPackageJson = { name: "codex-multi-auth", version: "4.12.0" };
 	let cacheContents: string | null;
@@ -52,6 +55,7 @@ describe("update-notice", () => {
 			const normalized = String(path).replace(/\\/g, "/");
 			if (
 				normalized === packageJsonPath ||
+				normalized === actualPackageJsonPath ||
 				normalized.endsWith("/codex-multi-auth-notice-only/package.json")
 			) {
 				return JSON.stringify(mockPackageJson);
@@ -68,6 +72,7 @@ describe("update-notice", () => {
 			const normalized = String(path).replace(/\\/g, "/");
 			return (
 				normalized === packageJsonPath ||
+				normalized === actualPackageJsonPath ||
 				normalized.endsWith("/codex-multi-auth-notice-only/package.json") ||
 				(normalized === cacheFilePath && cacheContents !== null)
 			);
