@@ -1,6 +1,6 @@
-# codex-multi-auth Docs
+# codex-multi-auth Daily Guide
 
-Daily-use guide for the `codex-multi-auth ...` workflow.
+Daily-use guide for Codex CLI multi-account OAuth management with `codex-multi-auth ...`: login, account switching, health checks, runtime rotation status, diagnostics, and repair.
 
 ---
 
@@ -24,8 +24,8 @@ codex-multi-auth forecast --live
 
 - first setup and verification: [getting-started.md](getting-started.md)
 - quick answers before install: [faq.md](faq.md)
-- understanding the wrapper, runtime rotation proxy, app bind, and optional plugin-host path: [architecture.md](architecture.md)
-- recovering from login, routing, or state problems: [troubleshooting.md](troubleshooting.md)
+- understanding the account manager, optional forwarding wrapper, runtime rotation proxy, app bind, and optional plugin-host path: [architecture.md](architecture.md)
+- recovering from login, routing, account switching, quota, or stale state problems: [troubleshooting.md](troubleshooting.md)
 
 ---
 

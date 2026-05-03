@@ -1,6 +1,6 @@
-# FAQ
+# codex-multi-auth FAQ
 
-Short answers for developers evaluating `codex-multi-auth`.
+Short answers for developers evaluating Codex CLI multi-account OAuth, account switching, local diagnostics, runtime rotation, and recovery workflows in `codex-multi-auth`.
 
 ---
 
@@ -12,7 +12,13 @@ No. `codex-multi-auth` wraps the official `@openai/codex` CLI. It handles `codex
 
 ## What problem does it solve?
 
-It makes multi-account OAuth state visible and operable. Instead of relying on one hidden local auth state, you can sign into multiple accounts, switch explicitly, run health checks, and repair local storage issues.
+It makes Codex CLI multi-account OAuth state visible and operable. Instead of relying on one hidden local auth state, you can sign into multiple ChatGPT-authenticated accounts, switch explicitly, run health checks, forecast account readiness, and repair local storage issues.
+
+---
+
+## How is it different from the official Codex CLI alone?
+
+The official Codex CLI owns the core coding experience and the `codex` binary. `codex-multi-auth` adds a separate local management layer for multiple OAuth accounts: account pool storage, explicit switching, health checks, forecasts, reports, repair commands, and optional wrapper-launched runtime rotation.
 
 ---
 
@@ -42,7 +48,7 @@ No. The packaged app bind updates user-level Codex config and startup/router met
 
 ## Who is this for?
 
-This project is aimed at individual developers using the official Codex CLI who want more control over local account state, switching, diagnostics, and recovery.
+This project is aimed at individual developers using the official Codex CLI who want more control over local account state, account switching, diagnostics, quota visibility, runtime rotation, and recovery.
 
 ---
 

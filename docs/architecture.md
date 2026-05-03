@@ -1,12 +1,12 @@
-# Architecture
+# codex-multi-auth Architecture
 
-Public overview of how `codex-multi-auth` fits around the official Codex CLI.
+Public overview of how the `codex-multi-auth` multi-account OAuth manager fits around the official Codex CLI, optional forwarding wrapper, local storage, runtime Responses rotation proxy, app bind, and plugin-host path.
 
 ---
 
 ## The Short Version
 
-`codex-multi-auth` is a conflict-free multi-account OAuth manager plus an optional forwarding wrapper for the official Codex CLI.
+`codex-multi-auth` is a conflict-free Codex CLI multi-account OAuth manager plus an optional forwarding wrapper for the official `@openai/codex` CLI.
 
 - `codex-multi-auth ...` commands are handled locally by the account manager.
 - `codex-multi-auth-codex ...` is the optional wrapper entrypoint for forwarding official Codex CLI commands.

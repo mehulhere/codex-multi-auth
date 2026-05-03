@@ -538,6 +538,8 @@ describe("Documentation Integrity", () => {
 	it("keeps package metadata aligned with the canonical owner surface", () => {
 		const packageJson = JSON.parse(read("package.json")) as {
 			name?: unknown;
+			description?: unknown;
+			keywords?: unknown;
 			author?: unknown;
 			license?: unknown;
 			repository?: { url?: unknown } | unknown;
@@ -547,6 +549,23 @@ describe("Documentation Integrity", () => {
 		};
 
 		expect(packageJson.name).toBe("codex-multi-auth");
+		expect(packageJson.description).toContain("Codex CLI");
+		expect(packageJson.description).toContain("multi-account OAuth");
+		expect(packageJson.description).toContain("runtime rotation");
+		expect(packageJson.keywords).toEqual(
+			expect.arrayContaining([
+				"codex-cli",
+				"codex-auth",
+				"codex-multi-account",
+				"oauth",
+				"runtime-rotation",
+				"responses-api",
+				"quota-management",
+				"diagnostics",
+				"account-health",
+				"recovery-tools",
+			]),
+		);
 		expect(packageJson.author).toBe("ndycode");
 		expect(packageJson.license).toBe("MIT");
 		expect(packageJson.repository).toEqual({

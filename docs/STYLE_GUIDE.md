@@ -10,6 +10,7 @@ Style contract for all docs in this repository.
 2. Precise references for maintainers and automation users.
 3. Stable wording for commands, flags, paths, and version policy.
 4. Consistent structure across user and maintainer docs.
+5. High-confidence discoverability without keyword stuffing or unsupported ranking claims.
 
 ---
 
@@ -34,6 +35,17 @@ Use short sections and scan-friendly tables where they improve clarity.
 3. Explain expected outcomes after critical commands.
 4. Keep terminology consistent with runtime names.
 5. Avoid speculative language when behavior is deterministic.
+6. Put the user problem in the first paragraph before implementation detail.
+
+---
+
+## Discoverability Rules
+
+1. Root README and docs landing pages should naturally include `Codex CLI`, `multi-account OAuth`, `account switching`, `health checks`, `runtime rotation`, `diagnostics`, and `recovery` when those topics are in scope.
+2. Use descriptive page titles such as `codex-multi-auth Features` instead of generic titles on public docs.
+3. Do not promise search rankings. Improve discoverability through accurate titles, first paragraphs, package metadata, internal links, and GitHub topics.
+4. Do not repeat keyword lists in every section. Search terms should appear only where they help a developer understand the page.
+5. Keep the repository description, package description, README lead, and `docs/development/GITHUB_DISCOVERABILITY.md` aligned.
 
 ---
 

@@ -1,6 +1,6 @@
-# Getting Started
+# Getting Started With codex-multi-auth
 
-Install `codex-multi-auth`, add an account, and confirm that `codex-multi-auth ...` is working.
+Install the Codex CLI multi-account OAuth manager, add your first ChatGPT-authenticated account, and confirm that `codex-multi-auth ...` account switching, health checks, and diagnostics work locally.
 
 ---
 
@@ -144,7 +144,7 @@ codex-multi-auth forecast --live
 
 ## Runtime Rotation
 
-Runtime rotation is enabled by default for request-bearing sessions launched through `codex-multi-auth-codex ...` or a configured app bind. Inspect it before relying on it for forwarded official Codex CLI/app sessions:
+Runtime rotation is enabled by default for request-bearing sessions launched through `codex-multi-auth-codex ...` or a configured app bind. The local Responses proxy can rotate managed accounts between forwarded official Codex CLI/app requests. Inspect it before relying on rotation for live sessions:
 
 ```bash
 codex-multi-auth rotation status

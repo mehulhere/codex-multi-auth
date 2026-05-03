@@ -1,10 +1,10 @@
-# Troubleshooting
+# codex-multi-auth Troubleshooting
 
-Recovery guide for install, login, switching, worktree storage, and stale local auth state.
+Recovery guide for Codex CLI multi-account install issues, OAuth login failures, account switching problems, runtime rotation routing, project/worktree storage, and stale local auth state.
 
 ---
 
-## Start Here
+## Start Here: 60-Second Recovery
 
 ```bash
 codex-multi-auth doctor --fix
@@ -46,7 +46,7 @@ The package does not publish a global `codex` binary. `codex-multi-auth ...` is 
 
 ---
 
-## Browser And OAuth Problems
+## Browser, Device Auth, And OAuth Problems
 
 | Symptom | Likely cause | Action |
 | --- | --- | --- |
@@ -59,7 +59,7 @@ The package does not publish a global `codex` binary. `codex-multi-auth ...` is 
 
 ---
 
-## Switching And State Problems
+## Account Switching And State Problems
 
 | Symptom | Likely cause | Action |
 | --- | --- | --- |

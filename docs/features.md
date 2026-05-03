@@ -1,10 +1,10 @@
-# Features
+# codex-multi-auth Features
 
-User-facing capability map for `codex-multi-auth`.
+User-facing capability map for Codex CLI multi-account OAuth, ChatGPT account switching, health checks, recovery tooling, project-scoped storage, and local runtime Responses rotation.
 
 ---
 
-## Manage More Than One Account
+## Manage Multiple Codex CLI Accounts
 
 | Capability | What it gives you | Primary entry |
 | --- | --- | --- |
@@ -17,7 +17,7 @@ User-facing capability map for `codex-multi-auth`.
 
 ---
 
-## Decide Which Account To Use
+## Choose The Best Account Before A Session
 
 | Capability | What it gives you | Primary entry |
 | --- | --- | --- |
@@ -43,7 +43,7 @@ Runtime rotation is part of the current architecture. It is default-on and local
 
 ---
 
-## Recover From Local State Problems
+## Recover From Local Auth And Storage Problems
 
 | Capability | What it gives you | Primary entry |
 | --- | --- | --- |

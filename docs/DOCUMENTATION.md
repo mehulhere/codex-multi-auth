@@ -8,7 +8,7 @@ Canonical governance for repository documentation quality and consistency.
 
 | Layer | Audience | Primary goal |
 | --- | --- | --- |
-| Product entry | New operators | Install quickly and complete first successful login/check |
+| Product entry | New operators and search visitors | Explain the project quickly, prioritize the right concepts first, and complete first successful login/check |
 | User operations | Daily users | Configure, run, recover, and report issues safely |
 | Reference | Power users and maintainers | Exact command, setting, and path lookup |
 | Development | Contributors and maintainers | Internal architecture, flow, tests, and ownership |
@@ -91,6 +91,7 @@ Before merge:
 4. Internal links are valid.
 5. Cross-platform instructions exist for OS-sensitive operations.
 6. No conflicting guidance between README, docs, and governance files.
+7. Public landing pages use accurate discoverability terms without keyword stuffing or ranking promises.
 
 ---
 

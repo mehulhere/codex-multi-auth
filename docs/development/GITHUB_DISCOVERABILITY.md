@@ -6,8 +6,8 @@ GitHub-facing audit and recommended presentation for `codex-multi-auth`.
 
 ## Product Summary
 
-- Purpose: add a local multi-account OAuth manager, `codex-multi-auth ...` workflow, and default-on runtime Responses rotation proxy for forwarded official `@openai/codex` CLI/app sessions
-- Target users: individual developers using the Codex CLI who want explicit account switching, health checks, local recovery tooling, optional project-scoped account pools, and live runtime rotation
+- Purpose: provide a conflict-free Codex CLI multi-account OAuth manager, `codex-multi-auth ...` workflow, explicit account switching, health checks, diagnostics, recovery tooling, and default-on runtime Responses rotation proxy for forwarded official `@openai/codex` CLI/app sessions
+- Target users: individual developers using the Codex CLI who want visible local account state, explicit account switching, health checks, quota-aware forecasts, local recovery tooling, optional project-scoped account pools, and live runtime rotation
 - Not the target: commercial multi-user services, generic API users, or teams looking for a hosted auth layer
 
 ---
@@ -26,6 +26,10 @@ Developers looking for a tool like this are likely to search for:
 - codex responses proxy
 - codex multi account oauth
 - project scoped codex accounts
+- codex cli health check
+- codex cli diagnostics
+- codex account recovery
+- codex oauth manager
 
 These terms belong naturally in the README intro, feature list, and package metadata. They should not be stuffed into every heading.
 
@@ -35,7 +39,13 @@ These terms belong naturally in the README intro, feature list, and package meta
 
 Use this as the GitHub repository description:
 
-`Conflict-free multi-account OAuth manager and optional forwarding wrapper for the official @openai/codex CLI, with switching, health checks, runtime rotation, and recovery tools`
+`Conflict-free Codex CLI multi-account OAuth manager with account switching, health checks, runtime rotation, diagnostics, and recovery tools for the official @openai/codex CLI`
+
+## Recommended README Title
+
+Use a descriptive H1 rather than a bare package name when possible:
+
+`codex-multi-auth: multi-account OAuth for the official Codex CLI`
 
 ---
 
@@ -60,6 +70,8 @@ Use this as the GitHub repository description:
 - responses-api
 - diagnostics
 - recovery-tools
+- account-health
+- quota-management
 - productivity
 
 ---
@@ -90,6 +102,16 @@ The image should immediately communicate:
 - this is a CLI tool
 - it works with the official Codex CLI
 - it helps manage multiple accounts and can optionally rotate runtime requests
+
+---
+
+## High-Confidence Wording Rules
+
+- First paragraph: say what it is, who it is for, and how it relates to the official Codex CLI.
+- Feature bullets: lead with outcomes such as account switching, health checks, recovery, diagnostics, quota visibility, and runtime rotation.
+- Metadata: keep package keywords and GitHub topics aligned with natural search terms.
+- Trust: explain local-only storage, loopback runtime rotation, reversible app bind, and the independent/non-official boundary.
+- Do not claim guaranteed GitHub ranking. The repo can improve relevance and click confidence, not control search placement.
 
 ---
 
@@ -139,7 +161,7 @@ Before:
 
 After:
 
-- README opens with what the project is, why it exists, and how to start quickly
+- README opens with a descriptive title, what the project is, why it exists, and how to start quickly
 - the wrapper-plus-manager use case is primary, runtime rotation is default-on with explicit opt-out, and plugin-host mode is clearly positioned as optional
 - public docs have a simpler path from install to FAQ to architecture to troubleshooting
 - release and metadata guidance is explicit and current

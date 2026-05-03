@@ -1,6 +1,6 @@
-# Documentation Portal
+# codex-multi-auth Documentation Portal
 
-Public documentation for `codex-multi-auth`.
+Public documentation for the `codex-multi-auth` Codex CLI multi-account OAuth manager. Start here for installation, ChatGPT OAuth account switching, runtime rotation, configuration, troubleshooting, release notes, and maintainer references.
 
 ---
 
@@ -17,11 +17,11 @@ Public documentation for `codex-multi-auth`.
 
 | Document | Focus |
 | --- | --- |
-| [Daily-use landing page](index.md) | Common `codex-multi-auth ...` workflows and quick-start guidance |
+| [Daily-use landing page](index.md) | Common Codex CLI multi-account workflows, quick-start commands, and recovery shortcuts |
 | [faq.md](faq.md) | Short answers to common adoption questions |
-| [features.md](features.md) | User-facing capability map |
+| [features.md](features.md) | Multi-account OAuth, runtime rotation, diagnostics, recovery, storage, and dashboard capability map |
 | [configuration.md](configuration.md) | Stable defaults, precedence, and environment overrides |
-| [architecture.md](architecture.md) | Public system overview of the wrapper, storage, runtime rotation proxy, app bind, and optional plugin-host path |
+| [architecture.md](architecture.md) | Public system overview of the account manager, optional wrapper, storage, runtime rotation proxy, app bind, and optional plugin-host path |
 | [privacy.md](privacy.md) | Data handling and local storage behavior |
 
 ---
