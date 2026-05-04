@@ -38,6 +38,64 @@ describe("storage transaction helpers", () => {
 		expect(saved).toHaveLength(1);
 	});
 
+	it("forwards loaded flagged storage to handler as third argument", async () => {
+		const flagged = {
+			version: 1 as const,
+			accounts: [{ refreshToken: "flagged-acct" }],
+		};
+		const loadCurrentFlagged = vi.fn(async () => flagged);
+
+		await withAccountAndFlaggedStorageTransaction(
+			async (_current, _persist, currentFlagged) => {
+				expect(currentFlagged).toEqual(flagged);
+				expect(currentFlagged.accounts).toHaveLength(1);
+			},
+			{
+				getStoragePath: () => "/tmp/accounts.json",
+				loadCurrent: async () => null,
+				loadCurrentFlagged,
+				saveAccounts: async () => undefined,
+				saveFlaggedAccounts: async () => undefined,
+				cloneAccountStorageForPersistence: (storage) =>
+					storage ?? {
+						version: 3,
+						accounts: [],
+						activeIndex: 0,
+						activeIndexByFamily: {},
+					},
+				logRollbackError: vi.fn(),
+			},
+		);
+
+		expect(loadCurrentFlagged).toHaveBeenCalledTimes(1);
+	});
+
+	it("falls back to empty flagged storage when loadCurrentFlagged is omitted", async () => {
+		const seen: unknown[] = [];
+
+		await withAccountAndFlaggedStorageTransaction(
+			async (_current, _persist, currentFlagged) => {
+				seen.push(currentFlagged);
+			},
+			{
+				getStoragePath: () => "/tmp/accounts.json",
+				loadCurrent: async () => null,
+				saveAccounts: async () => undefined,
+				saveFlaggedAccounts: async () => undefined,
+				cloneAccountStorageForPersistence: (storage) =>
+					storage ?? {
+						version: 3,
+						accounts: [],
+						activeIndex: 0,
+						activeIndexByFamily: {},
+					},
+				logRollbackError: vi.fn(),
+			},
+		);
+
+		expect(seen).toEqual([{ version: 1, accounts: [] }]);
+	});
+
 	it("rolls back account storage when flagged save fails", async () => {
 		const saveAccounts = vi.fn(async () => undefined);
 		await expect(
