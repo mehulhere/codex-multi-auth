@@ -4,6 +4,7 @@ import {
 	withAccountAndFlaggedStorageTransaction,
 	withAccountStorageTransaction,
 } from "../lib/storage/transactions.js";
+import type { AccountStorageV3 } from "../lib/storage.js";
 
 describe("storage transaction helpers", () => {
 	it("runs account transaction with current snapshot and persist callback", async () => {
@@ -112,6 +113,45 @@ describe("storage transaction helpers", () => {
 		const succeeding = withAccountStorageTransaction(async () => {
 			order.push("succeeding-start");
 			return "ok";
+		}, deps);
+
+		await expect(failing).rejects.toThrow("boom");
+		await expect(succeeding).resolves.toBe("ok");
+		expect(order).toEqual(["failing-start", "succeeding-start"]);
+	});
+
+	it("releases the storage lock when a queued account+flagged transaction rejects", async () => {
+		// Mirror of the prior test but for the
+		// withAccountAndFlaggedStorageTransaction code path so a future
+		// refactor that splits the lock chain between the two helpers can't
+		// silently regress only one of them.
+		const order: string[] = [];
+		const deps = {
+			getStoragePath: () => "/tmp/accounts.json",
+			loadCurrent: async () => null,
+			loadCurrentFlagged: async () => ({ version: 1 as const, accounts: [] }),
+			saveAccounts: async () => undefined,
+			saveFlaggedAccounts: async () => undefined,
+			cloneAccountStorageForPersistence: (
+				storage: AccountStorageV3 | null | undefined,
+			): AccountStorageV3 =>
+				storage ?? {
+					version: 3,
+					accounts: [],
+					activeIndex: 0,
+					activeIndexByFamily: {},
+				},
+			logRollbackError: vi.fn(),
+		};
+
+		const failing = withAccountAndFlaggedStorageTransaction(async () => {
+			order.push("failing-start");
+			throw new Error("boom");
+		}, deps);
+
+		const succeeding = withAccountAndFlaggedStorageTransaction(async () => {
+			order.push("succeeding-start");
+			return "ok" as const;
 		}, deps);
 
 		await expect(failing).rejects.toThrow("boom");

@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { resolveUninstallPaths } from "../lib/codex-manager/commands/uninstall.js";
 import { removeWithRetry } from "./helpers/remove-with-retry.js";
 
 // Wrap node:fs/promises so we can inject a one-shot EBUSY into a single
@@ -58,21 +59,23 @@ function makeTempHome(): string {
 	return root;
 }
 
+// Defer to production resolveUninstallPaths so the test fixtures cannot
+// drift from real uninstall behavior; derive the missing dir entries via
+// path.dirname.
 function pathsForTempHome(home: string) {
-	const isWindows = process.platform === "win32";
-	const configBase = isWindows
-		? path.join(home, "AppData", "Roaming")
-		: path.join(home, ".config");
-	const cacheBase = isWindows
-		? path.join(home, "AppData", "Local")
-		: path.join(home, ".cache");
-	const configDir = path.join(configBase, "Codex");
-	const cacheDir = path.join(cacheBase, "Codex");
+	const env: NodeJS.ProcessEnv = {
+		HOME: home,
+		USERPROFILE: home,
+		APPDATA:
+			process.platform === "win32" ? path.join(home, "AppData", "Roaming") : "",
+		LOCALAPPDATA:
+			process.platform === "win32" ? path.join(home, "AppData", "Local") : "",
+	};
+	const resolved = resolveUninstallPaths(process.platform, env, home);
 	return {
-		configDir,
-		configPath: path.join(configDir, "Codex.json"),
-		cacheNodeModules: path.join(cacheDir, "node_modules", "codex-multi-auth"),
-		cacheBunLock: path.join(cacheDir, "bun.lock"),
+		...resolved,
+		configDir: path.dirname(resolved.configPath),
+		cacheDir: path.dirname(resolved.cacheBunLock),
 	};
 }
 

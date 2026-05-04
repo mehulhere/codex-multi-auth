@@ -5,9 +5,11 @@ import type { TokenResult } from "../lib/types.js";
 
 const ORIGINAL_ENV = { ...process.env };
 
-function withTestEnv<T>(fn: () => Promise<T> | T): Promise<T> {
+async function withTestEnv<T>(fn: () => Promise<T> | T): Promise<T> {
 	// hydrateRuntimeEmails short-circuits in test mode by design — clear the
 	// flags it watches for so the function actually runs in this suite.
+	// Must be async + await fn() so the finally block doesn't restore the
+	// env BEFORE fn's first internal await resolves.
 	const previous = {
 		VITEST_WORKER_ID: process.env.VITEST_WORKER_ID,
 		NODE_ENV: process.env.NODE_ENV,
@@ -17,7 +19,7 @@ function withTestEnv<T>(fn: () => Promise<T> | T): Promise<T> {
 	delete process.env.NODE_ENV;
 	delete process.env.CODEX_SKIP_EMAIL_HYDRATE;
 	try {
-		return Promise.resolve(fn());
+		return await fn();
 	} finally {
 		if (previous.VITEST_WORKER_ID !== undefined)
 			process.env.VITEST_WORKER_ID = previous.VITEST_WORKER_ID;
@@ -122,6 +124,32 @@ describe("hydrateRuntimeEmails", () => {
 			// Index 1 was hydrated.
 			expect(storage.accounts[1]?.email).toBe("fresh@example.com");
 			expect(storage.accounts[1]?.accountId).toBe("fresh-id");
+			// Hydration committed exactly once.
+			expect(saveAccounts).toHaveBeenCalledTimes(1);
+		});
+	});
+
+	it("does not call saveAccounts when every queuedRefresh fails", async () => {
+		await withTestEnv(async () => {
+			const storage = makeStorage([{ refreshToken: "rt-x" }]);
+			const saveAccounts = vi.fn(async () => undefined);
+			const logWarn = vi.fn();
+
+			await hydrateRuntimeEmails(storage, {
+				queuedRefresh: async () => ({ type: "failed" } as TokenResult),
+				extractAccountId: () => undefined,
+				sanitizeEmail: (email) => email,
+				extractAccountEmail: () => undefined,
+				shouldUpdateAccountIdFromToken: () => true,
+				saveAccounts,
+				logWarn,
+				pluginName: "test",
+			});
+
+			// changed===false → no save, no patching.
+			expect(saveAccounts).not.toHaveBeenCalled();
+			expect(storage.accounts[0]?.email).toBeUndefined();
+			expect(storage.accounts[0]?.accessToken).toBeUndefined();
 		});
 	});
 });

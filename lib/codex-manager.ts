@@ -2391,7 +2391,15 @@ async function runHealthCheck(options: HealthCheckOptions = {}): Promise<void> {
 		);
 	}
 	if (workingQuotaCache && quotaCacheChanged) {
-		await saveQuotaCache(workingQuotaCache);
+		try {
+			await saveQuotaCache(workingQuotaCache);
+		} catch (error) {
+			// Quota cache is a derived artifact; a transient Windows EBUSY/EPERM
+			// here must not abort the health check before account fixes commit.
+			console.warn(
+				`Quota cache save failed: ${error instanceof Error ? error.message : String(error)}`,
+			);
+		}
 	}
 
 	if (changed) {

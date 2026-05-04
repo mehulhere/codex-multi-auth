@@ -1697,12 +1697,16 @@ describe("codex manager cli commands", () => {
 		);
 		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
 
-		await expect(
-			runCodexMultiAuthCli(["auth", "forecast", "--live", "--json"]),
-		).rejects.toMatchObject({
-			code: "EBUSY",
-			message: "save failed",
-		});
+		// Quota cache is a derived artifact; a Windows EBUSY/EPERM during the
+		// JSON-mode forecast save is now downgraded to a warning so the
+		// forecast output still emits. The loaded cache must remain unmutated.
+		const exitCode = await runCodexMultiAuthCli([
+			"auth",
+			"forecast",
+			"--live",
+			"--json",
+		]);
+		expect(exitCode).toBe(0);
 		expect(originalQuotaCache).toEqual({
 			byAccountId: {},
 			byEmail: {},
@@ -1774,12 +1778,15 @@ describe("codex manager cli commands", () => {
 		);
 		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
 
-		await expect(
-			runCodexMultiAuthCli(["auth", "forecast", "--live"]),
-		).rejects.toMatchObject({
-			code: "EBUSY",
-			message: "save failed",
-		});
+		// Quota cache failure is now downgraded to a warning rather than a
+		// hard failure; the forecast still completes and the loaded cache
+		// stays unmutated.
+		const exitCode = await runCodexMultiAuthCli([
+			"auth",
+			"forecast",
+			"--live",
+		]);
+		expect(exitCode).toBe(0);
 		expect(originalQuotaCache).toEqual({
 			byAccountId: {},
 			byEmail: {},
@@ -10948,13 +10955,21 @@ describe("codex manager cli commands", () => {
 					email: "live-fix@example.com",
 					accountId: "acc_live_fix",
 					refreshToken: "refresh-live-fix",
-					accessToken: "access-live-fix",
-					expiresAt: now + 60 * 60 * 1000,
+					accessToken: "access-live-fix-stale",
+					// Stale → forces a refresh → forces saveAccounts to commit
+					// the new tokens BEFORE the quota cache save attempt.
+					expiresAt: now - 5_000,
 					addedAt: now - 5_000,
 					lastUsed: now - 5_000,
 					enabled: true,
 				},
 			],
+		});
+		queuedRefreshMock.mockResolvedValueOnce({
+			type: "success",
+			access: "access-live-fix-fresh",
+			refresh: "refresh-live-fix-next",
+			expires: now + 60 * 60 * 1000,
 		});
 		loadQuotaCacheMock.mockResolvedValueOnce(originalQuotaCache);
 		fetchCodexQuotaSnapshotMock.mockResolvedValueOnce({
@@ -10976,6 +10991,21 @@ describe("codex manager cli commands", () => {
 
 		// Run completes successfully even though the cache write threw.
 		expect(exitCode).toBe(0);
+
+		// Primary fix MUST have been persisted before the quota-cache failure
+		// downgraded the run to partial-success. saveAccounts is called from
+		// inside withAccountStorageTransaction, which runs strictly before
+		// saveQuotaCache. Asserting both call counts pins that ordering.
+		expect(saveAccountsMock).toHaveBeenCalledTimes(1);
+		const persistedAccounts = saveAccountsMock.mock.calls[0]?.[0] as {
+			accounts: Array<{ accessToken?: string; refreshToken?: string }>;
+		};
+		expect(persistedAccounts.accounts[0]?.accessToken).toBe(
+			"access-live-fix-fresh",
+		);
+		expect(persistedAccounts.accounts[0]?.refreshToken).toBe(
+			"refresh-live-fix-next",
+		);
 		expect(saveQuotaCacheMock).toHaveBeenCalledTimes(1);
 
 		// JSON payload surfaces the cache save error so callers can act on it.

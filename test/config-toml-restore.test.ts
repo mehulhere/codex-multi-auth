@@ -37,6 +37,17 @@ describe("restoreTopLevelModelProvider", () => {
 		expect(restored).toContain('model_provider = "openai"');
 	});
 
+	it("preserves CRLF line endings end-to-end on Windows-authored configs", () => {
+		const original =
+			'model_provider = "openai"\r\n[profiles.default]\r\nmodel = "gpt-5"\r\n';
+		const current =
+			'model_provider = "codex-multi-auth-runtime-proxy"\r\n[profiles.default]\r\nmodel = "gpt-5"\r\n';
+		const restored = restoreTopLevelModelProvider(current, original);
+		expect(restored).toBe(original);
+		// No bare \n leaked into the output.
+		expect(restored.replace(/\r\n/g, "")).not.toContain("\n");
+	});
+
 	it("leaves config untouched when neither side has the runtime line", () => {
 		const original = '[profiles.default]\nmodel = "gpt-5"\n';
 		const current = '[profiles.default]\nmodel = "gpt-5"\n';

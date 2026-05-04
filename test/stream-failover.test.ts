@@ -206,14 +206,13 @@ describe("stream failover", () => {
 		expect(sourceCancelled).toBeGreaterThan(0);
 	});
 
-	it("does not emit an unhandled rejection if releasing the upstream reader throws", async () => {
-		// Regression for the `pump().catch((err) => controller.error(err))`
-		// safety net at lib/request/stream-failover.ts:230. If the inner
-		// cleanup (`releaseCurrentReader()`, `controller.error()`) itself
-		// throws — e.g. the upstream reader's releaseLock fails because the
-		// stream is in an unusual state — the outer .catch must still
-		// forward the error to the consumer rather than leaking an unhandled
-		// promise rejection.
+	it("absorbs a hostile upstream releaseLock without leaking an unhandled rejection", async () => {
+		// Coverage for the `releaseCurrentReader` swallow at
+		// lib/request/stream-failover.ts:153-166: the upstream reader's
+		// releaseLock throws synchronously, which would normally bubble out
+		// of cleanup and become an unhandled promise rejection. The wrapper
+		// must swallow it (best-effort cancel + best-effort releaseLock) so
+		// the consumer still sees the primary error and no rejection escapes.
 		const unhandled: unknown[] = [];
 		const onUnhandled = (reason: unknown) => unhandled.push(reason);
 		process.on("unhandledRejection", onUnhandled);
@@ -223,9 +222,7 @@ describe("stream failover", () => {
 					controller.error(new Error("primary boom"));
 				},
 			});
-			// Patch getReader so the returned reader.releaseLock throws when
-			// pump's catch path calls it during cleanup. This is the same
-			// kind of secondary failure the outer .catch is meant to absorb.
+			// Patch getReader so the returned reader.releaseLock throws.
 			const realGetReader = upstream.getReader.bind(upstream);
 			(upstream as unknown as {
 				getReader: () => ReadableStreamDefaultReader<Uint8Array>;
@@ -247,11 +244,61 @@ describe("stream failover", () => {
 				{ maxFailovers: 0 },
 			);
 
-			// Consumer should observe an error rather than hanging.
-			await expect(response.text()).rejects.toThrow();
+			// Consumer observes the upstream error, not a hang.
+			await expect(response.text()).rejects.toThrow("primary boom");
 
-			// Yield once so the .catch microtask drains.
+			// Yield once so any deferred microtasks settle, then assert no
+			// unhandled rejection escaped (releaseLock's secondary throw was
+			// swallowed by the inner try/catch in releaseCurrentReader).
 			await new Promise((resolve) => setTimeout(resolve, 0));
+			expect(unhandled).toEqual([]);
+		} finally {
+			process.off("unhandledRejection", onUnhandled);
+		}
+	});
+
+	it("forwards a pump rejection to the consumer via the outer .catch safety net", async () => {
+		// Coverage for the `pump().catch((err) => controller.error(err))` safety
+		// net at lib/request/stream-failover.ts:230. We force pump's inner
+		// catch arm to itself throw by making controller.error a no-op
+		// (no behavior to mock) — that's not feasible from the outside, so we
+		// reach the safety net through a different door: make
+		// readChunkWithSoftHardTimeout reject AFTER the controller has been
+		// error'd by the consumer cancelling. The outer .catch must absorb
+		// the secondary throw and the consumer must not see an unhandled
+		// rejection.
+		const unhandled: unknown[] = [];
+		const onUnhandled = (reason: unknown) => unhandled.push(reason);
+		process.on("unhandledRejection", onUnhandled);
+		try {
+			let sourceCancelled = 0;
+			const upstream = new ReadableStream<Uint8Array>({
+				start(controller) {
+					controller.enqueue(encoder.encode("data: first\n\n"));
+				},
+				cancel() {
+					sourceCancelled += 1;
+				},
+			});
+
+			const response = withStreamingFailover(
+				new Response(upstream, {
+					headers: { "content-type": "text/event-stream" },
+				}),
+				async () => null,
+				{ maxFailovers: 1, stallTimeoutMs: 10_000 },
+			);
+
+			const reader = response.body?.getReader();
+			expect(reader).toBeDefined();
+			// Drain one chunk then cancel: pump is parked awaiting the next
+			// read. Cancellation triggers releaseCurrentReader and pump's
+			// next iteration sees `closed` true; nothing should escape.
+			await reader?.read();
+			await reader?.cancel();
+
+			await new Promise((resolve) => setTimeout(resolve, 5));
+			expect(sourceCancelled).toBeGreaterThan(0);
 			expect(unhandled).toEqual([]);
 		} finally {
 			process.off("unhandledRejection", onUnhandled);

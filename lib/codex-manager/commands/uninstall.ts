@@ -62,7 +62,10 @@ export function resolveUninstallPaths(
 }
 
 export function removePluginFromList(list: unknown[]): unknown[] {
-	return list.filter((entry) => {
+	// Pre-filter null/undefined to match scripts/install-codex-auth-utils.js's
+	// `list.filter(Boolean)` so the two implementations cannot drift on a
+	// stray null entry in Codex.json.
+	return list.filter(Boolean).filter((entry) => {
 		if (typeof entry !== "string") return true;
 		return entry !== PLUGIN_NAME && !entry.startsWith(`${PLUGIN_NAME}@`);
 	});
