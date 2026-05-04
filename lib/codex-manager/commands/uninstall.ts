@@ -235,23 +235,27 @@ export async function runUninstallCommand(
 	type BunLockState = "safe" | "uncertain";
 	let bunLockState: BunLockState = "uncertain";
 	try {
-		if (dryRun) {
-			log(`[dry-run] Would remove ${PLUGIN_NAME} from ${paths.configPath}`);
-		} else {
-			try {
-				const raw = await readFile(paths.configPath, "utf8");
-				const config: unknown = JSON.parse(raw);
-				if (
-					config &&
-					typeof config === "object" &&
-					"plugins" in config &&
-					Array.isArray((config as { plugins: unknown[] }).plugins)
-				) {
-					const next = removePluginFromList(
-						(config as { plugins: unknown[] }).plugins,
+		try {
+			const raw = await withFileOperationRetry(() =>
+				readFile(paths.configPath, "utf8"),
+			);
+			const config: unknown = JSON.parse(raw);
+			if (
+				config &&
+				typeof config === "object" &&
+				"plugins" in config &&
+				Array.isArray((config as { plugins: unknown[] }).plugins)
+			) {
+				const next = removePluginFromList(
+					(config as { plugins: unknown[] }).plugins,
+				);
+				bunLockState = next.length === 0 ? "safe" : "uncertain";
+				if (dryRun) {
+					log(
+						`[dry-run] Would remove ${PLUGIN_NAME} from ${paths.configPath}`,
 					);
+				} else {
 					(config as { plugins: unknown[] }).plugins = next;
-					bunLockState = next.length === 0 ? "safe" : "uncertain";
 					await withFileOperationRetry(() =>
 						writeFile(
 							paths.configPath,
@@ -261,16 +265,25 @@ export async function runUninstallCommand(
 					);
 					removed.push("config-entry");
 				}
-			} catch (fileError) {
-				const code =
-					fileError && typeof fileError === "object" && "code" in fileError
-						? (fileError as NodeJS.ErrnoException).code
-						: undefined;
-				if (code === "ENOENT") {
-					bunLockState = "safe";
-				} else {
-					throw fileError;
+			} else if (dryRun) {
+				log(
+					`[dry-run] Would remove ${PLUGIN_NAME} from ${paths.configPath}`,
+				);
+			}
+		} catch (fileError) {
+			const code =
+				fileError && typeof fileError === "object" && "code" in fileError
+					? (fileError as NodeJS.ErrnoException).code
+					: undefined;
+			if (code === "ENOENT") {
+				bunLockState = "safe";
+				if (dryRun) {
+					log(
+						`[dry-run] Would remove ${PLUGIN_NAME} from ${paths.configPath}`,
+					);
 				}
+			} else {
+				throw fileError;
 			}
 		}
 	} catch (error) {

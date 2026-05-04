@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { mkdtempSync, rmSync, writeFileSync, mkdirSync, existsSync, readFileSync } from "node:fs";
+import { mkdtempSync, writeFileSync, mkdirSync, existsSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import {
@@ -8,14 +8,15 @@ import {
 	resolveUninstallPaths,
 	runUninstallCommand,
 } from "../lib/codex-manager/commands/uninstall.js";
+import { removeWithRetry } from "./helpers/remove-with-retry.js";
 
 const tempRoots: string[] = [];
 
-afterEach(() => {
+afterEach(async () => {
 	vi.restoreAllMocks();
 	while (tempRoots.length > 0) {
 		const root = tempRoots.pop();
-		if (root) rmSync(root, { recursive: true, force: true });
+		if (root) await removeWithRetry(root, { recursive: true, force: true });
 	}
 });
 
@@ -273,7 +274,7 @@ describe("runUninstallCommand", () => {
 		expect(existsSync(paths.cacheBunLock)).toBe(false);
 	});
 
-	it("logs a warning and marks partial failure when launcher import fails", async () => {
+	it("logs a warning and marks partial failure when launcher removal throws", async () => {
 		const home = makeTempHome();
 		const paths = pathsForTempHome(home);
 		const messages: string[] = [];
@@ -281,10 +282,9 @@ describe("runUninstallCommand", () => {
 		const code = await runUninstallCommand(["--json"], {
 			log: (m) => messages.push(m),
 			unbind: async () => {},
-			// removeLauncher intentionally omitted so loadDefaultLauncher() is invoked.
-			// In a test environment without dist/, the import path resolves to a file
-			// that may not exist or may be missing the expected export — either way
-			// the command should warn and continue.
+			removeLauncher: async () => {
+				throw new Error("boom from launcher");
+			},
 			paths: {
 				configPath: paths.configPath,
 				cacheNodeModules: paths.cacheNodeModules,
@@ -292,16 +292,13 @@ describe("runUninstallCommand", () => {
 			},
 		});
 
-		// We don't assert on exit code (depends on whether dist exists locally).
-		// We do assert that if a launcher warning fires, it routes through the
-		// log/warnings path rather than throwing.
-		const warned = messages.some((m) =>
-			m.includes("launcher removal skipped"),
+		const warned = messages.some(
+			(m) =>
+				m.includes("launcher removal skipped") &&
+				m.includes("boom from launcher"),
 		);
-		const summarized = messages.some((m) => m.startsWith("uninstall complete"));
-		// Either the launcher loaded fine (no warning, summary printed) OR it
-		// failed and we routed through the skip path.
-		expect(warned || summarized || code === 0).toBe(true);
+		expect(warned).toBe(true);
+		expect(code).toBe(1);
 	});
 
 	it("removes the shared bun.lock only when no other plugins remain", async () => {

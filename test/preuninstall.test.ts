@@ -1,16 +1,17 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { mkdtempSync, rmSync, writeFileSync, mkdirSync, existsSync, readFileSync } from "node:fs";
+import { mkdtempSync, writeFileSync, mkdirSync, existsSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { runPreuninstallCleanup } from "../scripts/preuninstall.js";
+import { removeWithRetry } from "./helpers/remove-with-retry.js";
 
 const tempRoots: string[] = [];
 
-afterEach(() => {
+afterEach(async () => {
 	vi.restoreAllMocks();
 	while (tempRoots.length > 0) {
 		const root = tempRoots.pop();
-		if (root) rmSync(root, { recursive: true, force: true });
+		if (root) await removeWithRetry(root, { recursive: true, force: true });
 	}
 });
 
