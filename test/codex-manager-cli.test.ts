@@ -10928,6 +10928,66 @@ describe("codex manager cli commands", () => {
 		});
 	});
 
+	it("treats a quota cache save failure as a partial-success warning, not a hard failure", async () => {
+		// Account-storage fixes are committed first; if saveQuotaCache then
+		// hits EBUSY/EPERM on Windows the run must NOT reject — that would
+		// turn a partial-success into a hard failure after the primary fix
+		// already landed. Instead the run continues and surfaces the cache
+		// error via quotaCacheSaveError in the JSON payload.
+		const now = Date.now();
+		const originalQuotaCache = {
+			byAccountId: {},
+			byEmail: {},
+		};
+		loadAccountsMock.mockResolvedValueOnce({
+			version: 3,
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0 },
+			accounts: [
+				{
+					email: "live-fix@example.com",
+					accountId: "acc_live_fix",
+					refreshToken: "refresh-live-fix",
+					accessToken: "access-live-fix",
+					expiresAt: now + 60 * 60 * 1000,
+					addedAt: now - 5_000,
+					lastUsed: now - 5_000,
+					enabled: true,
+				},
+			],
+		});
+		loadQuotaCacheMock.mockResolvedValueOnce(originalQuotaCache);
+		fetchCodexQuotaSnapshotMock.mockResolvedValueOnce({
+			status: 200,
+			model: "gpt-5-codex",
+			primary: { usedPercent: 35, windowMinutes: 300, resetAtMs: now + 1_000 },
+			secondary: { usedPercent: 22, windowMinutes: 10080, resetAtMs: now + 2_000 },
+		});
+
+		const ebusy = Object.assign(new Error("EBUSY: resource busy"), {
+			code: "EBUSY",
+		});
+		saveQuotaCacheMock.mockRejectedValueOnce(ebusy);
+
+		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+
+		const exitCode = await runCodexMultiAuthCli(["auth", "fix", "--live", "--json"]);
+
+		// Run completes successfully even though the cache write threw.
+		expect(exitCode).toBe(0);
+		expect(saveQuotaCacheMock).toHaveBeenCalledTimes(1);
+
+		// JSON payload surfaces the cache save error so callers can act on it.
+		const firstCall = logSpy.mock.calls[0]?.[0];
+		const payload = JSON.parse(String(firstCall)) as {
+			quotaCacheSaveError: string | null;
+			quotaCacheChanged: boolean;
+		};
+		expect(payload.quotaCacheChanged).toBe(true);
+		expect(payload.quotaCacheSaveError).toContain("EBUSY");
+	});
+
 	it("persists the working quota cache for live fix display mode", async () => {
 		const now = Date.now();
 		const originalQuotaCache = {

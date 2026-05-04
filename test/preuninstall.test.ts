@@ -3,6 +3,7 @@ import { mkdtempSync, writeFileSync, mkdirSync, existsSync, readFileSync } from 
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { runPreuninstallCleanup } from "../scripts/preuninstall.js";
+import { resolveInstallPaths } from "../scripts/install-codex-auth-utils.js";
 import { removeWithRetry } from "./helpers/remove-with-retry.js";
 
 const tempRoots: string[] = [];
@@ -36,18 +37,10 @@ function envFor(home: string): NodeJS.ProcessEnv {
 	};
 }
 
+// Use the production path resolver so the tests cannot drift from real
+// install/uninstall behavior.
 function resolveTempPaths(home: string) {
-	const isWindows = process.platform === "win32";
-	const configBase = isWindows ? path.join(home, "AppData", "Roaming") : path.join(home, ".config");
-	const cacheBase = isWindows ? path.join(home, "AppData", "Local") : path.join(home, ".cache");
-	const configDir = path.join(configBase, "Codex");
-	const cacheDir = path.join(cacheBase, "Codex");
-	return {
-		configDir,
-		configPath: path.join(configDir, "Codex.json"),
-		cacheDir,
-		cacheBunLock: path.join(cacheDir, "bun.lock"),
-	};
+	return resolveInstallPaths(process.platform, envFor(home), home);
 }
 
 describe("runPreuninstallCleanup", () => {
@@ -270,6 +263,42 @@ describe("runPreuninstallCleanup", () => {
 		// Codex.json itself remains untouched.
 		const config = JSON.parse(readFileSync(paths.configPath, "utf8"));
 		expect(config.plugins).toEqual(["codex-multi-auth"]);
+	});
+
+	it("concurrent invocations leave Codex.json valid and free of codex-multi-auth", async () => {
+		// Two npm processes upgrading/uninstalling in parallel can race on the
+		// Codex.json read-modify-write. Both invocations must end with a valid
+		// JSON file that does not contain codex-multi-auth.
+		const home = makeTempHome();
+		const env = envFor(home);
+		const paths = resolveTempPaths(home);
+		mkdirSync(paths.configDir, { recursive: true });
+		writeFileSync(
+			paths.configPath,
+			JSON.stringify({ plugins: ["codex-multi-auth", "other"] }, null, "\t") +
+				"\n",
+			"utf8",
+		);
+
+		const opts = {
+			env,
+			home,
+			log: () => {},
+			unbindCodexApp: async () => {},
+			removeLauncher: async () => {},
+			clearCache: async () => {},
+		};
+		const [a, b] = await Promise.all([
+			runPreuninstallCleanup(opts),
+			runPreuninstallCleanup(opts),
+		]);
+		expect(a).toBe(0);
+		expect(b).toBe(0);
+
+		const config = JSON.parse(readFileSync(paths.configPath, "utf8"));
+		expect(Array.isArray(config.plugins)).toBe(true);
+		expect(config.plugins).not.toContain("codex-multi-auth");
+		expect(config.plugins).toContain("other");
 	});
 
 	it("dry-run reports bunLockSafe=false when other plugins remain", async () => {

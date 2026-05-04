@@ -205,4 +205,56 @@ describe("stream failover", () => {
 
 		expect(sourceCancelled).toBeGreaterThan(0);
 	});
+
+	it("does not emit an unhandled rejection if releasing the upstream reader throws", async () => {
+		// Regression for the `pump().catch((err) => controller.error(err))`
+		// safety net at lib/request/stream-failover.ts:230. If the inner
+		// cleanup (`releaseCurrentReader()`, `controller.error()`) itself
+		// throws — e.g. the upstream reader's releaseLock fails because the
+		// stream is in an unusual state — the outer .catch must still
+		// forward the error to the consumer rather than leaking an unhandled
+		// promise rejection.
+		const unhandled: unknown[] = [];
+		const onUnhandled = (reason: unknown) => unhandled.push(reason);
+		process.on("unhandledRejection", onUnhandled);
+		try {
+			const upstream = new ReadableStream<Uint8Array>({
+				start(controller) {
+					controller.error(new Error("primary boom"));
+				},
+			});
+			// Patch getReader so the returned reader.releaseLock throws when
+			// pump's catch path calls it during cleanup. This is the same
+			// kind of secondary failure the outer .catch is meant to absorb.
+			const realGetReader = upstream.getReader.bind(upstream);
+			(upstream as unknown as {
+				getReader: () => ReadableStreamDefaultReader<Uint8Array>;
+			}).getReader = () => {
+				const reader = realGetReader();
+				const realReleaseLock = reader.releaseLock.bind(reader);
+				reader.releaseLock = () => {
+					realReleaseLock();
+					throw new Error("releaseLock blew up");
+				};
+				return reader;
+			};
+
+			const response = withStreamingFailover(
+				new Response(upstream, {
+					headers: { "content-type": "text/event-stream" },
+				}),
+				async () => null,
+				{ maxFailovers: 0 },
+			);
+
+			// Consumer should observe an error rather than hanging.
+			await expect(response.text()).rejects.toThrow();
+
+			// Yield once so the .catch microtask drains.
+			await new Promise((resolve) => setTimeout(resolve, 0));
+			expect(unhandled).toEqual([]);
+		} finally {
+			process.off("unhandledRejection", onUnhandled);
+		}
+	});
 });
