@@ -96,6 +96,29 @@ describe("storage transaction helpers", () => {
 		expect(seen).toEqual([{ version: 1, accounts: [] }]);
 	});
 
+	it("releases the storage lock when a queued transaction rejects", async () => {
+		const order: string[] = [];
+		const deps = {
+			getStoragePath: () => "/tmp/accounts.json",
+			loadCurrent: async () => null,
+			saveAccounts: async () => undefined,
+		};
+
+		const failing = withAccountStorageTransaction(async () => {
+			order.push("failing-start");
+			throw new Error("boom");
+		}, deps);
+
+		const succeeding = withAccountStorageTransaction(async () => {
+			order.push("succeeding-start");
+			return "ok";
+		}, deps);
+
+		await expect(failing).rejects.toThrow("boom");
+		await expect(succeeding).resolves.toBe("ok");
+		expect(order).toEqual(["failing-start", "succeeding-start"]);
+	});
+
 	it("rolls back account storage when flagged save fails", async () => {
 		const saveAccounts = vi.fn(async () => undefined);
 		await expect(

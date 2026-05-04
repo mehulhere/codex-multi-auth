@@ -158,6 +158,73 @@ describe("runUninstallCommand", () => {
 		expect(messages.some((m) => m.includes("[dry-run]"))).toBe(true);
 	});
 
+	it("dry-run does not load the launcher module when deps.removeLauncher is omitted", async () => {
+		// Regression: previously loadDefaultLauncher() was awaited before the
+		// dryRun branch, so a system without dist/scripts/codex-app-launcher.js
+		// could not preview the uninstall.
+		const home = makeTempHome();
+		const paths = pathsForTempHome(home);
+		mkdirSync(paths.configDir, { recursive: true });
+		writeFileSync(
+			paths.configPath,
+			JSON.stringify({ plugins: ["codex-multi-auth"] }, null, "\t") + "\n",
+			"utf8",
+		);
+
+		const messages: string[] = [];
+		const code = await runUninstallCommand(["--dry-run", "--json"], {
+			log: (m) => messages.push(m),
+			unbind: async () => {},
+			// removeLauncher intentionally omitted — dry-run must not invoke
+			// the default loader path.
+			paths: {
+				configPath: paths.configPath,
+				cacheNodeModules: paths.cacheNodeModules,
+				cacheBunLock: paths.cacheBunLock,
+			},
+		});
+
+		expect(code).toBe(0);
+		expect(messages.some((m) => m.includes("[dry-run] Would remove OS launcher"))).toBe(true);
+		// "launcher removal skipped" warning would mean the dry-run actually
+		// tried to load the launcher module and failed — that's the regression.
+		expect(messages.some((m) => m.includes("launcher removal skipped"))).toBe(false);
+	});
+
+	it("dry-run reports bun.lock as safe-to-remove when this is the only plugin", async () => {
+		// Regression: previously dry-run skipped the Codex.json read, so
+		// bunLockState stayed "uncertain" and the log always said "Would skip
+		// bun.lock" even when this was the sole plugin.
+		const home = makeTempHome();
+		const paths = pathsForTempHome(home);
+		mkdirSync(paths.configDir, { recursive: true });
+		writeFileSync(
+			paths.configPath,
+			JSON.stringify({ plugins: ["codex-multi-auth"] }, null, "\t") + "\n",
+			"utf8",
+		);
+
+		const messages: string[] = [];
+		const code = await runUninstallCommand(["--dry-run"], {
+			log: (m) => messages.push(m),
+			unbind: async () => {},
+			removeLauncher: async () => {},
+			paths: {
+				configPath: paths.configPath,
+				cacheNodeModules: paths.cacheNodeModules,
+				cacheBunLock: paths.cacheBunLock,
+			},
+		});
+
+		expect(code).toBe(0);
+		expect(
+			messages.some((m) => m.includes(`[dry-run] Would remove ${paths.cacheBunLock}`)),
+		).toBe(true);
+		expect(
+			messages.some((m) => m.includes("Would skip") && m.includes("bun.lock")),
+		).toBe(false);
+	});
+
 	it("removes plugin entry from Codex.json and clears node_modules cache", async () => {
 		const home = makeTempHome();
 		const paths = pathsForTempHome(home);

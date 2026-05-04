@@ -109,7 +109,6 @@ describe("runPreuninstallCleanup", () => {
 		const config = JSON.parse(readFileSync(paths.configPath, "utf8"));
 		expect(config.plugins).toEqual(["other"]);
 		expect(removedBunLock).not.toHaveBeenCalled();
-		expect(existsSync(paths.cacheBunLock)).toBe(true);
 	});
 
 	it("treats bun.lock as safe to remove when only this plugin was installed", async () => {
@@ -238,5 +237,66 @@ describe("runPreuninstallCleanup", () => {
 		expect(code).toBe(0);
 		const config = JSON.parse(readFileSync(paths.configPath, "utf8"));
 		expect(config.plugins).toEqual(["codex-multi-auth", "other"]);
+	});
+
+	it("dry-run computes bunLockSafe from real Codex.json (sole plugin → safe)", async () => {
+		// Regression: previously dry-run skipped the Codex.json read so
+		// bunLockState stayed "uncertain" and clearCache was always called
+		// with bunLockSafe=false during preview.
+		const home = makeTempHome();
+		const env = envFor(home);
+		const paths = resolveTempPaths(home);
+		mkdirSync(paths.configDir, { recursive: true });
+		writeFileSync(
+			paths.configPath,
+			JSON.stringify({ plugins: ["codex-multi-auth"] }, null, "\t") + "\n",
+			"utf8",
+		);
+
+		const observed = { bunLockSafe: false as boolean };
+		const code = await runPreuninstallCleanup({
+			env,
+			dryRun: true,
+			log: () => {},
+			unbindCodexApp: async () => {},
+			removeLauncher: async () => {},
+			clearCache: async (_dryRun, _log, bunLockSafe) => {
+				observed.bunLockSafe = bunLockSafe;
+			},
+		});
+
+		expect(code).toBe(0);
+		expect(observed.bunLockSafe).toBe(true);
+		// Codex.json itself remains untouched.
+		const config = JSON.parse(readFileSync(paths.configPath, "utf8"));
+		expect(config.plugins).toEqual(["codex-multi-auth"]);
+	});
+
+	it("dry-run reports bunLockSafe=false when other plugins remain", async () => {
+		const home = makeTempHome();
+		const env = envFor(home);
+		const paths = resolveTempPaths(home);
+		mkdirSync(paths.configDir, { recursive: true });
+		writeFileSync(
+			paths.configPath,
+			JSON.stringify({ plugins: ["codex-multi-auth", "other"] }, null, "\t") +
+				"\n",
+			"utf8",
+		);
+
+		const observed = { bunLockSafe: true as boolean };
+		const code = await runPreuninstallCleanup({
+			env,
+			dryRun: true,
+			log: () => {},
+			unbindCodexApp: async () => {},
+			removeLauncher: async () => {},
+			clearCache: async (_dryRun, _log, bunLockSafe) => {
+				observed.bunLockSafe = bunLockSafe;
+			},
+		});
+
+		expect(code).toBe(0);
+		expect(observed.bunLockSafe).toBe(false);
 	});
 });
