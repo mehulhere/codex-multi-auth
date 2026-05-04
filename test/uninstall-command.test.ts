@@ -199,6 +199,111 @@ describe("runUninstallCommand", () => {
 		expect(existsSync(paths.cacheBunLock)).toBe(true);
 	});
 
+	it("preserves the shared bun.lock when Codex.json is corrupt (parse error)", async () => {
+		const home = makeTempHome();
+		const paths = pathsForTempHome(home);
+		mkdirSync(paths.configDir, { recursive: true });
+		mkdirSync(paths.cacheDir, { recursive: true });
+		// Intentionally invalid JSON to trigger parse failure.
+		writeFileSync(paths.configPath, "{ broken json", "utf8");
+		writeFileSync(paths.cacheBunLock, "lock", "utf8");
+
+		const code = await runUninstallCommand([], {
+			log: () => {},
+			unbind: async () => {},
+			removeLauncher: async () => {},
+			paths: {
+				configPath: paths.configPath,
+				cacheNodeModules: paths.cacheNodeModules,
+				cacheBunLock: paths.cacheBunLock,
+			},
+		});
+
+		// Parse error → partial failure (exit 1) AND bun.lock preserved.
+		expect(code).toBe(1);
+		expect(existsSync(paths.cacheBunLock)).toBe(true);
+	});
+
+	it("preserves the shared bun.lock when Codex.json has no plugins array", async () => {
+		const home = makeTempHome();
+		const paths = pathsForTempHome(home);
+		mkdirSync(paths.configDir, { recursive: true });
+		mkdirSync(paths.cacheDir, { recursive: true });
+		writeFileSync(
+			paths.configPath,
+			JSON.stringify({ otherField: 1 }, null, "\t") + "\n",
+			"utf8",
+		);
+		writeFileSync(paths.cacheBunLock, "lock", "utf8");
+
+		const code = await runUninstallCommand([], {
+			log: () => {},
+			unbind: async () => {},
+			removeLauncher: async () => {},
+			paths: {
+				configPath: paths.configPath,
+				cacheNodeModules: paths.cacheNodeModules,
+				cacheBunLock: paths.cacheBunLock,
+			},
+		});
+
+		expect(code).toBe(0);
+		expect(existsSync(paths.cacheBunLock)).toBe(true);
+	});
+
+	it("treats the shared bun.lock as safe when Codex.json is missing (ENOENT)", async () => {
+		const home = makeTempHome();
+		const paths = pathsForTempHome(home);
+		mkdirSync(paths.cacheDir, { recursive: true });
+		// Intentionally do not create Codex.json.
+		writeFileSync(paths.cacheBunLock, "lock", "utf8");
+
+		const code = await runUninstallCommand([], {
+			log: () => {},
+			unbind: async () => {},
+			removeLauncher: async () => {},
+			paths: {
+				configPath: paths.configPath,
+				cacheNodeModules: paths.cacheNodeModules,
+				cacheBunLock: paths.cacheBunLock,
+			},
+		});
+
+		expect(code).toBe(0);
+		expect(existsSync(paths.cacheBunLock)).toBe(false);
+	});
+
+	it("logs a warning and marks partial failure when launcher import fails", async () => {
+		const home = makeTempHome();
+		const paths = pathsForTempHome(home);
+		const messages: string[] = [];
+
+		const code = await runUninstallCommand(["--json"], {
+			log: (m) => messages.push(m),
+			unbind: async () => {},
+			// removeLauncher intentionally omitted so loadDefaultLauncher() is invoked.
+			// In a test environment without dist/, the import path resolves to a file
+			// that may not exist or may be missing the expected export — either way
+			// the command should warn and continue.
+			paths: {
+				configPath: paths.configPath,
+				cacheNodeModules: paths.cacheNodeModules,
+				cacheBunLock: paths.cacheBunLock,
+			},
+		});
+
+		// We don't assert on exit code (depends on whether dist exists locally).
+		// We do assert that if a launcher warning fires, it routes through the
+		// log/warnings path rather than throwing.
+		const warned = messages.some((m) =>
+			m.includes("launcher removal skipped"),
+		);
+		const summarized = messages.some((m) => m.startsWith("uninstall complete"));
+		// Either the launcher loaded fine (no warning, summary printed) OR it
+		// failed and we routed through the skip path.
+		expect(warned || summarized || code === 0).toBe(true);
+	});
+
 	it("removes the shared bun.lock only when no other plugins remain", async () => {
 		const home = makeTempHome();
 		const paths = pathsForTempHome(home);

@@ -63,7 +63,7 @@ describe("runPreuninstallCleanup", () => {
 			},
 			removePluginFromConfig: async () => {
 				calls.push("CONFIG_CALLED");
-				return { pluginsRemaining: null };
+				return { bunLockState: "uncertain" as const };
 			},
 			clearCache: async () => {
 				calls.push("CACHE_CALLED");
@@ -136,6 +136,57 @@ describe("runPreuninstallCleanup", () => {
 
 		expect(code).toBe(0);
 		expect(observed.bunLockSafe).toBe(true);
+	});
+
+	it("treats bun.lock as uncertain when Codex.json is corrupt (parse error)", async () => {
+		const home = makeTempHome();
+		const env = envFor(home);
+		const paths = resolveTempPaths(home);
+		mkdirSync(paths.configDir, { recursive: true });
+		// Intentionally invalid JSON.
+		writeFileSync(paths.configPath, "{ this is not valid json", "utf8");
+
+		const observed: { bunLockSafe: boolean | null } = { bunLockSafe: null };
+		const code = await runPreuninstallCleanup({
+			env,
+			home,
+			log: () => {},
+			unbindCodexApp: async () => {},
+			removeLauncher: async () => {},
+			clearCache: async (_dryRun, _log, bunLockSafe) => {
+				observed.bunLockSafe = bunLockSafe;
+			},
+		});
+
+		expect(code).toBe(0);
+		expect(observed.bunLockSafe).toBe(false);
+	});
+
+	it("treats bun.lock as uncertain when Codex.json has no plugins array", async () => {
+		const home = makeTempHome();
+		const env = envFor(home);
+		const paths = resolveTempPaths(home);
+		mkdirSync(paths.configDir, { recursive: true });
+		writeFileSync(
+			paths.configPath,
+			JSON.stringify({ otherField: 123 }, null, "\t") + "\n",
+			"utf8",
+		);
+
+		const observed: { bunLockSafe: boolean | null } = { bunLockSafe: null };
+		const code = await runPreuninstallCleanup({
+			env,
+			home,
+			log: () => {},
+			unbindCodexApp: async () => {},
+			removeLauncher: async () => {},
+			clearCache: async (_dryRun, _log, bunLockSafe) => {
+				observed.bunLockSafe = bunLockSafe;
+			},
+		});
+
+		expect(code).toBe(0);
+		expect(observed.bunLockSafe).toBe(false);
 	});
 
 	it("treats bun.lock as safe when Codex.json is missing (nothing to protect)", async () => {

@@ -138,24 +138,21 @@ export type UninstallCommandDeps = {
 	paths?: ReturnType<typeof resolveUninstallPaths>;
 };
 
-async function loadDefaultLauncher(): Promise<
-	| ((options: { remove: true; log: (msg: string) => void }) => Promise<void>)
-	| null
-> {
-	try {
-		const launcherModule = await import(
-			new URL("../../../../scripts/codex-app-launcher.js", import.meta.url).href
+type RemoveLauncherFn = (options: {
+	remove: true;
+	log: (msg: string) => void;
+}) => Promise<void>;
+
+async function loadDefaultLauncher(): Promise<RemoveLauncherFn> {
+	const launcherModule = await import(
+		new URL("../../../../scripts/codex-app-launcher.js", import.meta.url).href
+	);
+	if (typeof launcherModule.installCodexAppLauncher !== "function") {
+		throw new Error(
+			"codex-app-launcher.js does not export installCodexAppLauncher",
 		);
-		if (typeof launcherModule.installCodexAppLauncher === "function") {
-			return launcherModule.installCodexAppLauncher as (options: {
-				remove: true;
-				log: (msg: string) => void;
-			}) => Promise<void>;
-		}
-		return null;
-	} catch {
-		return null;
 	}
+	return launcherModule.installCodexAppLauncher as RemoveLauncherFn;
 }
 
 export async function runUninstallCommand(
@@ -225,10 +222,18 @@ export async function runUninstallCommand(
 		partialFailure = true;
 	}
 
-	// Remove plugin entry from Codex.json. Track whether the resulting plugin
-	// list is empty so we can decide later whether removing the shared
-	// bun.lock is safe.
-	let configPluginsAfterRemoval: unknown[] | null = null;
+	// Remove plugin entry from Codex.json and decide whether the shared
+	// bun.lock is safe to delete. bun.lock is shared across all Codex plugins,
+	// so we only remove it when we are certain no other plugins remain.
+	//
+	// Decision table:
+	//   - File ENOENT             → safe (nothing to protect)
+	//   - Parse error / read fail → NOT safe (unknown state, be conservative)
+	//   - File ok, no plugins[]   → NOT safe (we don't know what's installed)
+	//   - File ok, plugins[]=[]   → safe
+	//   - File ok, plugins[]≠[]   → NOT safe
+	type BunLockState = "safe" | "uncertain";
+	let bunLockState: BunLockState = "uncertain";
 	try {
 		if (dryRun) {
 			log(`[dry-run] Would remove ${PLUGIN_NAME} from ${paths.configPath}`);
@@ -246,7 +251,7 @@ export async function runUninstallCommand(
 						(config as { plugins: unknown[] }).plugins,
 					);
 					(config as { plugins: unknown[] }).plugins = next;
-					configPluginsAfterRemoval = next;
+					bunLockState = next.length === 0 ? "safe" : "uncertain";
 					await withFileOperationRetry(() =>
 						writeFile(
 							paths.configPath,
@@ -261,7 +266,9 @@ export async function runUninstallCommand(
 					fileError && typeof fileError === "object" && "code" in fileError
 						? (fileError as NodeJS.ErrnoException).code
 						: undefined;
-				if (code !== "ENOENT") {
+				if (code === "ENOENT") {
+					bunLockState = "safe";
+				} else {
 					throw fileError;
 				}
 			}
@@ -273,13 +280,7 @@ export async function runUninstallCommand(
 		partialFailure = true;
 	}
 
-	// Clear plugin cache. The plugin's node_modules subdir is private to this
-	// plugin, but bun.lock is shared across all Codex plugins — only remove it
-	// when the Codex.json plugin list is empty (or unreadable, which we treat
-	// as "no other plugins to protect").
-	const bunLockSafeToRemove =
-		configPluginsAfterRemoval === null ||
-		configPluginsAfterRemoval.length === 0;
+	const bunLockSafeToRemove = bunLockState === "safe";
 	try {
 		if (dryRun) {
 			log(`[dry-run] Would remove ${paths.cacheNodeModules}`);

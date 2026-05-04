@@ -37,7 +37,7 @@ function defaultPreuninstallLog(message) {
  * @param {{
  *   unbindCodexApp?: (dryRun: boolean) => Promise<void>,
  *   removeLauncher?: (options: { dryRun: boolean, log: (m: string) => void }) => Promise<void>,
- *   removePluginFromConfig?: (dryRun: boolean, log: (m: string) => void) => Promise<{ pluginsRemaining: number | null }>,
+ *   removePluginFromConfig?: (dryRun: boolean, log: (m: string) => void) => Promise<{ bunLockState: "safe" | "uncertain" }>,
  *   clearCache?: (dryRun: boolean, log: (m: string) => void, bunLockSafe: boolean) => Promise<void>,
  *   log?: (message: string) => void,
  *   env?: NodeJS.ProcessEnv,
@@ -59,8 +59,8 @@ export async function runPreuninstallCleanup(deps = {}) {
 		return 0;
 	}
 
-	/** @type {number | null} */
-	let pluginsRemaining = null;
+	/** @type {"safe" | "uncertain"} */
+	let bunLockState = "uncertain";
 
 	// Unbind Codex app runtime rotation (reverses postinstall bind)
 	try {
@@ -101,13 +101,19 @@ export async function runPreuninstallCleanup(deps = {}) {
 		);
 	}
 
-	// Remove plugin entry from Codex.json. Track how many plugins remain so we
-	// can decide whether the shared bun.lock is safe to delete.
+	// Remove plugin entry from Codex.json and track whether we're certain that
+	// no other plugins remain. bun.lock is shared across all Codex plugins, so
+	// it's only safe to delete when:
+	//   - File ENOENT             → safe (nothing to protect)
+	//   - Parse error / read fail → uncertain (be conservative)
+	//   - File ok, no plugins[]   → uncertain (we don't know what's installed)
+	//   - File ok, plugins[]=[]   → safe
+	//   - File ok, plugins[]≠[]   → uncertain
 	try {
 		if (deps.removePluginFromConfig) {
 			const result = await deps.removePluginFromConfig(dryRun, log);
-			if (result && typeof result === "object" && "pluginsRemaining" in result) {
-				pluginsRemaining = /** @type {number | null} */ (result.pluginsRemaining);
+			if (result && typeof result === "object" && "bunLockState" in result) {
+				bunLockState = result.bunLockState === "safe" ? "safe" : "uncertain";
 			}
 		} else {
 			const paths = resolveInstallPaths(
@@ -123,7 +129,7 @@ export async function runPreuninstallCleanup(deps = {}) {
 					const config = JSON.parse(raw);
 					if (Array.isArray(config.plugins)) {
 						config.plugins = removePluginFromList(config.plugins);
-						pluginsRemaining = config.plugins.length;
+						bunLockState = config.plugins.length === 0 ? "safe" : "uncertain";
 						await withFileOperationRetry(() =>
 							writeFile(
 								paths.configPath,
@@ -139,7 +145,9 @@ export async function runPreuninstallCleanup(deps = {}) {
 						"code" in fileError
 							? fileError.code
 							: undefined;
-					if (code !== "ENOENT") {
+					if (code === "ENOENT") {
+						bunLockState = "safe";
+					} else {
 						log(
 							`config cleanup skipped: ${fileError instanceof Error ? fileError.message : String(fileError)}`,
 						);
@@ -153,10 +161,7 @@ export async function runPreuninstallCleanup(deps = {}) {
 		);
 	}
 
-	// bun.lock is shared across all Codex plugins. Treat it as safe to delete
-	// only when no other plugins remain (or the config is missing/unreadable,
-	// in which case there's nothing for us to protect).
-	const bunLockSafe = pluginsRemaining === null || pluginsRemaining === 0;
+	const bunLockSafe = bunLockState === "safe";
 
 	// Clear plugin cache dirs
 	try {
