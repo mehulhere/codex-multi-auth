@@ -1490,12 +1490,23 @@ export async function runFix(
 		});
 	}
 
+	let quotaCacheSaveError: string | null = null;
+	if (!options.dryRun && workingQuotaCache && quotaCacheChanged) {
+		try {
+			await saveQuotaCache(workingQuotaCache);
+		} catch (error) {
+			// Account storage was already persisted above. Surface the quota-cache
+			// save failure as a partial-success warning rather than turning the
+			// whole run into a hard failure (Windows EBUSY/EPERM is the common
+			// cause and is benign — quota cache is a derived artifact).
+			quotaCacheSaveError =
+				error instanceof Error ? error.message : String(error);
+		}
+	}
+
 	const changed = accountStorageChanged;
 
 	if (options.json) {
-		if (!options.dryRun && workingQuotaCache && quotaCacheChanged) {
-			await saveQuotaCache(workingQuotaCache);
-		}
 		console.log(
 			JSON.stringify(
 				{
@@ -1505,6 +1516,7 @@ export async function runFix(
 					model: options.model,
 					changed,
 					quotaCacheChanged,
+					quotaCacheSaveError,
 					summary: reportSummary,
 					recommendation,
 					recommendedSwitchCommand:
@@ -1541,6 +1553,14 @@ export async function runFix(
 			{ text: `${reportSummary.skipped} already disabled`, tone: "muted" },
 		]),
 	);
+	if (quotaCacheSaveError) {
+		console.log(
+			deps.stylePromptText(
+				`Warning: quota cache save failed (${quotaCacheSaveError}); account fixes were saved.`,
+				"warning",
+			),
+		);
+	}
 	if (display.showPerAccountRows) {
 		console.log("");
 		for (const report of reports) {
@@ -1594,9 +1614,6 @@ export async function runFix(
 				`${deps.stylePromptText("Note:", "accent")} ${deps.stylePromptText(recommendation.reason, "muted")}`,
 			);
 		}
-	}
-	if (!options.dryRun && workingQuotaCache && quotaCacheChanged) {
-		await saveQuotaCache(workingQuotaCache);
 	}
 
 	if (accountStorageChanged && options.dryRun) {

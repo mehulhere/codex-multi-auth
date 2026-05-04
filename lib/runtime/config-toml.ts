@@ -135,6 +135,19 @@ export function restoreTopLevelModelProvider(
 		output.push(line);
 	}
 
+	if (!handled && originalLine) {
+		// Splice the restored line into the root table — appending at tail
+		// would land it inside whatever section appears last in `output`.
+		const firstSectionIdx = output.findIndex(
+			(line) => readTomlTableName(line) !== null,
+		);
+		if (firstSectionIdx === -1) {
+			output.push(originalLine);
+		} else {
+			output.splice(firstSectionIdx, 0, originalLine);
+		}
+	}
+
 	return output.join(lineEnding);
 }
 
@@ -147,7 +160,6 @@ export function restoreTopLevelResponseStorage(
 		originalConfig,
 		"disable_response_storage",
 	);
-	if (!originalLine) return currentConfig;
 	const lines = currentConfig.length > 0 ? currentConfig.split(/\r?\n/) : [];
 	const output: string[] = [];
 	let handled = false;
@@ -165,11 +177,30 @@ export function restoreTopLevelResponseStorage(
 			/^\s*disable_response_storage\s*=/.test(line) &&
 			readTomlTableName(line) === null
 		) {
-			output.push(originalLine);
+			if (originalLine) {
+				output.push(originalLine);
+			}
+			// If no originalLine, drop the line we wrote during bind (removing residue)
 			handled = true;
 			continue;
 		}
 		output.push(line);
+	}
+
+	if (!handled && originalLine) {
+		// Mirror restoreTopLevelModelProvider: when the bind-written line was
+		// stripped from currentConfig before unbind, the user's original
+		// setting must still come back into the root table. Splice it before
+		// the first section header instead of appending at tail (a tail
+		// append would land it inside whatever section comes last).
+		const firstSectionIdx = output.findIndex(
+			(line) => readTomlTableName(line) !== null,
+		);
+		if (firstSectionIdx === -1) {
+			output.push(originalLine);
+		} else {
+			output.splice(firstSectionIdx, 0, originalLine);
+		}
 	}
 
 	return output.join(lineEnding);

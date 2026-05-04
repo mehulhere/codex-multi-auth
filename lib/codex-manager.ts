@@ -76,6 +76,7 @@ import {
 	runFix as runRepairFix,
 	runVerifyFlagged as runRepairVerifyFlagged,
 } from "./codex-manager/repair-commands.js";
+import { runUninstallCommand } from "./codex-manager/commands/uninstall.js";
 import { runForecastCommand } from "./codex-manager/commands/forecast.js";
 import { runInitConfigCommand } from "./codex-manager/commands/init-config.js";
 import { runReportCommand } from "./codex-manager/commands/report.js";
@@ -207,6 +208,7 @@ const ACCOUNT_MANAGER_COMMANDS = new Set([
 	"report",
 	"fix",
 	"doctor",
+	"uninstall",
 	"account",
 	"budget",
 	"bridge",
@@ -2389,7 +2391,15 @@ async function runHealthCheck(options: HealthCheckOptions = {}): Promise<void> {
 		);
 	}
 	if (workingQuotaCache && quotaCacheChanged) {
-		await saveQuotaCache(workingQuotaCache);
+		try {
+			await saveQuotaCache(workingQuotaCache);
+		} catch (error) {
+			// Quota cache is a derived artifact; a transient Windows EBUSY/EPERM
+			// here must not abort the health check before account fixes commit.
+			console.warn(
+				`Quota cache save failed: ${error instanceof Error ? error.message : String(error)}`,
+			);
+		}
 	}
 
 	if (changed) {
@@ -3603,6 +3613,9 @@ export async function runCodexMultiAuthCli(rawArgs: string[]): Promise<number> {
 	}
 	if (command === "doctor") {
 		return runRepairDoctor(rest, createRepairCommandDeps());
+	}
+	if (command === "uninstall") {
+		return runUninstallCommand(rest, { clearAccounts });
 	}
 	if (command === "config") {
 		const [subcommand, ...configArgs] = rest;

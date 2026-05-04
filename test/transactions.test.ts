@@ -4,6 +4,7 @@ import {
 	withAccountAndFlaggedStorageTransaction,
 	withAccountStorageTransaction,
 } from "../lib/storage/transactions.js";
+import type { AccountStorageV3 } from "../lib/storage.js";
 
 describe("storage transaction helpers", () => {
 	it("runs account transaction with current snapshot and persist callback", async () => {
@@ -36,6 +37,126 @@ describe("storage transaction helpers", () => {
 
 		expect(result).toBe("ok");
 		expect(saved).toHaveLength(1);
+	});
+
+	it("forwards loaded flagged storage to handler as third argument", async () => {
+		const flagged = {
+			version: 1 as const,
+			accounts: [{ refreshToken: "flagged-acct" }],
+		};
+		const loadCurrentFlagged = vi.fn(async () => flagged);
+
+		await withAccountAndFlaggedStorageTransaction(
+			async (_current, _persist, currentFlagged) => {
+				expect(currentFlagged).toEqual(flagged);
+				expect(currentFlagged.accounts).toHaveLength(1);
+			},
+			{
+				getStoragePath: () => "/tmp/accounts.json",
+				loadCurrent: async () => null,
+				loadCurrentFlagged,
+				saveAccounts: async () => undefined,
+				saveFlaggedAccounts: async () => undefined,
+				cloneAccountStorageForPersistence: (storage) =>
+					storage ?? {
+						version: 3,
+						accounts: [],
+						activeIndex: 0,
+						activeIndexByFamily: {},
+					},
+				logRollbackError: vi.fn(),
+			},
+		);
+
+		expect(loadCurrentFlagged).toHaveBeenCalledTimes(1);
+	});
+
+	it("falls back to empty flagged storage when loadCurrentFlagged is omitted", async () => {
+		const seen: unknown[] = [];
+
+		await withAccountAndFlaggedStorageTransaction(
+			async (_current, _persist, currentFlagged) => {
+				seen.push(currentFlagged);
+			},
+			{
+				getStoragePath: () => "/tmp/accounts.json",
+				loadCurrent: async () => null,
+				saveAccounts: async () => undefined,
+				saveFlaggedAccounts: async () => undefined,
+				cloneAccountStorageForPersistence: (storage) =>
+					storage ?? {
+						version: 3,
+						accounts: [],
+						activeIndex: 0,
+						activeIndexByFamily: {},
+					},
+				logRollbackError: vi.fn(),
+			},
+		);
+
+		expect(seen).toEqual([{ version: 1, accounts: [] }]);
+	});
+
+	it("releases the storage lock when a queued transaction rejects", async () => {
+		const order: string[] = [];
+		const deps = {
+			getStoragePath: () => "/tmp/accounts.json",
+			loadCurrent: async () => null,
+			saveAccounts: async () => undefined,
+		};
+
+		const failing = withAccountStorageTransaction(async () => {
+			order.push("failing-start");
+			throw new Error("boom");
+		}, deps);
+
+		const succeeding = withAccountStorageTransaction(async () => {
+			order.push("succeeding-start");
+			return "ok";
+		}, deps);
+
+		await expect(failing).rejects.toThrow("boom");
+		await expect(succeeding).resolves.toBe("ok");
+		expect(order).toEqual(["failing-start", "succeeding-start"]);
+	});
+
+	it("releases the storage lock when a queued account+flagged transaction rejects", async () => {
+		// Mirror of the prior test but for the
+		// withAccountAndFlaggedStorageTransaction code path so a future
+		// refactor that splits the lock chain between the two helpers can't
+		// silently regress only one of them.
+		const order: string[] = [];
+		const deps = {
+			getStoragePath: () => "/tmp/accounts.json",
+			loadCurrent: async () => null,
+			loadCurrentFlagged: async () => ({ version: 1 as const, accounts: [] }),
+			saveAccounts: async () => undefined,
+			saveFlaggedAccounts: async () => undefined,
+			cloneAccountStorageForPersistence: (
+				storage: AccountStorageV3 | null | undefined,
+			): AccountStorageV3 =>
+				storage ?? {
+					version: 3,
+					accounts: [],
+					activeIndex: 0,
+					activeIndexByFamily: {},
+				},
+			logRollbackError: vi.fn(),
+		};
+
+		const failing = withAccountAndFlaggedStorageTransaction(async () => {
+			order.push("failing-start");
+			throw new Error("boom");
+		}, deps);
+
+		const succeeding = withAccountAndFlaggedStorageTransaction(async () => {
+			order.push("succeeding-start");
+			return "ok" as const;
+		}, deps);
+
+		await expect(failing).rejects.toThrow("boom");
+		await expect(succeeding).resolves.toBe("ok");
+		expect(order).toEqual(["failing-start", "succeeding-start"]);
 	});
 
 	it("rolls back account storage when flagged save fails", async () => {

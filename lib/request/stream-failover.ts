@@ -89,6 +89,10 @@ async function readChunkWithSoftHardTimeout(
 	softTimeoutMs: number,
 	hardTimeoutMs: number,
 ): Promise<Awaited<ReturnType<ReadableStreamDefaultReader<Uint8Array>["read"]>>> {
+	// Hoist the read so a single read request stays in flight across the
+	// soft/hard timeout windows. If we called reader.read() a second time after
+	// a soft-timeout, the chunk that arrives first would resolve the abandoned
+	// first promise and be silently dropped, leaving a gap in the stream.
 	const readPromise = reader.read();
 	try {
 		return await readChunkWithTimeout(readPromise, softTimeoutMs);
@@ -223,7 +227,13 @@ export function withStreamingFailover(
 				}
 			};
 
-			void pump();
+			pump().catch((err) => {
+				try {
+					controller.error(err);
+				} catch {
+					/* controller may already be closed */
+				}
+			});
 		},
 		cancel() {
 			closed = true;

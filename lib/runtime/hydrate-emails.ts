@@ -85,7 +85,14 @@ export async function hydrateRuntimeEmails(
 	);
 
 	if (changed) {
-		storage.accounts = accountsCopy;
+		// Patch by index, not by accountId. Multiple accounts can share
+		// `accountId === undefined`, and a Map keyed on accountId would
+		// collapse them and apply one account's hydrated tokens to another.
+		// `accountsCopy` was built via `.map` so it has the same length and
+		// order as `storage.accounts`.
+		storage.accounts = storage.accounts.map(
+			(account, index) => accountsCopy[index] ?? account,
+		);
 		await deps.saveAccounts(storage);
 	}
 	return storage;

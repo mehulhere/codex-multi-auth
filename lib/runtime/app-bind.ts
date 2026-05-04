@@ -104,6 +104,13 @@ export interface AppBindOptions {
 	log?: (message: string) => void;
 }
 
+// Per-key mutex. `tail` resolves only after `current` resolves, so each
+// caller waits for the previous holder to call releaseCurrent(). The map
+// check and optional delete run synchronously after releaseCurrent() with no
+// await between them — JS's single-threaded event loop guarantees no other
+// caller can modify the map entry in that window. If a later caller has
+// already replaced the entry, the identity check is false and the chain is
+// preserved.
 async function withAppBindLock<T>(
 	key: string,
 	operation: () => Promise<T>,
@@ -669,6 +676,7 @@ async function bindCodexAppRuntimeRotationLocked(
 	await mkdir(paths.bindDir, { recursive: true });
 	await mkdir(dirname(paths.configPath), { recursive: true });
 	await atomicWriteFile(paths.backupPath, `${JSON.stringify(backup, null, 2)}\n`);
+	// Write bootstrap state before spawning so router can read --state on startup
 	await atomicWriteFile(paths.statePath, `${JSON.stringify(state, null, 2)}\n`);
 	const startedRouter = await maybeStartRouter(state, options);
 	const router = startedRouter
@@ -685,11 +693,27 @@ async function bindCodexAppRuntimeRotationLocked(
 	if (routerIsUsable) {
 		port = readPortFromBaseUrl(routerBaseUrl, port);
 		baseUrl = routerBaseUrl;
-	} else if (existingState && existingState.port > 0) {
+	} else if (
+		!startedRouter &&
+		existingState &&
+		existingState.port > 0 &&
+		router !== null &&
+		router.state === "running" &&
+		isProcessAlive(router.pid)
+	) {
+		// Only reuse existingState.port when the router process is verifiably
+		// alive — `router !== null` alone passes for stale status JSON left by
+		// a dead router, which would have us write a config.toml pointing at a
+		// port nothing is listening on.
 		port = existingState.port;
 		baseUrl = existingState.baseUrl;
 	}
 	if (port <= 0) {
+		if (startedRouter) {
+			// Best-effort stop of the router we just spawned
+			const orphan = await readRouterStatus(state.statusPath).catch(() => null);
+			await stopRouter(orphan).catch(() => undefined);
+		}
 		throw new Error(
 			"Codex app bind could not resolve a runtime router port; refusing to write config.toml with port=0.",
 		);
@@ -732,6 +756,11 @@ async function unbindCodexAppRuntimeRotationLocked(
 	const router = await readRouterStatus(paths.statusPath);
 	if (state) {
 		await stopRouter(router);
+		if (router?.pid && isProcessAlive(router.pid)) {
+			options.log?.(
+				`Warning: runtime router (pid ${router.pid}) did not stop; continuing cleanup`,
+			);
+		}
 		await removeAppBindStartup(state);
 	}
 

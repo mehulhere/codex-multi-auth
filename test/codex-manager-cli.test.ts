@@ -1697,12 +1697,16 @@ describe("codex manager cli commands", () => {
 		);
 		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
 
-		await expect(
-			runCodexMultiAuthCli(["auth", "forecast", "--live", "--json"]),
-		).rejects.toMatchObject({
-			code: "EBUSY",
-			message: "save failed",
-		});
+		// Quota cache is a derived artifact; a Windows EBUSY/EPERM during the
+		// JSON-mode forecast save is now downgraded to a warning so the
+		// forecast output still emits. The loaded cache must remain unmutated.
+		const exitCode = await runCodexMultiAuthCli([
+			"auth",
+			"forecast",
+			"--live",
+			"--json",
+		]);
+		expect(exitCode).toBe(0);
 		expect(originalQuotaCache).toEqual({
 			byAccountId: {},
 			byEmail: {},
@@ -1774,12 +1778,15 @@ describe("codex manager cli commands", () => {
 		);
 		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
 
-		await expect(
-			runCodexMultiAuthCli(["auth", "forecast", "--live"]),
-		).rejects.toMatchObject({
-			code: "EBUSY",
-			message: "save failed",
-		});
+		// Quota cache failure is now downgraded to a warning rather than a
+		// hard failure; the forecast still completes and the loaded cache
+		// stays unmutated.
+		const exitCode = await runCodexMultiAuthCli([
+			"auth",
+			"forecast",
+			"--live",
+		]);
+		expect(exitCode).toBe(0);
 		expect(originalQuotaCache).toEqual({
 			byAccountId: {},
 			byEmail: {},
@@ -10893,12 +10900,12 @@ describe("codex manager cli commands", () => {
 		);
 		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
 
-		await expect(
-			runCodexMultiAuthCli(["auth", "fix", "--live"]),
-		).rejects.toMatchObject({
-			code: "EBUSY",
-			message: "save failed",
-		});
+		// A failed display-mode quota cache save is now downgraded to a
+		// partial-success warning (account fixes were already committed
+		// when this code path runs); the run resolves to 0 instead of
+		// rejecting. The loaded cache must still NOT be mutated.
+		const exitCode = await runCodexMultiAuthCli(["auth", "fix", "--live"]);
+		expect(exitCode).toBe(0);
 		expect(originalQuotaCache).toEqual({
 			byAccountId: {},
 			byEmail: {},
@@ -10926,6 +10933,89 @@ describe("codex manager cli commands", () => {
 			},
 			byEmail: {},
 		});
+	});
+
+	it("treats a quota cache save failure as a partial-success warning, not a hard failure", async () => {
+		// Account-storage fixes are committed first; if saveQuotaCache then
+		// hits EBUSY/EPERM on Windows the run must NOT reject — that would
+		// turn a partial-success into a hard failure after the primary fix
+		// already landed. Instead the run continues and surfaces the cache
+		// error via quotaCacheSaveError in the JSON payload.
+		const now = Date.now();
+		const originalQuotaCache = {
+			byAccountId: {},
+			byEmail: {},
+		};
+		loadAccountsMock.mockResolvedValueOnce({
+			version: 3,
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0 },
+			accounts: [
+				{
+					email: "live-fix@example.com",
+					accountId: "acc_live_fix",
+					refreshToken: "refresh-live-fix",
+					accessToken: "access-live-fix-stale",
+					// Stale → forces a refresh → forces saveAccounts to commit
+					// the new tokens BEFORE the quota cache save attempt.
+					expiresAt: now - 5_000,
+					addedAt: now - 5_000,
+					lastUsed: now - 5_000,
+					enabled: true,
+				},
+			],
+		});
+		queuedRefreshMock.mockResolvedValueOnce({
+			type: "success",
+			access: "access-live-fix-fresh",
+			refresh: "refresh-live-fix-next",
+			expires: now + 60 * 60 * 1000,
+		});
+		loadQuotaCacheMock.mockResolvedValueOnce(originalQuotaCache);
+		fetchCodexQuotaSnapshotMock.mockResolvedValueOnce({
+			status: 200,
+			model: "gpt-5-codex",
+			primary: { usedPercent: 35, windowMinutes: 300, resetAtMs: now + 1_000 },
+			secondary: { usedPercent: 22, windowMinutes: 10080, resetAtMs: now + 2_000 },
+		});
+
+		const ebusy = Object.assign(new Error("EBUSY: resource busy"), {
+			code: "EBUSY",
+		});
+		saveQuotaCacheMock.mockRejectedValueOnce(ebusy);
+
+		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+
+		const exitCode = await runCodexMultiAuthCli(["auth", "fix", "--live", "--json"]);
+
+		// Run completes successfully even though the cache write threw.
+		expect(exitCode).toBe(0);
+
+		// Primary fix MUST have been persisted before the quota-cache failure
+		// downgraded the run to partial-success. saveAccounts is called from
+		// inside withAccountStorageTransaction, which runs strictly before
+		// saveQuotaCache. Asserting both call counts pins that ordering.
+		expect(saveAccountsMock).toHaveBeenCalledTimes(1);
+		const persistedAccounts = saveAccountsMock.mock.calls[0]?.[0] as {
+			accounts: Array<{ accessToken?: string; refreshToken?: string }>;
+		};
+		expect(persistedAccounts.accounts[0]?.accessToken).toBe(
+			"access-live-fix-fresh",
+		);
+		expect(persistedAccounts.accounts[0]?.refreshToken).toBe(
+			"refresh-live-fix-next",
+		);
+		expect(saveQuotaCacheMock).toHaveBeenCalledTimes(1);
+
+		// JSON payload surfaces the cache save error so callers can act on it.
+		const firstCall = logSpy.mock.calls[0]?.[0];
+		const payload = JSON.parse(String(firstCall)) as {
+			quotaCacheSaveError: string | null;
+			quotaCacheChanged: boolean;
+		};
+		expect(payload.quotaCacheChanged).toBe(true);
+		expect(payload.quotaCacheSaveError).toContain("EBUSY");
 	});
 
 	it("persists the working quota cache for live fix display mode", async () => {

@@ -16,6 +16,7 @@ export function printUsage(): void {
 			"  codex-multi-auth account tag|untag|weight|pause|unpause|drain|undrain|note ...",
 			"",
 			"Repair:",
+			"  codex-multi-auth uninstall [--dry-run] [--json] [--clear-accounts]",
 			"  codex-multi-auth verify-flagged [--dry-run] [--json] [--no-restore]",
 			"  codex-multi-auth verify [--paths | --flagged | --all] [--json]",
 			"  codex-multi-auth fix [--dry-run] [--json] [--live] [--model <model>]",

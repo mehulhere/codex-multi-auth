@@ -26,7 +26,7 @@ export function runInTransactionSnapshotContext<T>(
 
 export function withStorageLock<T>(fn: () => Promise<T>): Promise<T> {
 	const previousMutex = storageMutex;
-	let releaseLock: () => void;
+	let releaseLock: () => void = () => undefined;
 	storageMutex = new Promise<void>((resolve) => {
 		releaseLock = resolve;
 	});
@@ -68,10 +68,12 @@ export async function withAccountAndFlaggedStorageTransaction<T>(
 			accountStorage: AccountStorageV3,
 			flaggedStorage: FlaggedAccountStorageV1,
 		) => Promise<void>,
+		currentFlagged: FlaggedAccountStorageV1,
 	) => Promise<T>,
 	deps: {
 		getStoragePath: () => string;
 		loadCurrent: () => Promise<AccountStorageV3 | null>;
+		loadCurrentFlagged?: () => Promise<FlaggedAccountStorageV1>;
 		saveAccounts: (storage: AccountStorageV3) => Promise<void>;
 		saveFlaggedAccounts: (storage: FlaggedAccountStorageV1) => Promise<void>;
 		cloneAccountStorageForPersistence: (
@@ -87,6 +89,9 @@ export async function withAccountAndFlaggedStorageTransaction<T>(
 			active: true,
 		};
 		const current = state.snapshot;
+		const currentFlagged = deps.loadCurrentFlagged
+			? await deps.loadCurrentFlagged()
+			: { version: 1 as const, accounts: [] };
 		const persist = async (
 			accountStorage: AccountStorageV3,
 			flaggedStorage: FlaggedAccountStorageV1,
@@ -98,7 +103,10 @@ export async function withAccountAndFlaggedStorageTransaction<T>(
 				deps.cloneAccountStorageForPersistence(accountStorage);
 			await deps.saveAccounts(nextAccounts);
 			try {
-				await deps.saveFlaggedAccounts(flaggedStorage);
+				await deps.saveFlaggedAccounts({
+					...flaggedStorage,
+					accounts: [...flaggedStorage.accounts],
+				});
 				state.snapshot = nextAccounts;
 			} catch (error) {
 				try {
@@ -115,7 +123,7 @@ export async function withAccountAndFlaggedStorageTransaction<T>(
 			}
 		};
 		return transactionSnapshotContext.run(state, () =>
-			handler(current, persist),
+			handler(current, persist, currentFlagged),
 		);
 	});
 }

@@ -357,7 +357,15 @@ export async function runForecastCommand(
 
 	if (options.json) {
 		if (workingQuotaCache && quotaCacheChanged) {
-			await deps.saveQuotaCache(workingQuotaCache);
+			try {
+				await deps.saveQuotaCache(workingQuotaCache);
+			} catch (error) {
+				// Quota cache is a derived artifact; a transient Windows EBUSY/
+				// EPERM here must not abort the JSON forecast output.
+				console.warn(
+					`Quota cache save failed: ${error instanceof Error ? error.message : String(error)}`,
+				);
+			}
 		}
 		logInfo(
 			JSON.stringify(
@@ -520,7 +528,15 @@ export async function runForecastCommand(
 		}
 	}
 	if (workingQuotaCache && quotaCacheChanged) {
-		await deps.saveQuotaCache(workingQuotaCache);
+		try {
+			await deps.saveQuotaCache(workingQuotaCache);
+		} catch (error) {
+			// Quota cache is a derived artifact; tolerate transient Windows
+			// EBUSY/EPERM rather than aborting the forecast.
+			console.warn(
+				`Quota cache save failed: ${error instanceof Error ? error.message : String(error)}`,
+			);
+		}
 	}
 
 	return 0;
