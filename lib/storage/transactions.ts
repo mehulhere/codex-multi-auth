@@ -73,7 +73,7 @@ export async function withAccountAndFlaggedStorageTransaction<T>(
 	deps: {
 		getStoragePath: () => string;
 		loadCurrent: () => Promise<AccountStorageV3 | null>;
-		loadCurrentFlagged: () => Promise<FlaggedAccountStorageV1>;
+		loadCurrentFlagged?: () => Promise<FlaggedAccountStorageV1>;
 		saveAccounts: (storage: AccountStorageV3) => Promise<void>;
 		saveFlaggedAccounts: (storage: FlaggedAccountStorageV1) => Promise<void>;
 		cloneAccountStorageForPersistence: (
@@ -89,7 +89,9 @@ export async function withAccountAndFlaggedStorageTransaction<T>(
 			active: true,
 		};
 		const current = state.snapshot;
-		const currentFlagged = await deps.loadCurrentFlagged();
+		const currentFlagged = deps.loadCurrentFlagged
+			? await deps.loadCurrentFlagged()
+			: { version: 1 as const, accounts: [] };
 		const persist = async (
 			accountStorage: AccountStorageV3,
 			flaggedStorage: FlaggedAccountStorageV1,

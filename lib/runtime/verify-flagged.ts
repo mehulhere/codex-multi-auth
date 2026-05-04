@@ -108,26 +108,6 @@ export async function verifyRuntimeFlaggedAccounts(deps: {
 					);
 					continue;
 				}
-				// Fresh access token available but no cached refresh token — restore with flagged refresh token
-				const resolved = deps.resolveTokenSuccessAccount({
-					type: "success",
-					access: cached.accessToken,
-					refresh: flagged.refreshToken,
-					expires: cached.expiresAt,
-					multiAccount: true,
-				});
-				if (!resolved.accountIdOverride && flagged.accountId) {
-					resolved.accountIdOverride = flagged.accountId;
-					resolved.accountIdSource = flagged.accountIdSource ?? "manual";
-				}
-				if (!resolved.accountLabel && flagged.accountLabel) {
-					resolved.accountLabel = flagged.accountLabel;
-				}
-				state.restored.push(resolved);
-				deps.showLine(
-					`[${i + 1}/${flaggedStorage.accounts.length}] ${label}: RESTORED (Codex CLI cache)`,
-				);
-				continue;
 			}
 
 			const refreshResult = await deps.queuedRefresh(flagged.refreshToken);
@@ -172,11 +152,11 @@ export async function verifyRuntimeFlaggedAccounts(deps: {
 		await deps.persistAccountsAndFlagged(state.restored, nextFlaggedStorage, false);
 		deps.invalidateAccountManagerCache();
 	} else {
-		await deps.saveFlaggedAccounts(nextFlaggedStorage);
 		if (state.restored.length > 0) {
 			await deps.persistAccounts(state.restored, false);
 			deps.invalidateAccountManagerCache();
 		}
+		await deps.saveFlaggedAccounts(nextFlaggedStorage);
 	}
 
 	deps.showLine("");
