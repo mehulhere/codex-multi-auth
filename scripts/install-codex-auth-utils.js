@@ -49,6 +49,15 @@ export function resolveInstallPaths(
 }
 
 /** @param {unknown} list */
+export function removePluginFromList(list) {
+	const entries = Array.isArray(list) ? list.filter(Boolean) : [];
+	return entries.filter((entry) => {
+		if (typeof entry !== "string") return true;
+		return entry !== PLUGIN_NAME && !entry.startsWith(`${PLUGIN_NAME}@`);
+	});
+}
+
+/** @param {unknown} list */
 export function normalizePluginList(list) {
 	const entries = Array.isArray(list) ? list.filter(Boolean) : [];
 	const filtered = entries.filter((entry) => {
