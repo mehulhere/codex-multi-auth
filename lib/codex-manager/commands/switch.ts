@@ -10,6 +10,7 @@ type PersistAndSyncSelectedAccount = (params: {
 	switchReason: "rotation" | "best" | "restore" | "manual";
 	setPin?: boolean;
 	clearPin?: boolean;
+	bumpAffinityGeneration?: boolean;
 }) => Promise<{ synced: boolean; wasDisabled: boolean }>;
 
 export interface SwitchCommandDeps {
@@ -66,6 +67,7 @@ export async function runSwitchCommand(
 		parsed,
 		switchReason: "manual",
 		setPin: true,
+		bumpAffinityGeneration: true,
 	});
 
 	if (!synced) {

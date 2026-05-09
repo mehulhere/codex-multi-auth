@@ -83,6 +83,15 @@ export interface AccountStorageV3 {
 	 * `best` and the dedicated `unpin` command. See issue #474.
 	 */
 	pinnedAccountIndex?: number;
+	/**
+	 * Monotonically increasing counter bumped by user-initiated storage events
+	 * (`switch`, `unpin`, `best`) so the long-running runtime proxy can detect
+	 * a manual change and invalidate sticky session affinity. The proxy reads
+	 * this from disk via the same mtime-cached path as `pinnedAccountIndex` and
+	 * never bumps it from its own debounced writes. Treat `undefined` as
+	 * logically zero. See issue #474.
+	 */
+	affinityGeneration?: number;
 }
 
 function nowMs(): number {

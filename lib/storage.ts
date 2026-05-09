@@ -1266,6 +1266,23 @@ export function normalizeAccountStorage(
 		return truncated;
 	})();
 
+	const affinityGeneration = (() => {
+		const raw = (data as { affinityGeneration?: unknown }).affinityGeneration;
+		if (raw === undefined) return undefined;
+		if (
+			typeof raw !== "number" ||
+			!Number.isFinite(raw) ||
+			!Number.isInteger(raw) ||
+			raw < 0
+		) {
+			log.warn("Dropping invalid affinityGeneration from storage", {
+				value: raw,
+			});
+			return undefined;
+		}
+		return raw;
+	})();
+
 	const normalized: AccountStorageV3 = {
 		version: 3,
 		accounts: deduplicatedAccounts,
@@ -1274,6 +1291,9 @@ export function normalizeAccountStorage(
 	};
 	if (pinnedAccountIndex !== undefined) {
 		normalized.pinnedAccountIndex = pinnedAccountIndex;
+	}
+	if (affinityGeneration !== undefined) {
+		normalized.affinityGeneration = affinityGeneration;
 	}
 	return normalized;
 }

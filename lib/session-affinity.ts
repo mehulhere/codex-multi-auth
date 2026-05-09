@@ -203,6 +203,17 @@ export class SessionAffinityStore {
 		return removed;
 	}
 
+	/**
+	 * Drop every entry in the store. Used when the CLI bumps `affinityGeneration`
+	 * (via `switch`, `unpin`, or `best`) to invalidate sticky chat affinity so a
+	 * manual change takes effect on the next desktop-app request even mid-thread.
+	 * See issue #474.
+	 */
+	clearAll(): void {
+		if (this.entries.size === 0) return;
+		this.entries.clear();
+	}
+
 	size(): number {
 		return this.entries.size;
 	}

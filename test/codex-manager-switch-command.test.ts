@@ -84,6 +84,7 @@ describe("runSwitchCommand", () => {
 			parsed: 2,
 			switchReason: "manual",
 			setPin: true,
+			bumpAffinityGeneration: true,
 		});
 		expect(deps.logWarn).toHaveBeenCalledWith(
 			"Switched account 2 locally, but Codex auth sync did not complete. Multi-auth routing will still use this account.",

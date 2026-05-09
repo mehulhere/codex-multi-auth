@@ -30,6 +30,7 @@ export async function runUnpinCommand(
 
 	const previousPin = storage.pinnedAccountIndex;
 	delete storage.pinnedAccountIndex;
+	storage.affinityGeneration = (storage.affinityGeneration ?? 0) + 1;
 	await deps.saveAccounts(storage);
 
 	logInfo(
