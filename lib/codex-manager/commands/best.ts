@@ -68,6 +68,7 @@ export interface BestCommandDeps {
 		initialSyncIdToken?: string;
 		setPin?: boolean;
 		clearPin?: boolean;
+		bumpAffinityGeneration?: boolean;
 	}) => Promise<{ synced: boolean; wasDisabled: boolean }>;
 	setCodexCliActiveSelection: (params: {
 		accountId?: string;
@@ -325,6 +326,7 @@ export async function runBestCommand(
 		switchReason: "best",
 		initialSyncIdToken: probeIdTokenByIndex.get(bestIndex),
 		clearPin: true,
+		bumpAffinityGeneration: true,
 	});
 	const pinWasCleared = priorPin !== undefined;
 

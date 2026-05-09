@@ -259,52 +259,108 @@ function recordLastRuntimeAccount(
 }
 
 /**
- * mtime-keyed snapshot of the on-disk pinnedAccountIndex. The proxy is a
- * long-running process; the `switch` CLI runs in a different process and
- * mutates the storage file. We re-read only the top-level `pinnedAccountIndex`
- * field on each request so a manual switch is honored without doing a full
- * AccountManager reload (which would lose in-memory cooldown state). See #474.
+ * mtime-keyed snapshot of on-disk storage metadata. The proxy is a
+ * long-running process; the `switch`/`unpin`/`best` CLI runs in a different
+ * process and mutates the storage file. We re-read only the top-level
+ * `pinnedAccountIndex` and `affinityGeneration` fields on each request so
+ * manual changes are honored without doing a full AccountManager reload
+ * (which would lose in-memory cooldown state). See #474.
  */
-interface PinSnapshot {
+interface StorageMetaSnapshot {
 	mtimeMs: number;
-	index: number | null;
+	pinnedAccountIndex: number | null;
+	affinityGeneration: number;
 }
 
-const PIN_CACHE: { snapshot: PinSnapshot | null } = { snapshot: null };
+export interface StorageMeta {
+	pinnedAccountIndex: number | null;
+	affinityGeneration: number;
+}
 
-export function readPinnedAccountIndexFromDisk(
+const STORAGE_META_CACHE: { snapshot: StorageMetaSnapshot | null } = {
+	snapshot: null,
+};
+
+export function readStorageMetaFromDisk(
 	storagePath: string = getStoragePath(),
-): number | null {
+): StorageMeta {
 	if (!existsSync(storagePath)) {
-		PIN_CACHE.snapshot = null;
-		return null;
+		STORAGE_META_CACHE.snapshot = null;
+		return { pinnedAccountIndex: null, affinityGeneration: 0 };
 	}
 	try {
 		const stat = statSync(storagePath);
-		const cached = PIN_CACHE.snapshot;
+		const cached = STORAGE_META_CACHE.snapshot;
 		if (cached && cached.mtimeMs === stat.mtimeMs) {
-			return cached.index;
+			return {
+				pinnedAccountIndex: cached.pinnedAccountIndex,
+				affinityGeneration: cached.affinityGeneration,
+			};
 		}
 		const raw = readFileSync(storagePath, "utf8");
-		const parsed = JSON.parse(raw) as { pinnedAccountIndex?: unknown };
-		const index =
+		const parsed = JSON.parse(raw) as {
+			pinnedAccountIndex?: unknown;
+			affinityGeneration?: unknown;
+		};
+		const pinnedAccountIndex =
 			typeof parsed.pinnedAccountIndex === "number" &&
 			Number.isFinite(parsed.pinnedAccountIndex)
 				? Math.trunc(parsed.pinnedAccountIndex)
 				: null;
-		PIN_CACHE.snapshot = { mtimeMs: stat.mtimeMs, index };
-		return index;
+		const affinityGeneration =
+			typeof parsed.affinityGeneration === "number" &&
+			Number.isFinite(parsed.affinityGeneration) &&
+			Number.isInteger(parsed.affinityGeneration) &&
+			parsed.affinityGeneration >= 0
+				? parsed.affinityGeneration
+				: 0;
+		STORAGE_META_CACHE.snapshot = {
+			mtimeMs: stat.mtimeMs,
+			pinnedAccountIndex,
+			affinityGeneration,
+		};
+		return { pinnedAccountIndex, affinityGeneration };
 	} catch {
-		return null;
+		return { pinnedAccountIndex: null, affinityGeneration: 0 };
 	}
 }
 
 /**
- * Test-only: reset the pin mtime cache between scenarios so each test starts
- * from a clean read-from-disk state.
+ * Backwards-compatible helper retained for tests. Prefer `readStorageMetaFromDisk`
+ * for new callers that also need `affinityGeneration`.
+ */
+export function readPinnedAccountIndexFromDisk(
+	storagePath: string = getStoragePath(),
+): number | null {
+	return readStorageMetaFromDisk(storagePath).pinnedAccountIndex;
+}
+
+/**
+ * Test-only: reset the storage-meta mtime cache between scenarios so each test
+ * starts from a clean read-from-disk state.
  */
 export function resetPinCacheForTesting(): void {
-	PIN_CACHE.snapshot = null;
+	STORAGE_META_CACHE.snapshot = null;
+}
+
+/**
+ * If the on-disk `affinityGeneration` is greater than `lastObservedGeneration`,
+ * drop every entry in `sessionAffinityStore` and return the new generation so
+ * the caller can update its tracker. Otherwise returns `lastObservedGeneration`
+ * unchanged. Extracted so the request-flow logic can be unit-tested without
+ * spinning up the full proxy. See issue #474.
+ */
+export function maybeInvalidateAffinityFromDisk(
+	sessionAffinityStore: SessionAffinityStore | null,
+	lastObservedGeneration: number,
+	storagePath: string = getStoragePath(),
+): number {
+	const meta = readStorageMetaFromDisk(storagePath);
+	if (meta.affinityGeneration > lastObservedGeneration) {
+		sessionAffinityStore?.clearAll();
+		return meta.affinityGeneration;
+	}
+	return lastObservedGeneration;
 }
 
 async function persistRuntimeActiveAccount(
@@ -1001,6 +1057,11 @@ export async function startRuntimeRotationProxy(
 				maxEntries: getSessionAffinityMaxEntries(pluginConfig),
 			})
 		: null;
+	// Initialize from disk so the proxy starts in sync with whatever generation
+	// the storage file already shows. Subsequent disk bumps (from CLI commands)
+	// are detected per-request via `maybeInvalidateAffinityFromDisk`.
+	let lastObservedAffinityGeneration =
+		readStorageMetaFromDisk().affinityGeneration;
 	const status: RuntimeRotationProxyStatus = {
 		startedAt: now(),
 		totalRequests: 0,
@@ -1124,11 +1185,21 @@ export async function startRuntimeRotationProxy(
 			let transientAttempts = 0;
 			let transientExhaustionReason: ExhaustionReason | null = null;
 
-			// Read the manual pin from disk (mtime-cached) on each request so a
-			// `codex-multi-auth switch <n>` invocation in another process is honored
-			// without forcing a full AccountManager reload. See issue #474.
-			const pinnedIndex = readPinnedAccountIndexFromDisk();
+			// Read the manual pin and affinity generation from disk (mtime-cached)
+			// on each request so a `codex-multi-auth switch|unpin|best` invocation
+			// in another process is honored without forcing a full AccountManager
+			// reload. The CLI bumps `affinityGeneration` on user-initiated changes
+			// so the proxy can invalidate sticky session affinity that would
+			// otherwise glue an in-flight chat thread to the previously selected
+			// account. The proxy itself never bumps the generation, so its own
+			// debounced disk writes do not clear affinity. See issue #474.
+			const storageMeta = readStorageMetaFromDisk();
+			const pinnedIndex = storageMeta.pinnedAccountIndex;
 			const isPinned = typeof pinnedIndex === "number";
+			if (storageMeta.affinityGeneration > lastObservedAffinityGeneration) {
+				sessionAffinityStore?.clearAll();
+				lastObservedAffinityGeneration = storageMeta.affinityGeneration;
+			}
 
 			while (
 				attemptedIndexes.size < accountCount &&

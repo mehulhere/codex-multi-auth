@@ -3177,6 +3177,7 @@ async function persistAndSyncSelectedAccount({
 	preserveActiveIndexByFamily = false,
 	setPin = false,
 	clearPin = false,
+	bumpAffinityGeneration = false,
 }: {
 	storage: NonNullable<Awaited<ReturnType<typeof loadAccounts>>>;
 	targetIndex: number;
@@ -3186,6 +3187,7 @@ async function persistAndSyncSelectedAccount({
 	preserveActiveIndexByFamily?: boolean;
 	setPin?: boolean;
 	clearPin?: boolean;
+	bumpAffinityGeneration?: boolean;
 }): Promise<{ synced: boolean; wasDisabled: boolean }> {
 	const account = storage.accounts[targetIndex];
 	if (!account) {
@@ -3262,6 +3264,9 @@ async function persistAndSyncSelectedAccount({
 		storage.pinnedAccountIndex = targetIndex;
 	} else if (clearPin) {
 		delete storage.pinnedAccountIndex;
+	}
+	if (bumpAffinityGeneration) {
+		storage.affinityGeneration = (storage.affinityGeneration ?? 0) + 1;
 	}
 	await saveAccountsWithRetry(storage, saveAccounts);
 

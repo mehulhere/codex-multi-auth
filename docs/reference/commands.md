@@ -38,6 +38,16 @@ Compatibility forms are supported for migrations and wrapper-routed environments
 | `codex-multi-auth unpin` | Clear the manual pin set by `switch` and resume hybrid rotation |
 | `codex-multi-auth forecast` | Forecast best account by readiness/risk |
 | `codex-multi-auth best` | Pick and optionally sync the best account (clears any manual pin) |
+
+> Sticky session affinity: `switch`, `unpin`, and `best` all bump an
+> `affinityGeneration` counter in storage that the runtime rotation proxy
+> observes via the same mtime-cached read path it uses for the manual pin.
+> When the proxy sees a higher generation than its in-memory tracker, it
+> drops every entry in its session-affinity store. Net effect: a manual
+> change reaches the next desktop-app request even mid-conversation, instead
+> of being shadowed for up to 20 minutes by a per-thread account lock that
+> would otherwise glue the chat to whichever account first responded. See
+> issue #474.
 | `codex-multi-auth account ...` | Manage local account policy metadata |
 
 ---
