@@ -38,6 +38,7 @@ Compatibility forms are supported for migrations and wrapper-routed environments
 | `codex-multi-auth unpin` | Clear the manual pin set by `switch` and resume hybrid rotation |
 | `codex-multi-auth forecast` | Forecast best account by readiness/risk |
 | `codex-multi-auth best` | Pick and optionally sync the best account (clears any manual pin) |
+| `codex-multi-auth account ...` | Manage local account policy metadata |
 
 > Sticky session affinity: `switch`, `unpin`, and `best` all bump an
 > `affinityGeneration` counter in storage that the runtime rotation proxy
@@ -48,7 +49,6 @@ Compatibility forms are supported for migrations and wrapper-routed environments
 > of being shadowed for up to 20 minutes by a per-thread account lock that
 > would otherwise glue the chat to whichever account first responded. See
 > issue #474.
-| `codex-multi-auth account ...` | Manage local account policy metadata |
 
 ---
 
@@ -395,6 +395,7 @@ failure.
 - `CODEX_AUTH_NO_BROWSER=1` suppresses browser launch for automation/headless sessions. False-like values such as `0` and `false` do not disable browser launch by themselves.
 - In non-TTY/manual shells, pass the full redirect URL on stdin, for example: `echo "http://127.0.0.1:1455/auth/callback?code=..." | codex-multi-auth login --manual`.
 - `codex-multi-auth forecast --explain` now keeps the explain breakdown visible in text mode even when dashboard settings hide recommendation summary lines. Pair it with `--json` for machine-readable reasoning snapshots.
+- `codex-multi-auth switch <index>` now also pins the chosen account for runtime routing. The desktop-app rotation proxy honors the pin on every request and hard-fails with HTTP 503 `codex_pinned_account_unavailable` when the pinned account is rate-limited or otherwise unavailable. Run `codex-multi-auth unpin` (or `codex-multi-auth best`) to clear the pin and resume hybrid rotation. See issue #474.
 - No new npm scripts or storage migration steps were introduced for this auth-flow update.
 
 ---

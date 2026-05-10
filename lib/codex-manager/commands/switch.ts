@@ -1,4 +1,5 @@
 import { formatAccountLabel } from "../../accounts.js";
+import type { PersistedSwitchReason } from "../../schemas.js";
 import type { AccountStorageV3 } from "../../storage.js";
 
 type LoadedStorage = AccountStorageV3 | null;
@@ -7,7 +8,7 @@ type PersistAndSyncSelectedAccount = (params: {
 	storage: AccountStorageV3;
 	targetIndex: number;
 	parsed: number;
-	switchReason: "rotation" | "best" | "restore" | "manual";
+	switchReason: PersistedSwitchReason;
 	setPin?: boolean;
 	clearPin?: boolean;
 	bumpAffinityGeneration?: boolean;

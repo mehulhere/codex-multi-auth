@@ -123,6 +123,20 @@ export const SwitchReasonSchema = z.enum([
 export type SwitchReasonFromSchema = z.infer<typeof SwitchReasonSchema>;
 
 /**
+ * Switch reasons that callers may pass to `persistAndSyncSelectedAccount`.
+ * Excludes the runtime-internal reasons (`rate-limit`, `initial`) which are
+ * recorded by `markSwitched` but never originate from the CLI persist path.
+ */
+export const PersistedSwitchReasonSchema = z.enum([
+	"rotation",
+	"best",
+	"restore",
+	"manual",
+]);
+
+export type PersistedSwitchReason = z.infer<typeof PersistedSwitchReasonSchema>;
+
+/**
  * Rate limit state - maps model family to reset timestamp.
  */
 export const RateLimitStateV3Schema = z.record(
