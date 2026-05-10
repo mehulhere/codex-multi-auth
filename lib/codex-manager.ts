@@ -179,6 +179,7 @@ import {
 	setStoragePath,
 	withAccountStorageTransaction,
 } from "./storage.js";
+import type { PersistedSwitchReason } from "./schemas.js";
 import type { AccountIdSource, TokenResult } from "./types.js";
 import { ANSI } from "./ui/ansi.js";
 import { confirm } from "./ui/confirm.js";
@@ -3183,7 +3184,7 @@ async function persistAndSyncSelectedAccount({
 	storage: NonNullable<Awaited<ReturnType<typeof loadAccounts>>>;
 	targetIndex: number;
 	parsed: number;
-	switchReason: "rotation" | "best" | "restore" | "manual";
+	switchReason: PersistedSwitchReason;
 	initialSyncIdToken?: string;
 	preserveActiveIndexByFamily?: boolean;
 	setPin?: boolean;

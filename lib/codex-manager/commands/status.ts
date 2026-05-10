@@ -189,11 +189,12 @@ export async function runStatusCommand(
 	const pinnedAccountIndex = storage.pinnedAccountIndex;
 	if (typeof pinnedAccountIndex === "number") {
 		if (
+			!Number.isInteger(pinnedAccountIndex) ||
 			pinnedAccountIndex < 0 ||
 			pinnedAccountIndex >= storage.accounts.length
 		) {
 			logInfo(
-				`Pinned: invalid account index ${pinnedAccountIndex + 1}; run codex-multi-auth unpin`,
+				`Pinned: invalid account index ${pinnedAccountIndex}; run codex-multi-auth unpin`,
 			);
 		} else {
 			logInfo(`Pinned: account ${pinnedAccountIndex + 1} (set by switch)`);

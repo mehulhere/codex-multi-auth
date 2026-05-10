@@ -187,7 +187,7 @@ describe("issue #474 — pin-honored review feedback", () => {
 			expect(exit).toBe(0);
 			expect(
 				logInfo.mock.calls.some(([msg]) =>
-					String(msg).includes("invalid account index 100"),
+					String(msg).includes("invalid account index 99"),
 				),
 			).toBe(true);
 			expect(
@@ -197,9 +197,28 @@ describe("issue #474 — pin-honored review feedback", () => {
 			).toBe(false);
 		});
 
-		it("reports an out-of-range pin when the index is negative", async () => {
+		it("reports a negative pin using the raw stored value", async () => {
 			const storage = createStorage(Date.now(), 2);
-			storage.pinnedAccountIndex = -1;
+			storage.pinnedAccountIndex = -5;
+			const logInfo = vi.fn();
+			await runStatusCommand({
+				setStoragePath: vi.fn(),
+				getStoragePath: vi.fn(() => "/tmp/accounts.json"),
+				loadAccounts: vi.fn(async () => storage),
+				resolveActiveIndex: vi.fn(() => 0),
+				formatRateLimitEntry: vi.fn(() => null),
+				logInfo,
+			});
+			expect(
+				logInfo.mock.calls.some(([msg]) =>
+					String(msg).includes("invalid account index -5"),
+				),
+			).toBe(true);
+		});
+
+		it("rejects NaN pin without printing 'Pinned: account NaN'", async () => {
+			const storage = createStorage(Date.now(), 2);
+			storage.pinnedAccountIndex = Number.NaN;
 			const logInfo = vi.fn();
 			await runStatusCommand({
 				setStoragePath: vi.fn(),
@@ -214,6 +233,11 @@ describe("issue #474 — pin-honored review feedback", () => {
 					String(msg).includes("invalid account index"),
 				),
 			).toBe(true);
+			expect(
+				logInfo.mock.calls.some(([msg]) =>
+					/Pinned: account NaN/.test(String(msg)),
+				),
+			).toBe(false);
 		});
 	});
 
