@@ -2518,6 +2518,7 @@ function isTomlTableLine(line) {
 	);
 }
 
+// Keep these TOML block scan helpers aligned with test/codex-bin-wrapper.test.ts.
 function createTomlBlockScanState() {
 	return {
 		arrayDepth: 0,
@@ -2561,8 +2562,9 @@ function updateTomlBlockScanState(line, state) {
 			continue;
 		}
 		if (line[index] === "'") {
-			index = line.indexOf("'", index + 1);
-			if (index < 0) return;
+			const closeIndex = line.indexOf("'", index + 1);
+			if (closeIndex < 0) return;
+			index = closeIndex;
 			continue;
 		}
 		if (line[index] === "[") {

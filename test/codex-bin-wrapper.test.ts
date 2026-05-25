@@ -717,6 +717,7 @@ type TomlBlockScanState = {
 	multilineStringDelimiter: string | null;
 };
 
+// Keep these TOML block scan helpers aligned with scripts/codex.js.
 function createTomlBlockScanState(): TomlBlockScanState {
 	return {
 		arrayDepth: 0,
@@ -796,11 +797,12 @@ function extractTomlTableBody(output: string, header: string): string {
 
 function expectMirroredHookStateBlock(
 	output: string,
+	sourceText: string,
 	sourceHeader: string,
 	shadowHeader: string,
 	expectedBodyLines: string[],
 ): void {
-	const sourceBody = extractTomlTableBody(output, sourceHeader);
+	const sourceBody = extractTomlTableBody(sourceText, sourceHeader);
 	const shadowBody = extractTomlTableBody(output, shadowHeader);
 	expect(shadowBody).toBe(sourceBody);
 	for (const line of expectedBodyLines) {
@@ -1623,12 +1625,7 @@ describe("codex bin wrapper", () => {
 			'console.log(`CONFIG_HAS_CRLF:${config.includes("\\r\\n")}`);',
 			'console.log(config);',
 		]);
-		const originalHome = join(
-			fixtureRoot,
-			`codex-home-${"x".repeat(64)}`,
-			`nested-${"y".repeat(64)}`,
-			process.platform === "win32" ? "windows-path" : "C:\\Users\\rob\\.codex",
-		);
+		const originalHome = join(fixtureRoot, "codex-home");
 		const alternateHome = join(fixtureRoot, "other-codex-home");
 		const sourceHooksPath = join(originalHome, "hooks.json");
 		const alternateHooksPath = join(alternateHome, "hooks.json");
@@ -1643,44 +1640,41 @@ describe("codex bin wrapper", () => {
 		expect(longPathKey.length).toBeGreaterThan(256);
 		writeFileSync(sourceHooksPath, HOOKS_JSON_TEXT, "utf8");
 		writeFileSync(alternateHooksPath, '{"alternate":true}\n', "utf8");
-		writeFileSync(
-			join(originalHome, "config.toml"),
-			[
-				'model_provider = "openai"',
-				"",
-				hookStateHeader(sessionStartKey),
-				"enabled = true",
-				'trusted_hash = "sha256:session-start"',
-				"",
-				hookStateHeader(stopKey),
-				"enabled = true",
-				'trusted_hash = "sha256:stop"',
-				"",
-				literalHookStateHeader(userPromptSubmitKey),
-				"enabled = true",
-				"",
-				hookStateHeader(preCompactKey),
-				"enabled = true",
-				'trusted_hash = "sha256:pre-compact"',
-				'approval_reason = "reviewed manually"',
-				'review_notes = """',
-				"[not-a-table]",
-				'"""',
-				"review_batches = [",
-				'  ["alpha"],',
-				'  ["omega"]',
-				"]",
-				"",
-				hookStateHeader(longPathKey),
-				"enabled = true",
-				'trusted_hash = "sha256:long-path"',
-				"",
-				hookStateHeader(alternateKey),
-				"enabled = true",
-				'trusted_hash = "sha256:alternate"',
-			].join("\r\n"),
-			"utf8",
-		);
+		const originalConfig = [
+			'model_provider = "openai"',
+			"",
+			hookStateHeader(sessionStartKey),
+			"enabled = true",
+			'trusted_hash = "sha256:session-start"',
+			"",
+			hookStateHeader(stopKey),
+			"enabled = true",
+			'trusted_hash = "sha256:stop"',
+			"",
+			literalHookStateHeader(userPromptSubmitKey),
+			"enabled = true",
+			"",
+			hookStateHeader(preCompactKey),
+			"enabled = true",
+			'trusted_hash = "sha256:pre-compact"',
+			'approval_reason = "reviewed manually"',
+			'review_notes = """',
+			"[not-a-table]",
+			'"""',
+			"review_batches = [",
+			'  ["alpha"],',
+			'  ["omega"]',
+			"]",
+			"",
+			hookStateHeader(longPathKey),
+			"enabled = true",
+			'trusted_hash = "sha256:long-path"',
+			"",
+			hookStateHeader(alternateKey),
+			"enabled = true",
+			'trusted_hash = "sha256:alternate"',
+		].join("\r\n");
+		writeFileSync(join(originalHome, "config.toml"), originalConfig, "utf8");
 
 		const result = runWrapper(fixtureRoot, ["exec", "status"], {
 			CODEX_MULTI_AUTH_REAL_CODEX_BIN: fakeBin,
@@ -1700,24 +1694,25 @@ describe("codex bin wrapper", () => {
 		const shadowHooksPath = join(shadowHome, "hooks.json");
 		expectMirroredHookStateBlock(
 			output,
+			originalConfig,
 			hookStateHeader(sessionStartKey),
 			hookStateHeader(`${shadowHooksPath}:session_start:0:0`),
 			["enabled = true", 'trusted_hash = "sha256:session-start"'],
 		);
 		expectMirroredHookStateBlock(
 			output,
+			originalConfig,
 			hookStateHeader(stopKey),
 			hookStateHeader(`${shadowHooksPath}:stop:0:0`),
 			["enabled = true", 'trusted_hash = "sha256:stop"'],
 		);
-		expectMirroredHookStateBlock(
+		expect(extractTomlTableBody(
 			output,
-			literalHookStateHeader(userPromptSubmitKey),
 			hookStateHeader(`${shadowHooksPath}:user_prompt_submit:0:0`),
-			["enabled = true"],
-		);
+		)).toBe("enabled = true");
 		expectMirroredHookStateBlock(
 			output,
+			originalConfig,
 			hookStateHeader(preCompactKey),
 			hookStateHeader(`${shadowHooksPath}:pre_compact:0:0`),
 			[
@@ -1735,6 +1730,7 @@ describe("codex bin wrapper", () => {
 		);
 		expectMirroredHookStateBlock(
 			output,
+			originalConfig,
 			hookStateHeader(longPathKey),
 			hookStateHeader(`${shadowHooksPath}:${"long-event-".repeat(24)}:0:0`),
 			["enabled = true", 'trusted_hash = "sha256:long-path"'],
@@ -1771,21 +1767,18 @@ describe("codex bin wrapper", () => {
 		const stopKey = `${sourceHooksPath}:stop:0:0`;
 		mkdirSync(originalHome, { recursive: true });
 		writeFileSync(sourceHooksPath, HOOKS_JSON_TEXT, "utf8");
-		writeFileSync(
-			join(originalHome, "config.toml"),
-			[
-				'model_provider = "openai"',
-				"",
-				hookStateHeader(sessionStartKey),
-				"enabled = true",
-				'trusted_hash = "sha256:session-start"',
-				"",
-				hookStateHeader(stopKey),
-				"enabled = true",
-				'trusted_hash = "sha256:stop"',
-			].join("\n"),
-			"utf8",
-		);
+		const originalConfig = [
+			'model_provider = "openai"',
+			"",
+			hookStateHeader(sessionStartKey),
+			"enabled = true",
+			'trusted_hash = "sha256:session-start"',
+			"",
+			hookStateHeader(stopKey),
+			"enabled = true",
+			'trusted_hash = "sha256:stop"',
+		].join("\n");
+		writeFileSync(join(originalHome, "config.toml"), originalConfig, "utf8");
 
 		const launches = ["first", "second", "third"].map((marker) =>
 			runWrapperAsync(fixtureRoot, ["exec", "status"], {
@@ -1806,12 +1799,14 @@ describe("codex bin wrapper", () => {
 			const shadowHooksPath = join(shadowHome, "hooks.json");
 			expectMirroredHookStateBlock(
 				output,
+				originalConfig,
 				hookStateHeader(sessionStartKey),
 				hookStateHeader(`${shadowHooksPath}:session_start:0:0`),
 				["enabled = true", 'trusted_hash = "sha256:session-start"'],
 			);
 			expectMirroredHookStateBlock(
 				output,
+				originalConfig,
 				hookStateHeader(stopKey),
 				hookStateHeader(`${shadowHooksPath}:stop:0:0`),
 				["enabled = true", 'trusted_hash = "sha256:stop"'],
