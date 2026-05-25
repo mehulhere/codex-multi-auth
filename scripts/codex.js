@@ -2494,6 +2494,150 @@ function createRuntimeRotationShadowHome(originalCodexHome) {
 	return mkdtempSync(join(shadowRoot, "codex-multi-auth-runtime-home-"));
 }
 
+function parseHookStateTableKey(line) {
+	const basicStringMatch =
+		/^\s*\[\s*hooks\.state\.("(?:[^"\\]|\\.)*")\s*\]\s*$/.exec(line);
+	if (basicStringMatch) {
+		try {
+			const parsed = JSON.parse(basicStringMatch[1]);
+			return typeof parsed === "string" ? parsed : null;
+		} catch {
+			return null;
+		}
+	}
+
+	const literalStringMatch = /^\s*\[\s*hooks\.state\.'([^']*)'\s*\]\s*$/.exec(
+		line,
+	);
+	return literalStringMatch ? literalStringMatch[1] : null;
+}
+
+function isTomlTableLine(line) {
+	return /^\s*\[\[?\s*(?:"(?:[^"\\]|\\.)*"|'[^']*'|[A-Za-z0-9_-]+)(?:\s*\.|\s*\]\]?\s*(?:#.*)?$)/.test(
+		line,
+	);
+}
+
+// Keep these TOML block scan helpers aligned with test/codex-bin-wrapper.test.ts.
+function createTomlBlockScanState() {
+	return {
+		arrayDepth: 0,
+		multilineStringDelimiter: null,
+	};
+}
+
+function isTopLevelTomlBlockScanState(state) {
+	return state.arrayDepth === 0 && state.multilineStringDelimiter === null;
+}
+
+function updateTomlBlockScanState(line, state) {
+	for (let index = 0; index < line.length; index += 1) {
+		if (state.multilineStringDelimiter) {
+			const closeIndex = line.indexOf(state.multilineStringDelimiter, index);
+			if (closeIndex < 0) {
+				return;
+			}
+			index = closeIndex + state.multilineStringDelimiter.length - 1;
+			state.multilineStringDelimiter = null;
+			continue;
+		}
+
+		if (line[index] === "#") {
+			return;
+		}
+		if (line.startsWith('"""', index) || line.startsWith("'''", index)) {
+			state.multilineStringDelimiter = line.slice(index, index + 3);
+			index += 2;
+			continue;
+		}
+		if (line[index] === '"') {
+			index += 1;
+			for (; index < line.length; index += 1) {
+				if (line[index] === "\\") {
+					index += 1;
+				} else if (line[index] === '"') {
+					break;
+				}
+			}
+			continue;
+		}
+		if (line[index] === "'") {
+			const closeIndex = line.indexOf("'", index + 1);
+			if (closeIndex < 0) return;
+			index = closeIndex;
+			continue;
+		}
+		if (line[index] === "[") {
+			state.arrayDepth += 1;
+		} else if (line[index] === "]" && state.arrayDepth > 0) {
+			state.arrayDepth -= 1;
+		}
+	}
+}
+
+function mirrorRuntimeShadowHookTrustState(
+	rawConfig,
+	originalCodexHome,
+	shadowCodexHome,
+	tomlStringLiteral,
+) {
+	const sourceHooksPath = join(originalCodexHome, "hooks.json");
+	const shadowHooksPath = join(shadowCodexHome, "hooks.json");
+	if (sourceHooksPath === shadowHooksPath) {
+		return rawConfig;
+	}
+
+	const lineEnding = rawConfig.includes("\r\n") ? "\r\n" : "\n";
+	const lines = rawConfig.length > 0 ? rawConfig.split(/\r?\n/) : [];
+	const sourcePrefix = `${sourceHooksPath}:`;
+	const existingHookStateKeys = new Set();
+	for (const line of lines) {
+		const key = parseHookStateTableKey(line);
+		if (key) {
+			existingHookStateKeys.add(key);
+		}
+	}
+
+	const output = [];
+	let changed = false;
+	for (let index = 0; index < lines.length; index += 1) {
+		const line = lines[index];
+		const key = parseHookStateTableKey(line);
+		output.push(line);
+		if (!key || !key.startsWith(sourcePrefix)) {
+			continue;
+		}
+
+		const blockLines = [];
+		let nextIndex = index + 1;
+		const blockState = createTomlBlockScanState();
+		for (; nextIndex < lines.length; nextIndex += 1) {
+			const nextLine = lines[nextIndex];
+			if (
+				isTopLevelTomlBlockScanState(blockState) &&
+				isTomlTableLine(nextLine)
+			) {
+				break;
+			}
+			blockLines.push(nextLine);
+			updateTomlBlockScanState(nextLine, blockState);
+		}
+		output.push(...blockLines);
+		index = nextIndex - 1;
+		const shadowKey = `${shadowHooksPath}:${key.slice(sourcePrefix.length)}`;
+		if (existingHookStateKeys.has(shadowKey)) {
+			continue;
+		}
+		output.push("");
+		output.push(`[hooks.state.${tomlStringLiteral(shadowKey)}]`);
+		output.push(...blockLines);
+		existingHookStateKeys.add(shadowKey);
+		changed = true;
+	}
+
+	return changed ? output.join(lineEnding) : rawConfig;
+}
+
 function createRuntimeRotationProxyCodexHome(
 	baseEnv,
 	proxyBaseUrl,
@@ -2535,10 +2679,15 @@ function createRuntimeRotationProxyCodexHome(
 		const rawConfig = existsSync(originalConfigPath)
 			? readFileSync(originalConfigPath, "utf8")
 			: "";
-		const runtimeConfig = configTomlModule.rewriteConfigTomlForRuntimeRotationProvider(
-			rawConfig,
-			proxyBaseUrl,
-			clientApiKey,
+		const runtimeConfig = mirrorRuntimeShadowHookTrustState(
+			configTomlModule.rewriteConfigTomlForRuntimeRotationProvider(
+				rawConfig,
+				proxyBaseUrl,
+				clientApiKey,
+			),
+			originalCodexHome,
+			shadowCodexHome,
+			configTomlModule.tomlStringLiteral,
 		);
 		const runtimeConfigPath = join(shadowCodexHome, "config.toml");
 		writeFileSync(runtimeConfigPath, runtimeConfig, "utf8");

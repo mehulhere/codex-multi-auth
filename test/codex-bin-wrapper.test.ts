@@ -34,6 +34,7 @@ const testFileDir = dirname(fileURLToPath(import.meta.url));
 const repoRootDir = join(testFileDir, "..");
 const EXIT_SUCCESS_LINE = "exit 0";
 const SHADOW_HOME_ORPHAN_LOCK_TEST_AGE_MS = 2_200;
+const HOOKS_JSON_TEXT = '{"hooks":{}}\n';
 
 function isRetriableFsError(error: unknown): boolean {
 	if (!error || typeof error !== "object" || !("code" in error)) {
@@ -689,6 +690,124 @@ function combinedOutput(
 	result: SpawnSyncReturns<string> | WrapperAsyncResult,
 ): string {
 	return `${result.stdout ?? ""}\n${result.stderr ?? ""}`;
+}
+
+function hookStateHeader(key: string): string {
+	return `[hooks.state.${JSON.stringify(key)}]`;
+}
+
+function literalHookStateHeader(key: string): string {
+	return `[hooks.state.'${key}']`;
+}
+
+function extractLineValue(output: string, prefix: string): string {
+	const line = output.split(/\r?\n/).find((entry) => entry.startsWith(prefix));
+	expect(line).toBeTruthy();
+	return line?.slice(prefix.length) ?? "";
+}
+
+function isTomlHeaderLine(line: string): boolean {
+	return /^\s*\[\[?\s*(?:"(?:[^"\\]|\\.)*"|'[^']*'|[A-Za-z0-9_-]+)(?:\s*\.|\s*\]\]?\s*(?:#.*)?$)/.test(
+		line,
+	);
+}
+
+type TomlBlockScanState = {
+	arrayDepth: number;
+	multilineStringDelimiter: string | null;
+};
+
+// Keep these TOML block scan helpers aligned with scripts/codex.js.
+function createTomlBlockScanState(): TomlBlockScanState {
+	return {
+		arrayDepth: 0,
+		multilineStringDelimiter: null,
+	};
+}
+
+function isTopLevelTomlBlockScanState(state: TomlBlockScanState): boolean {
+	return state.arrayDepth === 0 && state.multilineStringDelimiter === null;
+}
+
+function updateTomlBlockScanState(
+	line: string,
+	state: TomlBlockScanState,
+): void {
+	for (let index = 0; index < line.length; index += 1) {
+		if (state.multilineStringDelimiter) {
+			const closeIndex = line.indexOf(state.multilineStringDelimiter, index);
+			if (closeIndex < 0) return;
+			index = closeIndex + state.multilineStringDelimiter.length - 1;
+			state.multilineStringDelimiter = null;
+			continue;
+		}
+
+		if (line[index] === "#") return;
+		if (line.startsWith('"""', index) || line.startsWith("'''", index)) {
+			state.multilineStringDelimiter = line.slice(index, index + 3);
+			index += 2;
+			continue;
+		}
+		if (line[index] === '"') {
+			index += 1;
+			for (; index < line.length; index += 1) {
+				if (line[index] === "\\") {
+					index += 1;
+				} else if (line[index] === '"') {
+					break;
+				}
+			}
+			continue;
+		}
+		if (line[index] === "'") {
+			const closeIndex = line.indexOf("'", index + 1);
+			if (closeIndex < 0) return;
+			index = closeIndex;
+			continue;
+		}
+		if (line[index] === "[") {
+			state.arrayDepth += 1;
+		} else if (line[index] === "]" && state.arrayDepth > 0) {
+			state.arrayDepth -= 1;
+		}
+	}
+}
+
+function extractTomlTableBody(output: string, header: string): string {
+	const lines = output.split(/\r?\n/);
+	const start = lines.indexOf(header);
+	expect(start).toBeGreaterThanOrEqual(0);
+	const body: string[] = [];
+	const blockState = createTomlBlockScanState();
+	for (let index = start + 1; index < lines.length; index += 1) {
+		if (
+			isTopLevelTomlBlockScanState(blockState) &&
+			isTomlHeaderLine(lines[index])
+		) {
+			break;
+		}
+		body.push(lines[index]);
+		updateTomlBlockScanState(lines[index], blockState);
+	}
+	while (body.length > 0 && body[body.length - 1] === "") {
+		body.pop();
+	}
+	return body.join("\n");
+}
+
+function expectMirroredHookStateBlock(
+	output: string,
+	sourceText: string,
+	sourceHeader: string,
+	shadowHeader: string,
+	expectedBodyLines: string[],
+): void {
+	const sourceBody = extractTomlTableBody(sourceText, sourceHeader);
+	const shadowBody = extractTomlTableBody(output, shadowHeader);
+	expect(shadowBody).toBe(sourceBody);
+	for (const line of expectedBodyLines) {
+		expect(shadowBody).toContain(line);
+	}
 }
 
 afterEach(async () => {
@@ -1490,6 +1609,209 @@ describe("codex bin wrapper", () => {
 		).toBeLessThan(
 			result.stdout.indexOf("[[profiles.experimental]]"),
 		);
+	});
+
+	it("mirrors trusted user hook state into the runtime shadow config", () => {
+		const fixtureRoot = createWrapperFixture();
+		createRuntimeRotationProxyFixtureModule(fixtureRoot);
+		const fakeBin = createCustomFakeCodexBin(fixtureRoot, [
+			"#!/usr/bin/env node",
+			'const fs = require("node:fs");',
+			'const path = require("node:path");',
+			'const config = fs.readFileSync(path.join(process.env.CODEX_HOME, "config.toml"), "utf8");',
+			'const hooks = fs.readFileSync(path.join(process.env.CODEX_HOME, "hooks.json"), "utf8");',
+			'console.log(`SHADOW_HOME:${process.env.CODEX_HOME ?? ""}`);',
+			'console.log(`HOOKS_JSON:${JSON.stringify(hooks)}`);',
+			'console.log(`CONFIG_HAS_CRLF:${config.includes("\\r\\n")}`);',
+			'console.log(config);',
+		]);
+		const originalHome = join(fixtureRoot, "codex-home");
+		const alternateHome = join(fixtureRoot, "other-codex-home");
+		const sourceHooksPath = join(originalHome, "hooks.json");
+		const alternateHooksPath = join(alternateHome, "hooks.json");
+		const sessionStartKey = `${sourceHooksPath}:session_start:0:0`;
+		const stopKey = `${sourceHooksPath}:stop:0:0`;
+		const userPromptSubmitKey = `${sourceHooksPath}:user_prompt_submit:0:0`;
+		const preCompactKey = `${sourceHooksPath}:pre_compact:0:0`;
+		const longPathKey = `${sourceHooksPath}:${"long-event-".repeat(24)}:0:0`;
+		const alternateKey = `${alternateHooksPath}:alternate_event:0:0`;
+		mkdirSync(originalHome, { recursive: true });
+		mkdirSync(alternateHome, { recursive: true });
+		expect(longPathKey.length).toBeGreaterThan(256);
+		writeFileSync(sourceHooksPath, HOOKS_JSON_TEXT, "utf8");
+		writeFileSync(alternateHooksPath, '{"alternate":true}\n', "utf8");
+		const originalConfig = [
+			'model_provider = "openai"',
+			"",
+			hookStateHeader(sessionStartKey),
+			"enabled = true",
+			'trusted_hash = "sha256:session-start"',
+			"",
+			hookStateHeader(stopKey),
+			"enabled = true",
+			'trusted_hash = "sha256:stop"',
+			"",
+			literalHookStateHeader(userPromptSubmitKey),
+			"enabled = true",
+			"",
+			hookStateHeader(preCompactKey),
+			"enabled = true",
+			'trusted_hash = "sha256:pre-compact"',
+			'approval_reason = "reviewed manually"',
+			'review_notes = """',
+			"[not-a-table]",
+			'"""',
+			"review_batches = [",
+			'  ["alpha"],',
+			'  ["omega"]',
+			"]",
+			"",
+			hookStateHeader(longPathKey),
+			"enabled = true",
+			'trusted_hash = "sha256:long-path"',
+			"",
+			hookStateHeader(alternateKey),
+			"enabled = true",
+			'trusted_hash = "sha256:alternate"',
+		].join("\r\n");
+		writeFileSync(join(originalHome, "config.toml"), originalConfig, "utf8");
+
+		const result = runWrapper(fixtureRoot, ["exec", "status"], {
+			CODEX_MULTI_AUTH_REAL_CODEX_BIN: fakeBin,
+			CODEX_HOME: originalHome,
+			CODEX_MULTI_AUTH_RUNTIME_ROTATION_PROXY: "1",
+			OPENAI_API_KEY: undefined,
+		});
+
+		const output = combinedOutput(result);
+		expect(result.status).toBe(0);
+		expect(JSON.parse(extractLineValue(output, "HOOKS_JSON:"))).toBe(
+			HOOKS_JSON_TEXT,
+		);
+		expect(extractLineValue(output, "CONFIG_HAS_CRLF:")).toBe("true");
+
+		const shadowHome = extractLineValue(output, "SHADOW_HOME:");
+		const shadowHooksPath = join(shadowHome, "hooks.json");
+		expectMirroredHookStateBlock(
+			output,
+			originalConfig,
+			hookStateHeader(sessionStartKey),
+			hookStateHeader(`${shadowHooksPath}:session_start:0:0`),
+			["enabled = true", 'trusted_hash = "sha256:session-start"'],
+		);
+		expectMirroredHookStateBlock(
+			output,
+			originalConfig,
+			hookStateHeader(stopKey),
+			hookStateHeader(`${shadowHooksPath}:stop:0:0`),
+			["enabled = true", 'trusted_hash = "sha256:stop"'],
+		);
+		expect(extractTomlTableBody(
+			output,
+			hookStateHeader(`${shadowHooksPath}:user_prompt_submit:0:0`),
+		)).toBe("enabled = true");
+		expectMirroredHookStateBlock(
+			output,
+			originalConfig,
+			hookStateHeader(preCompactKey),
+			hookStateHeader(`${shadowHooksPath}:pre_compact:0:0`),
+			[
+				"enabled = true",
+				'trusted_hash = "sha256:pre-compact"',
+				'approval_reason = "reviewed manually"',
+				'review_notes = """',
+				"[not-a-table]",
+				'"""',
+				"review_batches = [",
+				'  ["alpha"],',
+				'  ["omega"]',
+				"]",
+			],
+		);
+		expectMirroredHookStateBlock(
+			output,
+			originalConfig,
+			hookStateHeader(longPathKey),
+			hookStateHeader(`${shadowHooksPath}:${"long-event-".repeat(24)}:0:0`),
+			["enabled = true", 'trusted_hash = "sha256:long-path"'],
+		);
+		expect(output).toContain(hookStateHeader(alternateKey));
+		expect(output).not.toContain(
+			hookStateHeader(`${shadowHooksPath}:alternate_event:0:0`),
+		);
+	});
+
+	it("mirrors trusted hook state consistently for concurrent shadow launches", async () => {
+		const fixtureRoot = createWrapperFixture();
+		createRuntimeRotationProxyFixtureModule(fixtureRoot);
+		const readyDir = join(fixtureRoot, "ready");
+		const fakeBin = createCustomFakeCodexBin(fixtureRoot, [
+			"#!/usr/bin/env node",
+			'const fs = require("node:fs");',
+			'const path = require("node:path");',
+			'const readyDir = process.env.CODEX_MULTI_AUTH_TEST_READY_DIR;',
+			'const marker = process.env.CODEX_MULTI_AUTH_TEST_MARKER;',
+			'fs.mkdirSync(readyDir, { recursive: true });',
+			'fs.writeFileSync(path.join(readyDir, `${marker}.ready`), "1", "utf8");',
+			"const deadline = Date.now() + 3000;",
+			"while (Date.now() < deadline && fs.readdirSync(readyDir).filter((entry) => entry.endsWith('.ready')).length < 3) {",
+			"  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 20);",
+			"}",
+			'console.log(`SHADOW_HOME:${process.env.CODEX_HOME ?? ""}`);',
+			'console.log(fs.readFileSync(path.join(process.env.CODEX_HOME, "config.toml"), "utf8"));',
+			"process.exit(0);",
+		]);
+		const originalHome = join(fixtureRoot, "codex-home");
+		const sourceHooksPath = join(originalHome, "hooks.json");
+		const sessionStartKey = `${sourceHooksPath}:session_start:0:0`;
+		const stopKey = `${sourceHooksPath}:stop:0:0`;
+		mkdirSync(originalHome, { recursive: true });
+		writeFileSync(sourceHooksPath, HOOKS_JSON_TEXT, "utf8");
+		const originalConfig = [
+			'model_provider = "openai"',
+			"",
+			hookStateHeader(sessionStartKey),
+			"enabled = true",
+			'trusted_hash = "sha256:session-start"',
+			"",
+			hookStateHeader(stopKey),
+			"enabled = true",
+			'trusted_hash = "sha256:stop"',
+		].join("\n");
+		writeFileSync(join(originalHome, "config.toml"), originalConfig, "utf8");
+
+		const launches = ["first", "second", "third"].map((marker) =>
+			runWrapperAsync(fixtureRoot, ["exec", "status"], {
+				CODEX_MULTI_AUTH_REAL_CODEX_BIN: fakeBin,
+				CODEX_HOME: originalHome,
+				CODEX_MULTI_AUTH_RUNTIME_ROTATION_PROXY: "1",
+				CODEX_MULTI_AUTH_TEST_READY_DIR: readyDir,
+				CODEX_MULTI_AUTH_TEST_MARKER: marker,
+				OPENAI_API_KEY: undefined,
+			}),
+		);
+		const results = await Promise.all(launches);
+
+		for (const result of results) {
+			const output = combinedOutput(result);
+			expect(result.status).toBe(0);
+			const shadowHome = extractLineValue(output, "SHADOW_HOME:");
+			const shadowHooksPath = join(shadowHome, "hooks.json");
+			expectMirroredHookStateBlock(
+				output,
+				originalConfig,
+				hookStateHeader(sessionStartKey),
+				hookStateHeader(`${shadowHooksPath}:session_start:0:0`),
+				["enabled = true", 'trusted_hash = "sha256:session-start"'],
+			);
+			expectMirroredHookStateBlock(
+				output,
+				originalConfig,
+				hookStateHeader(stopKey),
+				hookStateHeader(`${shadowHooksPath}:stop:0:0`),
+				["enabled = true", 'trusted_hash = "sha256:stop"'],
+			);
+		}
 	});
 
 	it("starts the opt-in runtime rotation proxy for app-server without capturing protocol stdio", () => {
