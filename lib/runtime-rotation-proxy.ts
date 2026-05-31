@@ -21,6 +21,7 @@ import {
 	getTokenInvalidationCooldownMs,
 	getTokenRefreshSkewMs,
 	getPidOffsetEnabled,
+	getRoutingMutexMode,
 	loadPluginConfig,
 } from "./config.js";
 import {
@@ -464,7 +465,12 @@ async function persistRuntimeActiveAccount(
 		return;
 	}
 	try {
-		accountManager.markSwitched(account, "rotation", family);
+		// accounts-01/08: serialize the cursor mutation through the routing mutex
+		// (when routingMutex="enabled") because this commit spans an await
+		// (syncCodexCliActiveSelectionForIndex), which is the lost-update window the
+		// mutex exists to close. In legacy mode markSwitchedLocked runs inline, so
+		// behavior is unchanged by default.
+		await accountManager.markSwitchedLocked(account, "rotation", family);
 		accountManager.saveToDiskDebounced();
 		await accountManager.syncCodexCliActiveSelectionForIndex(account.index);
 	} catch {
@@ -1282,6 +1288,11 @@ export async function startRuntimeRotationProxy(
 	const pluginConfig = loadPluginConfig();
 	let activeAccountManager = options.accountManager ?? (await AccountManager.loadFromDisk());
 	const knownAccountManagers = new Set<AccountManager>([activeAccountManager]);
+	// accounts-01/08: apply the configured routing-mutex mode so the proxy's
+	// async select->commit path (persistRuntimeActiveAccount) can serialize cursor
+	// mutations when routingMutex="enabled". Legacy mode keeps the inline fast path.
+	const routingMutexMode = getRoutingMutexMode(pluginConfig);
+	activeAccountManager.setRoutingMutexMode(routingMutexMode);
 	const fetchImpl = options.fetchImpl ?? fetch;
 	const host = options.host ?? DEFAULT_HOST;
 	// Defense in depth (runtime-proxy-01): the proxy presents managed OAuth tokens
@@ -1366,6 +1377,7 @@ export async function startRuntimeRotationProxy(
 			AccountManager.resetVolatileRuntimeState();
 			recordRuntimeReset("pool-exhausted-no-account");
 			const reloaded = await AccountManager.loadFromDisk();
+			reloaded.setRoutingMutexMode(routingMutexMode);
 			activeAccountManager = reloaded;
 			knownAccountManagers.add(reloaded);
 			lastStaleRuntimeReloadAt = Date.now();

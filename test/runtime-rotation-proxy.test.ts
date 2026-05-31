@@ -359,6 +359,39 @@ describe("runtime rotation proxy", () => {
 		await proxy.close();
 	});
 
+	// accounts-01/08: the proxy must apply the configured routing-mutex mode to the
+	// account manager at startup (previously the mutex had zero production callers).
+	it("applies routingMutex=enabled to the account manager at startup", async () => {
+		const prev = process.env.CODEX_AUTH_ROUTING_MUTEX;
+		process.env.CODEX_AUTH_ROUTING_MUTEX = "enabled";
+		try {
+			const now = Date.now();
+			const accountManager = new AccountManager(undefined, createStorage(now));
+			const { fetchImpl } = createRecordingFetch(() => textEventStream());
+			const proxy = await startProxy({ accountManager, fetchImpl });
+			expect(accountManager.getRoutingMutexMode()).toBe("enabled");
+			await proxy.close();
+		} finally {
+			if (prev === undefined) delete process.env.CODEX_AUTH_ROUTING_MUTEX;
+			else process.env.CODEX_AUTH_ROUTING_MUTEX = prev;
+		}
+	});
+
+	it("leaves routingMutex in legacy mode by default", async () => {
+		const prev = process.env.CODEX_AUTH_ROUTING_MUTEX;
+		delete process.env.CODEX_AUTH_ROUTING_MUTEX;
+		try {
+			const now = Date.now();
+			const accountManager = new AccountManager(undefined, createStorage(now));
+			const { fetchImpl } = createRecordingFetch(() => textEventStream());
+			const proxy = await startProxy({ accountManager, fetchImpl });
+			expect(accountManager.getRoutingMutexMode()).toBe("legacy");
+			await proxy.close();
+		} finally {
+			if (prev !== undefined) process.env.CODEX_AUTH_ROUTING_MUTEX = prev;
+		}
+	});
+
 	it("records post-startup server errors without throwing uncaught errors", async () => {
 		const now = Date.now();
 		const accountManager = new AccountManager(undefined, createStorage(now));
