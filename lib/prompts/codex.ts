@@ -1,11 +1,46 @@
 import { promises as fs } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { createHash } from "node:crypto";
 import type { CacheMetadata, GitHubRelease } from "../types.js";
 import { logWarn, logError, logDebug } from "../logger.js";
 import { getCodexCacheDir } from "../runtime-paths.js";
 import { getModelProfile, type PromptModelFamily } from "../request/helpers/model-map.js";
 import { fetchWithTimeout, readBodyTextGuarded } from "./fetch-utils.js";
+
+/** SHA-256 of cache content for integrity verification (prompts-03). */
+function sha256(content: string): string {
+	return createHash("sha256").update(content, "utf8").digest("hex");
+}
+
+/**
+ * Atomically write content + meta (prompts-06).
+ *
+ * The previous parallel writeFile of cacheFile and cacheMetaFile could tear:
+ * a crash between them left content and meta (etag/sha) out of sync. Write each
+ * to a temp sibling then rename, and write the content before the meta so the
+ * meta's sha always describes a content file already on disk.
+ */
+async function writeCacheAtomically(
+	cacheFile: string,
+	cacheMetaFile: string,
+	content: string,
+	meta: CacheMetadata,
+): Promise<void> {
+	await fs.mkdir(CACHE_DIR, { recursive: true });
+	const nonce = `${Date.now()}-${process.pid}-${Math.random().toString(36).slice(2, 8)}`;
+	const contentTmp = `${cacheFile}.${nonce}.tmp`;
+	const metaTmp = `${cacheMetaFile}.${nonce}.tmp`;
+	try {
+		await fs.writeFile(contentTmp, content, { encoding: "utf8" });
+		await fs.writeFile(metaTmp, JSON.stringify(meta), { encoding: "utf8" });
+		await fs.rename(contentTmp, cacheFile);
+		await fs.rename(metaTmp, cacheMetaFile);
+	} finally {
+		await fs.rm(contentTmp, { force: true }).catch(() => undefined);
+		await fs.rm(metaTmp, { force: true }).catch(() => undefined);
+	}
+}
 
 const GITHUB_API_RELEASES =
 	"https://api.github.com/repos/openai/codex/releases/latest";
@@ -208,20 +243,29 @@ export async function getCodexInstructions(
 	}
 
 	if (diskContent && cachedMetadata?.lastChecked) {
-		if (now - cachedMetadata.lastChecked < CACHE_TTL_MS) {
+		// prompts-03: if the meta carries a sha256, the disk content must match it;
+		// a mismatch means a corrupted/tampered cache, so discard and refetch rather
+		// than serving untrusted instructions. Caches without a sha (pre-upgrade) are
+		// accepted for backward compatibility.
+		const integrityOk =
+			!cachedMetadata.sha256 || cachedMetadata.sha256 === sha256(diskContent);
+		if (!integrityOk) {
+			logWarn(`Discarding corrupt prompt cache for ${modelFamily} (sha256 mismatch)`);
+		} else if (now - cachedMetadata.lastChecked < CACHE_TTL_MS) {
 			setCacheEntry(modelFamily, { content: diskContent, timestamp: now });
 			return diskContent;
+		} else {
+			// Stale-while-revalidate: return stale cache immediately and refresh in background.
+			setCacheEntry(modelFamily, { content: diskContent, timestamp: now });
+			void refreshInstructionsInBackground(
+				modelFamily,
+				promptFile,
+				cacheFile,
+				cacheMetaFile,
+				cachedMetadata,
+			);
+			return diskContent;
 		}
-		// Stale-while-revalidate: return stale cache immediately and refresh in background.
-		setCacheEntry(modelFamily, { content: diskContent, timestamp: now });
-		void refreshInstructionsInBackground(
-			modelFamily,
-			promptFile,
-			cacheFile,
-			cacheMetaFile,
-			cachedMetadata,
-		);
-		return diskContent;
 	}
 
 	if (cached && now - cached.timestamp >= CACHE_TTL_MS) {
@@ -293,19 +337,15 @@ async function fetchAndPersistInstructions(
 		const diskContent = await readFileOrNull(cacheFile);
 		if (diskContent) {
 			setCacheEntry(modelFamily, { content: diskContent, timestamp: Date.now() });
-			await fs.mkdir(CACHE_DIR, { recursive: true });
-			await fs.writeFile(
-				cacheMetaFile,
-				JSON.stringify(
-					{
-						etag: cachedETag,
-						tag: latestTag,
-						lastChecked: Date.now(),
-						url: instructionsUrl,
-					} satisfies CacheMetadata,
-				),
-				"utf8",
-			);
+			// Refresh the meta (lastChecked) atomically and re-affirm the content sha
+			// so a 304 keeps the integrity record in sync with the on-disk content.
+			await writeCacheAtomically(cacheFile, cacheMetaFile, diskContent, {
+				etag: cachedETag,
+				tag: latestTag,
+				lastChecked: Date.now(),
+				url: instructionsUrl,
+				sha256: sha256(diskContent),
+			});
 			return diskContent;
 		}
 	}
@@ -317,22 +357,15 @@ async function fetchAndPersistInstructions(
 	// Size-cap + reject empty bodies (prompts-04/05) before caching/serving.
 	const instructions = await readBodyTextGuarded(response);
 	const newETag = response.headers.get("etag");
-	await fs.mkdir(CACHE_DIR, { recursive: true });
-	await Promise.all([
-		fs.writeFile(cacheFile, instructions, "utf8"),
-		fs.writeFile(
-			cacheMetaFile,
-			JSON.stringify(
-				{
-					etag: newETag,
-					tag: latestTag,
-					lastChecked: Date.now(),
-					url: instructionsUrl,
-				} satisfies CacheMetadata,
-			),
-			"utf8",
-		),
-	]);
+	// prompts-03/06: write content + meta atomically with a content sha256 so the
+	// cache cannot tear and can be integrity-checked on the next read.
+	await writeCacheAtomically(cacheFile, cacheMetaFile, instructions, {
+		etag: newETag,
+		tag: latestTag,
+		lastChecked: Date.now(),
+		url: instructionsUrl,
+		sha256: sha256(instructions),
+	});
 	setCacheEntry(modelFamily, { content: instructions, timestamp: Date.now() });
 	return instructions;
 }

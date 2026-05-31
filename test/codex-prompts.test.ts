@@ -8,6 +8,8 @@ vi.mock("node:fs", () => ({
 		readFile: vi.fn(),
 		writeFile: vi.fn(),
 		mkdir: vi.fn(),
+		rename: vi.fn(),
+		rm: vi.fn(),
 	},
 }));
 
@@ -26,11 +28,17 @@ import {
 const mockedReadFile = vi.mocked(fs.readFile);
 const mockedWriteFile = vi.mocked(fs.writeFile);
 const mockedMkdir = vi.mocked(fs.mkdir);
+const mockedRename = vi.mocked(fs.rename);
+const mockedRm = vi.mocked(fs.rm);
 
 describe("Codex Prompts Module", () => {
 	beforeEach(() => {
 		vi.clearAllMocks();
 		__clearCacheForTesting();
+		// writeCacheAtomically uses rename + rm; default them to resolved so the
+		// atomic cache write path works in tests that don't set them explicitly.
+		mockedRename.mockResolvedValue(undefined);
+		mockedRm.mockResolvedValue(undefined);
 		mockFetch = vi.fn();
 		global.fetch = mockFetch as unknown as typeof fetch;
 	});
@@ -150,6 +158,59 @@ describe("Codex Prompts Module", () => {
 
 				const result = await getCodexInstructions("gpt-5.2");
 				expect(result).toBe("disk cached instructions");
+			});
+
+			// prompts-03: a sha256 in the meta is verified against disk content.
+			it("serves disk cache when the sha256 matches", async () => {
+				const { createHash } = await import("node:crypto");
+				const content = "trusted disk instructions";
+				const digest = createHash("sha256").update(content, "utf8").digest("hex");
+				mockedReadFile.mockImplementation((filePath) => {
+					if (typeof filePath === "string" && filePath.includes("-meta.json")) {
+						return Promise.resolve(JSON.stringify({
+							etag: "e",
+							tag: "rust-v0.43.0",
+							lastChecked: Date.now() - 5 * 60 * 1000,
+							url: "https://example.com",
+							sha256: digest,
+						}));
+					}
+					return Promise.resolve(content);
+				});
+
+				const result = await getCodexInstructions("gpt-5.2");
+				expect(result).toBe(content);
+				// No network fetch needed when the trusted cache is fresh.
+				expect(mockFetch).not.toHaveBeenCalled();
+			});
+
+			it("discards disk cache and refetches when the sha256 mismatches", async () => {
+				mockedReadFile.mockImplementation((filePath) => {
+					if (typeof filePath === "string" && filePath.includes("-meta.json")) {
+						return Promise.resolve(JSON.stringify({
+							etag: "e",
+							tag: "rust-v0.43.0",
+							lastChecked: Date.now() - 5 * 60 * 1000,
+							url: "https://example.com",
+							sha256: "0".repeat(64), // wrong hash for the content below
+						}));
+					}
+					return Promise.resolve("tampered disk content");
+				});
+				mockFetch.mockResolvedValueOnce({
+					ok: true,
+					json: () => Promise.resolve({ tag_name: "rust-v0.43.0" }),
+				});
+				mockFetch.mockResolvedValueOnce({
+					ok: true,
+					text: () => Promise.resolve("fresh trusted instructions"),
+					headers: { get: () => "new-etag" },
+				});
+
+				const result = await getCodexInstructions("gpt-5.2");
+				// The corrupt cache was not served; a refetch happened.
+				expect(result).toBe("fresh trusted instructions");
+				expect(mockFetch).toHaveBeenCalled();
 			});
 		});
 

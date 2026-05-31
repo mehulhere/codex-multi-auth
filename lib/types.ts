@@ -233,6 +233,13 @@ export interface CacheMetadata {
         tag: string;
         lastChecked: number;
         url: string;
+        /**
+         * SHA-256 of the cached content (prompts-03). When present, the disk cache
+         * is verified against it before use and discarded on mismatch, so a corrupted
+         * or tampered cache file cannot be served as trusted prompt instructions.
+         * Optional for backward compatibility with caches written before this field.
+         */
+        sha256?: string;
 }
 
 /**
