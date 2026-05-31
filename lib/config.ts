@@ -44,6 +44,36 @@ const configSaveQueues = new Map<string, Promise<void>>();
 const RETRYABLE_FS_CODES = new Set(["EBUSY", "EPERM"]);
 const RETRYABLE_CONFIG_READ_CODES = new Set(["EBUSY", "EPERM", "EAGAIN"]);
 
+/**
+ * Synchronous readFileSync with bounded retry on transient FS-lock codes.
+ *
+ * loadPluginConfig() is synchronous, so a transient EBUSY/EPERM/EAGAIN on a
+ * Windows lock used to fall straight through to the catch and silently revert to
+ * DEFAULT_PLUGIN_CONFIG, discarding the user's real settings (config-04). This
+ * mirrors the async retry already used by readConfigRecordFromPath. ENOENT and
+ * SyntaxError are not retryable and propagate unchanged.
+ */
+function readFileSyncWithConfigRetry(configPath: string): string {
+	const maxAttempts = 4;
+	for (let attempt = 0; ; attempt += 1) {
+		try {
+			return readFileSync(configPath, "utf-8");
+		} catch (error) {
+			const code = (error as NodeJS.ErrnoException | undefined)?.code;
+			if (
+				typeof code === "string" &&
+				RETRYABLE_CONFIG_READ_CODES.has(code) &&
+				attempt < maxAttempts - 1
+			) {
+				// Non-busy sync sleep via Atomics.wait on a throwaway buffer.
+				Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10 * 2 ** attempt);
+				continue;
+			}
+			throw error;
+		}
+	}
+}
+
 type ConfigReadState =
 	| { status: "missing" }
 	| { status: "ok"; record: Record<string, unknown> }
@@ -246,7 +276,7 @@ export function loadPluginConfig(): PluginConfig {
 				return { ...DEFAULT_PLUGIN_CONFIG };
 			}
 
-			const fileContent = readFileSync(configPath, "utf-8");
+			const fileContent = readFileSyncWithConfigRetry(configPath);
 			const normalizedFileContent = stripUtf8Bom(fileContent);
 			userConfig = JSON.parse(normalizedFileContent) as unknown;
 			sourceKind = "file";

@@ -253,6 +253,43 @@ describe("Plugin Configuration", () => {
 			expect(loadPluginConfig().responseContinuation).toBe(true);
 		});
 
+		// Regression (config-04): a transient FS-lock (EBUSY/EPERM/EAGAIN) on the
+		// legacy-file read must be retried, not swallowed into a silent revert to
+		// defaults that discards the user's real settings.
+		it("retries a transient EBUSY on the config read instead of reverting to defaults", () => {
+			mockExistsSync.mockReturnValue(true);
+			let calls = 0;
+			mockReadFileSync.mockImplementation(() => {
+				calls += 1;
+				if (calls < 3) {
+					const err = new Error("EBUSY: resource busy or locked") as NodeJS.ErrnoException;
+					err.code = "EBUSY";
+					throw err;
+				}
+				return JSON.stringify({ codexMode: false });
+			});
+
+			const config = loadPluginConfig();
+			// The user's setting survived (not the default codexMode:true), proving the
+			// transient lock was retried rather than swallowed into a defaults revert.
+			expect(config.codexMode).toBe(false);
+			expect(calls).toBeGreaterThanOrEqual(3); // at least two failures then success
+		});
+
+		it("does not retry a non-transient read error (reverts to defaults)", () => {
+			mockExistsSync.mockReturnValue(true);
+			mockReadFileSync.mockImplementation(() => {
+				const err = new Error("EISDIR: illegal operation") as NodeJS.ErrnoException;
+				err.code = "EISDIR";
+				throw err;
+			});
+
+			// A non-transient code is not retried by the config-04 helper; load
+			// falls back to defaults rather than hanging or surfacing the raw error.
+			const config = loadPluginConfig();
+			expect(config.codexMode).toBe(true); // default
+		});
+
 		it("should detect CODEX_HOME legacy auth config path before global legacy path", async () => {
 			const runWithCodexHome = async (codexHomePath: string) => {
 				vi.resetModules();
