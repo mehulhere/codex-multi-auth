@@ -858,7 +858,7 @@ const TOKEN_INVALIDATED_FALLBACK_MESSAGE =
 // identically regardless of which vector fired. The upstream forwards a raw body
 // with no guaranteed code, so we wrap it here while preserving its human-readable
 // message when one is present.
-function buildTokenInvalidationBody(upstreamBodyText: string): string {
+export function buildTokenInvalidationBody(upstreamBodyText: string): string {
 	let message = TOKEN_INVALIDATED_FALLBACK_MESSAGE;
 	const trimmed = upstreamBodyText.trim();
 	if (trimmed) {
@@ -1556,14 +1556,10 @@ export async function startRuntimeRotationProxy(
 						// return auth error to client instead of rotating to the next account.
 						sessionAffinityStore?.forgetSession(context.sessionKey);
 						res.writeHead(HTTP_STATUS.UNAUTHORIZED, { "content-type": "application/json" });
-						res.end(
-							JSON.stringify({
-								error: {
-									message: "OAuth token has been invalidated. Please re-login.",
-									code: "token_invalidated",
-								},
-							}),
-						);
+						// Route through the shared builder so both invalidation exit paths stay
+						// in lockstep — empty input yields { error: { message: <fallback>,
+						// code: "token_invalidated" } }.
+						res.end(buildTokenInvalidationBody(""));
 						await usageRecorder.record({
 							outcome: "failure",
 							statusCode: HTTP_STATUS.UNAUTHORIZED,

@@ -4,6 +4,7 @@ import { AccountManager } from "../lib/accounts.js";
 import { HTTP_STATUS, OPENAI_HEADERS } from "../lib/constants.js";
 import {
 	startRuntimeRotationProxy,
+	buildTokenInvalidationBody,
 	type RuntimeRotationProxyServer,
 } from "../lib/runtime-rotation-proxy.js";
 import { clearCircuitBreakers } from "../lib/circuit-breaker.js";
@@ -2041,5 +2042,62 @@ describe("runtime rotation proxy", () => {
 		expect(body.error.message).toBe("OAuth token has been invalidated. Please re-login.");
 		expect(calls).toHaveLength(1);
 		expect(proxy.getStatus().rotations).toBe(0);
+	});
+});
+
+describe("buildTokenInvalidationBody", () => {
+	const FALLBACK = "OAuth token has been invalidated. Please re-login.";
+	const parse = (raw: string) =>
+		JSON.parse(raw) as { error: { message: string; code: string } };
+
+	it("always emits the token_invalidated code", () => {
+		expect(parse(buildTokenInvalidationBody("")).error.code).toBe("token_invalidated");
+		expect(
+			parse(buildTokenInvalidationBody(JSON.stringify({ message: "x" }))).error.code,
+		).toBe("token_invalidated");
+	});
+
+	it("uses the stable fallback message for empty input", () => {
+		expect(parse(buildTokenInvalidationBody("")).error.message).toBe(FALLBACK);
+	});
+
+	it("preserves a top-level message", () => {
+		const body = JSON.stringify({ message: "Encountered invalidated oauth token" });
+		expect(parse(buildTokenInvalidationBody(body)).error.message).toBe(
+			"Encountered invalidated oauth token",
+		);
+	});
+
+	it("preserves a nested error.message when no top-level message is present", () => {
+		const body = JSON.stringify({ error: { message: "nested invalidation detail" } });
+		expect(parse(buildTokenInvalidationBody(body)).error.message).toBe(
+			"nested invalidation detail",
+		);
+	});
+
+	it("prefers a top-level message over a nested error.message", () => {
+		const body = JSON.stringify({
+			message: "top-level wins",
+			error: { message: "nested loses" },
+		});
+		expect(parse(buildTokenInvalidationBody(body)).error.message).toBe("top-level wins");
+	});
+
+	it("falls back to nested error.message when top-level message is blank/whitespace", () => {
+		const body = JSON.stringify({
+			message: "   ",
+			error: { message: "nested fallback" },
+		});
+		expect(parse(buildTokenInvalidationBody(body)).error.message).toBe("nested fallback");
+	});
+
+	it("falls back to the stable message for non-JSON bodies (no markup echoed)", () => {
+		const html = "<html><body>oauth token has been invalidated</body></html>";
+		expect(parse(buildTokenInvalidationBody(html)).error.message).toBe(FALLBACK);
+	});
+
+	it("falls back to the stable message when no usable message field exists", () => {
+		const body = JSON.stringify({ error: { code: "something_else" } });
+		expect(parse(buildTokenInvalidationBody(body)).error.message).toBe(FALLBACK);
 	});
 });
