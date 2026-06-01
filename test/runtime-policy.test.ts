@@ -8,7 +8,7 @@ import {
 	evaluateRuntimePolicy,
 	type RuntimePolicyState,
 } from "../lib/policy/runtime-policy.js";
-import { appendUsageLedgerRow } from "../lib/usage/index.js";
+import { appendUsageLedgerRow, rotateUsageLedger } from "../lib/usage/index.js";
 import { removeWithRetry } from "./helpers/remove-with-retry.js";
 
 function state(): RuntimePolicyState {
@@ -243,5 +243,68 @@ describe("runtime policy", () => {
 			statusCode: 403,
 			errorCode: "thread_goal_upstream_blocked",
 		});
+	});
+
+	// quota-forecast-03: a budget window can span a usage-ledger rotation. runtime
+	// policy passes includeArchives:true to summarizeUsageLedger so rotated-out spend
+	// is still counted. This integration test writes a row, rotates the ledger, writes
+	// a second row, then sets a day-window budget (maxRequests:2) whose window covers
+	// both rows. The before-rotate row now lives only in the archives; if archives were
+	// dropped the current ledger holds just 1 request (< 2 → allowed), so the fact that
+	// evaluateRuntimePolicy BLOCKS proves the archived row is included in the count.
+	it("counts archived spend when the budget window spans a ledger rotation", async () => {
+		const policyState = state();
+		policyState.budgets.limits.global = {
+			key: "global",
+			window: "day",
+			maxRequests: 2,
+			updatedAt: 1,
+		};
+
+		// First request lands before the rotation.
+		await appendUsageLedgerRow({
+			id: "before-rotate",
+			createdAt: Date.UTC(2026, 3, 29, 1),
+			source: "runtime-proxy",
+			operation: "responses",
+			outcome: "success",
+			model: "gpt-5.3-codex",
+		});
+
+		// Rotate: the before-rotate row moves into an archive file and the current
+		// ledger is reset.
+		const rotated = await rotateUsageLedger({
+			now: Date.UTC(2026, 3, 29, 2),
+		});
+		expect(rotated).not.toBeNull();
+
+		// Second request lands after the rotation, in the now-current ledger.
+		await appendUsageLedgerRow({
+			id: "after-rotate",
+			createdAt: Date.UTC(2026, 3, 29, 3),
+			source: "runtime-proxy",
+			operation: "responses",
+			outcome: "success",
+			model: "gpt-5.3-codex",
+		});
+
+		// Window = the UTC day (start 2026-03-29T00:00:00Z), so it spans both rows and
+		// crosses the rotation boundary at hour 2.
+		const decision = await evaluateRuntimePolicy({
+			state: policyState,
+			accounts: [],
+			model: "gpt-5.3-codex",
+			now: Date.UTC(2026, 3, 29, 4),
+		});
+
+		// 2 requests in-window (1 archived + 1 current) >= maxRequests:2 → blocked.
+		// This only holds because the archived row is counted.
+		expect(decision.allowed).toBe(false);
+		expect(decision.statusCode).toBe(429);
+		expect(decision.errorCode).toBe("budget_blocked");
+		const globalEval = decision.budgetEvaluations.find(
+			(evaluation) => evaluation.key === "global",
+		);
+		expect(globalEval?.usage.requests).toBe(2);
 	});
 });

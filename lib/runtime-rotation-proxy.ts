@@ -135,6 +135,34 @@ function isLoopbackHost(host: string): boolean {
 	);
 }
 
+// IPv6 literals must be presented in two distinct forms and the proxy
+// previously conflated them (runtime-proxy IPv6 bug). Node's
+// net.Server.listen(port, host) requires the RAW literal ("::1"); a bracketed
+// literal ("[::1]") makes the bind fail or behave wrong. Conversely a URL
+// authority requires the BRACKETED literal ("[::1]") so "http://[::1]:port"
+// parses unambiguously — the raw form yields the unparseable "http://::1:port".
+// Normalize each form ONCE at startup so concurrent rotation paths never race
+// on inconsistent host string representations.
+function stripIpv6Brackets(host: string): string {
+	const trimmed = host.trim();
+	if (trimmed.startsWith("[") && trimmed.endsWith("]")) {
+		return trimmed.slice(1, -1);
+	}
+	return trimmed;
+}
+
+// Raw literal suitable for server.listen: "[::1]" -> "::1", others unchanged.
+function toBindHost(host: string): string {
+	return stripIpv6Brackets(host);
+}
+
+// URL authority host: IPv6 literals are bracketed ("::1" -> "[::1]") while
+// IPv4 addresses and hostnames (no embedded colon) pass through unchanged.
+function toUrlHost(host: string): string {
+	const bare = stripIpv6Brackets(host);
+	return bare.includes(":") ? `[${bare}]` : bare;
+}
+
 // Structured logger for the default-on runtime proxy (errors-logging-01,
 // runtime-proxy-04). Previously the 1900-LOC proxy had zero logger integration;
 // failures surfaced only as a last-write-wins status.lastError string. Logs are
@@ -1306,6 +1334,12 @@ export async function startRuntimeRotationProxy(
 				"Set allowNonLoopbackHost:true only if you fully understand the exposure.",
 		);
 	}
+	// Normalize the validated host into its two representations exactly once so the
+	// listen() bind and the emitted baseUrl can never disagree under concurrent
+	// rotation: bindHost is the raw literal Node's listen() expects ("[::1]"->"::1"),
+	// urlHost is the bracketed form a URL authority requires ("::1"->"[::1]").
+	const bindHost = toBindHost(host);
+	const urlHost = toUrlHost(host);
 	const port = options.port ?? 0;
 	const upstreamBaseUrl = options.upstreamBaseUrl ?? CODEX_BASE_URL;
 	const clientApiKey =
@@ -2112,7 +2146,7 @@ export async function startRuntimeRotationProxy(
 		};
 		server.once("error", onError);
 		server.once("listening", onListening);
-		server.listen(port, host);
+		server.listen(port, bindHost);
 	});
 	server.on("error", onPostStartupServerError);
 
@@ -2121,9 +2155,9 @@ export async function startRuntimeRotationProxy(
 		typeof address === "object" && address ? address.port : port;
 
 	return {
-		host,
+		host: bindHost,
 		port: resolvedPort,
-		baseUrl: `http://${host}:${resolvedPort}`,
+		baseUrl: `http://${urlHost}:${resolvedPort}`,
 		close: async () => {
 			await closeServer(server, sockets);
 			await activeAccountManager.flushPendingSave();

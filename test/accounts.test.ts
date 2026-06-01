@@ -1113,6 +1113,87 @@ describe("AccountManager", () => {
 			expect(getCircuitBreaker(breakerKey).getState()).toBe("closed");
 		});
 
+		// Regression (accounts-02 / phase-1): tracker state is WRITTEN under the
+		// pinned getRuntimeTrackerKey, which stays STABLE across later identity
+		// enrichment. Removal cleanup must clear that stable key, NOT the recomputed
+		// getRuntimeAccountIdentityKey. When an account is first tracked under an
+		// older key shape (here email-only) and then gains an accountId, the two
+		// keys DIVERGE; clearing only the recomputed key leaves stale health/token
+		// entries behind, so a later re-add inherits stale penalties.
+		it("clears tracker state under the stable tracker key after identity enrichment on removal", () => {
+			const now = Date.now();
+			const stored = {
+				version: 3 as const,
+				activeIndex: 0,
+				accounts: [
+					// Email-only at construction: pinned tracker key will be
+					// "email:<key>" (a string of the pre-enrichment shape), not numeric.
+					{
+						refreshToken: "tok-enrich",
+						email: "stale@example.com",
+						addedAt: now,
+						lastUsed: now,
+					},
+					{ refreshToken: "tok-other", accountId: "acc_other", addedAt: now, lastUsed: now },
+				],
+			};
+			const manager = new AccountManager(undefined, stored);
+
+			const account = manager.getAccountByIndex(0)!;
+			const healthTracker = getHealthTracker();
+			const tokenTracker = getTokenTracker();
+
+			// Pin + capture the stable tracker key BEFORE enrichment. consumeToken
+			// calls getRuntimeTrackerKey internally, which pins _runtimeTrackerKey.
+			// Consume the token FIRST: the recordFailure loop below opens the circuit
+			// breaker, which would otherwise block consumeToken.
+			expect(manager.consumeToken(account, "codex")).toBe(true);
+			const stableTrackerKey = getRuntimeTrackerKey(account);
+			expect(stableTrackerKey).toBe("email:stale@example.com");
+
+			// Drive health down, all keyed by the stable key.
+			for (let i = 0; i < 5; i++) manager.recordFailure(account, "codex");
+			const penalizedScore = healthTracker.getScore(stableTrackerKey, "codex");
+			expect(penalizedScore).toBeLessThan(100);
+			expect(tokenTracker.getTokens(stableTrackerKey, "codex")).toBeLessThan(
+				DEFAULT_TOKEN_BUCKET_CONFIG.maxTokens,
+			);
+
+			// Enrich identity so the account gains an accountId. The pinned tracker
+			// key stays "email:stale@example.com", but the RECOMPUTED identity key
+			// now folds in the accountId and therefore DIVERGES from it.
+			const payload = Buffer.from(
+				JSON.stringify({
+					email: "stale@example.com",
+					"https://api.openai.com/auth": {
+						chatgpt_account_id: "acc_enriched",
+					},
+					exp: Math.floor((now + 3600000) / 1000),
+				}),
+			).toString("base64url");
+			manager.updateFromAuth(account, {
+				type: "oauth",
+				access: `header.${payload}.signature`,
+				refresh: "tok-enrich-rotated",
+				expires: now + 3600000,
+			});
+			expect(account.accountId).toBe("acc_enriched");
+			expect(getRuntimeTrackerKey(account)).toBe(stableTrackerKey);
+			// Crux of the bug: recomputed identity key differs from the stable one.
+			expect(getRuntimeAccountIdentityKey(account)).not.toBe(stableTrackerKey);
+
+			// Remove the (live) account. Cleanup must clear the STABLE tracker key.
+			expect(manager.removeAccount(account)).toBe(true);
+
+			// Under the buggy code (clear only the recomputed identity key), the
+			// stale entries under the stable key survive: getScore < 100 and
+			// getTokens < max. The fix clears the stable key, so both reset.
+			expect(healthTracker.getScore(stableTrackerKey, "codex")).toBe(100);
+			expect(tokenTracker.getTokens(stableTrackerKey, "codex")).toBe(
+				DEFAULT_TOKEN_BUCKET_CONFIG.maxTokens,
+			);
+		});
+
 		it("returns false when removing non-existent account", () => {
 			const now = Date.now();
 			const stored = {

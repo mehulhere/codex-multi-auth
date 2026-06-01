@@ -61,6 +61,14 @@ describe("display-width (ui-02)", () => {
 			expect(displayWidth(String.fromCodePoint(0x1f1fa))).toBe(2);
 		});
 
+		it("does NOT collapse a ZWJ between non-emoji wide chars", () => {
+			// 漢 + ZWJ + 字: two separate 2-wide CJK glyphs joined by a zero-width
+			// control = width 4, NOT 2. The ZWJ fast-path must gate on emoji-ness,
+			// not on "both sides are 2 columns".
+			const cjkZwj = `漢${String.fromCharCode(0x200d)}字`;
+			expect(displayWidth(cjkZwj)).toBe(4);
+		});
+
 		it("treats non-Latin combining marks as zero width", () => {
 			// Arabic fatha (U+064E), Hebrew point (U+05B0), Thai sara-i (U+0E34).
 			expect(displayWidth(`a${String.fromCharCode(0x064e)}`)).toBe(1);

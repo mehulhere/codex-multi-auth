@@ -67,7 +67,30 @@ vi.mock("../lib/logger.js", () => ({
 	maskToken: vi.fn((token: string) =>
 		token.length <= 12 ? "***MASKED***" : `${token.slice(0, 6)}...${token.slice(-4)}`,
 	),
-	sanitizeValue: vi.fn((value: unknown) => value),
+	// Mirror the real logger's redaction contract (lib/logger.ts) rather than a
+	// pass-through, so this suite actually enforces that sensitive keys are masked
+	// in the debug bundle instead of silently accepting cleartext (test-redaction).
+	sanitizeValue: vi.fn(function sv(value: unknown): unknown {
+		const SENSITIVE =
+			/^(access|accesstoken|refresh|refreshtoken|token|authorization|apikey|secret|password|credential|idtoken|accountid)$/;
+		const maskTok = (t: string) =>
+			t.length <= 12 ? "***MASKED***" : `${t.slice(0, 6)}...${t.slice(-4)}`;
+		if (typeof value === "string") return value;
+		if (Array.isArray(value)) return value.map((v) => sv(v));
+		if (value !== null && typeof value === "object") {
+			const out: Record<string, unknown> = {};
+			for (const [k, v] of Object.entries(value)) {
+				const norm = k.toLowerCase().replace(/[-_]/g, "");
+				if (SENSITIVE.test(norm)) {
+					out[k] = typeof v === "string" ? maskTok(v) : "***MASKED***";
+				} else {
+					out[k] = sv(v);
+				}
+			}
+			return out;
+		}
+		return value;
+	}),
 }));
 
 vi.mock("../lib/auth/auth.js", () => ({
@@ -1248,6 +1271,10 @@ describe("codex manager cli commands", () => {
 		expect(String(logSpy.mock.calls[0]?.[0])).not.toContain("codex@example.com");
 		// ...and neither does the raw account id.
 		expect(String(logSpy.mock.calls[0]?.[0])).not.toContain("acc_codex");
+		// ...and the bundle must never carry the raw refresh tokens it is built from
+		// (the shareable artifact is the one most likely to be pasted into a ticket).
+		expect(String(logSpy.mock.calls[0]?.[0])).not.toContain("token-1");
+		expect(String(logSpy.mock.calls[0]?.[0])).not.toContain("flagged-1");
 	});
 
 	it.each([

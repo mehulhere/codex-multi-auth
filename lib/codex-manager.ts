@@ -1257,7 +1257,14 @@ async function syncCodexCliActiveSelectionIfDrifted(
 	}
 }
 
-function resolveAccountSelection(
+/**
+ * Resolve the account-id selection for freshly-minted tokens.
+ *
+ * @internal Exported for unit testing of the org-override contract (the explicit
+ * `login --org` argument must win over the ambient CODEX_AUTH_ACCOUNT_ID env for
+ * that call only); not part of the public CLI surface.
+ */
+export function resolveAccountSelection(
 	tokens: TokenSuccess,
 	orgOverride?: string,
 ): TokenSuccessWithAccount {
@@ -1267,7 +1274,10 @@ function resolveAccountSelection(
 	// re-entry (menu re-entry / a reused test worker) and could bind a later login
 	// to a stale org. The env override is still honored as a fallback so the
 	// runtime-proxy mechanism that sets it is unchanged.
-	const override = (orgOverride ?? process.env.CODEX_AUTH_ACCOUNT_ID ?? "").trim();
+	// A blank/whitespace explicit org is treated as absent so it falls back to the
+	// env override (an empty `--org ""` must not suppress CODEX_AUTH_ACCOUNT_ID).
+	const explicitOrg = orgOverride?.trim();
+	const override = (explicitOrg || process.env.CODEX_AUTH_ACCOUNT_ID || "").trim();
 	if (override) {
 		return {
 			...tokens,

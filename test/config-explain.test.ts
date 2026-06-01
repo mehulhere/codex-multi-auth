@@ -257,4 +257,76 @@ describe("getPluginConfigExplainReport", () => {
 		expect(entry?.source).toBe("file");
 		expect(entry?.value).toBe("fallback");
 	});
+
+	// config-08 (transient lock): getPluginConfigExplainReport() reads the stored
+	// record via readConfigRecordFromPath(), which used a single-shot readFileSync
+	// with NO retry — so a transient Windows EBUSY/EPERM/EAGAIN made the explain
+	// report say storageKind "unreadable" even though loadPluginConfig() (which
+	// uses readFileSyncWithConfigRetry) succeeded after retrying. That split-brain
+	// is the regression: load succeeds, explain reports unreadable. After the fix,
+	// readConfigRecordFromPath() reuses the same bounded retry, so a transient lock
+	// no longer produces a false "unreadable".
+	//
+	// Call sequence with CODEX_MULTI_AUTH_CONFIG_PATH set + present:
+	//   read #1  loadPluginConfig() env read              -> succeeds
+	//   read #2  readConfigRecordFromPath() env read       -> EBUSY (throw once)
+	//   read #3  readConfigRecordFromPath() retry          -> succeeds (fixed code)
+	// Old single-shot code stops at #2 and reports "unreadable"; the retry recovers.
+	it("retries a transient lock instead of reporting the env config as unreadable", async () => {
+		const configPath = nextConfigPath("transient-lock");
+		process.env.CODEX_MULTI_AUTH_CONFIG_PATH = configPath;
+		const validJson = JSON.stringify({ unsupportedCodexPolicy: "fallback" });
+
+		let configReadCalls = 0;
+		vi.doMock("node:fs", async () => {
+			const actual =
+				await vi.importActual<typeof import("node:fs")>("node:fs");
+			return {
+				...actual,
+				existsSync: (target: Parameters<typeof actual.existsSync>[0]) =>
+					target === configPath ? true : actual.existsSync(target),
+				readFileSync: ((
+					target: unknown,
+					...rest: unknown[]
+				) => {
+					if (target === configPath) {
+						configReadCalls += 1;
+						// Throw a single transient EBUSY on the readConfigRecordFromPath
+						// read (the 2nd call); loadPluginConfig's earlier read (#1) and the
+						// retry (#3) both succeed.
+						if (configReadCalls === 2) {
+							const error = new Error(
+								"EBUSY: resource busy or locked",
+							) as NodeJS.ErrnoException;
+							error.code = "EBUSY";
+							throw error;
+						}
+						return validJson;
+					}
+					return (
+						actual.readFileSync as (...args: unknown[]) => unknown
+					)(target, ...rest);
+				}) as typeof actual.readFileSync,
+			};
+		});
+
+		try {
+			const { getPluginConfigExplainReport } =
+				await import("../lib/config.js");
+			const report = getPluginConfigExplainReport();
+
+			// The transient EBUSY hit readConfigRecordFromPath but the retry recovered,
+			// so the report must NOT be "unreadable" — it matches the loaded file.
+			expect(report.storageKind).not.toBe("unreadable");
+			expect(report.storageKind).toBe("file");
+			expect(report.configPath).toBe(configPath);
+			// Confirms the EBUSY was actually exercised + a retry happened (>= 3 reads).
+			expect(configReadCalls).toBeGreaterThanOrEqual(3);
+			const entry = expectEntry(report, "unsupportedCodexPolicy");
+			expect(entry?.source).toBe("file");
+			expect(entry?.value).toBe("fallback");
+		} finally {
+			vi.doUnmock("node:fs");
+		}
+	});
 });

@@ -70,6 +70,14 @@ describe("debug-bundle redactHome (errors-logging-04)", () => {
 			);
 		});
 
+		it("redacts a mixed-separator (forward-slash) windows path", () => {
+			// homedir() returns backslashes but a captured path may use forward
+			// slashes; the username must still be redacted (separator-insensitive).
+			expect(redactHome("c:/users/alice/.codex/config.json")).toBe(
+				"~/.codex/config.json",
+			);
+		});
+
 		it("redacts the exact home regardless of case", () => {
 			expect(redactHome("C:\\USERS\\ALICE")).toBe("~");
 		});

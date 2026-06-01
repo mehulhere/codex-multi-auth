@@ -413,6 +413,16 @@ function canonicalizeExistingPrefix(targetPath: string): string {
 	let current = targetPath;
 	const trailing: string[] = [];
 	// Walk up until we find a path component that exists on disk.
+	//
+	// The 4096 cap is a defensive upper bound on path depth, chosen to exceed any
+	// real filesystem path: Linux PATH_MAX is ~4096 *bytes* total (so far fewer
+	// components), and Windows is 260 (legacy MAX_PATH) up to 32767 with long-path
+	// support — none of which approach 4096 nested directories. It exists purely so
+	// a pathological input (e.g. a crafted string of separators) can never spin this
+	// loop forever; the `parent === current` root check below is the normal exit.
+	// Keep the bound: each iteration performs an existsSync syscall, which is slow on
+	// Windows when antivirus filter drivers or network/UNC drives are in play, so we
+	// must not let the walk run unbounded.
 	for (let i = 0; i < 4096; i++) {
 		if (existsSync(current)) break;
 		const parent = dirname(current);
@@ -472,6 +482,17 @@ export function resolvePath(filePath: string): string {
 	// a symlink within an approved root that resolves outside it is rejected. If
 	// the lexical guard passed but the canonical path escapes every approved root,
 	// the path is a symlink-escape and must be denied.
+	//
+	// Performance note (deliberate correctness-over-speed tradeoff): this block can
+	// invoke canonicalizeExistingPrefix up to four times per resolvePath call — once
+	// for the target, then for home, projectRoot, and tmp when the canonical target
+	// differs from the raw one. Each call walks the directory tree with existsSync +
+	// realpathSync, so on Windows (AV filter drivers, UNC/network drives) and for deep
+	// paths this is many syscalls. We accept that cost: resolvePath is the security
+	// boundary for all file access, and canonicalizing every approved root is what lets
+	// us reject genuine symlink escapes without falsely denying legitimate files under a
+	// root that is itself reached via a symlink (e.g. macOS /var -> /private/var). The
+	// roots are few and shallow, so the extra walks stay bounded in practice.
 	const canonical = canonicalizeExistingPrefix(resolved);
 	if (canonical !== resolved) {
 		// Compare the canonical target against CANONICAL roots, not the raw ones:

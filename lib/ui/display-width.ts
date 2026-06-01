@@ -62,6 +62,21 @@ function isRegionalIndicator(cp: number): boolean {
 	return cp >= 0x1f1e6 && cp <= 0x1f1ff;
 }
 
+/**
+ * Emoji / pictographic code points that participate in ZWJ sequences. This is
+ * deliberately the emoji blocks only (NOT every 2-wide code point): a ZWJ
+ * between wide CJK text (e.g. 漢‍字) must NOT collapse — those are two
+ * separate 2-wide glyphs, so gating on emoji-ness keeps that width at 4.
+ */
+function isEmojiBase(cp: number): boolean {
+	return (
+		(cp >= 0x1f300 && cp <= 0x1faff) || // misc pictographs, emoji, symbols & pictographs ext
+		(cp >= 0x2600 && cp <= 0x27bf) || // misc symbols + dingbats
+		(cp >= 0x1f000 && cp <= 0x1f0ff) || // mahjong/domino/playing cards
+		cp === 0x2764 // heavy black heart (common ZWJ component)
+	);
+}
+
 /** Returns the number of terminal columns a single code point occupies (0, 1, or 2). */
 function codePointWidth(cp: number): number {
 	if (isZeroWidthCodePoint(cp)) {
@@ -124,7 +139,7 @@ function clusterWidthAt(cps: number[], i: number): [number, number] {
 			// (emoji/pictographic). Otherwise stop and let the joiner count as 0 and
 			// the next char count on its own.
 			const joined = cps[j + 1];
-			if (width === 2 && joined !== undefined && codePointWidth(joined) === 2) {
+			if (isEmojiBase(cp) && joined !== undefined && isEmojiBase(joined)) {
 				j += 1; // consume the ZWJ and the joined emoji (adds no extra width)
 				continue;
 			}

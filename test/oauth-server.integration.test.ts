@@ -51,8 +51,14 @@ describe("OAuth Server Integration", () => {
 		if (serverInfo) {
 			serverInfo.close();
 			serverInfo = null;
-			await waitForPortFree(OAUTH_PORT);
 		}
+		// Always wait for the port to free, regardless of whether this case still
+		// owned `serverInfo`. The "server cleanup" case closes the server and nulls
+		// `serverInfo` itself; a guarded wait would skip the release there and let
+		// the next case race on the fixed port 1455 (the exact EADDRINUSE flake
+		// this helper exists to prevent). The wait is idempotent when the port is
+		// already free, so running it unconditionally is safe.
+		await waitForPortFree(OAUTH_PORT);
 	});
 
 	it("should start server and handle valid OAuth callback", async () => {

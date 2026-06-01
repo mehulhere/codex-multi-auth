@@ -496,7 +496,14 @@ function readConfigRecordFromPath(
 ): Record<string, unknown> | null {
 	if (!existsSync(configPath)) return null;
 	try {
-		const fileContent = readFileSync(configPath, "utf-8");
+		// config-08: reuse the same bounded transient-FS retry that
+		// loadPluginConfig() uses. A single-shot readFileSync here meant a
+		// transient Windows EBUSY/EPERM/EAGAIN lock made `config explain` report
+		// storageKind "unreadable" even though loadPluginConfig() succeeded after
+		// retrying — a split-brain. ENOENT and SyntaxError remain non-retryable and
+		// fall through to the catch below (returns null), so genuinely-missing and
+		// genuinely-unreadable files behave exactly as before.
+		const fileContent = readFileSyncWithConfigRetry(configPath);
 		const normalizedFileContent = stripUtf8Bom(fileContent);
 		const parsed = JSON.parse(normalizedFileContent) as unknown;
 		return isRecord(parsed) ? parsed : null;

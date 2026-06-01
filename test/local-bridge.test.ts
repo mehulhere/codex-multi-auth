@@ -240,4 +240,27 @@ describe("local bridge", () => {
 		// runtime-proxy-02: don't leak the caller's bridge token upstream.
 		expect(headers.get("authorization")).toBeNull();
 	});
+
+	it("strips an inbound x-api-key before forwarding upstream", async () => {
+		const { calls, fetchImpl } = createFetch();
+		const server = await startLocalBridge({
+			runtimeBaseUrl: "http://127.0.0.1:9999/",
+			fetchImpl,
+			requireAuth: false,
+		});
+		openServers.push(server);
+
+		await fetch(`${server.baseUrl}/v1/models`, {
+			headers: {
+				authorization: "Bearer inbound-client-token",
+				"x-api-key": "inbound-secret-key",
+			},
+		});
+
+		const forwarded = calls.find((c) => c.url.endsWith("/v1/models"));
+		const headers = new Headers(forwarded?.init?.headers as HeadersInit);
+		// runtime-proxy-02: neither inbound credential header crosses the bridge.
+		expect(headers.get("authorization")).toBeNull();
+		expect(headers.get("x-api-key")).toBeNull();
+	});
 });

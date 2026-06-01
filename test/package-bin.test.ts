@@ -46,15 +46,19 @@ describe("package bin entries", () => {
 		expect(pkg.devDependencies?.["@codex-ai/plugin"]).toBeUndefined();
 	});
 
-	// install-scripts-02: preuninstall.js is shipped + tested, so it must be wired
-	// as the npm preuninstall lifecycle hook (it was previously dead — present in
-	// files[] but never registered, so it never ran on uninstall).
-	it("wires the preuninstall lifecycle hook to the shipped script", () => {
+	// install-scripts-02: npm@7+ no longer fires the `preuninstall` lifecycle hook
+	// (see lib/codex-manager/commands/uninstall.ts), so wiring it would be dead
+	// config that misleads readers into thinking cleanup runs on `npm uninstall`.
+	// The real cleanup path is the explicit `codex-multi-auth uninstall` command,
+	// which reuses the same logic. The script stays shipped (invokable + tested via
+	// runPreuninstallCleanup), but must NOT be registered as the npm hook.
+	it("does NOT wire a preuninstall lifecycle hook (npm@7+ never runs it)", () => {
 		const pkg = JSON.parse(readFileSync("package.json", "utf8")) as {
 			scripts?: Record<string, string>;
 			files?: string[];
 		};
-		expect(pkg.scripts?.preuninstall).toBe("node scripts/preuninstall.js");
+		expect(pkg.scripts?.preuninstall).toBeUndefined();
+		// The script is still shipped so the explicit uninstall command can use it.
 		expect(pkg.files).toEqual(
 			expect.arrayContaining(["scripts/preuninstall.js"]),
 		);

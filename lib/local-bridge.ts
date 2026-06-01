@@ -74,6 +74,11 @@ function forwardHeaders(headers: Headers, runtimeClientApiKey?: string): Headers
 		result.delete(key);
 	}
 	result.delete("host");
+	// runtime-proxy-02: never forward inbound client credentials upstream. Beyond
+	// Authorization (handled below), an inbound `x-api-key` would also leak the
+	// caller's local credential across the bridge boundary and could change which
+	// auth the runtime proxy evaluates — strip it unconditionally.
+	result.delete("x-api-key");
 	// runtime-proxy-03: present the runtime proxy's client token. We replace the
 	// inbound client's Authorization (already validated by the bridge) rather than
 	// forwarding it verbatim, so the bridge can authenticate to an auth-enabled

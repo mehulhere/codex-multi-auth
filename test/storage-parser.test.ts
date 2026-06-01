@@ -1,5 +1,5 @@
 import { promises as fs } from "node:fs";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, vi } from "vitest";
 import {
 	loadAccountsFromPath,
 	parseAndNormalizeStorage,
@@ -71,6 +71,29 @@ describe("storage parser helpers", () => {
 		const readSpy = vi
 			.spyOn(fs, "readFile")
 			.mockRejectedValueOnce(ebusy)
+			.mockResolvedValueOnce(validJson as unknown as Buffer);
+
+		const result = await loadAccountsFromPath("/virtual/accounts.json", {
+			normalizeAccountStorage,
+			isRecord,
+		});
+		expect(result.normalized?.version).toBe(3);
+		expect(readSpy).toHaveBeenCalledTimes(2);
+	});
+
+	it("retries a transient EPERM on the primary read, then parses (windows lock)", async () => {
+		// storage-07: permission-style failures (EPERM/EACCES) are now part of the
+		// shared retryable set the loader consumes via withFileOperationRetry, so a
+		// momentary Windows permission hold must retry rather than fall through to
+		// WAL/backup recovery — mirroring the EBUSY case above to pin the widened
+		// contract.
+		const eperm = Object.assign(new Error("EPERM: operation not permitted"), {
+			code: "EPERM",
+		});
+		const validJson = JSON.stringify({ version: 3, activeIndex: 0, accounts: [] });
+		const readSpy = vi
+			.spyOn(fs, "readFile")
+			.mockRejectedValueOnce(eperm)
 			.mockResolvedValueOnce(validJson as unknown as Buffer);
 
 		const result = await loadAccountsFromPath("/virtual/accounts.json", {

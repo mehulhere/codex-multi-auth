@@ -25,16 +25,24 @@ export function redactHome(value: string): string {
 	}
 
 	const isWindows = process.platform === "win32";
-	const normalizedValue = isWindows ? value.toLowerCase() : value;
-	const normalizedHome = isWindows ? home.toLowerCase() : home;
+	// On win32 the comparison must be case-insensitive AND separator-insensitive:
+	// homedir() returns `C:\Users\Alice` but a captured path may use forward
+	// slashes (`c:/users/alice/...`). Fold both case and separator to a canonical
+	// form before comparing, otherwise the username leaks for mixed-separator
+	// paths. We keep the ORIGINAL `value` for the returned (unredacted) suffix so
+	// the emitted path keeps its real separators.
+	const canon = (s: string): string =>
+		isWindows ? s.toLowerCase().replace(/\//g, "\\") : s;
+	const normalizedValue = canon(value);
+	const normalizedHome = canon(home);
 
 	if (normalizedValue === normalizedHome) {
 		return "~";
 	}
 
 	// Require a path boundary after the home prefix so `/users/alice2` is not
-	// treated as living under home `/users/alice`. Accept either path separator
-	// so a value captured with the foreign separator still redacts.
+	// treated as living under home `/users/alice`. After canonicalization on
+	// win32 the boundary is always `\`; on POSIX accept the platform separator.
 	const boundary = normalizedValue.slice(normalizedHome.length, normalizedHome.length + 1);
 	if (
 		normalizedValue.startsWith(normalizedHome) &&

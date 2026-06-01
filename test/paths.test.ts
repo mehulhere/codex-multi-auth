@@ -875,6 +875,41 @@ describe("Storage Paths Module", () => {
 			);
 		});
 
+		// storage-02 (Windows drive-letter case-normalization): on Windows the
+		// canonical-vs-raw containment re-check compares paths case-insensitively
+		// (normalizePathForComparison lowercases on win32). A realpath that differs
+		// from the requested path by case (e.g. `c:\users\test\.codex\link` ->
+		// `C:\Users\test\.codex\real`) is NOT a symlink escape: case-folded it still
+		// lives under the same approved root. resolvePath must ACCEPT it. This guards
+		// against a regression where a case-sensitive comparison would treat the
+		// case-differing canonical path as "outside" the root and wrongly deny it.
+		it("accepts a windows symlink whose realpath differs only by drive-letter case", () => {
+			// Case-folding containment is Windows-only behavior; on POSIX these paths
+			// are genuinely distinct, so scope the assertion to win32.
+			if (process.platform !== "win32") return;
+			const link = "c:\\users\\test\\.codex\\link";
+			const real = "C:\\Users\\test\\.codex\\real";
+			const projectRoot = "c:\\users\\test\\.codex";
+			const lower = (p: unknown) => String(p).toLowerCase();
+			// Only the link exists on disk; canonicalizeExistingPrefix stops at it and
+			// realpaths it to the case-differing `real`. Compare case-insensitively so
+			// the test is robust to path.resolve drive-letter normalization.
+			mockedExistsSync.mockImplementation((p) => lower(p) === link);
+			mockedRealpathSync.mockImplementation((p) =>
+				lower(p) === link ? real : String(p),
+			);
+			// Approve the project root at the shared .codex dir so the lexical guard
+			// passes; the canonical target (`real`, different case) must still be
+			// accepted because, case-folded, it is within that approved root.
+			setStoragePathState({
+				currentStoragePath: null,
+				currentLegacyProjectStoragePath: null,
+				currentLegacyWorktreeStoragePath: null,
+				currentProjectRoot: projectRoot,
+			});
+			expect(() => resolvePath(link)).not.toThrow();
+		});
+
 		it("accepts paths within the storage state's project root even when cwd differs", () => {
 			const cwd = process.cwd();
 			const parent = path.dirname(cwd);

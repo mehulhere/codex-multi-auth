@@ -1,4 +1,5 @@
 import { createInterface } from "node:readline/promises";
+import { formatWaitTime } from "../accounts.js";
 import type {
 	ApplyOcChatgptSyncOptions,
 	OcChatgptSyncApplyResult,
@@ -122,7 +123,7 @@ export async function promptExperimentalSettingsMenu<TTargetState>(
 					color: "yellow",
 				},
 				{
-					label: `${copy.experimentalRefreshInterval}: ${Math.round((draft.proactiveRefreshIntervalMs ?? 60000) / 60000)} min`,
+					label: `${copy.experimentalRefreshInterval}: ${formatWaitTime(draft.proactiveRefreshIntervalMs ?? 60000)}`,
 					value: { type: "back" },
 					disabled: true,
 					hideUnavailableSuffix: true,

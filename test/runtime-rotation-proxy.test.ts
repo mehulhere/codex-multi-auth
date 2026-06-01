@@ -362,8 +362,33 @@ describe("runtime rotation proxy", () => {
 		await proxy.close();
 	});
 
-	// accounts-01/08: the proxy must apply the configured routing-mutex mode to the
-	// account manager at startup (previously the mutex had zero production callers).
+	// Regression (runtime-proxy IPv6 bug): the loopback guard accepted both "::1"
+	// and "[::1]", but the bind and the emitted baseUrl conflated the two forms.
+	// server.listen needs the RAW literal ("::1") or the bind misbehaves, while the
+	// baseUrl needs the BRACKETED literal so "http://[::1]:port" parses. Both input
+	// spellings must end up listening (port > 0) AND emit a bracketed baseUrl.
+	it.each(["::1", "[::1]"])(
+		"normalizes IPv6 loopback host %s for both bind and baseUrl",
+		async (hostInput) => {
+			const now = Date.now();
+			const accountManager = new AccountManager(undefined, createStorage(now));
+			const { fetchImpl } = createRecordingFetch(() => textEventStream());
+
+			const proxy = await startProxy({
+				accountManager,
+				fetchImpl,
+				options: { host: hostInput },
+			});
+
+			// Server actually bound (raw literal accepted by listen()).
+			expect(proxy.port).toBeGreaterThan(0);
+			// baseUrl always emits the bracketed IPv6 authority, regardless of input form.
+			expect(proxy.baseUrl).toContain(`http://[::1]:`);
+			expect(proxy.baseUrl).toBe(`http://[::1]:${proxy.port}`);
+
+			await proxy.close();
+		},
+	);
 	it("applies routingMutex=enabled to the account manager at startup", async () => {
 		const prev = process.env.CODEX_AUTH_ROUTING_MUTEX;
 		process.env.CODEX_AUTH_ROUTING_MUTEX = "enabled";

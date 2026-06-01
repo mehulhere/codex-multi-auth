@@ -216,7 +216,11 @@ async function persistMergedDefault(
 		await withFileOperationRetry(() => fs.rename(tempPath, path));
 	} finally {
 		try {
-			await fs.unlink(tempPath);
+			// Route cleanup through withFileOperationRetry too: if the rename failed
+			// and a transient Windows EBUSY/EPERM lingers, a single-shot unlink would
+			// leave a secret-bearing .tmp next to the live account store. force:true
+			// keeps ENOENT (rename already consumed it) a no-op.
+			await withFileOperationRetry(() => fs.rm(tempPath, { force: true }));
 		} catch {
 			// Best-effort temp cleanup; rename success removes it, ENOENT is expected.
 		}

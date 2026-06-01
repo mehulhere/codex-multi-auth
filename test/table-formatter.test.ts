@@ -77,6 +77,22 @@ describe("table-formatter", () => {
 			const row = buildTableRow(["1", "漢字漢字漢字", "ok"], simpleOptions);
 			expect(row).toBe("1    漢字漢字…  ok      ");
 		});
+
+		it("emits empty (not an overflowing ellipsis) for a zero-width column", () => {
+			// A width-0 column has no room for content OR the "…" — returning "…"
+			// would overflow the declared width by one and desync the row from the
+			// header/separator layout. The cell must be empty.
+			const options = {
+				columns: [
+					{ header: "A", width: 0 },
+					{ header: "B", width: 3 },
+				],
+			};
+			const row = buildTableRow(["dropped", "ok"], options);
+			// First cell contributes 0 columns; the join space + 3-col "ok " follow.
+			expect(row).toBe(" ok ");
+			expect(row).not.toContain("…");
+		});
 	});
 
 	describe("buildTable", () => {
