@@ -33,17 +33,17 @@ export default defineConfig({
     include: ['test/**/*.test.ts'],
     // tests-ci-16: the suite had a pre-existing, environment-level intermittent
     // vitest *worker_threads* crash on Windows (exit 1, no test failure, no
-    // summary line) that also reproduced on upstream main. The `forks` pool runs
-    // each file in a child process instead of a worker thread, which does not
-    // exhibit that crash; `singleFork` keeps the single-worker semantics the
-    // fixed-port OAuth callback (1455) and other shared-port suites rely on
-    // (previously enforced via `--maxWorkers=1` in the npm `test` script).
+    // summary line) that also reproduced on upstream main. Vitest 4 already
+    // defaults to the `forks` pool (each file in a child process, not a worker
+    // thread), which does not exhibit that crash; we pin it explicitly so a
+    // future default change cannot silently reintroduce the threads pool.
+    // `fileParallelism: false` is the Vitest 4 replacement for the removed
+    // `poolOptions.forks.singleFork`: it forces single-worker execution
+    // (maxWorkers=1), which the fixed-port OAuth callback (1455) and other
+    // shared-port suites rely on (also enforced via `--maxWorkers=1` in the npm
+    // `test` script).
     pool: 'forks',
-    poolOptions: {
-      forks: {
-        singleFork: true,
-      },
-    },
+    fileParallelism: false,
     // Wire the property-test global config so fc.configureGlobal (numRuns, time
     // budget) actually applies; it was previously a dead export never imported
     // (tests-ci-02).

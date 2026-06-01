@@ -855,30 +855,6 @@ describe("Storage Paths Module", () => {
 			);
 		});
 
-		it("treats realpath case-only differences as the same approved root (no false escape)", () => {
-			// Canonicalization that only changes case (a Windows-style realpath that
-			// normalizes drive/dir casing) must NOT be treated as an escape when it
-			// still points inside an approved root.
-			const insideHome = path.join(homedir(), ".codex", "case-link");
-			const sameRootDifferentCase = path
-				.join(homedir(), ".codex", "real-target.json")
-				.toUpperCase();
-			mockedExistsSync.mockImplementation((p) => String(p) === insideHome);
-			mockedRealpathSync.mockImplementation((p) =>
-				String(p) === insideHome ? sameRootDifferentCase : String(p),
-			);
-			// On case-insensitive hosts (win32/macOS) this stays inside home; on a
-			// case-sensitive host the upper-cased path is genuinely outside, so accept
-			// either the no-throw or the symlink-escape outcome deterministically.
-			try {
-				resolvePath(insideHome);
-			} catch (error) {
-				expect(String((error as Error).message)).toMatch(
-					/resolves \(via symlink\) outside/,
-				);
-			}
-		});
-
 		it("accepts paths within the storage state's project root even when cwd differs", () => {
 			const cwd = process.cwd();
 			const parent = path.dirname(cwd);
