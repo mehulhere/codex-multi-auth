@@ -19,6 +19,14 @@ export interface LocalBridgeOptions {
 	fetchImpl?: typeof fetch;
 	requireAuth?: boolean;
 	verifyBearerToken?: typeof verifyLocalClientBearerToken;
+	/**
+	 * Client API key for an auth-enabled runtime proxy (runtime-proxy-03). When
+	 * set, the bridge replaces the inbound client's Authorization with this key on
+	 * the forwarded request, so it can talk to a runtime proxy that requires a
+	 * per-process client token. The inbound request is still authenticated by the
+	 * bridge's own verifyBearerToken check first.
+	 */
+	runtimeClientApiKey?: string;
 }
 
 const DEFAULT_HOST = "127.0.0.1";
@@ -51,12 +59,22 @@ function responseHeadersForClient(headers: Headers): Headers {
 	return result;
 }
 
-function forwardHeaders(headers: Headers): Headers {
+function forwardHeaders(headers: Headers, runtimeClientApiKey?: string): Headers {
 	const result = new Headers(headers);
 	for (const key of HOP_BY_HOP_HEADERS) {
 		result.delete(key);
 	}
 	result.delete("host");
+	// runtime-proxy-03: present the runtime proxy's client token. We replace the
+	// inbound client's Authorization (already validated by the bridge) rather than
+	// forwarding it verbatim, so the bridge can authenticate to an auth-enabled
+	// runtime proxy. When no key is configured, strip any inbound Authorization to
+	// avoid leaking the caller's bridge token upstream (runtime-proxy-02).
+	if (runtimeClientApiKey && runtimeClientApiKey.trim().length > 0) {
+		result.set("authorization", `Bearer ${runtimeClientApiKey.trim()}`);
+	} else {
+		result.delete("authorization");
+	}
 	return result;
 }
 
@@ -156,6 +174,7 @@ export async function startLocalBridge(
 	const fetchImpl = options.fetchImpl ?? (undiciFetch as typeof fetch);
 	const requireAuth = options.requireAuth ?? true;
 	const verifyBearerToken = options.verifyBearerToken ?? verifyLocalClientBearerToken;
+	const runtimeClientApiKey = options.runtimeClientApiKey;
 	const app = new Hono();
 
 	app.get("/health", (context) =>
@@ -196,7 +215,7 @@ export async function startLocalBridge(
 		try {
 			upstream = await fetchImpl(targetUrl, {
 				method: request.method,
-				headers: forwardHeaders(request.headers),
+				headers: forwardHeaders(request.headers, runtimeClientApiKey),
 				body:
 					request.method === "GET" || request.method === "HEAD"
 						? undefined

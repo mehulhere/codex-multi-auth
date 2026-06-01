@@ -158,4 +158,45 @@ describe("local bridge", () => {
 			}),
 		).rejects.toThrow(/not a valid URL/i);
 	});
+
+	// runtime-proxy-03: the bridge can authenticate to an auth-enabled runtime proxy
+	// by injecting a configured client key, replacing the inbound Authorization.
+	it("forwards the configured runtimeClientApiKey as Authorization", async () => {
+		const { calls, fetchImpl } = createFetch();
+		const server = await startLocalBridge({
+			runtimeBaseUrl: "http://127.0.0.1:9999/",
+			fetchImpl,
+			requireAuth: false,
+			runtimeClientApiKey: "runtime-secret-key",
+		});
+		openServers.push(server);
+
+		await fetch(`${server.baseUrl}/v1/models`, {
+			headers: { authorization: "Bearer inbound-client-token" },
+		});
+
+		const forwarded = calls.find((c) => c.url.endsWith("/v1/models"));
+		const headers = new Headers(forwarded?.init?.headers as HeadersInit);
+		// The runtime key replaced the inbound client's token.
+		expect(headers.get("authorization")).toBe("Bearer runtime-secret-key");
+	});
+
+	it("strips inbound Authorization when no runtime key is configured", async () => {
+		const { calls, fetchImpl } = createFetch();
+		const server = await startLocalBridge({
+			runtimeBaseUrl: "http://127.0.0.1:9999/",
+			fetchImpl,
+			requireAuth: false,
+		});
+		openServers.push(server);
+
+		await fetch(`${server.baseUrl}/v1/models`, {
+			headers: { authorization: "Bearer inbound-client-token" },
+		});
+
+		const forwarded = calls.find((c) => c.url.endsWith("/v1/models"));
+		const headers = new Headers(forwarded?.init?.headers as HeadersInit);
+		// runtime-proxy-02: don't leak the caller's bridge token upstream.
+		expect(headers.get("authorization")).toBeNull();
+	});
 });
