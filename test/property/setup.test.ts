@@ -13,6 +13,14 @@ describe("Property test setup verification", () => {
     expect(global?.endOnFailure).toBe(true);
   });
 
+  // Regression (tests-ci-06): a deterministic seed is pinned so property failures
+  // are reproducible from CI logs.
+  it("pins a deterministic fast-check seed", () => {
+    const global = fc.readConfigureGlobal();
+    expect(typeof global?.seed).toBe("number");
+    expect(global?.seed).toBe(0x5eed);
+  });
+
   it("health scores are always in valid range", () => {
     fc.assert(
       fc.property(arbHealthScore, (score) => {
