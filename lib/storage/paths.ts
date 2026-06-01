@@ -474,14 +474,33 @@ export function resolvePath(filePath: string): string {
 	// the path is a symlink-escape and must be denied.
 	const canonical = canonicalizeExistingPrefix(resolved);
 	if (canonical !== resolved) {
-		if (
+		// Compare the canonical target against CANONICAL roots, not the raw ones:
+		// an approved root can itself live under a symlink (e.g. macOS tmpdir
+		// /var/folders/... realpaths to /private/var/folders/...). Comparing a
+		// canonicalized target against a non-canonical root would falsely reject a
+		// legitimate file under that root. Canonicalizing both sides keeps the
+		// symlink-escape rejection while avoiding that false denial.
+		const canonicalHome = canonicalizeExistingPrefix(home);
+		const canonicalProjectRoot = canonicalizeExistingPrefix(projectRoot);
+		const canonicalTmp = canonicalizeExistingPrefix(tmp);
+		const escapesRawRoots =
 			isLookalikeSibling(home, canonical) ||
 			isLookalikeSibling(projectRoot, canonical) ||
 			isLookalikeSibling(tmp, canonical) ||
 			(!isWithinDirectory(home, canonical) &&
 				!isWithinDirectory(projectRoot, canonical) &&
-				!isWithinDirectory(tmp, canonical))
-		) {
+				!isWithinDirectory(tmp, canonical));
+		const escapesCanonicalRoots =
+			isLookalikeSibling(canonicalHome, canonical) ||
+			isLookalikeSibling(canonicalProjectRoot, canonical) ||
+			isLookalikeSibling(canonicalTmp, canonical) ||
+			(!isWithinDirectory(canonicalHome, canonical) &&
+				!isWithinDirectory(canonicalProjectRoot, canonical) &&
+				!isWithinDirectory(canonicalTmp, canonical));
+		// Only deny when the canonical target is outside BOTH the raw and the
+		// canonical root sets — i.e. it is a genuine escape, not just a root that
+		// happens to be reached via a symlink.
+		if (escapesRawRoots && escapesCanonicalRoots) {
 			throw new Error(
 				`Access denied: path resolves (via symlink) outside the home, project, or temp directory`,
 			);

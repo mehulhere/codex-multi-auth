@@ -75,10 +75,17 @@ export async function fetchWithTimeout(
  * streaming so a server that omits/understates the header still cannot exceed
  * the limit. Throws on oversize or empty/whitespace-only content so the caller
  * treats it as a fetch failure and falls back to disk/bundled content.
+ *
+ * prompts-02: the streaming read also enforces a per-chunk idle timeout. The
+ * fetch-level AbortSignal in `fetchWithTimeout` only covers connect+headers and
+ * is cleared once the Response arrives, so without this a server that sends
+ * headers then stalls mid-body would hang this request-blocking path forever.
+ * If no chunk arrives within `timeoutMs`, the read is aborted and rejected.
  */
 export async function readBodyTextGuarded(
 	response: Response,
 	maxBytes: number = PROMPT_FETCH_MAX_BYTES,
+	timeoutMs: number = PROMPT_FETCH_TIMEOUT_MS,
 ): Promise<string> {
 	const declared = Number(response.headers.get("content-length") ?? "");
 	if (Number.isFinite(declared) && declared > maxBytes) {
@@ -93,17 +100,37 @@ export async function readBodyTextGuarded(
 		const reader = body.getReader();
 		const chunks: Uint8Array[] = [];
 		let total = 0;
-		for (;;) {
-			const { done, value } = await reader.read();
-			if (done) break;
-			if (value) {
-				total += value.byteLength;
-				if (total > maxBytes) {
-					await reader.cancel().catch(() => undefined);
-					throw new Error(`prompt body too large: exceeded ${maxBytes} bytes`);
+		try {
+			for (;;) {
+				// Race each read against an idle-timeout so a mid-body stall cannot
+				// hang the request pipeline. A chunk resets the budget (the timer is
+				// per-read); a quiet gap longer than timeoutMs aborts.
+				let idleTimer: ReturnType<typeof setTimeout> | undefined;
+				const idle = new Promise<never>((_resolve, reject) => {
+					idleTimer = setTimeout(
+						() => reject(new Error(`prompt body read timed out after ${timeoutMs}ms`)),
+						timeoutMs,
+					);
+				});
+				let result: Awaited<ReturnType<typeof reader.read>>;
+				try {
+					result = await Promise.race([reader.read(), idle]);
+				} finally {
+					if (idleTimer) clearTimeout(idleTimer);
 				}
-				chunks.push(value);
+				const { done, value } = result;
+				if (done) break;
+				if (value) {
+					total += value.byteLength;
+					if (total > maxBytes) {
+						throw new Error(`prompt body too large: exceeded ${maxBytes} bytes`);
+					}
+					chunks.push(value);
+				}
 			}
+		} catch (error) {
+			await reader.cancel().catch(() => undefined);
+			throw error;
 		}
 		text = Buffer.concat(chunks).toString("utf8");
 	} else {

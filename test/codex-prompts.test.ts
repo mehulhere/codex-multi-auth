@@ -212,6 +212,55 @@ describe("Codex Prompts Module", () => {
 				expect(result).toBe("fresh trusted instructions");
 				expect(mockFetch).toHaveBeenCalled();
 			});
+
+			it("does not re-serve tampered cache via a 304 after an sha256 mismatch", async () => {
+				// prompts-03 regression: a sha256 mismatch must force a FULL refetch
+				// (no If-None-Match), so a server 304 cannot bless+re-serve the corrupt
+				// disk bytes. Here the mismatch fires, the conditional header is dropped,
+				// and even if the upstream still answers 304 the tampered content must
+				// NOT come back — it falls through to the bundled instructions instead.
+				mockedReadFile.mockImplementation((filePath) => {
+					if (typeof filePath === "string" && filePath.includes("-meta.json")) {
+						return Promise.resolve(
+							JSON.stringify({
+								etag: "stale-etag",
+								tag: "rust-v0.43.0",
+								lastChecked: Date.now() - 5 * 60 * 1000,
+								url: "https://example.com",
+								sha256: "0".repeat(64), // wrong hash for the content below
+							}),
+						);
+					}
+					if (typeof filePath === "string" && filePath.includes("codex-instructions.md")) {
+						return Promise.resolve("bundled fallback instructions");
+					}
+					return Promise.resolve("tampered disk content");
+				});
+				const sentHeaders: Array<Record<string, string> | undefined> = [];
+				mockFetch.mockImplementation((_url: string, init?: RequestInit) => {
+					sentHeaders.push(init?.headers as Record<string, string> | undefined);
+					if (String(_url).includes("api.github.com")) {
+						return Promise.resolve({
+							ok: true,
+							json: () => Promise.resolve({ tag_name: "rust-v0.43.0" }),
+						});
+					}
+					// Upstream answers 304 — but since no If-None-Match was sent, the
+					// fix must not treat the tampered disk bytes as a valid body.
+					return Promise.resolve({ status: 304, ok: false });
+				});
+
+				const result = await getCodexInstructions("gpt-5.2");
+				expect(result).not.toBe("tampered disk content");
+				expect(result).toBe("bundled fallback instructions");
+				// The instructions fetch must NOT carry a conditional revalidation header.
+				const instructionsHeaders = sentHeaders.filter(Boolean) as Array<
+					Record<string, string>
+				>;
+				expect(
+					instructionsHeaders.some((h) => h && "If-None-Match" in h),
+				).toBe(false);
+			});
 		});
 
 		describe("GitHub fetch with ETag", () => {

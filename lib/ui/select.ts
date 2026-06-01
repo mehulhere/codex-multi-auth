@@ -416,14 +416,24 @@ export async function select<T>(items: MenuItem<T>[], options: SelectOptions<T>)
 				escapeTimeout = null;
 			}
 
+			// Tear down the render interval and data listener BEFORE the fragile
+			// setRawMode call. setRawMode can throw depending on stream/terminal
+			// state; if it did, the old ordering jumped to the empty catch and left
+			// the setInterval firing forever — corrupting the terminal and keeping
+			// the process alive so the CLI never exits.
+			if (refreshTimer) {
+				clearInterval(refreshTimer);
+				refreshTimer = null;
+			}
 			try {
 				stdin.removeListener("data", onKey);
+			} catch {
+				// best effort
+			}
+
+			try {
 				stdin.setRawMode(wasRaw);
 				stdin.pause();
-				if (refreshTimer) {
-					clearInterval(refreshTimer);
-					refreshTimer = null;
-				}
 				stdout.write(ANSI.show);
 			} catch {
 				// best effort cleanup

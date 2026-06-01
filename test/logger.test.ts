@@ -540,6 +540,27 @@ describe('Logger Module', () => {
 			expect(data['experimental-bearer-token']).toBe('runtim...alue');
 		});
 
+		it('masks a sensitive email KEY with maskEmail, not maskToken (no local-part leak)', () => {
+			// Regression: sanitizeValue used maskToken for every sensitive key, so an
+			// `email` field leaked the local part + TLD (alice@example.com ->
+			// alice@....com). It must use maskEmail like the free-text path.
+			const mockLog = vi.fn();
+			initLogger({ app: { log: mockLog } });
+			logError('test', { email: 'alice@example.com' });
+			const data = mockLog.mock.calls[0][0].body.extra?.data;
+			expect(data.email).toBe('al***@***.com');
+			expect(data.email).not.toContain('alice');
+			expect(data.email).not.toContain('example');
+		});
+
+		it('handles a non-string email key without leaking', () => {
+			const mockLog = vi.fn();
+			initLogger({ app: { log: mockLog } });
+			logError('test', { email: { nested: 'alice@example.com' } });
+			const data = mockLog.mock.calls[0][0].body.extra?.data;
+			expect(data.email).toBe('***MASKED***');
+		});
+
 		it('should handle arrays in sanitization', () => {
 			const mockLog = vi.fn();
 			initLogger({ app: { log: mockLog } });
@@ -735,6 +756,22 @@ describe('Logger Module', () => {
 			expect(consoleLog).toHaveBeenCalled();
 			expect(consoleWarn).toHaveBeenCalled();
 			expect(consoleError).toHaveBeenCalled();
+		});
+
+		it('strips CR/LF from console output (no log injection)', async () => {
+			// Regression: logToConsole skipped the newline strip that logToApp does,
+			// so a message with embedded newlines could forge extra log lines when
+			// console output is captured to a file/aggregator.
+			const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+			const { logError: logErrorNl } = await loadLoggerModule({
+				CODEX_CONSOLE_LOG: '1',
+			});
+			consoleError.mockClear();
+			logErrorNl('line one\n[forged] line two\r\nline three');
+			const printed = String(consoleError.mock.calls[0]?.[0] ?? '');
+			expect(printed).not.toMatch(/[\r\n]/);
+			expect(printed).toContain('line one');
+			expect(printed).toContain('line three');
 		});
 
 		it('logs errors even when debug logging is disabled', async () => {

@@ -44,6 +44,23 @@ describe("local bridge", () => {
 		).rejects.toThrow("loopback");
 	});
 
+	it("accepts an IPv6-loopback runtimeBaseUrl ([::1])", async () => {
+		// Regression: new URL("http://[::1]:port").hostname yields the bracketed
+		// "[::1]", which the egress guard must treat as loopback. It previously only
+		// matched "::1" and threw "non-loopback runtimeBaseUrl host" at startup for a
+		// valid IPv6 runtime proxy URL. Assert startup succeeds (the bug was a
+		// pre-bind rejection); no request is sent.
+		const { fetchImpl } = createFetch();
+		const server = await startLocalBridge({
+			host: "127.0.0.1",
+			runtimeBaseUrl: "http://[::1]:9999/",
+			fetchImpl,
+			requireAuth: false,
+		});
+		openServers.push(server);
+		expect(server.port).toBeGreaterThan(0);
+	});
+
 	it("serves health and forwards allowed OpenAI-compatible paths", async () => {
 		const { calls, fetchImpl } = createFetch();
 		const server = await startLocalBridge({

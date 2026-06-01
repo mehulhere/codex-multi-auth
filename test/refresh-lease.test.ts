@@ -48,6 +48,80 @@ describe("RefreshLeaseCoordinator", () => {
     expect(follower.result).toEqual(sampleSuccessResult);
   });
 
+  it("tightens an already-existing lease dir to 0o700 on POSIX (chmod after mkdir)", async () => {
+    // Regression: mkdir(recursive, mode) does NOT re-apply mode to a dir that
+    // already exists, so an upgrade over a looser (umask) dir kept its perms.
+    // The coordinator must chmod the dir 0o700 on POSIX. Stub platform to linux
+    // and inject an fsOps wrapper that spies on chmod.
+    const platformSpy = vi
+      .spyOn(process, "platform", "get")
+      .mockReturnValue("linux");
+    // Pre-create the dir so mkdir's mode is a no-op (the bug scenario).
+    await mkdir(leaseDir, { recursive: true });
+    const chmodSpy = vi.fn(async () => undefined);
+    const fsOps = {
+      mkdir: fsPromises.mkdir,
+      open: fsPromises.open,
+      writeFile: fsPromises.writeFile,
+      rename: fsPromises.rename,
+      unlink: fsPromises.unlink,
+      readFile: fsPromises.readFile,
+      stat: fsPromises.stat,
+      readdir: fsPromises.readdir,
+      chmod: chmodSpy,
+    };
+    const coordinator = new RefreshLeaseCoordinator({
+      enabled: true,
+      leaseDir,
+      leaseTtlMs: 5_000,
+      waitTimeoutMs: 500,
+      pollIntervalMs: 25,
+      resultTtlMs: 2_000,
+      fsOps,
+    });
+
+    const owner = await coordinator.acquire("token-perms");
+    expect(owner.role).toBe("owner");
+    await owner.release(sampleSuccessResult);
+
+    expect(chmodSpy).toHaveBeenCalledWith(leaseDir, 0o700);
+    platformSpy.mockRestore();
+  });
+
+  it("does not chmod the lease dir on Windows", async () => {
+    const platformSpy = vi
+      .spyOn(process, "platform", "get")
+      .mockReturnValue("win32");
+    const chmodSpy = vi.fn(async () => undefined);
+    const fsOps = {
+      mkdir: fsPromises.mkdir,
+      open: fsPromises.open,
+      writeFile: fsPromises.writeFile,
+      rename: fsPromises.rename,
+      unlink: fsPromises.unlink,
+      readFile: fsPromises.readFile,
+      stat: fsPromises.stat,
+      readdir: fsPromises.readdir,
+      chmod: chmodSpy,
+    };
+    const coordinator = new RefreshLeaseCoordinator({
+      enabled: true,
+      leaseDir,
+      leaseTtlMs: 5_000,
+      waitTimeoutMs: 500,
+      pollIntervalMs: 25,
+      resultTtlMs: 2_000,
+      fsOps,
+    });
+
+    const owner = await coordinator.acquire("token-win");
+    expect(owner.role).toBe("owner");
+    await owner.release(sampleSuccessResult);
+
+    expect(chmodSpy).not.toHaveBeenCalled();
+    platformSpy.mockRestore();
+  });
+
   it("recovers from stale lock payload", async () => {
     const coordinator = new RefreshLeaseCoordinator({
       enabled: true,

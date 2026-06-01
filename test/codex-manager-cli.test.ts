@@ -64,6 +64,10 @@ vi.mock("../lib/logger.js", () => ({
 		return `${local.slice(0, Math.min(2, local.length))}***@***.${tld}`;
 	}),
 	maskString: vi.fn((value: string) => value),
+	maskToken: vi.fn((token: string) =>
+		token.length <= 12 ? "***MASKED***" : `${token.slice(0, 6)}...${token.slice(-4)}`,
+	),
+	sanitizeValue: vi.fn((value: unknown) => value),
 }));
 
 vi.mock("../lib/auth/auth.js", () => ({
@@ -1233,13 +1237,17 @@ describe("codex manager cli commands", () => {
 				// activeEmail is redacted (errors-logging-04): the debug bundle is a
 				// shareable artifact and must not embed the raw account email.
 				activeEmail: "co***@***.com",
-				activeAccountId: "acc_codex",
+				// activeAccountId is masked (logger SENSITIVE_KEYS): the shareable
+				// bundle must not expose the raw account/org identifier.
+				activeAccountId: "***MASKED***",
 				syncVersion: 7,
 				sourceUpdatedAtMs: 1_710_000_000_000,
 			},
 		});
 		// Hard guarantee: the raw email never appears anywhere in the emitted bundle.
 		expect(String(logSpy.mock.calls[0]?.[0])).not.toContain("codex@example.com");
+		// ...and neither does the raw account id.
+		expect(String(logSpy.mock.calls[0]?.[0])).not.toContain("acc_codex");
 	});
 
 	it.each([

@@ -46,7 +46,16 @@ const DECODED_UPSTREAM_RESPONSE_HEADERS = new Set(["content-encoding"]);
 
 function isLoopbackHost(host: string): boolean {
 	const normalized = host.trim().toLowerCase();
-	return normalized === "127.0.0.1" || normalized === "localhost" || normalized === "::1";
+	return (
+		normalized === "127.0.0.1" ||
+		normalized === "localhost" ||
+		normalized === "::1" ||
+		// new URL("http://[::1]:port").hostname yields the bracketed form, so the
+		// IPv6 loopback runtime proxy must match here too (mirrors the guard in
+		// lib/runtime-rotation-proxy.ts). Without this, a valid [::1] runtimeBaseUrl
+		// is falsely rejected as non-loopback.
+		normalized === "[::1]"
+	);
 }
 
 function responseHeadersForClient(headers: Headers): Headers {

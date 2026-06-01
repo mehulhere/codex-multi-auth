@@ -1,7 +1,7 @@
 import type { ConfigExplainReport } from "../../config.js";
 import { homedir } from "node:os";
 import { sep } from "node:path";
-import { maskEmail } from "../../logger.js";
+import { maskEmail, maskToken, sanitizeValue } from "../../logger.js";
 
 /**
  * Replace the user's home-directory prefix with `~` so the bundle does not leak
@@ -44,6 +44,29 @@ export function redactHome(value: string): string {
 	}
 
 	return value;
+}
+
+/**
+ * Sanitize the config report before it lands in a shared debug bundle.
+ *
+ * Two leaks closed here:
+ *   - `configPath` is an absolute path that embeds the OS username; redact the
+ *     home prefix like every other path in the bundle.
+ *   - `entries[].value` can hold sensitive config (e.g. a runtime-rotation-proxy
+ *     URL with `user:pass@host` credentials). Route each value through the
+ *     shared logger `sanitizeValue`, which masks token/secret/email-shaped data,
+ *     so a `--json` bundle pasted into a bug report cannot carry live creds.
+ */
+function sanitizeConfigReport(config: ConfigExplainReport): ConfigExplainReport {
+	return {
+		...config,
+		configPath: config.configPath ? redactHome(config.configPath) : config.configPath,
+		entries: config.entries.map((entry) => ({
+			...entry,
+			value: sanitizeValue(entry.value),
+			defaultValue: sanitizeValue(entry.defaultValue),
+		})),
+	};
 }
 
 export function runDebugBundleCommand(
@@ -89,7 +112,7 @@ export function runDebugBundleCommand(
 				generatedAt: new Date().toISOString(),
 				storagePath: redactHome(deps.getStoragePath()),
 				lastAccountsSaveTimestamp: deps.getLastAccountsSaveTimestamp(),
-				config,
+				config: sanitizeConfigReport(config),
 				accounts: {
 					total: accounts?.accounts.length ?? 0,
 					enabled:
@@ -110,7 +133,12 @@ export function runDebugBundleCommand(
 							activeEmail: codexCli.activeEmail
 								? maskEmail(codexCli.activeEmail)
 								: null,
-							activeAccountId: codexCli.activeAccountId ?? null,
+							// accountid is in the logger's SENSITIVE_KEYS and is masked
+							// everywhere else; mask it here too so the shared bundle does
+							// not expose the account/org identifier in cleartext.
+							activeAccountId: codexCli.activeAccountId
+								? maskToken(codexCli.activeAccountId)
+								: null,
 							syncVersion: codexCli.syncVersion ?? null,
 							sourceUpdatedAtMs: codexCli.sourceUpdatedAtMs ?? null,
 						}

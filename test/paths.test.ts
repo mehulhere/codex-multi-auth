@@ -822,6 +822,26 @@ describe("Storage Paths Module", () => {
 			expect(() => resolvePath(insideHome)).not.toThrow();
 		});
 
+		// storage-02 (symlinked root, NOT an escape): an approved root can itself be
+		// a symlink (e.g. macOS tmpdir /var/folders/... realpaths to
+		// /private/var/folders/...). A legitimate file under that root canonicalizes
+		// under the *canonical* root, which differs from the raw root string — the
+		// guard must compare canonical-to-canonical and NOT falsely deny it.
+		it("allows a file under a root that is itself a symlink (no false escape)", () => {
+			const tmp = tmpdir();
+			const realTmp = path.join(path.parse(tmp).root, "private", "real-tmp");
+			// Requested file is lexically under the raw tmp root; its leaf does not
+			// exist, so canonicalizeExistingPrefix walks up to tmp and realpaths it.
+			const requested = path.join(tmp, "probe.tmp");
+			mockedExistsSync.mockImplementation((p) => String(p) === tmp);
+			mockedRealpathSync.mockImplementation((p) =>
+				String(p) === tmp ? realTmp : String(p),
+			);
+			// canonical target = realTmp/probe.tmp — inside the canonicalized tmp root,
+			// so even though it is NOT inside the raw tmp string, it must be allowed.
+			expect(() => resolvePath(requested)).not.toThrow();
+		});
+
 		// storage-02 (message + deeper canonicalization): the symlink-escape branch
 		// must throw the specific "resolves (via symlink) outside" message (distinct
 		// from the lexical "must be within" denial), and it must fire even when the

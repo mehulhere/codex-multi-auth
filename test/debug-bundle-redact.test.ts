@@ -10,7 +10,7 @@ vi.mock("node:os", async (importActual) => {
 	};
 });
 
-import { redactHome } from "../lib/codex-manager/commands/debug-bundle.js";
+import { redactHome, runDebugBundleCommand } from "../lib/codex-manager/commands/debug-bundle.js";
 
 const realPlatform = process.platform;
 
@@ -85,5 +85,54 @@ describe("debug-bundle redactHome (errors-logging-04)", () => {
 		setPlatform("linux");
 		homedirMock.mockReturnValue("");
 		expect(redactHome("/home/alice/.codex")).toBe("/home/alice/.codex");
+	});
+
+	describe("--json bundle redaction", () => {
+		beforeEach(() => {
+			setPlatform("linux");
+			homedirMock.mockReturnValue("/home/alice");
+		});
+
+		it("redacts configPath, masks accountId, and strips proxy creds from config entries", async () => {
+			const lines: string[] = [];
+			const code = await runDebugBundleCommand(["--json"], {
+				getConfigReport: () => ({
+					configPath: "/home/alice/.codex/config.json",
+					storageKind: "unified" as never,
+					entries: [
+						{
+							key: "runtimeRotationProxy" as never,
+							value: "http://user:s3cr3t-pass@proxy.internal:8080",
+							defaultValue: null,
+							source: "config" as never,
+							envNames: [],
+						},
+					],
+				}),
+				getStoragePath: () => "/home/alice/.codex/accounts.json",
+				loadAccounts: async () => ({ accounts: [], activeIndex: undefined }),
+				loadFlaggedAccounts: async () => ({ accounts: [] }),
+				loadCodexCliState: async () => ({
+					path: "/home/alice/.codex",
+					accounts: [],
+					activeEmail: "alice@example.com",
+					activeAccountId: "org-1234567890abcdef",
+				}),
+				getLastAccountsSaveTimestamp: () => 0,
+				logInfo: (m) => lines.push(m),
+				logError: (m) => lines.push(m),
+			});
+			expect(code).toBe(0);
+			const out = lines.join("\n");
+			// configPath home prefix redacted.
+			expect(out).toContain("~/.codex/config.json");
+			expect(out).not.toContain("/home/alice/.codex/config.json");
+			// account id masked, not cleartext.
+			expect(out).not.toContain("org-1234567890abcdef");
+			// email masked.
+			expect(out).not.toContain("alice@example.com");
+			// proxy password must not appear anywhere in the bundle.
+			expect(out).not.toContain("s3cr3t-pass");
+		});
 	});
 });

@@ -100,7 +100,16 @@ function sanitizeValue(value: unknown, depth = 0): unknown {
 		for (const [key, val] of Object.entries(value)) {
 			const normalizedKey = key.toLowerCase().replace(/[-_]/g, "");
 			if (SENSITIVE_KEYS.has(normalizedKey)) {
-				sanitized[key] = typeof val === "string" ? maskToken(val) : "***MASKED***";
+				if (typeof val !== "string") {
+					sanitized[key] = "***MASKED***";
+				} else if (normalizedKey === "email") {
+					// An email value masked with maskToken leaks the local part and TLD
+					// (alice@example.com -> alice@....com). Use the dedicated email masker
+					// so structured `email` fields match the free-text path (maskString).
+					sanitized[key] = maskEmail(val);
+				} else {
+					sanitized[key] = maskToken(val);
+				}
 			} else {
 				sanitized[key] = sanitizeValue(val, depth + 1);
 			}
@@ -227,7 +236,10 @@ function logToApp(
 
 function logToConsole(level: LogLevel, message: string, data?: unknown): void {
 	if (!CONSOLE_LOG_ENABLED) return;
-	const sanitizedMessage = maskString(message);
+	// Strip CR/LF like logToApp does: a message carrying embedded newlines could
+	// otherwise forge extra log lines when console output is captured to a file
+	// or aggregator (log injection).
+	const sanitizedMessage = maskString(message).replace(/[\r\n]+/g, " ");
 	const sanitizedData = data === undefined ? undefined : sanitizeValue(data);
 	// This is the single sanctioned console sink for the whole package: every
 	// message is mask-sanitized above before it reaches the terminal. The
@@ -472,4 +484,4 @@ export function getRequestId(): number {
 	return requestCounter;
 }
 
-export { formatDuration, maskEmail, maskString };
+export { formatDuration, maskEmail, maskString, maskToken, sanitizeValue };

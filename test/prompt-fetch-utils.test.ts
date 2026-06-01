@@ -116,5 +116,26 @@ describe("prompt fetch-utils", () => {
 			const big = "x".repeat(50);
 			await expect(readBodyTextGuarded(new Response(big), 10)).rejects.toThrow(/too large/i);
 		});
+
+		it("times out a mid-body stall instead of hanging forever (prompts-02)", async () => {
+			// A server that sends headers then stalls mid-body must not hang the
+			// request-blocking path: the per-read idle timeout aborts and rejects.
+			let cancelled = false;
+			const stallingBody = new ReadableStream<Uint8Array>({
+				start(controller) {
+					// Emit one chunk so the stream is "live", then never produce more.
+					controller.enqueue(new TextEncoder().encode("partial"));
+					// Intentionally no close() / no further enqueue → reader.read() hangs.
+				},
+				cancel() {
+					cancelled = true;
+				},
+			});
+			const res = new Response(stallingBody);
+			await expect(
+				readBodyTextGuarded(res, PROMPT_FETCH_MAX_BYTES, 30),
+			).rejects.toThrow(/timed out/i);
+			expect(cancelled).toBe(true);
+		});
 	});
 });

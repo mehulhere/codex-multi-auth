@@ -255,6 +255,12 @@ export async function getCodexInstructions(
 		}
 	}
 
+	// prompts-03: once we know the disk content fails its sha256, it must not be
+	// trusted anywhere downstream — not served, not used as the 304 revalidation
+	// body, and not used as the offline fallback in the catch below. Track a
+	// "usable" view of the disk content separate from the raw read.
+	let usableDiskContent = diskContent;
+
 	if (diskContent && cachedMetadata?.lastChecked) {
 		// prompts-03: if the meta carries a sha256, the disk content must match it;
 		// a mismatch means a corrupted/tampered cache, so discard and refetch rather
@@ -264,6 +270,12 @@ export async function getCodexInstructions(
 			!cachedMetadata.sha256 || cachedMetadata.sha256 === sha256(diskContent);
 		if (!integrityOk) {
 			logWarn(`Discarding corrupt prompt cache for ${modelFamily} (sha256 mismatch)`);
+			// Force a full refetch: drop the corrupt body so it cannot be served or
+			// used as the catch fallback, and clear the cached metadata so no
+			// If-None-Match is sent (a 304 would otherwise re-serve and re-bless the
+			// exact corrupt content this check is meant to reject).
+			usableDiskContent = null;
+			cachedMetadata = null;
 		} else if (now - cachedMetadata.lastChecked < CACHE_TTL_MS) {
 			setCacheEntry(modelFamily, { content: diskContent, timestamp: now });
 			return diskContent;
@@ -308,10 +320,10 @@ export async function getCodexInstructions(
 			`Failed to fetch ${modelFamily} instructions from GitHub: ${err.message}`,
 		);
 
-		if (diskContent) {
+		if (usableDiskContent) {
 			logWarn(`Using cached ${modelFamily} instructions`);
-			setCacheEntry(modelFamily, { content: diskContent, timestamp: now });
-			return diskContent;
+			setCacheEntry(modelFamily, { content: usableDiskContent, timestamp: now });
+			return usableDiskContent;
 		}
 
 		logWarn(`Falling back to bundled instructions for ${modelFamily}`);
@@ -346,9 +358,20 @@ async function fetchAndPersistInstructions(
 	}
 
 	const response = await fetchWithTimeout(instructionsUrl, { headers });
-	if (response.status === 304) {
+	// A 304 is only meaningful if we actually sent a conditional request. When the
+	// caller cleared the metadata (e.g. an sha256 mismatch forced a full refetch),
+	// cachedETag is null and no If-None-Match was sent, so a 304 here cannot be
+	// trusted to describe our disk content — fall through to the error path rather
+	// than re-serving (and re-blessing) whatever is on disk.
+	if (response.status === 304 && cachedETag) {
 		const diskContent = await readFileOrNull(cacheFile);
-		if (diskContent) {
+		// Only re-serve the disk content if it still matches the integrity hash we
+		// had on record. Recomputing and trusting the hash unconditionally would
+		// launder tampered bytes; verifying against the prior sha closes that.
+		const priorSha = cachedMetadata?.sha256;
+		const diskIntegrityOk =
+			diskContent !== null && (!priorSha || priorSha === sha256(diskContent));
+		if (diskContent && diskIntegrityOk) {
 			setCacheEntry(modelFamily, { content: diskContent, timestamp: Date.now() });
 			// Refresh the meta (lastChecked) atomically and re-affirm the content sha
 			// so a 304 keeps the integrity record in sync with the on-disk content.
@@ -361,6 +384,9 @@ async function fetchAndPersistInstructions(
 			});
 			return diskContent;
 		}
+		// 304 but the disk content is missing or fails its integrity check: treat as
+		// a fetch failure so the caller falls back to bundled instructions.
+		throw new Error("304 revalidation failed integrity check");
 	}
 
 	if (!response.ok) {
