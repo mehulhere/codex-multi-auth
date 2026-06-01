@@ -277,10 +277,15 @@ export function readMessages(sessionID: string): StoredMessageMeta[] {
 	}
 
 	return messages.sort((a, b) => {
-		const aTime = a.time?.created ?? 0;
-		const bTime = b.time?.created ?? 0;
+		const aTime = a?.time?.created ?? 0;
+		const bTime = b?.time?.created ?? 0;
 		if (aTime !== bTime) return aTime - bTime;
-		return a.id.localeCompare(b.id);
+		// recovery-02: a parseable-but-malformed record can lack `id`; guard the
+		// comparator so a missing/non-string id cannot throw out of the sort (which
+		// runs outside the per-file try/catch above) and crash readMessages.
+		const aId = typeof a?.id === "string" ? a.id : "";
+		const bId = typeof b?.id === "string" ? b.id : "";
+		return aId.localeCompare(bId);
 	});
 }
 
@@ -352,6 +357,9 @@ export function injectTextPart(
 	messageID: string,
 	text: string,
 ): boolean {
+	// recovery-03: validate before joining into a filesystem path, matching the
+	// read path. Without this, a crafted messageID could escape PART_STORAGE.
+	validatePathId(messageID, "messageID");
 	const partDir = join(PART_STORAGE, messageID);
 
 	try {
@@ -453,6 +461,7 @@ export function prependThinkingPart(
 	sessionID: string,
 	messageID: string,
 ): boolean {
+	validatePathId(messageID, "messageID"); // recovery-03
 	const partDir = join(PART_STORAGE, messageID);
 
 	try {
@@ -488,10 +497,12 @@ export function prependThinkingPart(
 }
 
 export function stripThinkingParts(messageID: string): boolean {
+	validatePathId(messageID, "messageID"); // recovery-03
 	const partDir = join(PART_STORAGE, messageID);
 	if (!existsSync(partDir)) return false;
 
 	let anyRemoved = false;
+	let anyTargetFailed = false;
 	try {
 		for (const file of readdirSync(partDir)) {
 			if (!file.endsWith(".json")) continue;
@@ -502,6 +513,11 @@ export function stripThinkingParts(messageID: string): boolean {
 				if (THINKING_TYPES.has(part.type)) {
 					if (safeUnlinkWithRetry(filePath)) {
 						anyRemoved = true;
+					} else {
+						// recovery-05: a thinking part we targeted could NOT be removed.
+						// Reporting success here would let the auto-resume loop believe
+						// the message is clean and retry forever, burning quota.
+						anyTargetFailed = true;
 					}
 				}
 			} catch {
@@ -512,7 +528,8 @@ export function stripThinkingParts(messageID: string): boolean {
 		return false;
 	}
 
-	return anyRemoved;
+	// Only report success when every targeted thinking part was actually removed.
+	return anyRemoved && !anyTargetFailed;
 }
 
 // =============================================================================
@@ -586,6 +603,7 @@ export function replaceEmptyTextParts(
 	messageID: string,
 	replacementText: string,
 ): boolean {
+	validatePathId(messageID, "messageID"); // recovery-03
 	const partDir = join(PART_STORAGE, messageID);
 	if (!existsSync(partDir)) return false;
 

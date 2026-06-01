@@ -178,6 +178,29 @@ describe("RecoveryStorage", () => {
 
 			expect(storage.readMessages(sessionID)).toEqual([]);
 		});
+
+		// recovery-02: a parseable record missing `id` must not crash the sort
+		// comparator (which runs outside the per-file try/catch).
+		it("does not throw when a record is missing its id", () => {
+			const sessionID = "sess";
+			const messageDir = join(MESSAGE_STORAGE, sessionID);
+
+			fsMock.existsSync.mockImplementation(
+				(path: string) => path === MESSAGE_STORAGE || path === messageDir,
+			);
+			fsMock.readdirSync.mockReturnValue(["good.json", "noid.json"]);
+			fsMock.readFileSync.mockImplementation((path: string) => {
+				if (path === join(messageDir, "good.json")) {
+					return JSON.stringify({ id: "g", sessionID, role: "assistant", time: { created: 1 } });
+				}
+				// Parseable but malformed: no `id` field.
+				return JSON.stringify({ sessionID, role: "assistant", time: { created: 2 } });
+			});
+
+			expect(() => storage.readMessages(sessionID)).not.toThrow();
+			const result = storage.readMessages(sessionID);
+			expect(result.length).toBe(2);
+		});
 	});
 
 	describe("readParts", () => {
@@ -725,6 +748,38 @@ describe("RecoveryStorage", () => {
 			});
 
 			expect(storage.stripThinkingParts(messageID)).toBe(false);
+		});
+
+		// recovery-05: if a targeted thinking part cannot be deleted, the function
+		// must NOT report success (a false "clean" makes auto-resume retry forever).
+		it("returns false when a targeted thinking part cannot be removed", () => {
+			const messageID = "m";
+			const partDir = join(PART_STORAGE, messageID);
+
+			fsMock.existsSync.mockReturnValue(true);
+			fsMock.readdirSync.mockReturnValue(["t.json"]);
+			fsMock.readFileSync.mockImplementation((path: string) => {
+				if (path === join(partDir, "t.json")) {
+					return JSON.stringify({ id: "t", sessionID: "s", messageID, type: "thinking" });
+				}
+				return "";
+			});
+			// Deletion fails with a non-retryable error.
+			fsMock.unlinkSync.mockImplementation(() => {
+				const err = new Error("EACCES") as NodeJS.ErrnoException;
+				err.code = "EISDIR"; // non-retryable -> safeUnlinkWithRetry returns false
+				throw err;
+			});
+
+			expect(storage.stripThinkingParts(messageID)).toBe(false);
+		});
+
+		// recovery-03: write/mutate helpers validate the messageID path component.
+		it("rejects an unsafe messageID (path traversal) on mutate helpers", () => {
+			expect(() => storage.stripThinkingParts("../escape")).toThrow(/unsafe/i);
+			expect(() => storage.injectTextPart("s", "../escape", "x")).toThrow(/unsafe/i);
+			expect(() => storage.prependThinkingPart("s", "../escape")).toThrow(/unsafe/i);
+			expect(() => storage.replaceEmptyTextParts("../escape", "x")).toThrow(/unsafe/i);
 		});
 
 		it("should skip non-JSON files in part directory (line 275 coverage)", () => {
