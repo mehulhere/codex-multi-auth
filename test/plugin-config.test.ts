@@ -290,6 +290,33 @@ describe("Plugin Configuration", () => {
 			expect(config.codexMode).toBe(true); // default
 		});
 
+		// config-02: load precedence must match save. When CODEX_MULTI_AUTH_CONFIG_PATH
+		// is set, savePluginConfig writes there first, so loadPluginConfig must read
+		// from that env path (not unified) or a save would be invisible to the load.
+		it("prefers the CODEX_MULTI_AUTH_CONFIG_PATH env file on load (symmetry with save)", () => {
+			const prev = process.env.CODEX_MULTI_AUTH_CONFIG_PATH;
+			process.env.CODEX_MULTI_AUTH_CONFIG_PATH = "/tmp/env-config.json";
+			try {
+				mockExistsSync.mockImplementation(
+					(p: unknown) => p === "/tmp/env-config.json",
+				);
+				mockReadFileSync.mockImplementation((p: unknown) => {
+					if (p === "/tmp/env-config.json") {
+						return JSON.stringify({ codexMode: false });
+					}
+					throw new Error("ENOENT");
+				});
+
+				const config = loadPluginConfig();
+				// The env-path file's value won, proving load reads the env path first.
+				expect(config.codexMode).toBe(false);
+				expect(mockReadFileSync).toHaveBeenCalledWith("/tmp/env-config.json", "utf-8");
+			} finally {
+				if (prev === undefined) delete process.env.CODEX_MULTI_AUTH_CONFIG_PATH;
+				else process.env.CODEX_MULTI_AUTH_CONFIG_PATH = prev;
+			}
+		});
+
 		it("should detect CODEX_HOME legacy auth config path before global legacy path", async () => {
 			const runWithCodexHome = async (codexHomePath: string) => {
 				vi.resetModules();

@@ -266,9 +266,22 @@ export function getDefaultPluginConfig(): PluginConfig {
  */
 export function loadPluginConfig(): PluginConfig {
 	try {
-		const unifiedConfig = loadUnifiedPluginConfigSync();
-		let userConfig: unknown = unifiedConfig;
+		// config-02: keep load precedence symmetric with save. savePluginConfig
+		// writes to CODEX_MULTI_AUTH_CONFIG_PATH first (when set), so the load must
+		// prefer that same env path; otherwise a save to the env path would be
+		// invisible to the next load (which would read unified settings instead) —
+		// a split-brain. Only when the env path is unset do we prefer unified.
+		const envConfigPath = (process.env.CODEX_MULTI_AUTH_CONFIG_PATH ?? "").trim();
+		let userConfig: unknown;
 		let sourceKind: "unified" | "file" = "unified";
+		if (envConfigPath.length > 0 && existsSync(envConfigPath)) {
+			const fileContent = readFileSyncWithConfigRetry(envConfigPath);
+			userConfig = JSON.parse(stripUtf8Bom(fileContent)) as unknown;
+			sourceKind = "file";
+		} else {
+			userConfig = loadUnifiedPluginConfigSync();
+			sourceKind = "unified";
+		}
 
 		if (!isRecord(userConfig)) {
 			const configPath = resolvePluginConfigPath();
