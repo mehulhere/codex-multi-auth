@@ -31,6 +31,19 @@ export default defineConfig({
     globals: true,
     environment: 'node',
     include: ['test/**/*.test.ts'],
+    // tests-ci-16: the suite had a pre-existing, environment-level intermittent
+    // vitest *worker_threads* crash on Windows (exit 1, no test failure, no
+    // summary line) that also reproduced on upstream main. The `forks` pool runs
+    // each file in a child process instead of a worker thread, which does not
+    // exhibit that crash; `singleFork` keeps the single-worker semantics the
+    // fixed-port OAuth callback (1455) and other shared-port suites rely on
+    // (previously enforced via `--maxWorkers=1` in the npm `test` script).
+    pool: 'forks',
+    poolOptions: {
+      forks: {
+        singleFork: true,
+      },
+    },
     // Wire the property-test global config so fc.configureGlobal (numRuns, time
     // budget) actually applies; it was previously a dead export never imported
     // (tests-ci-02).
@@ -39,12 +52,12 @@ export default defineConfig({
     // rather than the developer's real ~/.codex. Then the property-test config.
     setupFiles: ['test/helpers/global-sandbox.ts', 'test/property/setup.ts'],
     // tests-ci-03: the fixed-port OAuth callback (1455) collision risk is covered
-    // by `--maxWorkers=1` in the npm `test` script plus the awaited port-release in
-    // test/oauth-server.integration.test.ts afterEach, so `fileParallelism: false`
-    // is not set here (it added no protection beyond those). NOTE: this suite has a
-    // pre-existing, environment-level intermittent vitest worker crash on Windows
-    // (exit 1 with no test failure and no summary) that reproduces on upstream main
-    // too; it is unrelated to fileParallelism. See finding tests-ci-16.
+    // by single-worker execution (`pool: 'forks'` + `singleFork` above, reinforced
+    // by `--maxWorkers=1` in the npm `test` script) plus the awaited port-release in
+    // test/oauth-server.integration.test.ts afterEach. The intermittent Windows
+    // worker crash previously noted here (tests-ci-16) was a worker_threads-pool
+    // artifact; the forks pool above runs each file in a child process and does not
+    // exhibit it.
     exclude: [
       'node_modules/**',
       '.codex/**',

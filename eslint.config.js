@@ -32,11 +32,42 @@ export default [
       "@typescript-eslint/require-await": "warn",
       
       // General best practices
-      "no-console": "off", // Allow console for CLI tool
+      // request-10: guard lib internals against stray console output that should
+      // go through the structured logger (which masks tokens/emails). The genuine
+      // CLI/UI output surface (commands, help, the CLI entrypoints, the injectable
+      // device-auth log sink) is re-allowed in the override block below, so this
+      // only fires on NEW leaks in non-CLI library code.
+      "no-console": "error",
       "prefer-const": "error",
       "no-var": "error",
       "eqeqeq": ["error", "always"],
       "no-duplicate-imports": "error",
+    },
+  },
+  {
+    // CLI / UI / human-output surface: console IS the intended output channel
+    // here (the tool prints to stdout/stderr for the user), so `no-console` stays
+    // off. Keep this list tight — library internals must use the logger.
+    files: [
+      "index.ts",
+      "lib/cli.ts",
+      "lib/codex-manager.ts",
+      "lib/codex-manager/**/*.ts",
+      "lib/auth/device-auth.ts",
+    ],
+    languageOptions: {
+      parser: tsparser,
+      parserOptions: {
+        ecmaVersion: "latest",
+        sourceType: "module",
+        project: "./tsconfig.json",
+      },
+    },
+    plugins: {
+      "@typescript-eslint": tseslint,
+    },
+    rules: {
+      "no-console": "off",
     },
   },
   {

@@ -431,6 +431,31 @@ describe("runtime rotation proxy", () => {
 		expect(proxy.getStatus().lastError).toBe("policy store unreadable");
 	});
 
+	it("masks email/token material in getStatus().lastError (errors-logging-08)", async () => {
+		const now = Date.now();
+		const accountManager = new AccountManager(undefined, createStorage(now));
+		const { fetchImpl } = createRecordingFetch(() => textEventStream());
+		// Inject a failure whose message embeds a bearer token and an email so a
+		// future refactor that drops the masking would leak secrets through the
+		// status surface. getStatus() must redact both on read.
+		vi.spyOn(runtimePolicy, "loadRuntimePolicyState").mockRejectedValueOnce(
+			new Error("refresh failed Bearer sk-supersecrettokenvalue123 for bob@example.com"),
+		);
+		const proxy = await startProxy({ accountManager, fetchImpl });
+
+		await postResponses(proxy, { model: "gpt-5.3-codex", input: "hello" });
+
+		const lastError = proxy.getStatus().lastError ?? "";
+		// Raw secrets must NOT survive into the status surface.
+		expect(lastError).not.toContain("bob@example.com");
+		expect(lastError).not.toContain("sk-supersecrettokenvalue123");
+		// And the masked markers should be present: email redacted to its prefix +
+		// tld, and the bearer token collapsed to head...tail (maskToken).
+		expect(lastError).toContain("bo***@***.com");
+		expect(lastError).toContain("Bearer...");
+		await proxy.close();
+	});
+
 	it("closes active streaming clients during shutdown", async () => {
 		const now = Date.now();
 		const accountManager = new AccountManager(undefined, createStorage(now, 1));

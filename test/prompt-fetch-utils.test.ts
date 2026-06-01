@@ -68,23 +68,31 @@ describe("prompt fetch-utils", () => {
 
 		it("resolves and clears the timer when fetch wins the race", async () => {
 			// Abort-vs-resolve ordering regression: a fetch that resolves before the
-			// timeout must return the response and must not abort afterwards.
-			let aborted = false;
-			const quick = (_url: string, init?: RequestInit) => {
-				init?.signal?.addEventListener("abort", () => {
-					aborted = true;
-				});
-				return Promise.resolve(new Response("won"));
-			};
-			const res = await fetchWithTimeout(
-				"https://example.com",
-				{ timeoutMs: 1000 },
-				quick as unknown as typeof fetch,
-			);
-			expect(await res.text()).toBe("won");
-			// Give any (incorrectly) pending timer a chance to fire; it must not.
-			await new Promise((resolve) => setTimeout(resolve, 5));
-			expect(aborted).toBe(false);
+			// timeout must return the response AND clear the timer, so the abort never
+			// fires. Use fake timers and advance past the FULL timeout after the
+			// response resolves — a 5ms real wait would never reach a 1000ms boundary
+			// and would stay green even if the timer were left armed.
+			vi.useFakeTimers();
+			try {
+				let aborted = false;
+				const quick = (_url: string, init?: RequestInit) => {
+					init?.signal?.addEventListener("abort", () => {
+						aborted = true;
+					});
+					return Promise.resolve(new Response("won"));
+				};
+				const res = await fetchWithTimeout(
+					"https://example.com",
+					{ timeoutMs: 1000 },
+					quick as unknown as typeof fetch,
+				);
+				expect(await res.text()).toBe("won");
+				// Advance well past the timeout: a correctly-cleared timer never fires.
+				vi.advanceTimersByTime(5000);
+				expect(aborted).toBe(false);
+			} finally {
+				vi.useRealTimers();
+			}
 		});
 	});
 

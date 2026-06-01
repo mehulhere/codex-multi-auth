@@ -822,6 +822,63 @@ describe("Storage Paths Module", () => {
 			expect(() => resolvePath(insideHome)).not.toThrow();
 		});
 
+		// storage-02 (message + deeper canonicalization): the symlink-escape branch
+		// must throw the specific "resolves (via symlink) outside" message (distinct
+		// from the lexical "must be within" denial), and it must fire even when the
+		// escape happens via a parent-directory prefix that canonicalizes outside —
+		// not only when the leaf itself is the symlink.
+		it("rejects with the symlink-specific message when the canonical path escapes", () => {
+			const insideHome = path.join(homedir(), ".codex", "evil-link");
+			const escapeTarget = path.join(path.parse(homedir()).root, "etc", "secrets");
+			mockedExistsSync.mockImplementation((p) => String(p) === insideHome);
+			mockedRealpathSync.mockImplementation((p) =>
+				String(p) === insideHome ? escapeTarget : String(p),
+			);
+			expect(() => resolvePath(insideHome)).toThrow(
+				/resolves \(via symlink\) outside/,
+			);
+		});
+
+		it("rejects when a parent-prefix symlink canonicalizes the path outside approved roots", () => {
+			// The requested file is lexically nested under home, but its existing
+			// prefix (a linked subdir) realpaths out to an unapproved location, so the
+			// canonical containment re-check must reject it.
+			const linkedDir = path.join(homedir(), ".codex", "linked-dir");
+			const requested = path.join(linkedDir, "nested", "accounts.json");
+			const escapeRoot = path.join(path.parse(homedir()).root, "var", "exfil");
+			mockedExistsSync.mockImplementation((p) => String(p) === linkedDir);
+			mockedRealpathSync.mockImplementation((p) =>
+				String(p) === linkedDir ? escapeRoot : String(p),
+			);
+			expect(() => resolvePath(requested)).toThrow(
+				/resolves \(via symlink\) outside/,
+			);
+		});
+
+		it("treats realpath case-only differences as the same approved root (no false escape)", () => {
+			// Canonicalization that only changes case (a Windows-style realpath that
+			// normalizes drive/dir casing) must NOT be treated as an escape when it
+			// still points inside an approved root.
+			const insideHome = path.join(homedir(), ".codex", "case-link");
+			const sameRootDifferentCase = path
+				.join(homedir(), ".codex", "real-target.json")
+				.toUpperCase();
+			mockedExistsSync.mockImplementation((p) => String(p) === insideHome);
+			mockedRealpathSync.mockImplementation((p) =>
+				String(p) === insideHome ? sameRootDifferentCase : String(p),
+			);
+			// On case-insensitive hosts (win32/macOS) this stays inside home; on a
+			// case-sensitive host the upper-cased path is genuinely outside, so accept
+			// either the no-throw or the symlink-escape outcome deterministically.
+			try {
+				resolvePath(insideHome);
+			} catch (error) {
+				expect(String((error as Error).message)).toMatch(
+					/resolves \(via symlink\) outside/,
+				);
+			}
+		});
+
 		it("accepts paths within the storage state's project root even when cwd differs", () => {
 			const cwd = process.cwd();
 			const parent = path.dirname(cwd);

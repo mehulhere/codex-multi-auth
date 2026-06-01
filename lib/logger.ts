@@ -229,6 +229,11 @@ function logToConsole(level: LogLevel, message: string, data?: unknown): void {
 	if (!CONSOLE_LOG_ENABLED) return;
 	const sanitizedMessage = maskString(message);
 	const sanitizedData = data === undefined ? undefined : sanitizeValue(data);
+	// This is the single sanctioned console sink for the whole package: every
+	// message is mask-sanitized above before it reaches the terminal. The
+	// no-console lint rule (request-10) intentionally points all other lib code
+	// here, so the direct console calls below are allowed.
+	/* eslint-disable no-console */
 	if (sanitizedData !== undefined) {
 		if (level === "warn") console.warn(sanitizedMessage, sanitizedData);
 		else if (level === "error") console.error(sanitizedMessage, sanitizedData);
@@ -239,6 +244,7 @@ function logToConsole(level: LogLevel, message: string, data?: unknown): void {
 	if (level === "warn") console.warn(sanitizedMessage);
 	else if (level === "error") console.error(sanitizedMessage);
 	else console.log(sanitizedMessage);
+	/* eslint-enable no-console */
 }
 
 if (LOGGING_ENABLED) {
