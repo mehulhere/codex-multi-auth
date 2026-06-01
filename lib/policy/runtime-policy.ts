@@ -1,4 +1,5 @@
 import type { CapabilityPolicyStore } from "../capability-policy.js";
+import { resolveEntitlementAccountKey } from "../entitlement-cache.js";
 import {
 	getAccountPolicyKey,
 	loadAccountPolicyStore,
@@ -196,8 +197,17 @@ export async function evaluateRuntimePolicy(input: {
 		if (profile?.accountWeightByKey[accountKey] !== undefined) {
 			boost += (profile.accountWeightByKey[accountKey] ?? 0) * 2;
 		}
+		// quota-forecast-01: the capability store is WRITTEN under the entitlement
+		// key (resolveEntitlementAccountKey) at the recordUnsupported sites, so the
+		// read must use the same key. Previously this used getAccountPolicyKey, a
+		// different format, so getSnapshot never matched and suppression was dead.
+		const capabilityKey = resolveEntitlementAccountKey({
+			accountId: account.accountId ?? undefined,
+			email: account.email ?? undefined,
+			index: account.index,
+		});
 		const capabilitySnapshot = input.capabilityPolicy?.getSnapshot(
-			accountKey,
+			capabilityKey,
 			input.model ?? "unknown",
 		);
 		if (capabilitySnapshot && capabilitySnapshot.unsupported > 0) {

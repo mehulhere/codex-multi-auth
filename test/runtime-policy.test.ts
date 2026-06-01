@@ -81,6 +81,35 @@ describe("runtime policy", () => {
 		expect(decision.scoreBoostByAccount[0]).toBe(16);
 	});
 
+	// quota-forecast-01: capability suppression reads the store under the SAME key
+	// the recordUnsupported sites write (resolveEntitlementAccountKey). A record
+	// written under that key must cause evaluateRuntimePolicy to block the account.
+	it("blocks an account whose model was recorded unsupported (key alignment)", async () => {
+		const { CapabilityPolicyStore } = await import("../lib/capability-policy.js");
+		const { resolveEntitlementAccountKey } = await import("../lib/entitlement-cache.js");
+		const capabilityPolicy = new CapabilityPolicyStore();
+
+		const account = { index: 0, accountId: "acct_cap", email: "cap@example.com" };
+		const model = "gpt-5.3-codex";
+		const entitlementKey = resolveEntitlementAccountKey({
+			accountId: account.accountId,
+			email: account.email,
+			index: account.index,
+		});
+		// Record enough unsupported hits that the snapshot reports unsupported > 0.
+		capabilityPolicy.recordUnsupported(entitlementKey, model);
+
+		const decision = await evaluateRuntimePolicy({
+			state: state(),
+			accounts: [account],
+			model,
+			now: 100,
+			capabilityPolicy,
+		});
+
+		expect(decision.blockedAccountIndexes.has(0)).toBe(true);
+	});
+
 	it("blocks requests when a matching budget is exhausted", async () => {
 		const policyState = state();
 		policyState.budgets.limits.global = {
