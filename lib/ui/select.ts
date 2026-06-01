@@ -1,4 +1,5 @@
 import { ANSI, isTTY, parseKey } from "./ansi.js";
+import { displayWidth } from "./display-width.js";
 import type { UiTheme } from "./theme.js";
 
 export interface MenuItem<T = string> {
@@ -61,8 +62,14 @@ function stripAnsi(input: string): string {
  * Token handling: this function does not redact or interpret token semantics; it only preserves ANSI escape sequences.
  *
  * @param input - The input string which may contain ANSI SGR escape sequences.
- * @param maxVisibleChars - Maximum number of visible (non-ANSI) characters to keep; values <= 0 yield an empty string.
- * @returns The input string truncated so its visible character count does not exceed `maxVisibleChars`, with ANSI codes preserved and a truncation suffix appended when truncation occurred.
+ * @param maxVisibleChars - Maximum number of visible terminal columns to keep
+ *   (CJK/emoji count as 2, combining marks as 0); values <= 0 yield an empty
+ *   string. Measured by display width, not UTF-16 code units, so a wide-glyph
+ *   label cannot overflow the column budget and wrap to an extra physical row
+ *   (which would desync the render's up-cursor line accounting).
+ * @returns The input string truncated so its visible display width does not
+ *   exceed `maxVisibleChars`, with ANSI codes preserved and a truncation suffix
+ *   appended when truncation occurred.
  *
  * @internal Exported for unit testing of ANSI reset placement (ui-01); not part
  * of the public UI surface.
@@ -70,15 +77,16 @@ function stripAnsi(input: string): string {
 export function truncateAnsi(input: string, maxVisibleChars: number): string {
 	if (maxVisibleChars <= 0) return "";
 	const visible = stripAnsi(input);
-	if (visible.length <= maxVisibleChars) return input;
+	if (displayWidth(visible) <= maxVisibleChars) return input;
 
+	// Reserve room for the suffix in display columns ("..." is 3 columns).
 	const suffix = maxVisibleChars >= 3 ? "..." : ".".repeat(maxVisibleChars);
-	const keep = Math.max(0, maxVisibleChars - suffix.length);
-	let kept = 0;
+	const keep = Math.max(0, maxVisibleChars - displayWidth(suffix));
+	let keptWidth = 0;
 	let index = 0;
 	let output = "";
 
-	while (index < input.length && kept < keep) {
+	while (index < input.length && keptWidth < keep) {
 		if (input[index] === "\x1b") {
 			const match = input.slice(index).match(ANSI_LEADING_REGEX);
 			if (match) {
@@ -87,9 +95,16 @@ export function truncateAnsi(input: string, maxVisibleChars: number): string {
 				continue;
 			}
 		}
-		output += input[index];
-		index += 1;
-		kept += 1;
+		// Advance one full code point (surrogate-pair aware) and budget by its
+		// display width so a 2-column glyph is never split or allowed to overflow.
+		const cp = input.codePointAt(index);
+		const ch = cp !== undefined ? String.fromCodePoint(cp) : (input[index] ?? "");
+		if (ch === "") break;
+		const w = displayWidth(ch);
+		if (keptWidth + w > keep) break;
+		output += ch;
+		index += ch.length;
+		keptWidth += w;
 	}
 
 	// ui-01: if the kept portion contains any ANSI escape (e.g. a color that the

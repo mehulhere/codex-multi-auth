@@ -69,25 +69,39 @@ export async function fetchWithTimeout(
 }
 
 /**
- * Race a response-body read against a bounded timeout (prompts-02).
+ * Race a response-body read against a bounded timeout, cancelling the underlying
+ * stream on timeout (prompts-02).
  *
  * `fetchWithTimeout`'s AbortSignal only covers connect+headers and is cleared
  * once the Response arrives, so a server that sends headers then stalls mid-body
  * makes `response.json()` / `response.text()` hang forever on a request-blocking
- * path. Wrap those reads so a stalled body rejects instead of hanging. Unlike
- * `readBodyTextGuarded` this adds no size/Content-Length/empty checks, so it is
- * safe for the small release-metadata reads that just need the hang guard.
+ * path. This races the read against a timeout AND, on timeout, calls
+ * `response.body.cancel()` so the stalled body stops consuming the connection
+ * instead of leaking until GC/socket close. Unlike `readBodyTextGuarded` it adds
+ * no size/Content-Length/empty checks, so it is safe for the small
+ * release-metadata reads that just need the hang guard. For fetch impls / mocks
+ * without a streamable `body`, the cancel is a no-op and the timeout still
+ * rejects.
  */
 export async function withBodyTimeout<T>(
+	response: Pick<Response, "body">,
 	read: Promise<T>,
 	timeoutMs: number = PROMPT_FETCH_TIMEOUT_MS,
 ): Promise<T> {
 	let timer: ReturnType<typeof setTimeout> | undefined;
 	const timeout = new Promise<never>((_resolve, reject) => {
-		timer = setTimeout(
-			() => reject(new Error(`response body read timed out after ${timeoutMs}ms`)),
-			timeoutMs,
-		);
+		timer = setTimeout(() => {
+			// Release the underlying stream so a stalled body is torn down rather
+			// than left consuming the connection. body may be null (already read or
+			// a mock without a stream); cancel may reject — swallow either.
+			try {
+				const body = response.body as ReadableStream<Uint8Array> | null | undefined;
+				void body?.cancel?.().catch(() => undefined);
+			} catch {
+				// best-effort cancel
+			}
+			reject(new Error(`response body read timed out after ${timeoutMs}ms`));
+		}, timeoutMs);
 	});
 	try {
 		return await Promise.race([read, timeout]);

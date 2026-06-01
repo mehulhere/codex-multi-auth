@@ -135,7 +135,6 @@ const CONSOLE_LOG_ENABLED = process.env.CODEX_CONSOLE_LOG === "1";
 const LOG_DIR = join(getCodexLogDir(), "codex-plugin");
 const LOG_DIR_RETRYABLE_ERRORS = new Set(["EBUSY", "EPERM"]);
 const LOG_DIR_MAX_ATTEMPTS = 3;
-const LOG_DIR_RETRY_BASE_DELAY_MS = 10;
 
 let client: LogClient | null = null;
 
@@ -311,32 +310,47 @@ function formatDuration(ms: number): string {
 	return `${minutes}m ${seconds}s`;
 }
 
+// Once the log dir is confirmed to exist we never need to stat/mkdir again for
+// this process, so the hot logging path does no filesystem work after the first
+// success.
+let logDirReady = false;
+
+/**
+ * Ensure the log directory exists (best-effort, synchronous, non-blocking).
+ *
+ * Logging is fire-and-forget on a concurrent request path, so this must never
+ * block the event loop. The previous implementation slept via `Atomics.wait`,
+ * which froze ALL in-flight requests for up to ~30ms on a transient Windows
+ * EBUSY/EPERM from antivirus/the indexer. Instead we retry the mkdir a few times
+ * immediately (no sleep); a directory lock is typically released within a tick,
+ * and if it genuinely persists we skip this one log line rather than stalling
+ * the proxy. Success is cached so the steady state does a single existsSync.
+ */
 function ensureLogDir(path: string): boolean {
+	if (logDirReady) return true;
+	let lastError: unknown;
 	for (let attempt = 0; attempt < LOG_DIR_MAX_ATTEMPTS; attempt += 1) {
 		try {
 			if (!existsSync(path)) {
 				mkdirSync(path, { recursive: true, mode: 0o700 });
 			}
+			logDirReady = true;
 			return true;
 		} catch (error) {
+			lastError = error;
 			const code = (error as NodeJS.ErrnoException).code ?? "";
-			const canRetry = LOG_DIR_RETRYABLE_ERRORS.has(code);
-			if (canRetry && attempt + 1 < LOG_DIR_MAX_ATTEMPTS) {
-				Atomics.wait(
-					new Int32Array(new SharedArrayBuffer(4)),
-					0,
-					0,
-					LOG_DIR_RETRY_BASE_DELAY_MS * 2 ** attempt,
-				);
+			if (LOG_DIR_RETRYABLE_ERRORS.has(code) && attempt + 1 < LOG_DIR_MAX_ATTEMPTS) {
+				// Immediate retry (no event-loop-blocking sleep). A transient lock is
+				// usually gone by the next attempt; persistent contention falls through.
 				continue;
 			}
-			logToConsole("warn", `[${PLUGIN_NAME}] Failed to ensure log directory`, {
-				path,
-				error: error instanceof Error ? error.message : String(error),
-			});
-			return false;
+			break;
 		}
 	}
+	logToConsole("warn", `[${PLUGIN_NAME}] Failed to ensure log directory`, {
+		path,
+		error: lastError instanceof Error ? lastError.message : String(lastError),
+	});
 	return false;
 }
 

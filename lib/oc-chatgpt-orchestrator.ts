@@ -1,5 +1,6 @@
 import { promises as fs } from "node:fs";
 import { dirname } from "node:path";
+import { withFileOperationRetry } from "./fs-retry.js";
 import {
 	type OcChatgptMergePreview,
 	type OcChatgptPreviewPayload,
@@ -191,12 +192,28 @@ async function persistMergedDefault(
 	// at the process umask. Create the parent at 0o700 too (matching auth-01) so the
 	// directory is not world-listable — otherwise other users could enumerate the
 	// filenames, including the `.tmp` intermediary that briefly holds the same secrets.
-	await fs.mkdir(dirname(path), { recursive: true, mode: 0o700 });
+	const dir = dirname(path);
+	await fs.mkdir(dir, { recursive: true, mode: 0o700 });
+	// mkdir's `mode` is ignored on an already-existing dir and on win32; on POSIX
+	// re-assert 0o700 so a pre-existing loose-perm dir is tightened (matches the
+	// refresh-lease hardening). win32 relies on the user-profile ACL like the main
+	// account store does — POSIX bits are not enforced there.
+	if (process.platform !== "win32") {
+		await fs.chmod(dir, 0o700).catch(() => undefined);
+	}
 	const tempPath = `${path}.${Date.now()}.${Math.random().toString(36).slice(2, 8)}.tmp`;
 	const content = `${JSON.stringify(merged, null, 2)}\n`;
 	try {
 		await fs.writeFile(tempPath, content, { encoding: "utf-8", mode: 0o600 });
-		await fs.rename(tempPath, path);
+		if (process.platform !== "win32") {
+			await fs.chmod(tempPath, 0o600).catch(() => undefined);
+		}
+		// Route the atomic rename through withFileOperationRetry: on Windows the
+		// destination is a live, watched store, so a concurrent reader/indexer can
+		// hold it briefly and surface EBUSY/EPERM/ENOTEMPTY/EACCES. Retrying with
+		// backoff turns a transient lock into a successful merge instead of a
+		// spurious error (mirrors the account-save path).
+		await withFileOperationRetry(() => fs.rename(tempPath, path));
 	} finally {
 		try {
 			await fs.unlink(tempPath);

@@ -142,8 +142,9 @@ describe("prompt fetch-utils", () => {
 
 	describe("withBodyTimeout (prompts-02)", () => {
 		it("resolves with the body value when the read wins", async () => {
+			const res = { body: null } as Pick<Response, "body">;
 			await expect(
-				withBodyTimeout(Promise.resolve({ tag_name: "v1" }), 1000),
+				withBodyTimeout(res, Promise.resolve({ tag_name: "v1" }), 1000),
 			).resolves.toEqual({ tag_name: "v1" });
 		});
 
@@ -152,11 +153,32 @@ describe("prompt fetch-utils", () => {
 			// must reject, not hang. Fake timers drive the bound deterministically.
 			vi.useFakeTimers();
 			try {
+				const res = { body: null } as Pick<Response, "body">;
 				const stalled = new Promise<string>(() => {});
-				const guarded = withBodyTimeout(stalled, 50);
+				const guarded = withBodyTimeout(res, stalled, 50);
 				const assertion = expect(guarded).rejects.toThrow(/timed out/i);
 				await vi.advanceTimersByTimeAsync(50);
 				await assertion;
+			} finally {
+				vi.useRealTimers();
+			}
+		});
+
+		it("cancels the underlying stream on timeout", async () => {
+			// Real cancel (not just reject): the stalled body must be torn down so it
+			// stops consuming the connection. Assert response.body.cancel() is called.
+			vi.useFakeTimers();
+			try {
+				let cancelled = false;
+				const res = {
+					body: { cancel: () => { cancelled = true; return Promise.resolve(); } },
+				} as unknown as Pick<Response, "body">;
+				const stalled = new Promise<string>(() => {});
+				const guarded = withBodyTimeout(res, stalled, 50);
+				const assertion = expect(guarded).rejects.toThrow(/timed out/i);
+				await vi.advanceTimersByTimeAsync(50);
+				await assertion;
+				expect(cancelled).toBe(true);
 			} finally {
 				vi.useRealTimers();
 			}

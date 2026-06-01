@@ -1259,8 +1259,15 @@ async function syncCodexCliActiveSelectionIfDrifted(
 
 function resolveAccountSelection(
 	tokens: TokenSuccess,
+	orgOverride?: string,
 ): TokenSuccessWithAccount {
-	const override = (process.env.CODEX_AUTH_ACCOUNT_ID ?? "").trim();
+	// An explicit org (from `login --org <id>`) takes precedence over the ambient
+	// CODEX_AUTH_ACCOUNT_ID env override. Threading it as a parameter avoids
+	// mutating process.env for the duration of a login, which raced on concurrent
+	// re-entry (menu re-entry / a reused test worker) and could bind a later login
+	// to a stale org. The env override is still honored as a fallback so the
+	// runtime-proxy mechanism that sets it is unchanged.
+	const override = (orgOverride ?? process.env.CODEX_AUTH_ACCOUNT_ID ?? "").trim();
 	if (override) {
 		return {
 			...tokens,
@@ -2761,25 +2768,13 @@ async function runAuthLogin(args: string[]): Promise<number> {
 	const loginOptions = parsedArgs.options;
 	// `--org <id>` binds this login to a specific workspace/org so the same
 	// email's personal vs business/team workspace can be registered on demand
-	// (issue #491). It reuses the CODEX_AUTH_ACCOUNT_ID override that every login
-	// resolver already honors. Scope it to this invocation and restore the prior
-	// value in a finally so a later login in the same process (menu re-entry, a
-	// reused test worker) is never silently bound to a stale org.
-	if (!loginOptions.org) {
-		return runAuthLoginFlow(loginOptions);
+	// (issue #491). The org is threaded explicitly into resolveAccountSelection
+	// (no process.env mutation), so concurrent re-entry (menu re-entry, a reused
+	// test worker) can never bind a login to a stale org via a shared global.
+	if (loginOptions.org) {
+		console.log(`Binding this login to workspace org id: ${loginOptions.org}`);
 	}
-	const previousAccountIdOverride = process.env.CODEX_AUTH_ACCOUNT_ID;
-	process.env.CODEX_AUTH_ACCOUNT_ID = loginOptions.org;
-	console.log(`Binding this login to workspace org id: ${loginOptions.org}`);
-	try {
-		return await runAuthLoginFlow(loginOptions);
-	} finally {
-		if (previousAccountIdOverride === undefined) {
-			delete process.env.CODEX_AUTH_ACCOUNT_ID;
-		} else {
-			process.env.CODEX_AUTH_ACCOUNT_ID = previousAccountIdOverride;
-		}
-	}
+	return runAuthLoginFlow(loginOptions);
 }
 
 async function runAuthLoginFlow(
@@ -3162,7 +3157,7 @@ async function runAuthLoginFlow(
 				return 1;
 			}
 
-			const resolved = resolveAccountSelection(tokenResult);
+			const resolved = resolveAccountSelection(tokenResult, loginOptions.org);
 			await persistAccountPool([resolved], false);
 			await syncSelectionToCodex(resolved);
 

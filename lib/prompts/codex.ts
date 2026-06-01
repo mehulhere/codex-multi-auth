@@ -179,7 +179,7 @@ async function getLatestReleaseTag(): Promise<string> {
 			// Guard the body read: the fetch AbortSignal only covers connect+headers
 			// (see fetch-utils), so a release API response that stalls mid-body would
 			// otherwise hang getLatestReleaseTag() indefinitely on this blocking path.
-			const data = (await withBodyTimeout(response.json())) as GitHubRelease;
+			const data = (await withBodyTimeout(response, response.json())) as GitHubRelease;
 			if (data.tag_name) {
 				latestReleaseTagCache = {
 					tag: data.tag_name,
@@ -213,7 +213,7 @@ async function getLatestReleaseTag(): Promise<string> {
 	}
 
 	// Same mid-body-stall guard as the JSON path above for the HTML fallback.
-	const html = await withBodyTimeout(htmlResponse.text());
+	const html = await withBodyTimeout(htmlResponse, htmlResponse.text());
 	const match = html.match(/\/openai\/codex\/releases\/tag\/([^"]+)/);
 	if (match && match[1]) {
 		const tag = match[1];

@@ -32,6 +32,41 @@ describe("display-width (ui-02)", () => {
 		it("counts emoji pictographs as 2 columns", () => {
 			expect(displayWidth(String.fromCodePoint(0x1f600))).toBe(2);
 		});
+
+		it("collapses a ZWJ emoji sequence to a single 2-column glyph", () => {
+			// 👨‍👩‍👧 = man + ZWJ + woman + ZWJ + girl. A naive per-code-point sum is
+			// 2+0+2+0+2 = 6; it renders as one 2-wide glyph.
+			const family =
+				String.fromCodePoint(0x1f468) +
+				String.fromCharCode(0x200d) +
+				String.fromCodePoint(0x1f469) +
+				String.fromCharCode(0x200d) +
+				String.fromCodePoint(0x1f467);
+			expect(displayWidth(family)).toBe(2);
+		});
+
+		it("counts an emoji + skin-tone modifier as one 2-column glyph", () => {
+			// 👍 + medium-dark skin tone modifier (U+1F3FE) → still 2 columns.
+			const thumbsUp =
+				String.fromCodePoint(0x1f44d) + String.fromCodePoint(0x1f3fe);
+			expect(displayWidth(thumbsUp)).toBe(2);
+		});
+
+		it("counts a regional-indicator flag pair as one 2-column glyph", () => {
+			// 🇺🇸 = REGIONAL INDICATOR U + S → one 2-wide flag, not 4.
+			const flag =
+				String.fromCodePoint(0x1f1fa) + String.fromCodePoint(0x1f1f8);
+			expect(displayWidth(flag)).toBe(2);
+			// A lone trailing indicator still counts as one 2-wide glyph.
+			expect(displayWidth(String.fromCodePoint(0x1f1fa))).toBe(2);
+		});
+
+		it("treats non-Latin combining marks as zero width", () => {
+			// Arabic fatha (U+064E), Hebrew point (U+05B0), Thai sara-i (U+0E34).
+			expect(displayWidth(`a${String.fromCharCode(0x064e)}`)).toBe(1);
+			expect(displayWidth(`a${String.fromCharCode(0x05b0)}`)).toBe(1);
+			expect(displayWidth(`a${String.fromCharCode(0x0e34)}`)).toBe(1);
+		});
 	});
 
 	describe("truncateToWidth", () => {
@@ -48,6 +83,19 @@ describe("display-width (ui-02)", () => {
 
 		it("keeps full string when it fits", () => {
 			expect(truncateToWidth("hi", 10)).toEqual({ text: "hi", width: 2 });
+		});
+
+		it("never splits a ZWJ emoji cluster across the boundary", () => {
+			// 👨‍👩‍👧 is one 2-wide cluster. At maxWidth 1 it can't fit (dropped whole);
+			// at 2 it is kept whole (never half a join).
+			const family =
+				String.fromCodePoint(0x1f468) +
+				String.fromCharCode(0x200d) +
+				String.fromCodePoint(0x1f469) +
+				String.fromCharCode(0x200d) +
+				String.fromCodePoint(0x1f467);
+			expect(truncateToWidth(family, 1)).toEqual({ text: "", width: 0 });
+			expect(truncateToWidth(family, 2)).toEqual({ text: family, width: 2 });
 		});
 	});
 });
