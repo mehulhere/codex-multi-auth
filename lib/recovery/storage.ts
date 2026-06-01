@@ -112,6 +112,39 @@ export function __resetRecoveryCorruptionStats(): void {
 
 const SAFE_ID_PATTERN = /^[a-zA-Z0-9_-]+$/;
 
+/**
+ * recovery-02: a file can parse as JSON yet be structurally invalid (missing or
+ * non-string `id`/`type`). Such a record must not survive into `messages`/`parts`
+ * — downstream code sorts on `part.id.localeCompare(...)` and indexes by id, so a
+ * malformed record would crash a later pass instead of being quarantined now.
+ * Validate the minimal shape each reader relies on and treat a failure exactly
+ * like a parse failure (quarantine via handleUnreadableFile).
+ */
+function isValidStoredMessage(value: unknown): value is StoredMessageMeta {
+	return (
+		typeof value === "object" &&
+		value !== null &&
+		typeof (value as { id?: unknown }).id === "string"
+	);
+}
+
+function isValidStoredPart(value: unknown): value is StoredPart {
+	return (
+		typeof value === "object" &&
+		value !== null &&
+		typeof (value as { id?: unknown }).id === "string" &&
+		typeof (value as { type?: unknown }).type === "string"
+	);
+}
+
+/** Error thrown for a parseable-but-structurally-invalid recovery record. */
+class InvalidRecoveryRecordError extends Error {
+	constructor(detail: string) {
+		super(`invalid recovery record: ${detail}`);
+		this.name = "InvalidRecoveryRecordError";
+	}
+}
+
 function validatePathId(id: string, name: string): void {
 	if (!SAFE_ID_PATTERN.test(id)) {
 		throw new Error(`Invalid ${name}: contains unsafe characters`);
@@ -306,11 +339,18 @@ export function readMessages(sessionID: string): StoredMessageMeta[] {
 			const filePath = join(messageDir, file);
 			try {
 				const content = readFileSync(filePath, "utf-8");
-				messages.push(JSON.parse(content));
+				const parsed: unknown = JSON.parse(content);
+				if (!isValidStoredMessage(parsed)) {
+					throw new InvalidRecoveryRecordError("message missing string id");
+				}
+				messages.push(parsed);
 			} catch (error) {
 				// recovery-10: quarantine genuine corruption; skip transient FS-lock /
 				// ENOENT races (handleUnreadableFile classifies) instead of renaming a
 				// healthy file that was momentarily locked or concurrently rotated.
+				// recovery-02: a parseable-but-structurally-invalid record (no string
+				// id) is corruption too — quarantine it here rather than letting it
+				// crash a later id-based sort/index pass.
 				handleUnreadableFile(filePath, error);
 				continue;
 			}
@@ -348,11 +388,18 @@ export function readParts(messageID: string): StoredPart[] {
 			const filePath = join(partDir, file);
 			try {
 				const content = readFileSync(filePath, "utf-8");
-				parts.push(JSON.parse(content));
+				const parsed: unknown = JSON.parse(content);
+				if (!isValidStoredPart(parsed)) {
+					throw new InvalidRecoveryRecordError("part missing string id/type");
+				}
+				parts.push(parsed);
 			} catch (error) {
 				// recovery-10: quarantine genuine corruption; skip transient FS-lock /
 				// ENOENT races (handleUnreadableFile classifies) instead of renaming a
 				// healthy file that was momentarily locked or concurrently rotated.
+				// recovery-02: a parseable record missing a string id/type is corruption
+				// too — quarantine here so the id-sort in findMessagesWithOrphanThinking
+				// (and type checks elsewhere) can't crash on it.
 				handleUnreadableFile(filePath, error);
 				continue;
 			}

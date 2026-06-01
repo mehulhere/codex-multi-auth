@@ -349,6 +349,75 @@ describe("Codex Prompts Module", () => {
 				expect(mockedRename.mock.calls.length).toBeGreaterThanOrEqual(2);
 			});
 
+			it("retries a transient EBUSY on temp-file cleanup (windows lock)", async () => {
+				// prompts-06 / windows fs: writeCacheAtomically's finally cleanup routes
+				// fs.rm through withFileOperationRetry, so a transient EBUSY on the temp
+				// sibling is retried rather than leaking a *.tmp file.
+				mockedReadFile.mockRejectedValue(new Error("ENOENT"));
+				mockFetch.mockResolvedValueOnce({
+					ok: true,
+					json: () => Promise.resolve({ tag_name: "rust-v0.51.0" }),
+				});
+				mockFetch.mockResolvedValueOnce({
+					ok: true,
+					text: () => Promise.resolve("instructions with rm contention"),
+					headers: { get: () => "rm-etag" },
+				});
+				mockedMkdir.mockResolvedValue(undefined);
+				mockedWriteFile.mockResolvedValue(undefined);
+				mockedRename.mockResolvedValue(undefined);
+				// First rm throws EBUSY once, then succeeds — withFileOperationRetry
+				// must absorb the transient fault and still resolve the fetch.
+				const ebusy = Object.assign(new Error("EBUSY: resource busy or locked"), {
+					code: "EBUSY",
+				});
+				mockedRm.mockRejectedValueOnce(ebusy);
+				mockedRm.mockResolvedValue(undefined);
+
+				const result = await getCodexInstructions("gpt-5.2");
+				expect(result).toBe("instructions with rm contention");
+				// At least one extra rm attempt beyond the initial failed one.
+				expect(mockedRm.mock.calls.length).toBeGreaterThanOrEqual(2);
+			});
+
+			it("does not hang when the release API body stalls (mid-body timeout)", async () => {
+				// prompts-02: the fetch AbortSignal only covers connect+headers, so a
+				// release API response that stalls in .json() must be bounded by
+				// withBodyTimeout rather than hanging getLatestReleaseTag() forever.
+				// The JSON read rejects on timeout; the code must fall through to the
+				// HTML fallback and still return a tag. Fake timers drive the bound so
+				// the test does not wait the real 10s.
+				vi.useFakeTimers();
+				try {
+					mockedReadFile.mockRejectedValue(new Error("ENOENT"));
+					mockFetch.mockResolvedValueOnce({
+						ok: true,
+						// Never resolves: simulates a server that sent headers then stalled.
+						json: () => new Promise(() => {}),
+					});
+					mockFetch.mockResolvedValueOnce({
+						ok: true,
+						url: "https://github.com/openai/codex/releases/tag/rust-v0.52.0",
+						text: () => Promise.resolve(""),
+					});
+					mockFetch.mockResolvedValueOnce({
+						ok: true,
+						text: () => Promise.resolve("instructions after stalled api"),
+						headers: { get: () => "stall-etag" },
+					});
+					mockedMkdir.mockResolvedValue(undefined);
+					mockedWriteFile.mockResolvedValue(undefined);
+
+					const pending = getCodexInstructions("gpt-5.2");
+					// Let the stalled json() race start, then trip the body timeout.
+					await vi.advanceTimersByTimeAsync(10_000);
+					const result = await pending;
+					expect(result).toBe("instructions after stalled api");
+				} finally {
+					vi.useRealTimers();
+				}
+			});
+
 			it("should refresh stale cache in background when release tag changes", async () => {
 				const oldTimestamp = Date.now() - 20 * 60 * 1000;
 				mockedReadFile.mockImplementation((filePath) => {

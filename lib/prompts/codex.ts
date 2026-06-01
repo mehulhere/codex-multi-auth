@@ -6,7 +6,7 @@ import type { CacheMetadata, GitHubRelease } from "../types.js";
 import { logWarn, logError, logDebug } from "../logger.js";
 import { getCodexCacheDir } from "../runtime-paths.js";
 import { getModelProfile, type PromptModelFamily } from "../request/helpers/model-map.js";
-import { fetchWithTimeout, readBodyTextGuarded } from "./fetch-utils.js";
+import { fetchWithTimeout, readBodyTextGuarded, withBodyTimeout } from "./fetch-utils.js";
 import { withFileOperationRetry } from "../fs-retry.js";
 
 /** SHA-256 of cache content for integrity verification (prompts-03). */
@@ -50,8 +50,17 @@ async function writeCacheAtomically(
 		await withFileOperationRetry(() => fs.rename(contentTmp, cacheFile));
 		await withFileOperationRetry(() => fs.rename(metaTmp, cacheMetaFile));
 	} finally {
-		await fs.rm(contentTmp, { force: true }).catch(() => undefined);
-		await fs.rm(metaTmp, { force: true }).catch(() => undefined);
+		// Route cleanup through withFileOperationRetry too: a transient Windows
+		// EBUSY/EPERM/ENOTEMPTY/EACCES from antivirus/the indexer/a concurrent
+		// reader on the temp sibling would otherwise leak a *.tmp file. force:true
+		// keeps ENOENT (already-renamed) a no-op; the catch swallows a persistent
+		// failure so cleanup never masks a successful write.
+		await withFileOperationRetry(() => fs.rm(contentTmp, { force: true })).catch(
+			() => undefined,
+		);
+		await withFileOperationRetry(() => fs.rm(metaTmp, { force: true })).catch(
+			() => undefined,
+		);
 	}
 }
 
@@ -167,7 +176,10 @@ async function getLatestReleaseTag(): Promise<string> {
 	try {
 		const response = await fetchWithTimeout(GITHUB_API_RELEASES, { json: true });
 		if (response.ok) {
-			const data = (await response.json()) as GitHubRelease;
+			// Guard the body read: the fetch AbortSignal only covers connect+headers
+			// (see fetch-utils), so a release API response that stalls mid-body would
+			// otherwise hang getLatestReleaseTag() indefinitely on this blocking path.
+			const data = (await withBodyTimeout(response.json())) as GitHubRelease;
 			if (data.tag_name) {
 				latestReleaseTagCache = {
 					tag: data.tag_name,
@@ -200,7 +212,8 @@ async function getLatestReleaseTag(): Promise<string> {
 		}
 	}
 
-	const html = await htmlResponse.text();
+	// Same mid-body-stall guard as the JSON path above for the HTML fallback.
+	const html = await withBodyTimeout(htmlResponse.text());
 	const match = html.match(/\/openai\/codex\/releases\/tag\/([^"]+)/);
 	if (match && match[1]) {
 		const tag = match[1];

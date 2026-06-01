@@ -66,6 +66,38 @@ function readRestoreReason(storage: AccountStorageV3): RestoreReason | undefined
 		: undefined;
 }
 
+/**
+ * Build the status marker list for one account (cli-manager-03).
+ *
+ * The json and text paths previously rebuilt this identical sequence
+ * independently, so adding a marker to one branch silently diverged the other.
+ * Both paths now call this single builder. Order matters (current → disabled →
+ * rate-limited → 429-from-quota → quota-exhausted → cooldown) and is preserved.
+ */
+function buildAccountMarkers(
+	account: AccountStorageV3["accounts"][number],
+	index: number,
+	activeIndex: number,
+	runtimeCurrent: ReturnType<typeof resolveRuntimeCurrentAccount>,
+	now: number,
+	quotaCache: QuotaCacheData | null,
+	allAccounts: AccountStorageV3["accounts"],
+	formatRateLimitEntry: StatusCommandDeps["formatRateLimitEntry"],
+): string[] {
+	const markers: string[] = [];
+	markers.push(...resolveAccountCurrentMarkers(index, activeIndex, runtimeCurrent));
+	if (account.enabled === false) markers.push("disabled");
+	if (formatRateLimitEntry(account, now, "codex")) markers.push("rate-limited");
+	const quotaEntry = findQuotaCacheEntryForAccount(quotaCache, account, allAccounts);
+	if (quotaEntry?.status === 429 && !markers.some(isRateLimitedMarker)) {
+		markers.push("rate-limited");
+	}
+	if (isQuotaCacheEntryExhausted(quotaEntry, now)) markers.push("quota-exhausted");
+	const cooldown = formatCooldown(account, now);
+	if (cooldown) markers.push(`cooldown:${cooldown}`);
+	return markers;
+}
+
 function formatRuntimeLastAccount(
 	runtimeSnapshot: RuntimeObservabilitySnapshot,
 ): string | null {
@@ -111,6 +143,13 @@ export async function runStatusCommand(
 						storagePath: path,
 						storageHealth: effectiveState ?? null,
 						accountCount: 0,
+						// Emit the same keys the populated branch does (as null) so a
+						// --json consumer sees one stable shape regardless of account count.
+						activeIndex: null,
+						pinnedAccountIndex: null,
+						recommendedIndex: null,
+						recommendationReason: null,
+						runtimeInUseIndex: null,
 						accounts: [],
 					},
 					null,
@@ -178,17 +217,16 @@ export async function runStatusCommand(
 	// object from the same data the text path renders, then emit and return.
 	if (deps.json) {
 		const accounts = storage.accounts.map((account, i) => {
-			const markers: string[] = [];
-			markers.push(...resolveAccountCurrentMarkers(i, activeIndex, runtimeCurrent));
-			if (account.enabled === false) markers.push("disabled");
-			if (deps.formatRateLimitEntry(account, now, "codex")) markers.push("rate-limited");
-			const quotaEntry = findQuotaCacheEntryForAccount(quotaCache, account, storage.accounts);
-			if (quotaEntry?.status === 429 && !markers.some(isRateLimitedMarker)) {
-				markers.push("rate-limited");
-			}
-			if (isQuotaCacheEntryExhausted(quotaEntry, now)) markers.push("quota-exhausted");
-			const cooldown = formatCooldown(account, now);
-			if (cooldown) markers.push(`cooldown:${cooldown}`);
+			const markers = buildAccountMarkers(
+				account,
+				i,
+				activeIndex,
+				runtimeCurrent,
+				now,
+				quotaCache,
+				storage.accounts,
+				deps.formatRateLimitEntry,
+			);
 			return {
 				index: i,
 				label: formatAccountLabel(account, i),
@@ -283,27 +321,16 @@ export async function runStatusCommand(
 		const account = storage.accounts[i];
 		if (!account) continue;
 		const label = formatAccountLabel(account, i);
-		const markers: string[] = [];
-		markers.push(...resolveAccountCurrentMarkers(i, activeIndex, runtimeCurrent));
-		if (account.enabled === false) markers.push("disabled");
-		const rateLimit = deps.formatRateLimitEntry(account, now, "codex");
-		if (rateLimit) markers.push("rate-limited");
-		const quotaEntry = findQuotaCacheEntryForAccount(
-			quotaCache,
+		const markers = buildAccountMarkers(
 			account,
+			i,
+			activeIndex,
+			runtimeCurrent,
+			now,
+			quotaCache,
 			storage.accounts,
+			deps.formatRateLimitEntry,
 		);
-		if (
-			quotaEntry?.status === 429 &&
-			!markers.some((marker) => isRateLimitedMarker(marker))
-		) {
-			markers.push("rate-limited");
-		}
-		if (isQuotaCacheEntryExhausted(quotaEntry, now)) {
-			markers.push("quota-exhausted");
-		}
-		const cooldown = formatCooldown(account, now);
-		if (cooldown) markers.push(`cooldown:${cooldown}`);
 		const markerLabel = markers.length > 0 ? ` [${markers.join(", ")}]` : "";
 		const lastUsed =
 			typeof account.lastUsed === "number" && account.lastUsed > 0

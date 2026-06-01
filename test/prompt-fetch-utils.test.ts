@@ -2,6 +2,7 @@ import { vi } from "vitest";
 import {
 	fetchWithTimeout,
 	readBodyTextGuarded,
+	withBodyTimeout,
 	withPromptFetchHeaders,
 	PROMPT_FETCH_MAX_BYTES,
 } from "../lib/prompts/fetch-utils.js";
@@ -136,6 +137,29 @@ describe("prompt fetch-utils", () => {
 				readBodyTextGuarded(res, PROMPT_FETCH_MAX_BYTES, 30),
 			).rejects.toThrow(/timed out/i);
 			expect(cancelled).toBe(true);
+		});
+	});
+
+	describe("withBodyTimeout (prompts-02)", () => {
+		it("resolves with the body value when the read wins", async () => {
+			await expect(
+				withBodyTimeout(Promise.resolve({ tag_name: "v1" }), 1000),
+			).resolves.toEqual({ tag_name: "v1" });
+		});
+
+		it("rejects when the body read stalls past the timeout", async () => {
+			// A .json()/.text() that never settles (server sent headers then stalled)
+			// must reject, not hang. Fake timers drive the bound deterministically.
+			vi.useFakeTimers();
+			try {
+				const stalled = new Promise<string>(() => {});
+				const guarded = withBodyTimeout(stalled, 50);
+				const assertion = expect(guarded).rejects.toThrow(/timed out/i);
+				await vi.advanceTimersByTimeAsync(50);
+				await assertion;
+			} finally {
+				vi.useRealTimers();
+			}
 		});
 	});
 });

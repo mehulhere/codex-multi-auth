@@ -202,6 +202,44 @@ describe("RecoveryStorage", () => {
 			expect(transientStats.quarantinedPaths).toHaveLength(0);
 		});
 
+		it("quarantines a parseable-but-invalid message record (recovery-02)", () => {
+			// A file can be valid JSON yet structurally invalid (missing/non-string
+			// id). It must be quarantined like corruption, not pushed into messages
+			// where a later id-based sort/index would crash.
+			storage.__resetRecoveryCorruptionStats();
+			const sessionID = "sess";
+			const messageDir = join(MESSAGE_STORAGE, sessionID);
+
+			fsMock.existsSync.mockImplementation(
+				(path: string) => path === MESSAGE_STORAGE || path === messageDir,
+			);
+			fsMock.readdirSync.mockReturnValue(["good.json", "noid.json"]);
+			fsMock.readFileSync.mockImplementation((path: string) => {
+				if (path === join(messageDir, "good.json")) {
+					return JSON.stringify({
+						id: "good",
+						sessionID,
+						role: "assistant",
+						time: { created: 1 },
+					});
+				}
+				if (path === join(messageDir, "noid.json")) {
+					// Parses fine, but no string id — must be quarantined, not kept.
+					return JSON.stringify({ sessionID, role: "assistant", time: { created: 2 } });
+				}
+				return "";
+			});
+
+			const result = storage.readMessages(sessionID);
+			expect(result.map((msg) => msg.id)).toEqual(["good"]);
+			expect(fsMock.renameSync).toHaveBeenCalledWith(
+				join(messageDir, "noid.json"),
+				expect.stringContaining(".corrupt-"),
+			);
+			const stats = storage.getRecoveryCorruptionStats();
+			expect(stats.quarantinedPaths.some((p) => p.includes("noid.json"))).toBe(true);
+		});
+
 		it("retries a transient EBUSY on the quarantine rename, then succeeds", () => {
 			// recovery-10 / windows fs: genuine corruption is quarantined, and the
 			// quarantine rename routes through renameSyncWithRetry so a transient
@@ -249,9 +287,11 @@ describe("RecoveryStorage", () => {
 			expect(storage.readMessages(sessionID)).toEqual([]);
 		});
 
-		// recovery-02: a parseable record missing `id` must not crash the sort
-		// comparator (which runs outside the per-file try/catch).
-		it("does not throw when a record is missing its id", () => {
+		// recovery-02: a parseable record missing `id` is quarantined (it would
+		// otherwise crash the id-based sort that runs outside the per-file
+		// try/catch). It must not throw and must not survive into the result.
+		it("does not throw when a record is missing its id (quarantines it)", () => {
+			storage.__resetRecoveryCorruptionStats();
 			const sessionID = "sess";
 			const messageDir = join(MESSAGE_STORAGE, sessionID);
 
@@ -267,9 +307,16 @@ describe("RecoveryStorage", () => {
 				return JSON.stringify({ sessionID, role: "assistant", time: { created: 2 } });
 			});
 
-			expect(() => storage.readMessages(sessionID)).not.toThrow();
-			const result = storage.readMessages(sessionID);
-			expect(result.length).toBe(2);
+			let result: ReturnType<typeof storage.readMessages> = [];
+			expect(() => {
+				result = storage.readMessages(sessionID);
+			}).not.toThrow();
+			// The malformed record is dropped (quarantined), only the valid one remains.
+			expect(result.map((m) => m.id)).toEqual(["g"]);
+			expect(fsMock.renameSync).toHaveBeenCalledWith(
+				join(messageDir, "noid.json"),
+				expect.stringContaining(".corrupt-"),
+			);
 		});
 	});
 
@@ -312,6 +359,49 @@ describe("RecoveryStorage", () => {
 
 			const result = storage.readParts(messageID);
 			expect(result).toHaveLength(2);
+		});
+
+		it("quarantines a parseable part missing id/type (recovery-02)", () => {
+			// findMessagesWithOrphanThinking sorts parts via a.id.localeCompare(b.id);
+			// a parseable record without a string id/type would crash that pass, so it
+			// must be quarantined here rather than pushed into parts.
+			storage.__resetRecoveryCorruptionStats();
+			const messageID = "msg";
+			const partDir = join(PART_STORAGE, messageID);
+
+			fsMock.existsSync.mockImplementation((path: string) => path === partDir);
+			fsMock.readdirSync.mockReturnValue(["ok.json", "noid.json", "notype.json"]);
+			fsMock.readFileSync.mockImplementation((path: string) => {
+				if (path === join(partDir, "ok.json")) {
+					return JSON.stringify({
+						id: "1",
+						messageID,
+						sessionID: "s",
+						type: "text",
+						text: "hi",
+					});
+				}
+				if (path === join(partDir, "noid.json")) {
+					// No string id.
+					return JSON.stringify({ messageID, sessionID: "s", type: "text" });
+				}
+				if (path === join(partDir, "notype.json")) {
+					// No string type.
+					return JSON.stringify({ id: "3", messageID, sessionID: "s" });
+				}
+				return "";
+			});
+
+			const result = storage.readParts(messageID);
+			expect(result.map((p) => p.id)).toEqual(["1"]);
+			expect(fsMock.renameSync).toHaveBeenCalledWith(
+				join(partDir, "noid.json"),
+				expect.stringContaining(".corrupt-"),
+			);
+			expect(fsMock.renameSync).toHaveBeenCalledWith(
+				join(partDir, "notype.json"),
+				expect.stringContaining(".corrupt-"),
+			);
 		});
 
 		it("should return empty array on read failure", () => {

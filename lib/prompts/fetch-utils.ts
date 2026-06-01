@@ -69,6 +69,34 @@ export async function fetchWithTimeout(
 }
 
 /**
+ * Race a response-body read against a bounded timeout (prompts-02).
+ *
+ * `fetchWithTimeout`'s AbortSignal only covers connect+headers and is cleared
+ * once the Response arrives, so a server that sends headers then stalls mid-body
+ * makes `response.json()` / `response.text()` hang forever on a request-blocking
+ * path. Wrap those reads so a stalled body rejects instead of hanging. Unlike
+ * `readBodyTextGuarded` this adds no size/Content-Length/empty checks, so it is
+ * safe for the small release-metadata reads that just need the hang guard.
+ */
+export async function withBodyTimeout<T>(
+	read: Promise<T>,
+	timeoutMs: number = PROMPT_FETCH_TIMEOUT_MS,
+): Promise<T> {
+	let timer: ReturnType<typeof setTimeout> | undefined;
+	const timeout = new Promise<never>((_resolve, reject) => {
+		timer = setTimeout(
+			() => reject(new Error(`response body read timed out after ${timeoutMs}ms`)),
+			timeoutMs,
+		);
+	});
+	try {
+		return await Promise.race([read, timeout]);
+	} finally {
+		if (timer) clearTimeout(timer);
+	}
+}
+
+/**
  * Read a response body as text with a size ceiling, rejecting empty bodies.
  *
  * Checks Content-Length first (fast reject), then enforces the cap while
