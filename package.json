@@ -110,6 +110,7 @@
 		"vendor:verify": "node scripts/verify-vendor-provenance.mjs",
 		"vendor:update-manifest": "node scripts/update-vendor-provenance.mjs",
 		"postinstall": "node scripts/postinstall.js",
+		"preuninstall": "node scripts/preuninstall.js",
 		"prepublishOnly": "npm run build",
 		"prepare": "husky"
 	},

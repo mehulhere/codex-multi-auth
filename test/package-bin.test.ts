@@ -45,5 +45,19 @@ describe("package bin entries", () => {
 		expect(pkg.devDependencies?.["@codex-ai/sdk"]).toBeUndefined();
 		expect(pkg.devDependencies?.["@codex-ai/plugin"]).toBeUndefined();
 	});
+
+	// install-scripts-02: preuninstall.js is shipped + tested, so it must be wired
+	// as the npm preuninstall lifecycle hook (it was previously dead — present in
+	// files[] but never registered, so it never ran on uninstall).
+	it("wires the preuninstall lifecycle hook to the shipped script", () => {
+		const pkg = JSON.parse(readFileSync("package.json", "utf8")) as {
+			scripts?: Record<string, string>;
+			files?: string[];
+		};
+		expect(pkg.scripts?.preuninstall).toBe("node scripts/preuninstall.js");
+		expect(pkg.files).toEqual(
+			expect.arrayContaining(["scripts/preuninstall.js"]),
+		);
+	});
 });
 
