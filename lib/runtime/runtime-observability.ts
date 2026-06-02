@@ -201,10 +201,18 @@ async function writeSnapshot(snapshot: RuntimeObservabilitySnapshot): Promise<vo
 	await fs.mkdir(dir, { recursive: true, mode: 0o700 });
 	// mkdir's mode only applies to a freshly-created dir; an upgrade path with a
 	// pre-existing multi-auth dir keeps its old (possibly permissive) perms, so
-	// re-assert 0o700 on POSIX. Best-effort: a concurrent wrapper may race the
-	// chmod, and win32 ignores POSIX modes.
+	// re-assert 0o700 on POSIX. Only ENOENT is swallowed (the dir was removed by a
+	// concurrent process — the snapshot write below will recreate/fail as needed);
+	// any other chmod failure is surfaced rather than silently leaving a
+	// world-readable dir to hold account ids/labels.
 	if (process.platform !== "win32") {
-		await fs.chmod(dir, 0o700).catch(() => undefined);
+		try {
+			await fs.chmod(dir, 0o700);
+		} catch (error) {
+			if ((error as NodeJS.ErrnoException | undefined)?.code !== "ENOENT") {
+				throw error;
+			}
+		}
 	}
 	let lastError: unknown = null;
 	for (let attempt = 0; attempt < 3; attempt += 1) {

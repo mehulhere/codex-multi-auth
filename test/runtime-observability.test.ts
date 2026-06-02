@@ -39,6 +39,7 @@ describe("runtime observability snapshot versioning", () => {
 		renameMock.mockReset();
 		unlinkMock.mockReset();
 		mkdirMock.mockReset();
+		chmodMock.mockReset();
 		if (originalVitestEnv === undefined) {
 			delete process.env.VITEST;
 		} else {
@@ -98,6 +99,28 @@ describe("runtime observability snapshot versioning", () => {
 			expect(renameMock).toHaveBeenCalledTimes(2);
 		});
 		expect(unlinkMock).toHaveBeenCalled();
+	});
+
+	it("does not chmod the dir on win32 and still persists the snapshot", async () => {
+		// The 0o700 re-assert is POSIX-only (win32 perms are ACL-based, mode is a
+		// no-op). Persistence must still succeed without calling chmod.
+		process.env.VITEST = "";
+		const platformSpy = vi
+			.spyOn(process, "platform", "get")
+			.mockReturnValue("win32");
+		renameMock.mockResolvedValue(undefined);
+		try {
+			const mod = await import("../lib/runtime/runtime-observability.js");
+			mod.mutateRuntimeObservabilitySnapshot((snapshot) => {
+				snapshot.responsesRequests = 7;
+			});
+			await vi.waitFor(() => {
+				expect(renameMock).toHaveBeenCalled();
+			});
+			expect(chmodMock).not.toHaveBeenCalled();
+		} finally {
+			platformSpy.mockRestore();
+		}
 	});
 
 	it("contains permanent snapshot write failures without leaving pending writes rejected", async () => {
