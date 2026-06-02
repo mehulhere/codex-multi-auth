@@ -7,6 +7,8 @@ import {
 	CodexNetworkError,
 	CodexValidationError,
 	CodexRateLimitError,
+	CodexUnavailableError,
+	isCodexUnavailableError,
 } from '../lib/errors.js';
 
 describe('Errors Module', () => {
@@ -259,6 +261,37 @@ describe('Errors Module', () => {
 
 			expect(networkError).toBeInstanceOf(CodexNetworkError);
 			expect(networkError).not.toBeInstanceOf(CodexApiError);
+		});
+	});
+
+	describe('CodexUnavailableError', () => {
+		it('exposes the CODEX_UNAVAILABLE code and preserves cause', () => {
+			const cause = new Error('all models unsupported');
+			const error = new CodexUnavailableError('Codex not available', { cause });
+
+			expect(error).toBeInstanceOf(CodexUnavailableError);
+			expect(error).toBeInstanceOf(CodexError);
+			expect(error.name).toBe('CodexUnavailableError');
+			expect(error.code).toBe(ErrorCode.CODEX_UNAVAILABLE);
+			expect(error.message).toBe('Codex not available');
+			expect(error.cause).toBe(cause);
+		});
+
+		it('isCodexUnavailableError matches instances and structural code marker', () => {
+			expect(isCodexUnavailableError(new CodexUnavailableError('x'))).toBe(true);
+
+			// Cross-realm / duplicate-module guard: a plain Error carrying the code.
+			const structural = Object.assign(new Error('x'), {
+				code: ErrorCode.CODEX_UNAVAILABLE,
+			});
+			expect(isCodexUnavailableError(structural)).toBe(true);
+		});
+
+		it('isCodexUnavailableError rejects unrelated errors and non-errors', () => {
+			expect(isCodexUnavailableError(new CodexApiError('x', { status: 400 }))).toBe(false);
+			expect(isCodexUnavailableError(new Error('x'))).toBe(false);
+			expect(isCodexUnavailableError(undefined)).toBe(false);
+			expect(isCodexUnavailableError({ code: ErrorCode.CODEX_UNAVAILABLE })).toBe(false);
 		});
 	});
 });

@@ -207,7 +207,25 @@ export function getUnsupportedCodexModelInfo(
 
 	const maybeError = errorBody.error;
 	if (!isRecord(maybeError)) {
-		return { isUnsupported: false };
+		// Some upstreams (e.g. the Codex quota endpoint) return the flat
+		// `{ "detail": "...model is not supported..." }` shape instead of the
+		// nested `{ "error": { "message": "..." } }` envelope. Fall back to the
+		// top-level `detail` string so model-fallback detection still works.
+		const detail = typeof errorBody.detail === "string" ? errorBody.detail : undefined;
+		if (!detail) {
+			return { isUnsupported: false };
+		}
+		const isUnsupportedDetail =
+			CHATGPT_CODEX_UNSUPPORTED_MODEL_PATTERN.test(detail) ||
+			MODEL_ACCESS_DENIED_PATTERN.test(detail);
+		if (!isUnsupportedDetail) {
+			return { isUnsupported: false };
+		}
+		return {
+			isUnsupported: true,
+			message: detail,
+			unsupportedModel: extractUnsupportedCodexModelFromText(detail) ?? undefined,
+		};
 	}
 
 	const code = typeof maybeError.code === "string" ? maybeError.code : undefined;

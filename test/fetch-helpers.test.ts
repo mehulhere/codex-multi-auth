@@ -1664,6 +1664,46 @@ describe('createEntitlementErrorResponse', () => {
 			expect(info.isUnsupported).toBe(false);
 		});
 
+		it("detects unsupported model from flat `detail` payload (issue #501)", () => {
+			const info = getUnsupportedCodexModelInfo({
+				detail:
+					"The 'gpt-5-codex' model is not supported when using Codex with a ChatGPT account.",
+			});
+			expect(info.isUnsupported).toBe(true);
+			expect(info.message).toContain("gpt-5-codex");
+			expect(info.unsupportedModel).toBe("gpt-5-codex");
+		});
+
+		it("detects unsupported model from `detail` even when `error` is null", () => {
+			const info = getUnsupportedCodexModelInfo({
+				error: null,
+				detail:
+					"The 'gpt-5.3-codex' model is not supported when using Codex with a ChatGPT account.",
+			});
+			expect(info.isUnsupported).toBe(true);
+			expect(info.unsupportedModel).toBe("gpt-5.3-codex");
+		});
+
+		it("uses `detail` access-denied wording and leaves model undefined when absent", () => {
+			const info = getUnsupportedCodexModelInfo({
+				detail:
+					"model is not supported when using Codex with a ChatGPT account",
+			});
+			expect(info.isUnsupported).toBe(true);
+			expect(info.unsupportedModel).toBeUndefined();
+		});
+
+		it("ignores unrelated `detail` strings", () => {
+			expect(
+				getUnsupportedCodexModelInfo({ detail: "you are not authorized" })
+					.isUnsupported,
+			).toBe(false);
+			expect(
+				getUnsupportedCodexModelInfo({ detail: 42 as unknown as string })
+					.isUnsupported,
+			).toBe(false);
+		});
+
 		it("resolves unsupported-model fallbacks with custom chains and canonicalization", () => {
 			const fallback = resolveUnsupportedCodexFallbackModel({
 				requestedModel: "org/gpt-5.3-codex-high",

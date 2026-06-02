@@ -163,6 +163,7 @@ import {
 	fetchCodexQuotaSnapshot,
 	formatQuotaSnapshotLine,
 } from "./quota-probe.js";
+import { isCodexUnavailableError } from "./errors.js";
 import { queuedRefresh } from "./refresh-queue.js";
 import {
 	type AccountMetadataV3,
@@ -2266,12 +2267,17 @@ async function runHealthCheck(options: HealthCheckOptions = {}): Promise<void> {
 						}
 						healthDetail = formatQuotaSnapshotForDashboard(snapshot, display);
 					} catch (error) {
-						const message = normalizeFailureDetail(
-							error instanceof Error ? error.message : String(error),
-							undefined,
-						);
 						warnings += 1;
-						healthDetail = `signed in and working (live check failed: ${message})`;
+						if (isCodexUnavailableError(error)) {
+							healthDetail =
+								"signed in and working (Codex not available for this account)";
+						} else {
+							const message = normalizeFailureDetail(
+								error instanceof Error ? error.message : String(error),
+								undefined,
+							);
+							healthDetail = `signed in and working (live check failed: ${message})`;
+						}
 					}
 				}
 			}
@@ -2362,12 +2368,17 @@ async function runHealthCheck(options: HealthCheckOptions = {}): Promise<void> {
 						}
 						healthyMessage = formatQuotaSnapshotForDashboard(snapshot, display);
 					} catch (error) {
-						const message = normalizeFailureDetail(
-							error instanceof Error ? error.message : String(error),
-							undefined,
-						);
 						warnings += 1;
-						healthyMessage = `working now (live check failed: ${message})`;
+						if (isCodexUnavailableError(error)) {
+							healthyMessage =
+								"working now (Codex not available for this account)";
+						} else {
+							const message = normalizeFailureDetail(
+								error instanceof Error ? error.message : String(error),
+								undefined,
+							);
+							healthyMessage = `working now (live check failed: ${message})`;
+						}
 					}
 				}
 			}

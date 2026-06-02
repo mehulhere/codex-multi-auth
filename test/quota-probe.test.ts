@@ -24,6 +24,7 @@ vi.mock("../lib/request/fetch-helpers.js", () => ({
 }));
 
 import { fetchCodexQuotaSnapshot, formatQuotaSnapshotLine } from "../lib/quota-probe.js";
+import { CodexUnavailableError } from "../lib/errors.js";
 
 function makeQuotaHeaders(overrides: Record<string, string> = {}): Headers {
 	const headers = new Headers({
@@ -306,6 +307,81 @@ describe("quota-probe", () => {
 				fallbackModels: [],
 			}),
 		).rejects.toThrow("Model 'gpt-5-codex' unsupported for this account");
+	});
+
+	it("throws CodexUnavailableError when every model is unsupported (issue #501)", async () => {
+		const detailBody = () =>
+			new Response(
+				JSON.stringify({
+					detail:
+						"The 'gpt-5-codex' model is not supported when using Codex with a ChatGPT account.",
+				}),
+				{ status: 400, headers: new Headers({ "content-type": "application/json" }) },
+			);
+		const fetchMock = vi
+			.fn()
+			.mockResolvedValueOnce(detailBody())
+			.mockResolvedValueOnce(detailBody());
+		vi.stubGlobal("fetch", fetchMock);
+
+		getUnsupportedCodexModelInfoMock.mockReturnValue({
+			isUnsupported: true,
+			unsupportedModel: "gpt-5-codex",
+			message:
+				"The 'gpt-5-codex' model is not supported when using Codex with a ChatGPT account.",
+		});
+
+		const promise = fetchCodexQuotaSnapshot({
+			accountId: "acc-detail",
+			accessToken: "token-detail",
+			model: "gpt-5.3-codex",
+			fallbackModels: ["gpt-5.2-codex"],
+		});
+
+		await expect(promise).rejects.toBeInstanceOf(CodexUnavailableError);
+		await expect(promise).rejects.toThrow(/not supported when using Codex/i);
+		expect(fetchMock).toHaveBeenCalledTimes(2);
+	});
+
+	it("does not throw CodexUnavailableError when a non-unsupported failure is mixed in", async () => {
+		const unsupported = new Response(
+			JSON.stringify({
+				detail:
+					"The 'gpt-5.3-codex' model is not supported when using Codex with a ChatGPT account.",
+			}),
+			{ status: 400, headers: new Headers({ "content-type": "application/json" }) },
+		);
+		const serverError = new Response(JSON.stringify({ error: { message: "boom" } }), {
+			status: 500,
+			headers: new Headers({ "content-type": "application/json" }),
+		});
+		const fetchMock = vi
+			.fn()
+			.mockResolvedValueOnce(unsupported)
+			.mockResolvedValueOnce(serverError);
+		vi.stubGlobal("fetch", fetchMock);
+
+		getUnsupportedCodexModelInfoMock
+			.mockReturnValueOnce({
+				isUnsupported: true,
+				unsupportedModel: "gpt-5.3-codex",
+				message: "unsupported",
+			})
+			.mockReturnValue({
+				isUnsupported: false,
+				unsupportedModel: undefined,
+				message: undefined,
+			});
+
+		const promise = fetchCodexQuotaSnapshot({
+			accountId: "acc-mixed",
+			accessToken: "token-mixed",
+			model: "gpt-5.3-codex",
+			fallbackModels: ["gpt-5.2-codex"],
+		});
+
+		await expect(promise).rejects.not.toBeInstanceOf(CodexUnavailableError);
+		await expect(promise).rejects.toThrow("boom");
 	});
 
 	it("throws generic failure when no normalized probe models are available", async () => {

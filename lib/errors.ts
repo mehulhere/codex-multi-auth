@@ -13,6 +13,7 @@ export const ErrorCode = {
 	VALIDATION_ERROR: "CODEX_VALIDATION_ERROR",
 	RATE_LIMIT: "CODEX_RATE_LIMIT",
 	TIMEOUT: "CODEX_TIMEOUT",
+	CODEX_UNAVAILABLE: "CODEX_UNAVAILABLE",
 } as const;
 
 export type ErrorCodeType = (typeof ErrorCode)[keyof typeof ErrorCode];
@@ -184,4 +185,30 @@ export class StorageError extends CodexError {
 		this.path = path;
 		this.hint = hint;
 	}
+}
+
+/**
+ * Raised when every probe model is rejected because the account/workspace has no
+ * Codex entitlement (e.g. the API answers `model is not supported when using
+ * Codex with a ChatGPT account` for all candidates). The account is otherwise
+ * signed in and working; callers should surface this as a warning, not a failure.
+ */
+export class CodexUnavailableError extends CodexError {
+	override readonly name = "CodexUnavailableError";
+
+	constructor(message: string, options?: CodexErrorOptions) {
+		super(message, { ...options, code: options?.code ?? ErrorCode.CODEX_UNAVAILABLE });
+	}
+}
+
+/**
+ * Type guard for `CodexUnavailableError` that survives cross-realm/duplicate-module
+ * boundaries by also matching on the structural `code` marker.
+ */
+export function isCodexUnavailableError(error: unknown): error is CodexUnavailableError {
+	if (error instanceof CodexUnavailableError) return true;
+	return (
+		error instanceof Error &&
+		(error as { code?: unknown }).code === ErrorCode.CODEX_UNAVAILABLE
+	);
 }

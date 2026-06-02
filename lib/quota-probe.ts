@@ -1,5 +1,6 @@
 import { CODEX_BASE_URL } from "./constants.js";
 import { createCodexHeaders, getUnsupportedCodexModelInfo } from "./request/fetch-helpers.js";
+import { CodexUnavailableError } from "./errors.js";
 import { getCodexInstructions } from "./prompts/codex.js";
 import { mutateRuntimeObservabilitySnapshot } from "./runtime/runtime-observability.js";
 import type { RequestBody } from "./types.js";
@@ -330,8 +331,12 @@ export async function fetchCodexQuotaSnapshot(
 	const models = normalizeProbeModels(options.model, options.fallbackModels);
 	const timeoutMs = Math.max(1_000, Math.min(options.timeoutMs ?? 15_000, 60_000));
 	let lastError: Error | null = null;
+	let attemptedAnyModel = false;
+	let sawUnsupportedModel = false;
+	let sawOtherFailure = false;
 
 	for (const model of models) {
+		attemptedAnyModel = true;
 		try {
 			const instructions = await getCodexInstructions(model);
 			const probeBody: RequestBody = {
@@ -395,12 +400,14 @@ export async function fetchCodexQuotaSnapshot(
 
 				const unsupportedInfo = getUnsupportedCodexModelInfo(errorBody);
 				if (unsupportedInfo.isUnsupported) {
+					sawUnsupportedModel = true;
 					lastError = new Error(
 						unsupportedInfo.message ?? `Model '${model}' unsupported for this account`,
 					);
 					continue;
 				}
 
+				sawOtherFailure = true;
 				throw new Error(extractErrorMessage(bodyText, response.status));
 			}
 
@@ -409,10 +416,19 @@ export async function fetchCodexQuotaSnapshot(
 			} catch {
 				// Best effort cancellation.
 			}
+			sawOtherFailure = true;
 			lastError = new Error("Codex response did not include quota headers");
 		} catch (error) {
+			sawOtherFailure = true;
 			lastError = error instanceof Error ? error : new Error(String(error));
 		}
+	}
+
+	if (attemptedAnyModel && sawUnsupportedModel && !sawOtherFailure) {
+		throw new CodexUnavailableError(
+			lastError?.message ?? "Codex is not available for this account",
+			{ cause: lastError ?? undefined },
+		);
 	}
 
 	throw lastError ?? new Error("Failed to fetch quotas");
