@@ -3,6 +3,8 @@ import {
 	type ForecastCommandDeps,
 	runForecastCommand,
 } from "../lib/codex-manager/commands/forecast.js";
+import { CodexUnavailableError } from "../lib/errors.js";
+import { CODEX_UNAVAILABLE_PROBE_NOTE } from "../lib/quota-probe.js";
 import type { AccountStorageV3 } from "../lib/storage.js";
 
 function createStorage(): AccountStorageV3 {
@@ -347,5 +349,32 @@ describe("runForecastCommand", () => {
 		expect(deps.logInfo).toHaveBeenCalledWith(
 			'<accent>1.</accent> <accent>1. forecast@example.com [current]</accent> <muted>|</muted> <success>ready</success><muted> | </muted><success>low risk (0)</success>',
 		);
+	});
+
+	it("includes the codex-unavailable note in json probeErrors without leaking raw detail", async () => {
+		const deps = createDeps({
+			fetchCodexQuotaSnapshot: vi.fn(async () => {
+				throw new CodexUnavailableError(
+					"The 'gpt-5-codex' model is not supported when using Codex with a ChatGPT account.",
+				);
+			}),
+		});
+
+		const result = await runForecastCommand(["--json", "--live"], deps);
+
+		expect(result).toBe(0);
+		const jsonLine = (deps.logInfo as ReturnType<typeof vi.fn>).mock.calls
+			.map((call) => String(call[0]))
+			.find((line) => line.includes('"command": "forecast"'));
+		expect(jsonLine).toBeDefined();
+		const payload = JSON.parse(jsonLine as string) as { probeErrors?: string[] };
+		expect(
+			payload.probeErrors?.some(
+				(e) =>
+					e.includes(CODEX_UNAVAILABLE_PROBE_NOTE) &&
+					e.includes("forecast@example.com"),
+			),
+		).toBe(true);
+		expect(jsonLine).not.toContain("is not supported when using Codex");
 	});
 });

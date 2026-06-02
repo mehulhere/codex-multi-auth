@@ -5,6 +5,7 @@ export type AccountCheckWorkingState = {
 	flaggedChanged: boolean;
 	ok: number;
 	errors: number;
+	warnings: number;
 	disabled: number;
 	removeFromActive: Set<string>;
 	flaggedStorage: { version: 1; accounts: FlaggedAccountMetadataV1[] };
@@ -19,6 +20,7 @@ export function createAccountCheckWorkingState(flaggedStorage: {
 		flaggedChanged: false,
 		ok: 0,
 		errors: 0,
+		warnings: 0,
 		disabled: 0,
 		removeFromActive: new Set<string>(),
 		flaggedStorage,

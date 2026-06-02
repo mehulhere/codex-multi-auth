@@ -1,6 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { RepairCommandDeps } from "../lib/codex-manager/repair-commands.js";
+import { CodexUnavailableError } from "../lib/errors.js";
+// Note: do not statically import from ../lib/quota-probe.js here — it is mocked
+// below via vi.mock and a top-level import would race the hoisted factory.
+const CODEX_UNAVAILABLE_PROBE_NOTE = "Codex not available for this account";
 
 const existsSyncMock = vi.fn();
 const statMock = vi.fn();
@@ -67,7 +71,8 @@ vi.mock("../lib/quota-cache.js", () => ({
 	saveQuotaCache: saveQuotaCacheMock,
 }));
 
-vi.mock("../lib/quota-probe.js", () => ({
+vi.mock("../lib/quota-probe.js", async (importOriginal) => ({
+	...(await importOriginal<typeof import("../lib/quota-probe.js")>()),
 	fetchCodexQuotaSnapshot: fetchCodexQuotaSnapshotMock,
 }));
 
@@ -688,6 +693,62 @@ describe("repair-commands direct deps coverage", () => {
 		expect(payload.summary).toMatchObject({ healthy: 1, warnings: 0 });
 		expect(payload.reports).toHaveLength(1);
 		expect(payload.reports[0]).toMatchObject({ outcome: "healthy" });
+	});
+
+	it("runFix marks codex-unavailable live probe as a soft warning and keeps the account enabled", async () => {
+		loadQuotaCacheMock.mockResolvedValueOnce({ byAccountId: {}, byEmail: {} });
+		const storage = {
+			version: 3 as const,
+			accounts: [
+				{
+					email: "unavailable@example.com",
+					refreshToken: "refresh-unavailable",
+					accessToken: "access-expired",
+					expiresAt: 0,
+					accountId: "unavailable-account",
+					accountIdSource: "manual" as const,
+					enabled: true,
+				},
+			],
+			activeIndex: 0,
+			activeIndexByFamily: {},
+		};
+		loadAccountsMock.mockResolvedValue(storage);
+		queuedRefreshMock.mockResolvedValueOnce({
+			type: "success",
+			access: "access-unavailable-next",
+			refresh: "refresh-unavailable-next",
+			expires: Date.now() + 120_000,
+			idToken: "id-token-unavailable",
+		});
+		fetchCodexQuotaSnapshotMock.mockRejectedValue(
+			new CodexUnavailableError(
+				"The 'gpt-5-codex' model is not supported when using Codex with a ChatGPT account.",
+			),
+		);
+		extractAccountEmailMock.mockReturnValue("unavailable@example.com");
+		extractAccountIdMock.mockReturnValue("unavailable-account");
+		const consoleSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+
+		const exitCode = await runFix(
+			["--json", "--live"],
+			createDeps({ hasUsableAccessToken: () => false }),
+		);
+
+		expect(exitCode).toBe(0);
+		const payload = JSON.parse(
+			String(consoleSpy.mock.calls.at(-1)?.[0] ?? "{}"),
+		) as {
+			summary: { warnings: number };
+			reports: Array<{ outcome: string; message: string }>;
+		};
+		expect(payload.reports).toHaveLength(1);
+		expect(payload.reports[0]?.outcome).toBe("warning-soft-failure");
+		expect(payload.reports[0]?.message).toContain(CODEX_UNAVAILABLE_PROBE_NOTE);
+		// raw upstream error must not leak
+		expect(payload.reports[0]?.message).not.toContain(
+			"is not supported when using Codex",
+		);
 	});
 
 	it("runDoctor uses the injected refresh-token validator in JSON diagnostics", async () => {

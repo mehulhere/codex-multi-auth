@@ -1,4 +1,6 @@
 import { maskEmail } from "../logger.js";
+import { CODEX_UNAVAILABLE_PROBE_NOTE } from "../quota-probe.js";
+import { isCodexUnavailableError } from "../errors.js";
 import type { ModelFamily } from "../prompts/codex.js";
 import type { AccountStorageV3, FlaggedAccountMetadataV1 } from "../storage.js";
 import type { AccountIdSource, TokenResult } from "../types.js";
@@ -294,11 +296,19 @@ export async function runRuntimeAccountCheck(
 					`[${i + 1}/${total}] ${label}: ${deps.formatCodexQuotaLine(snapshot)}`,
 				);
 			} catch (error) {
-				state.errors += 1;
-				const message = error instanceof Error ? error.message : String(error);
-				deps.showLine(
-					`[${i + 1}/${total}] ${label}: ERROR (${message.slice(0, 160)})`,
-				);
+				if (isCodexUnavailableError(error)) {
+					state.warnings += 1;
+					state.ok += 1;
+					deps.showLine(
+						`[${i + 1}/${total}] ${label}: ${CODEX_UNAVAILABLE_PROBE_NOTE}`,
+					);
+				} else {
+					state.errors += 1;
+					const message = error instanceof Error ? error.message : String(error);
+					deps.showLine(
+						`[${i + 1}/${total}] ${label}: ERROR (${message.slice(0, 160)})`,
+					);
+				}
 			}
 		} catch (error) {
 			state.errors += 1;
@@ -338,7 +348,9 @@ export async function runRuntimeAccountCheck(
 
 	deps.showLine("");
 	deps.showLine(
-		`Results: ${state.ok} ok, ${state.errors} error, ${state.disabled} disabled`,
+		state.warnings > 0
+			? `Results: ${state.ok} ok, ${state.warnings} warning, ${state.errors} error, ${state.disabled} disabled`
+			: `Results: ${state.ok} ok, ${state.errors} error, ${state.disabled} disabled`,
 	);
 	if (state.removeFromActive.size > 0) {
 		deps.showLine(

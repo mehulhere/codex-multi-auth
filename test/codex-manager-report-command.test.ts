@@ -3,6 +3,8 @@ import {
 	type ReportCommandDeps,
 	runReportCommand,
 } from "../lib/codex-manager/commands/report.js";
+import { CodexUnavailableError } from "../lib/errors.js";
+import { CODEX_UNAVAILABLE_PROBE_NOTE } from "../lib/quota-probe.js";
 import type { AccountStorageV3, StorageHealthSummary } from "../lib/storage.js";
 
 function createStorage(
@@ -774,5 +776,47 @@ describe("runReportCommand", () => {
 		await expect(
 			runReportCommand(["--json", "--out", "report.json"], deps),
 		).rejects.toThrow("disk full");
+	});
+
+	it("reports codex-unavailable probe failures via forecast.probeErrors without leaking raw detail", async () => {
+		const deps = createDeps({
+			loadAccounts: vi.fn(async () =>
+				createStorage([
+					{
+						email: "one@example.com",
+						accountId: "acc-report-1",
+						refreshToken: "refresh-token-1",
+						accessToken: "access-token-1",
+						expiresAt: Date.now() + 600_000,
+						addedAt: 1,
+						lastUsed: 1,
+						enabled: true,
+					},
+				]),
+			),
+			hasUsableAccessToken: vi.fn(() => true),
+			fetchCodexQuotaSnapshot: vi.fn(async () => {
+				throw new CodexUnavailableError(
+					"The 'gpt-5-codex' model is not supported when using Codex with a ChatGPT account.",
+				);
+			}),
+		});
+
+		const result = await runReportCommand(["--json", "--live"], deps);
+
+		expect(result).toBe(0);
+		const jsonOutput = JSON.parse(
+			(deps.logInfo as ReturnType<typeof vi.fn>).mock.calls.at(-1)?.[0] ?? "{}",
+		) as { forecast: { probeErrors: string[] } };
+		expect(
+			jsonOutput.forecast.probeErrors.some((e) =>
+				e.includes(CODEX_UNAVAILABLE_PROBE_NOTE),
+			),
+		).toBe(true);
+		expect(
+			jsonOutput.forecast.probeErrors.some((e) =>
+				e.includes("is not supported when using Codex"),
+			),
+		).toBe(false);
 	});
 });

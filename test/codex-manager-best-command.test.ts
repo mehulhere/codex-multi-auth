@@ -4,6 +4,8 @@ import {
 	type BestCommandDeps,
 	runBestCommand,
 } from "../lib/codex-manager/commands/best.js";
+import { CodexUnavailableError } from "../lib/errors.js";
+import { CODEX_UNAVAILABLE_PROBE_NOTE } from "../lib/quota-probe.js";
 import type { AccountStorageV3 } from "../lib/storage.js";
 
 function createAccount(
@@ -367,5 +369,71 @@ describe("runBestCommand", () => {
 				switchReason: "best",
 			}),
 		);
+	});
+
+	it("surfaces the friendly note for codex-unavailable live probe failures", async () => {
+		const deps = createDeps({
+			parseBestArgs: vi.fn(() => ({
+				ok: true,
+				options: {
+					live: true,
+					json: true,
+					model: "gpt-5-codex",
+					modelProvided: false,
+				} satisfies BestCliOptions,
+			})),
+			fetchCodexQuotaSnapshot: vi.fn(async () => {
+				throw new CodexUnavailableError(
+					"The 'gpt-5-codex' model is not supported when using Codex with a ChatGPT account.",
+				);
+			}),
+		});
+
+		const result = await runBestCommand(["--live"], deps);
+
+		expect(result).toBe(0);
+		const jsonCall = (deps.logInfo as ReturnType<typeof vi.fn>).mock.calls
+			.map((call) => String(call[0]))
+			.find((line) => line.includes("probeErrors"));
+		expect(jsonCall).toBeDefined();
+		const payload = JSON.parse(jsonCall as string) as {
+			probeErrors?: string[];
+		};
+		expect(payload.probeErrors).toBeDefined();
+		expect(payload.probeErrors?.some((e) => e.includes(CODEX_UNAVAILABLE_PROBE_NOTE))).toBe(true);
+		// must not leak the raw upstream error
+		expect(jsonCall).not.toContain("is not supported when using Codex");
+	});
+
+	it("normalizes non-codex-unavailable probe failures without leaking raw detail", async () => {
+		const deps = createDeps({
+			parseBestArgs: vi.fn(() => ({
+				ok: true,
+				options: {
+					live: true,
+					json: true,
+					model: "gpt-5-codex",
+					modelProvided: false,
+				} satisfies BestCliOptions,
+			})),
+			normalizeFailureDetail: vi.fn(() => "rate limited; retry later"),
+			fetchCodexQuotaSnapshot: vi.fn(async () => {
+				throw new Error(
+					'{"error":{"message":"token sk-secret leaked"}} HTTP 429',
+				);
+			}),
+		});
+
+		const result = await runBestCommand(["--live"], deps);
+
+		expect(result).toBe(0);
+		const jsonCall = (deps.logInfo as ReturnType<typeof vi.fn>).mock.calls
+			.map((call) => String(call[0]))
+			.find((line) => line.includes("probeErrors"));
+		const payload = JSON.parse(jsonCall as string) as {
+			probeErrors?: string[];
+		};
+		expect(payload.probeErrors?.some((e) => e.includes("rate limited; retry later"))).toBe(true);
+		expect(jsonCall).not.toContain("sk-secret");
 	});
 });

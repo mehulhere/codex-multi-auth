@@ -21,6 +21,7 @@ import {
 import {
 	type CodexQuotaSnapshot,
 	formatQuotaSnapshotLine,
+	describeCodexProbeFailure,
 } from "../../quota-probe.js";
 import { type ModelFamily } from "../../prompts/codex.js";
 import {
@@ -447,9 +448,8 @@ export async function runReportCommand(
 				});
 				liveQuotaByIndex.set(i, liveQuota);
 			} catch (error) {
-				const message = deps.normalizeFailureDetail(
-					error instanceof Error ? error.message : String(error),
-					undefined,
+				const message = describeCodexProbeFailure(error, (raw) =>
+					deps.normalizeFailureDetail(raw, undefined),
 				);
 				probeErrors.push(`${formatAccountLabel(account, i)}: ${message}`);
 			}

@@ -164,7 +164,9 @@ import {
 	type CodexQuotaSnapshot,
 	fetchCodexQuotaSnapshot,
 	formatQuotaSnapshotLine,
+	CODEX_UNAVAILABLE_PROBE_NOTE,
 } from "./quota-probe.js";
+import { isCodexUnavailableError } from "./errors.js";
 import { queuedRefresh } from "./refresh-queue.js";
 import {
 	type AccountMetadataV3,
@@ -420,7 +422,7 @@ function styleAccountDetailText(
 				? "success"
 				: fallbackTone;
 		const suffixTone: PromptTone =
-			/re-login|stale|warning|retry|fallback/i.test(suffix)
+			/re-login|stale|warning|retry|fallback|unavailable|not available/i.test(suffix)
 				? "warning"
 				: /failed|error/i.test(suffix)
 					? "danger"
@@ -434,7 +436,7 @@ function styleAccountDetailText(
 	}
 
 	if (/rate-limited/i.test(compact)) return stylePromptText(compact, "danger");
-	if (/re-login|stale|warning|fallback/i.test(compact))
+	if (/re-login|stale|warning|fallback|unavailable|not available/i.test(compact))
 		return stylePromptText(compact, "warning");
 	if (/failed|error/i.test(compact)) return stylePromptText(compact, "danger");
 	if (/ok|working|succeeded|valid/i.test(compact))
@@ -2248,12 +2250,17 @@ async function runHealthCheck(options: HealthCheckOptions = {}): Promise<void> {
 						}
 						healthDetail = formatQuotaSnapshotForDashboard(snapshot, display);
 					} catch (error) {
-						const message = normalizeFailureDetail(
-							error instanceof Error ? error.message : String(error),
-							undefined,
-						);
 						warnings += 1;
-						healthDetail = `signed in and working (live check failed: ${message})`;
+						if (isCodexUnavailableError(error)) {
+							healthDetail =
+								`signed in and working (${CODEX_UNAVAILABLE_PROBE_NOTE})`;
+						} else {
+							const message = normalizeFailureDetail(
+								error instanceof Error ? error.message : String(error),
+								undefined,
+							);
+							healthDetail = `signed in and working (live check failed: ${message})`;
+						}
 					}
 				}
 			}
@@ -2344,12 +2351,17 @@ async function runHealthCheck(options: HealthCheckOptions = {}): Promise<void> {
 						}
 						healthyMessage = formatQuotaSnapshotForDashboard(snapshot, display);
 					} catch (error) {
-						const message = normalizeFailureDetail(
-							error instanceof Error ? error.message : String(error),
-							undefined,
-						);
 						warnings += 1;
-						healthyMessage = `working now (live check failed: ${message})`;
+						if (isCodexUnavailableError(error)) {
+							healthyMessage =
+								`working now (${CODEX_UNAVAILABLE_PROBE_NOTE})`;
+						} else {
+							const message = normalizeFailureDetail(
+								error instanceof Error ? error.message : String(error),
+								undefined,
+							);
+							healthyMessage = `working now (live check failed: ${message})`;
+						}
 					}
 				}
 			}

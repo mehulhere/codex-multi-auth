@@ -13,7 +13,11 @@ import {
 	sanitizeEmail,
 } from "../accounts.js";
 import { loadQuotaCache, saveQuotaCache, type QuotaCacheData } from "../quota-cache.js";
-import { fetchCodexQuotaSnapshot } from "../quota-probe.js";
+import {
+	fetchCodexQuotaSnapshot,
+	CODEX_UNAVAILABLE_PROBE_NOTE,
+} from "../quota-probe.js";
+import { isCodexUnavailableError } from "../errors.js";
 import { queuedRefresh } from "../refresh-queue.js";
 import {
 	findMatchingAccountIndex,
@@ -1386,6 +1390,15 @@ export async function runFix(
 						});
 						continue;
 					} catch (error) {
+						if (isCodexUnavailableError(error)) {
+							reports.push({
+								index: i,
+								label,
+								outcome: "warning-soft-failure",
+								message: `refresh succeeded (${CODEX_UNAVAILABLE_PROBE_NOTE})`,
+							});
+							continue;
+						}
 						const message = deps.normalizeFailureDetail(
 							error instanceof Error ? error.message : String(error),
 							undefined,

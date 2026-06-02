@@ -1,9 +1,42 @@
 import { CODEX_BASE_URL } from "./constants.js";
 import { createCodexHeaders, getUnsupportedCodexModelInfo } from "./request/fetch-helpers.js";
+import { CodexUnavailableError, isCodexUnavailableError } from "./errors.js";
 import { getCodexInstructions } from "./prompts/codex.js";
 import { mutateRuntimeObservabilitySnapshot } from "./runtime/runtime-observability.js";
 import type { RequestBody } from "./types.js";
 import { isRecord } from "./utils.js";
+
+/**
+ * Human-readable note shown when a live probe fails solely because the account
+ * lacks Codex entitlement (see {@link CodexUnavailableError}). Centralized so
+ * every check/forecast/repair surface renders the same wording instead of
+ * leaking the raw upstream "model is not supported..." message (issue #501).
+ */
+export const CODEX_UNAVAILABLE_PROBE_NOTE = "Codex not available for this account";
+
+/**
+ * Turn a live-probe failure into a display string. When the failure is a
+ * {@link CodexUnavailableError} (every probe model rejected for lack of Codex
+ * entitlement), returns the friendly {@link CODEX_UNAVAILABLE_PROBE_NOTE};
+ * otherwise falls back to the normalized error message.
+ *
+ * Pure and side-effect free; safe for concurrent use and performs no I/O.
+ *
+ * @param error - The thrown probe error.
+ * @param normalize - Optional normalizer applied to non-unavailable messages
+ *   (e.g. `normalizeFailureDetail`); defaults to the raw error message.
+ * @returns A display-ready failure description.
+ */
+export function describeCodexProbeFailure(
+	error: unknown,
+	normalize?: (message: string) => string,
+): string {
+	if (isCodexUnavailableError(error)) {
+		return CODEX_UNAVAILABLE_PROBE_NOTE;
+	}
+	const raw = error instanceof Error ? error.message : String(error);
+	return normalize ? normalize(raw) : raw;
+}
 
 export interface CodexQuotaWindow {
 	usedPercent?: number;
@@ -330,8 +363,12 @@ export async function fetchCodexQuotaSnapshot(
 	const models = normalizeProbeModels(options.model, options.fallbackModels);
 	const timeoutMs = Math.max(1_000, Math.min(options.timeoutMs ?? 15_000, 60_000));
 	let lastError: Error | null = null;
+	let attemptedAnyModel = false;
+	let sawUnsupportedModel = false;
+	let sawOtherFailure = false;
 
 	for (const model of models) {
+		attemptedAnyModel = true;
 		try {
 			const instructions = await getCodexInstructions(model);
 			const probeBody: RequestBody = {
@@ -395,12 +432,14 @@ export async function fetchCodexQuotaSnapshot(
 
 				const unsupportedInfo = getUnsupportedCodexModelInfo(errorBody);
 				if (unsupportedInfo.isUnsupported) {
+					sawUnsupportedModel = true;
 					lastError = new Error(
 						unsupportedInfo.message ?? `Model '${model}' unsupported for this account`,
 					);
 					continue;
 				}
 
+				sawOtherFailure = true;
 				throw new Error(extractErrorMessage(bodyText, response.status));
 			}
 
@@ -409,10 +448,19 @@ export async function fetchCodexQuotaSnapshot(
 			} catch {
 				// Best effort cancellation.
 			}
+			sawOtherFailure = true;
 			lastError = new Error("Codex response did not include quota headers");
 		} catch (error) {
+			sawOtherFailure = true;
 			lastError = error instanceof Error ? error : new Error(String(error));
 		}
+	}
+
+	if (attemptedAnyModel && sawUnsupportedModel && !sawOtherFailure) {
+		throw new CodexUnavailableError(
+			lastError?.message ?? "Codex is not available for this account",
+			{ cause: lastError ?? undefined },
+		);
 	}
 
 	throw lastError ?? new Error("Failed to fetch quotas");
