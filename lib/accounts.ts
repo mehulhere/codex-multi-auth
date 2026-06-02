@@ -40,7 +40,7 @@ import {
 	getAccountIdentityKey,
 	getRuntimeAccountIdentityKey,
 } from "./storage/identity.js";
-import { getCircuitBreaker, resetAllCircuitBreakers } from "./circuit-breaker.js";
+import { getCircuitBreaker, resetAllCircuitBreakers, removeCircuitBreaker } from "./circuit-breaker.js";
 import {
 	getStoragePathState,
 	runWithStoragePathState,
@@ -1459,6 +1459,37 @@ export class AccountManager {
 		}
 
 		this.accounts.splice(idx, 1);
+		// Clear identity-keyed tracker + circuit state for the removed account so a
+		// later re-add of the same identity does not inherit stale health/token
+		// penalties or an open circuit (accounts-02). Done before the numeric-range
+		// clear below, which handles the index-shift of the *remaining* accounts.
+		//
+		// Tracker state is WRITTEN under getRuntimeTrackerKey (the pinned
+		// _runtimeTrackerKey), which is intentionally STABLE across later identity
+		// enrichment (see getRuntimeTrackerKey / updateFromAuth). The recomputed
+		// getRuntimeAccountIdentityKey can DIFFER from that stable key when an
+		// account was first tracked under an older key shape (e.g. "email:foo" or a
+		// numeric index) and then gained accountId/email fields. Clearing only the
+		// recomputed key would leave the real (stable) entries behind, so a re-add
+		// inherits stale penalties. Clear the stable tracker key first (required),
+		// then also clear the recomputed identity key when it differs to defensively
+		// cover any state written under the post-enrichment shape.
+		const removedTrackerKey = getRuntimeTrackerKey(account);
+		const healthTracker = getHealthTracker();
+		const tokenTracker = getTokenTracker();
+		healthTracker.clearAccountKey(removedTrackerKey);
+		tokenTracker.clearAccountKey(removedTrackerKey);
+		const removedIdentityKey = getRuntimeAccountIdentityKey(account);
+		if (
+			removedIdentityKey !== undefined &&
+			removedIdentityKey !== removedTrackerKey
+		) {
+			healthTracker.clearAccountKey(removedIdentityKey);
+			tokenTracker.clearAccountKey(removedIdentityKey);
+		}
+		if (typeof account.circuitKeyId === "string" && account.circuitKeyId) {
+			removeCircuitBreaker(account.circuitKeyId);
+		}
 		// Clear numeric-keyed tracker state in the shifted range. After reindex,
 		// any refresh-only account that moved from N to N-1 must not inherit the
 		// stale health/token entries that used to belong to the old numeric slot.

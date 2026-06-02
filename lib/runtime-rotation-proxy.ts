@@ -1,4 +1,4 @@
-import { createHash, timingSafeEqual } from "node:crypto";
+import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import type { Socket } from "node:net";
@@ -20,6 +20,8 @@ import {
 	getMinRotationIntervalMs,
 	getTokenInvalidationCooldownMs,
 	getTokenRefreshSkewMs,
+	getPidOffsetEnabled,
+	getRoutingMutexMode,
 	loadPluginConfig,
 } from "./config.js";
 import {
@@ -44,6 +46,7 @@ import {
 	type RuntimePolicyDecision,
 } from "./policy/runtime-policy.js";
 import { isWorkspaceDisabledError } from "./request/fetch-helpers.js";
+import { createLogger, maskString, runWithCorrelationId } from "./logger.js";
 import { SessionAffinityStore } from "./session-affinity.js";
 import type { OAuthAuthDetails, RequestBody, TokenResult } from "./types.js";
 import { isRecord } from "./utils.js";
@@ -116,6 +119,50 @@ interface RuntimeRotationAccountIdentity {
 }
 
 const DEFAULT_HOST = "127.0.0.1";
+
+function isLoopbackHost(host: string): boolean {
+	const normalized = host.trim().toLowerCase();
+	return (
+		normalized === "127.0.0.1" ||
+		normalized === "localhost" ||
+		normalized === "::1" ||
+		normalized === "[::1]"
+	);
+}
+
+// IPv6 literals must be presented in two distinct forms and the proxy
+// previously conflated them (runtime-proxy IPv6 bug). Node's
+// net.Server.listen(port, host) requires the RAW literal ("::1"); a bracketed
+// literal ("[::1]") makes the bind fail or behave wrong. Conversely a URL
+// authority requires the BRACKETED literal ("[::1]") so "http://[::1]:port"
+// parses unambiguously — the raw form yields the unparseable "http://::1:port".
+// Normalize each form ONCE at startup so concurrent rotation paths never race
+// on inconsistent host string representations.
+function stripIpv6Brackets(host: string): string {
+	const trimmed = host.trim();
+	if (trimmed.startsWith("[") && trimmed.endsWith("]")) {
+		return trimmed.slice(1, -1);
+	}
+	return trimmed;
+}
+
+// Raw literal suitable for server.listen: "[::1]" -> "::1", others unchanged.
+function toBindHost(host: string): string {
+	return stripIpv6Brackets(host);
+}
+
+// URL authority host: IPv6 literals are bracketed ("::1" -> "[::1]") while
+// IPv4 addresses and hostnames (no embedded colon) pass through unchanged.
+function toUrlHost(host: string): string {
+	const bare = stripIpv6Brackets(host);
+	return bare.includes(":") ? `[${bare}]` : bare;
+}
+
+// Structured logger for the default-on runtime proxy (errors-logging-01,
+// runtime-proxy-04). Previously the 1900-LOC proxy had zero logger integration;
+// failures surfaced only as a last-write-wins status.lastError string. Logs are
+// level-gated and carry the per-request correlation id set in handleRequest.
+const proxyLog = createLogger("runtime-proxy");
 const DEFAULT_QUOTA_REMAINING_THRESHOLD = 10;
 const DEFAULT_AUTH_FAILURE_COOLDOWN_MS = 30_000;
 
@@ -441,7 +488,12 @@ async function persistRuntimeActiveAccount(
 		return;
 	}
 	try {
-		accountManager.markSwitched(account, "rotation", family);
+		// accounts-01/08: serialize the cursor mutation through the routing mutex
+		// (when routingMutex="enabled") because this commit spans an await
+		// (syncCodexCliActiveSelectionForIndex), which is the lost-update window the
+		// mutex exists to close. In legacy mode markSwitchedLocked runs inline, so
+		// behavior is unchanged by default.
+		await accountManager.markSwitchedLocked(account, "rotation", family);
 		accountManager.saveToDiskDebounced();
 		await accountManager.syncCodexCliActiveSelectionForIndex(account.index);
 	} catch {
@@ -955,6 +1007,7 @@ export function chooseAccount(params: {
 	pinnedIndex: number | null;
 	skipReasons?: Map<number, string>;
 	stickyBoostByAccount?: Record<number, number>;
+	pidOffsetEnabled?: boolean;
 }): ManagedAccount | null {
 	const {
 		accountManager,
@@ -968,6 +1021,7 @@ export function chooseAccount(params: {
 		pinnedIndex,
 		skipReasons,
 		stickyBoostByAccount,
+		pidOffsetEnabled,
 	} = params;
 
 	// Manual pin (from `codex-multi-auth switch <n>`) overrides every other
@@ -1031,6 +1085,10 @@ export function chooseAccount(params: {
 			...(policy?.scoreBoostByAccount ?? {}),
 			...(stickyBoostByAccount ?? {}),
 		},
+		// accounts-05: carry the PID-offset distribution into the default-on proxy
+		// path too (index.ts already does). Without it, parallel proxy processes can
+		// stampede the same account instead of spreading across the pool.
+		pidOffsetEnabled,
 	});
 	if (
 		selected &&
@@ -1253,8 +1311,29 @@ export async function startRuntimeRotationProxy(
 	const pluginConfig = loadPluginConfig();
 	let activeAccountManager = options.accountManager ?? (await AccountManager.loadFromDisk());
 	const knownAccountManagers = new Set<AccountManager>([activeAccountManager]);
+	// accounts-01/08: apply the configured routing-mutex mode so the proxy's
+	// async select->commit path (persistRuntimeActiveAccount) can serialize cursor
+	// mutations when routingMutex="enabled". Legacy mode keeps the inline fast path.
+	const routingMutexMode = getRoutingMutexMode(pluginConfig);
+	activeAccountManager.setRoutingMutexMode(routingMutexMode);
 	const fetchImpl = options.fetchImpl ?? fetch;
 	const host = options.host ?? DEFAULT_HOST;
+	// Defense in depth (runtime-proxy-01): the proxy presents managed OAuth tokens
+	// and must never be reachable off-box. It is loopback-only with NO opt-out —
+	// binding a non-loopback host would expose every managed account to the
+	// network, so it is refused unconditionally.
+	if (!isLoopbackHost(host)) {
+		throw new Error(
+			`Runtime rotation proxy refuses to bind non-loopback host "${host}". ` +
+				"It forwards managed OAuth tokens and is loopback-only.",
+		);
+	}
+	// Normalize the validated host into its two representations exactly once so the
+	// listen() bind and the emitted baseUrl can never disagree under concurrent
+	// rotation: bindHost is the raw literal Node's listen() expects ("[::1]"->"::1"),
+	// urlHost is the bracketed form a URL authority requires ("::1"->"[::1]").
+	const bindHost = toBindHost(host);
+	const urlHost = toUrlHost(host);
 	const port = options.port ?? 0;
 	const upstreamBaseUrl = options.upstreamBaseUrl ?? CODEX_BASE_URL;
 	const clientApiKey =
@@ -1271,6 +1350,7 @@ export async function startRuntimeRotationProxy(
 	const serverErrorCooldownMs = getServerErrorCooldownMs(pluginConfig);
 	const tokenInvalidationCooldownMs = getTokenInvalidationCooldownMs(pluginConfig);
 	const minRotationIntervalMs = getMinRotationIntervalMs(pluginConfig);
+	const pidOffsetEnabled = getPidOffsetEnabled(pluginConfig);
 	let lastGlobalAccountIndex: number | null = null;
 	let lastGlobalSwitchAt = 0;
 	const fetchTimeoutMs = options.fetchTimeoutMs ?? getFetchTimeoutMs(pluginConfig);
@@ -1325,6 +1405,7 @@ export async function startRuntimeRotationProxy(
 			AccountManager.resetVolatileRuntimeState();
 			recordRuntimeReset("pool-exhausted-no-account");
 			const reloaded = await AccountManager.loadFromDisk();
+			reloaded.setRoutingMutexMode(routingMutexMode);
 			activeAccountManager = reloaded;
 			knownAccountManagers.add(reloaded);
 			lastStaleRuntimeReloadAt = Date.now();
@@ -1344,6 +1425,18 @@ export async function startRuntimeRotationProxy(
 	const handleRequest = async (
 		req: IncomingMessage,
 		res: ServerResponse,
+	): Promise<void> => {
+		// Per-request trace id (errors-logging-03): distinct from sessionKey, which
+		// is shared across a thread's requests. Bound to this request's async context
+		// so every proxyLog line and usage row can be correlated to one request.
+		const traceId = randomUUID();
+		return runWithCorrelationId(traceId, () => handleRequestInner(req, res, traceId));
+	};
+
+	const handleRequestInner = async (
+		req: IncomingMessage,
+		res: ServerResponse,
+		traceId: string,
 	): Promise<void> => {
 		let usageRecorder: ReturnType<typeof createRuntimeUsageRecorder> | null = null;
 		let accountManager = activeAccountManager;
@@ -1413,7 +1506,7 @@ export async function startRuntimeRotationProxy(
 						: "responses",
 				model: context.model,
 				projectKey,
-				requestId: context.sessionKey,
+				requestId: traceId,
 				startedAt: requestStartedAt,
 			});
 			if (policyError) {
@@ -1500,6 +1593,7 @@ export async function startRuntimeRotationProxy(
 					pinnedIndex,
 					skipReasons: accountSkipReasons,
 					stickyBoostByAccount: rotationStickyBoost,
+					pidOffsetEnabled,
 				});
 				if (!selected) {
 					if (
@@ -1975,7 +2069,20 @@ export async function startRuntimeRotationProxy(
 				});
 			}
 		} catch (error) {
-			status.lastError = error instanceof Error ? error.message : String(error);
+			const rawErrorMessage = error instanceof Error ? error.message : String(error);
+			// errors-logging-08: redact any email/token material that leaked into a
+			// raw upstream or refresh error string before it reaches status consumers
+			// or the structured log. maskString is a no-op for clean diagnostic text.
+			const maskedErrorMessage = maskString(rawErrorMessage);
+			status.lastError = maskedErrorMessage;
+			// errors-logging-01: surface the failure through the structured logger
+			// (redaction-safe) with the request trace id, instead of only stashing a
+			// last-write-wins status string.
+			proxyLog.error("runtime proxy request failed", {
+				traceId,
+				code: isRuntimeProxyHttpError(error) ? error.code : "codex_runtime_rotation_proxy_error",
+				error: maskedErrorMessage,
+			});
 			if (!res.headersSent) {
 				if (isRuntimeProxyHttpError(error)) {
 					await usageRecorder?.record({
@@ -2033,7 +2140,7 @@ export async function startRuntimeRotationProxy(
 		};
 		server.once("error", onError);
 		server.once("listening", onListening);
-		server.listen(port, host);
+		server.listen(port, bindHost);
 	});
 	server.on("error", onPostStartupServerError);
 
@@ -2042,14 +2149,20 @@ export async function startRuntimeRotationProxy(
 		typeof address === "object" && address ? address.port : port;
 
 	return {
-		host,
+		host: bindHost,
 		port: resolvedPort,
-		baseUrl: `http://${host}:${resolvedPort}`,
+		baseUrl: `http://${urlHost}:${resolvedPort}`,
 		close: async () => {
 			await closeServer(server, sockets);
 			await activeAccountManager.flushPendingSave();
 		},
-		getStatus: () => ({ ...status }),
+		getStatus: () => ({
+			...status,
+			// Redact any email/token material that leaked into a raw upstream or
+			// refresh error string before exposing it to status/report consumers
+			// (errors-logging-08). maskString is a no-op for clean diagnostic text.
+			lastError: status.lastError === null ? null : maskString(status.lastError),
+		}),
 	};
 }
 

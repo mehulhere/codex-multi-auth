@@ -798,6 +798,118 @@ describe("Storage Paths Module", () => {
 			expect(() => resolvePath(tempPath)).not.toThrow();
 		});
 
+		// storage-02: a path that is lexically inside home but whose realpath
+		// (via a symlink) resolves outside every approved root must be rejected.
+		it("rejects a symlink inside home that resolves outside all approved roots", () => {
+			const insideHome = path.join(homedir(), ".codex", "evil-link");
+			const escapeTarget = path.join(path.parse(homedir()).root, "etc", "secrets");
+			// The lexical path exists (it's the symlink), and realpath follows it
+			// out to a location outside home/project/temp.
+			mockedExistsSync.mockImplementation((p) => String(p) === insideHome);
+			mockedRealpathSync.mockImplementation((p) =>
+				String(p) === insideHome ? escapeTarget : String(p),
+			);
+			expect(() => resolvePath(insideHome)).toThrow("Access denied");
+		});
+
+		it("allows a symlink inside home that resolves to another approved root", () => {
+			const insideHome = path.join(homedir(), ".codex", "ok-link");
+			const tempTarget = path.join(tmpdir(), "real-target.json");
+			mockedExistsSync.mockImplementation((p) => String(p) === insideHome);
+			mockedRealpathSync.mockImplementation((p) =>
+				String(p) === insideHome ? tempTarget : String(p),
+			);
+			expect(() => resolvePath(insideHome)).not.toThrow();
+		});
+
+		// storage-02 (symlinked root, NOT an escape): an approved root can itself be
+		// a symlink (e.g. macOS tmpdir /var/folders/... realpaths to
+		// /private/var/folders/...). A legitimate file under that root canonicalizes
+		// under the *canonical* root, which differs from the raw root string — the
+		// guard must compare canonical-to-canonical and NOT falsely deny it.
+		it("allows a file under a root that is itself a symlink (no false escape)", () => {
+			const tmp = tmpdir();
+			const realTmp = path.join(path.parse(tmp).root, "private", "real-tmp");
+			// Requested file is lexically under the raw tmp root; its leaf does not
+			// exist, so canonicalizeExistingPrefix walks up to tmp and realpaths it.
+			const requested = path.join(tmp, "probe.tmp");
+			mockedExistsSync.mockImplementation((p) => String(p) === tmp);
+			mockedRealpathSync.mockImplementation((p) =>
+				String(p) === tmp ? realTmp : String(p),
+			);
+			// canonical target = realTmp/probe.tmp — inside the canonicalized tmp root,
+			// so even though it is NOT inside the raw tmp string, it must be allowed.
+			expect(() => resolvePath(requested)).not.toThrow();
+		});
+
+		// storage-02 (message + deeper canonicalization): the symlink-escape branch
+		// must throw the specific "resolves (via symlink) outside" message (distinct
+		// from the lexical "must be within" denial), and it must fire even when the
+		// escape happens via a parent-directory prefix that canonicalizes outside —
+		// not only when the leaf itself is the symlink.
+		it("rejects with the symlink-specific message when the canonical path escapes", () => {
+			const insideHome = path.join(homedir(), ".codex", "evil-link");
+			const escapeTarget = path.join(path.parse(homedir()).root, "etc", "secrets");
+			mockedExistsSync.mockImplementation((p) => String(p) === insideHome);
+			mockedRealpathSync.mockImplementation((p) =>
+				String(p) === insideHome ? escapeTarget : String(p),
+			);
+			expect(() => resolvePath(insideHome)).toThrow(
+				/resolves \(via symlink\) outside/,
+			);
+		});
+
+		it("rejects when a parent-prefix symlink canonicalizes the path outside approved roots", () => {
+			// The requested file is lexically nested under home, but its existing
+			// prefix (a linked subdir) realpaths out to an unapproved location, so the
+			// canonical containment re-check must reject it.
+			const linkedDir = path.join(homedir(), ".codex", "linked-dir");
+			const requested = path.join(linkedDir, "nested", "accounts.json");
+			const escapeRoot = path.join(path.parse(homedir()).root, "var", "exfil");
+			mockedExistsSync.mockImplementation((p) => String(p) === linkedDir);
+			mockedRealpathSync.mockImplementation((p) =>
+				String(p) === linkedDir ? escapeRoot : String(p),
+			);
+			expect(() => resolvePath(requested)).toThrow(
+				/resolves \(via symlink\) outside/,
+			);
+		});
+
+		// storage-02 (Windows drive-letter case-normalization): on Windows the
+		// canonical-vs-raw containment re-check compares paths case-insensitively
+		// (normalizePathForComparison lowercases on win32). A realpath that differs
+		// from the requested path by case (e.g. `c:\users\test\.codex\link` ->
+		// `C:\Users\test\.codex\real`) is NOT a symlink escape: case-folded it still
+		// lives under the same approved root. resolvePath must ACCEPT it. This guards
+		// against a regression where a case-sensitive comparison would treat the
+		// case-differing canonical path as "outside" the root and wrongly deny it.
+		it("accepts a windows symlink whose realpath differs only by drive-letter case", () => {
+			// Case-folding containment is Windows-only behavior; on POSIX these paths
+			// are genuinely distinct, so scope the assertion to win32.
+			if (process.platform !== "win32") return;
+			const link = "c:\\users\\test\\.codex\\link";
+			const real = "C:\\Users\\test\\.codex\\real";
+			const projectRoot = "c:\\users\\test\\.codex";
+			const lower = (p: unknown) => String(p).toLowerCase();
+			// Only the link exists on disk; canonicalizeExistingPrefix stops at it and
+			// realpaths it to the case-differing `real`. Compare case-insensitively so
+			// the test is robust to path.resolve drive-letter normalization.
+			mockedExistsSync.mockImplementation((p) => lower(p) === link);
+			mockedRealpathSync.mockImplementation((p) =>
+				lower(p) === link ? real : String(p),
+			);
+			// Approve the project root at the shared .codex dir so the lexical guard
+			// passes; the canonical target (`real`, different case) must still be
+			// accepted because, case-folded, it is within that approved root.
+			setStoragePathState({
+				currentStoragePath: null,
+				currentLegacyProjectStoragePath: null,
+				currentLegacyWorktreeStoragePath: null,
+				currentProjectRoot: projectRoot,
+			});
+			expect(() => resolvePath(link)).not.toThrow();
+		});
+
 		it("accepts paths within the storage state's project root even when cwd differs", () => {
 			const cwd = process.cwd();
 			const parent = path.dirname(cwd);

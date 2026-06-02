@@ -55,6 +55,42 @@ vi.mock("../lib/logger.js", () => ({
 		error: loggerErrorMock,
 	})),
 	logWarn: vi.fn(),
+	maskEmail: vi.fn((email: string) => {
+		const at = email.indexOf("@");
+		if (at < 0) return "***@***";
+		const local = email.slice(0, at);
+		const domain = email.slice(at + 1);
+		const tld = domain.split(".").pop() ?? "";
+		return `${local.slice(0, Math.min(2, local.length))}***@***.${tld}`;
+	}),
+	maskString: vi.fn((value: string) => value),
+	maskToken: vi.fn((token: string) =>
+		token.length <= 12 ? "***MASKED***" : `${token.slice(0, 6)}...${token.slice(-4)}`,
+	),
+	// Mirror the real logger's redaction contract (lib/logger.ts) rather than a
+	// pass-through, so this suite actually enforces that sensitive keys are masked
+	// in the debug bundle instead of silently accepting cleartext (test-redaction).
+	sanitizeValue: vi.fn(function sv(value: unknown): unknown {
+		const SENSITIVE =
+			/^(access|accesstoken|refresh|refreshtoken|token|authorization|apikey|secret|password|credential|idtoken|accountid)$/;
+		const maskTok = (t: string) =>
+			t.length <= 12 ? "***MASKED***" : `${t.slice(0, 6)}...${t.slice(-4)}`;
+		if (typeof value === "string") return value;
+		if (Array.isArray(value)) return value.map((v) => sv(v));
+		if (value !== null && typeof value === "object") {
+			const out: Record<string, unknown> = {};
+			for (const [k, v] of Object.entries(value)) {
+				const norm = k.toLowerCase().replace(/[-_]/g, "");
+				if (SENSITIVE.test(norm)) {
+					out[k] = typeof v === "string" ? maskTok(v) : "***MASKED***";
+				} else {
+					out[k] = sv(v);
+				}
+			}
+			return out;
+		}
+		return value;
+	}),
 }));
 
 vi.mock("../lib/auth/auth.js", () => ({
@@ -1221,12 +1257,24 @@ describe("codex manager cli commands", () => {
 			codexCli: {
 				path: "/mock/.codex/state.json",
 				accountCount: 1,
-				activeEmail: "codex@example.com",
-				activeAccountId: "acc_codex",
+				// activeEmail is redacted (errors-logging-04): the debug bundle is a
+				// shareable artifact and must not embed the raw account email.
+				activeEmail: "co***@***.com",
+				// activeAccountId is masked (logger SENSITIVE_KEYS): the shareable
+				// bundle must not expose the raw account/org identifier.
+				activeAccountId: "***MASKED***",
 				syncVersion: 7,
 				sourceUpdatedAtMs: 1_710_000_000_000,
 			},
 		});
+		// Hard guarantee: the raw email never appears anywhere in the emitted bundle.
+		expect(String(logSpy.mock.calls[0]?.[0])).not.toContain("codex@example.com");
+		// ...and neither does the raw account id.
+		expect(String(logSpy.mock.calls[0]?.[0])).not.toContain("acc_codex");
+		// ...and the bundle must never carry the raw refresh tokens it is built from
+		// (the shareable artifact is the one most likely to be pasted into a ticket).
+		expect(String(logSpy.mock.calls[0]?.[0])).not.toContain("token-1");
+		expect(String(logSpy.mock.calls[0]?.[0])).not.toContain("flagged-1");
 	});
 
 	it.each([
@@ -10285,12 +10333,23 @@ describe("codex manager cli commands", () => {
 		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
 		const exitCode = await runCodexMultiAuthCli(["auth", "login"]);
 
+		// settings-hub-01: the interval step is the backend schema's value (not a test
+		// literal) so this stays aligned if the schema step changes.
+		const { BACKEND_NUMBER_OPTION_BY_KEY } = await import(
+			"../lib/codex-manager/backend-settings-schema.js"
+		);
+		const intervalStep = BACKEND_NUMBER_OPTION_BY_KEY.get(
+			"proactiveRefreshIntervalMs",
+		)?.step;
+
 		expect(exitCode).toBe(0);
 		expect(selectSequence.remaining()).toBe(0);
 		expect(savePluginConfigMock).toHaveBeenCalledWith(
 			expect.objectContaining({
 				proactiveRefreshGuardian: !(defaults.proactiveRefreshGuardian ?? false),
-				proactiveRefreshIntervalMs: 120_000,
+				// Two decreases + one increase = net one decrease step, pulled from the
+				// backend schema: 180000 - step.
+				proactiveRefreshIntervalMs: 180_000 - (intervalStep ?? 5_000),
 			}),
 		);
 	});
@@ -10528,13 +10587,23 @@ describe("codex manager cli commands", () => {
 		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
 		const exitCode = await runCodexMultiAuthCli(["auth", "login"]);
 
+		// settings-hub-01: pull the increase step from the backend schema rather than a
+		// literal so the experimental and backend panels stay unified automatically.
+		const { BACKEND_NUMBER_OPTION_BY_KEY } = await import(
+			"../lib/codex-manager/backend-settings-schema.js"
+		);
+		const intervalStep =
+			BACKEND_NUMBER_OPTION_BY_KEY.get("proactiveRefreshIntervalMs")?.step ??
+			5_000;
+
 		expect(exitCode).toBe(0);
 		expect(selectSequence.remaining()).toBe(0);
 		expect(savePluginConfigMock).toHaveBeenCalledWith(
 			expect.objectContaining({
 				proactiveRefreshGuardian: !(defaults.proactiveRefreshGuardian ?? false),
+				// One increase = one backend-schema step above the default.
 				proactiveRefreshIntervalMs:
-					(defaults.proactiveRefreshIntervalMs ?? 60000) + 60000,
+					(defaults.proactiveRefreshIntervalMs ?? 60000) + intervalStep,
 			}),
 		);
 	});

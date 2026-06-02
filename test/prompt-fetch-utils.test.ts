@@ -1,0 +1,187 @@
+import { vi } from "vitest";
+import {
+	fetchWithTimeout,
+	readBodyTextGuarded,
+	withBodyTimeout,
+	withPromptFetchHeaders,
+	PROMPT_FETCH_MAX_BYTES,
+} from "../lib/prompts/fetch-utils.js";
+
+describe("prompt fetch-utils", () => {
+	describe("withPromptFetchHeaders (prompts-08)", () => {
+		it("adds a User-Agent and Accept, preserving caller headers", () => {
+			const h = withPromptFetchHeaders({ "If-None-Match": '"x"' });
+			expect(h["User-Agent"]).toBe("codex-multi-auth");
+			expect(h.Accept).toContain("text/plain");
+			expect(h["If-None-Match"]).toBe('"x"');
+		});
+
+		it("uses the GitHub JSON Accept when json=true", () => {
+			expect(withPromptFetchHeaders({}, true).Accept).toContain("application/vnd.github+json");
+		});
+
+		it("does not let the caller override the mandatory User-Agent / Accept", () => {
+			// Hardening guarantee: a caller must not be able to blank or replace the
+			// mandatory headers (github rejects requests without a User-Agent).
+			const h = withPromptFetchHeaders({
+				"User-Agent": "custom",
+				Accept: "text/evil",
+			});
+			expect(h["User-Agent"]).toBe("codex-multi-auth");
+			expect(h.Accept).toContain("text/plain");
+		});
+
+		it("keeps mandatory headers when the caller tries to blank them", () => {
+			const h = withPromptFetchHeaders({ "User-Agent": "", Accept: "" }, true);
+			expect(h["User-Agent"]).toBe("codex-multi-auth");
+			expect(h.Accept).toContain("application/vnd.github+json");
+		});
+	});
+
+	describe("fetchWithTimeout (prompts-02)", () => {
+		it("passes an abort signal and the prompt headers", async () => {
+			const fake = vi.fn(async (_url: string, init?: RequestInit) => {
+				expect(init?.signal).toBeInstanceOf(AbortSignal);
+				expect((init?.headers as Record<string, string>)["User-Agent"]).toBe(
+					"codex-multi-auth",
+				);
+				return new Response("ok");
+			});
+			await fetchWithTimeout("https://example.com", {}, fake as unknown as typeof fetch);
+			expect(fake).toHaveBeenCalledOnce();
+		});
+
+		it("aborts when the request exceeds the timeout", async () => {
+			const hang = (_url: string, init?: RequestInit) =>
+				new Promise<Response>((_resolve, reject) => {
+					init?.signal?.addEventListener("abort", () =>
+						reject(new DOMException("aborted", "AbortError")),
+					);
+				});
+			await expect(
+				fetchWithTimeout(
+					"https://example.com",
+					{ timeoutMs: 20 },
+					hang as unknown as typeof fetch,
+				),
+			).rejects.toThrow(/abort/i);
+		});
+
+		it("resolves and clears the timer when fetch wins the race", async () => {
+			// Abort-vs-resolve ordering regression: a fetch that resolves before the
+			// timeout must return the response AND clear the timer, so the abort never
+			// fires. Use fake timers and advance past the FULL timeout after the
+			// response resolves — a 5ms real wait would never reach a 1000ms boundary
+			// and would stay green even if the timer were left armed.
+			vi.useFakeTimers();
+			try {
+				let aborted = false;
+				const quick = (_url: string, init?: RequestInit) => {
+					init?.signal?.addEventListener("abort", () => {
+						aborted = true;
+					});
+					return Promise.resolve(new Response("won"));
+				};
+				const res = await fetchWithTimeout(
+					"https://example.com",
+					{ timeoutMs: 1000 },
+					quick as unknown as typeof fetch,
+				);
+				expect(await res.text()).toBe("won");
+				// Advance well past the timeout: a correctly-cleared timer never fires.
+				vi.advanceTimersByTime(5000);
+				expect(aborted).toBe(false);
+			} finally {
+				vi.useRealTimers();
+			}
+		});
+	});
+
+	describe("readBodyTextGuarded (prompts-04/05)", () => {
+		it("returns body text for a normal response", async () => {
+			expect(await readBodyTextGuarded(new Response("hello"))).toBe("hello");
+		});
+
+		it("rejects an empty / whitespace-only body", async () => {
+			await expect(readBodyTextGuarded(new Response("   \n"))).rejects.toThrow(/empty/i);
+		});
+
+		it("rejects when Content-Length exceeds the cap", async () => {
+			const res = new Response("data", {
+				headers: { "content-length": String(PROMPT_FETCH_MAX_BYTES + 1) },
+			});
+			await expect(readBodyTextGuarded(res)).rejects.toThrow(/too large/i);
+		});
+
+		it("enforces the cap while streaming even without Content-Length", async () => {
+			const big = "x".repeat(50);
+			await expect(readBodyTextGuarded(new Response(big), 10)).rejects.toThrow(/too large/i);
+		});
+
+		it("times out a mid-body stall instead of hanging forever (prompts-02)", async () => {
+			// A server that sends headers then stalls mid-body must not hang the
+			// request-blocking path: the per-read idle timeout aborts and rejects.
+			let cancelled = false;
+			const stallingBody = new ReadableStream<Uint8Array>({
+				start(controller) {
+					// Emit one chunk so the stream is "live", then never produce more.
+					controller.enqueue(new TextEncoder().encode("partial"));
+					// Intentionally no close() / no further enqueue → reader.read() hangs.
+				},
+				cancel() {
+					cancelled = true;
+				},
+			});
+			const res = new Response(stallingBody);
+			await expect(
+				readBodyTextGuarded(res, PROMPT_FETCH_MAX_BYTES, 30),
+			).rejects.toThrow(/timed out/i);
+			expect(cancelled).toBe(true);
+		});
+	});
+
+	describe("withBodyTimeout (prompts-02)", () => {
+		it("resolves with the body value when the read wins", async () => {
+			const res = { body: null } as Pick<Response, "body">;
+			await expect(
+				withBodyTimeout(res, Promise.resolve({ tag_name: "v1" }), 1000),
+			).resolves.toEqual({ tag_name: "v1" });
+		});
+
+		it("rejects when the body read stalls past the timeout", async () => {
+			// A .json()/.text() that never settles (server sent headers then stalled)
+			// must reject, not hang. Fake timers drive the bound deterministically.
+			vi.useFakeTimers();
+			try {
+				const res = { body: null } as Pick<Response, "body">;
+				const stalled = new Promise<string>(() => {});
+				const guarded = withBodyTimeout(res, stalled, 50);
+				const assertion = expect(guarded).rejects.toThrow(/timed out/i);
+				await vi.advanceTimersByTimeAsync(50);
+				await assertion;
+			} finally {
+				vi.useRealTimers();
+			}
+		});
+
+		it("cancels the underlying stream on timeout", async () => {
+			// Real cancel (not just reject): the stalled body must be torn down so it
+			// stops consuming the connection. Assert response.body.cancel() is called.
+			vi.useFakeTimers();
+			try {
+				let cancelled = false;
+				const res = {
+					body: { cancel: () => { cancelled = true; return Promise.resolve(); } },
+				} as unknown as Pick<Response, "body">;
+				const stalled = new Promise<string>(() => {});
+				const guarded = withBodyTimeout(res, stalled, 50);
+				const assertion = expect(guarded).rejects.toThrow(/timed out/i);
+				await vi.advanceTimersByTimeAsync(50);
+				await assertion;
+				expect(cancelled).toBe(true);
+			} finally {
+				vi.useRealTimers();
+			}
+		});
+	});
+});

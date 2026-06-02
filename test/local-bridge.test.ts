@@ -44,6 +44,48 @@ describe("local bridge", () => {
 		).rejects.toThrow("loopback");
 	});
 
+	it.each(["::1", "[::1]"])(
+		"binds and emits a parseable baseUrl for IPv6 loopback host %s",
+		async (hostInput) => {
+			// Regression: server.listen needs the raw "::1" (bracketed "[::1]" fails
+			// the bind), while baseUrl needs the bracketed form ("http://::1:port" is
+			// invalid). Both input shapes must start successfully and yield a baseUrl
+			// that round-trips through new URL().
+			const { fetchImpl } = createFetch();
+			const server = await startLocalBridge({
+				host: hostInput,
+				runtimeBaseUrl: "http://127.0.0.1:9999/",
+				fetchImpl,
+				requireAuth: false,
+			});
+			openServers.push(server);
+			expect(server.port).toBeGreaterThan(0);
+			// baseUrl must parse and carry the bracketed IPv6 authority.
+			const parsed = new URL(server.baseUrl);
+			expect(parsed.hostname).toBe("[::1]");
+			expect(parsed.port).toBe(String(server.port));
+			// The returned host is the raw (unbracketed) literal used for the bind.
+			expect(server.host).toBe("::1");
+		},
+	);
+
+	it("accepts an IPv6-loopback runtimeBaseUrl ([::1])", async () => {
+		// Regression: new URL("http://[::1]:port").hostname yields the bracketed
+		// "[::1]", which the egress guard must treat as loopback. It previously only
+		// matched "::1" and threw "non-loopback runtimeBaseUrl host" at startup for a
+		// valid IPv6 runtime proxy URL. Assert startup succeeds (the bug was a
+		// pre-bind rejection); no request is sent.
+		const { fetchImpl } = createFetch();
+		const server = await startLocalBridge({
+			host: "127.0.0.1",
+			runtimeBaseUrl: "http://[::1]:9999/",
+			fetchImpl,
+			requireAuth: false,
+		});
+		openServers.push(server);
+		expect(server.port).toBeGreaterThan(0);
+	});
+
 	it("serves health and forwards allowed OpenAI-compatible paths", async () => {
 		const { calls, fetchImpl } = createFetch();
 		const server = await startLocalBridge({
@@ -128,5 +170,160 @@ describe("local bridge", () => {
 		});
 		expect(accepted.status).toBe(200);
 		expect(calls).toHaveLength(1);
+	});
+
+	// Regression (runtime-proxy-02): the bridge forwards the caller's bearer token to
+	// runtimeBaseUrl, so that target must be loopback. A remote runtimeBaseUrl would
+	// exfiltrate the local client token off-box; startup must refuse it.
+	it("refuses a non-loopback runtimeBaseUrl", async () => {
+		const { fetchImpl } = createFetch();
+		await expect(
+			startLocalBridge({
+				host: "127.0.0.1",
+				port: 0,
+				runtimeBaseUrl: "http://evil.example.com:8080",
+				fetchImpl,
+				requireAuth: false,
+			}),
+		).rejects.toThrow(/non-loopback runtimeBaseUrl/i);
+	});
+
+	it("rejects an invalid runtimeBaseUrl", async () => {
+		const { fetchImpl } = createFetch();
+		await expect(
+			startLocalBridge({
+				host: "127.0.0.1",
+				port: 0,
+				runtimeBaseUrl: "not a url",
+				fetchImpl,
+				requireAuth: false,
+			}),
+		).rejects.toThrow(/not a valid URL/i);
+	});
+
+	// runtime-proxy-03: the bridge can authenticate to an auth-enabled runtime proxy
+	// by injecting a configured client key, replacing the inbound Authorization —
+	// but only when inbound auth is also required (see rejection test below).
+	it("forwards the configured runtimeClientApiKey as Authorization", async () => {
+		const { calls, fetchImpl } = createFetch();
+		const server = await startLocalBridge({
+			runtimeBaseUrl: "http://127.0.0.1:9999/",
+			fetchImpl,
+			requireAuth: true,
+			verifyBearerToken: async () => ({
+				id: "test-id",
+				label: "test",
+				prefix: "tst",
+				tokenHash: "hash",
+				createdAt: 0,
+				lastUsedAt: null,
+				revokedAt: null,
+			}),
+			runtimeClientApiKey: "runtime-secret-key",
+		});
+		openServers.push(server);
+
+		await fetch(`${server.baseUrl}/v1/models`, {
+			headers: { authorization: "Bearer inbound-client-token" },
+		});
+
+		const forwarded = calls.find((c) => c.url.endsWith("/v1/models"));
+		const headers = new Headers(forwarded?.init?.headers as HeadersInit);
+		// The runtime key replaced the inbound client's token.
+		expect(headers.get("authorization")).toBe("Bearer runtime-secret-key");
+	});
+
+	// runtime-proxy-02/03: the x-api-key strip must hold even when auth is enabled and
+	// a runtime key is injected. The runtime key lands as Authorization (above), so a
+	// regression that only strips on the no-runtime-key path would leak the inbound
+	// x-api-key upstream here. Assert it is dropped on the auth-enabled runtime-proxy flow.
+	it("strips an inbound x-api-key on the auth-enabled runtime-proxy path", async () => {
+		const { calls, fetchImpl } = createFetch();
+		const server = await startLocalBridge({
+			runtimeBaseUrl: "http://127.0.0.1:9999/",
+			fetchImpl,
+			requireAuth: true,
+			verifyBearerToken: async () => ({
+				id: "test-id",
+				label: "test",
+				prefix: "tst",
+				tokenHash: "hash",
+				createdAt: 0,
+				lastUsedAt: null,
+				revokedAt: null,
+			}),
+			runtimeClientApiKey: "runtime-secret-key",
+		});
+		openServers.push(server);
+
+		await fetch(`${server.baseUrl}/v1/models`, {
+			headers: {
+				authorization: "Bearer inbound-client-token",
+				"x-api-key": "inbound-secret-key",
+			},
+		});
+
+		const forwarded = calls.find((c) => c.url.endsWith("/v1/models"));
+		const headers = new Headers(forwarded?.init?.headers as HeadersInit);
+		// The runtime key is injected as Authorization, but the inbound x-api-key is
+		// still stripped — it must never cross the bridge, runtime key or not.
+		expect(headers.get("authorization")).toBe("Bearer runtime-secret-key");
+		expect(headers.get("x-api-key")).toBeNull();
+	});
+
+	it("refuses to start with a runtimeClientApiKey when auth is disabled", async () => {
+		const { fetchImpl } = createFetch();
+		// Security regression: a configured runtime key + requireAuth:false would
+		// expose upstream access to any local process. Fail fast instead.
+		await expect(
+			startLocalBridge({
+				runtimeBaseUrl: "http://127.0.0.1:9999/",
+				fetchImpl,
+				requireAuth: false,
+				runtimeClientApiKey: "runtime-secret-key",
+			}),
+		).rejects.toThrow(/requireAuth=true when runtimeClientApiKey is configured/i);
+	});
+
+	it("strips inbound Authorization when no runtime key is configured", async () => {
+		const { calls, fetchImpl } = createFetch();
+		const server = await startLocalBridge({
+			runtimeBaseUrl: "http://127.0.0.1:9999/",
+			fetchImpl,
+			requireAuth: false,
+		});
+		openServers.push(server);
+
+		await fetch(`${server.baseUrl}/v1/models`, {
+			headers: { authorization: "Bearer inbound-client-token" },
+		});
+
+		const forwarded = calls.find((c) => c.url.endsWith("/v1/models"));
+		const headers = new Headers(forwarded?.init?.headers as HeadersInit);
+		// runtime-proxy-02: don't leak the caller's bridge token upstream.
+		expect(headers.get("authorization")).toBeNull();
+	});
+
+	it("strips an inbound x-api-key before forwarding upstream", async () => {
+		const { calls, fetchImpl } = createFetch();
+		const server = await startLocalBridge({
+			runtimeBaseUrl: "http://127.0.0.1:9999/",
+			fetchImpl,
+			requireAuth: false,
+		});
+		openServers.push(server);
+
+		await fetch(`${server.baseUrl}/v1/models`, {
+			headers: {
+				authorization: "Bearer inbound-client-token",
+				"x-api-key": "inbound-secret-key",
+			},
+		});
+
+		const forwarded = calls.find((c) => c.url.endsWith("/v1/models"));
+		const headers = new Headers(forwarded?.init?.headers as HeadersInit);
+		// runtime-proxy-02: neither inbound credential header crosses the bridge.
+		expect(headers.get("authorization")).toBeNull();
+		expect(headers.get("x-api-key")).toBeNull();
 	});
 });

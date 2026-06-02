@@ -164,6 +164,38 @@ describe("HealthScoreTracker", () => {
 			);
 		});
 	});
+
+	describe("clearAccountKey", () => {
+		it("clears every quotaKey variant for one identity (accounts-02)", () => {
+			tracker.recordFailure("acc", "codex");
+			tracker.recordFailure("acc", "codex:gpt-5.1");
+			tracker.recordFailure("other", "codex");
+
+			tracker.clearAccountKey("acc");
+
+			// All variants of the cleared identity reset to maxScore...
+			expect(tracker.getScore("acc", "codex")).toBe(
+				DEFAULT_HEALTH_SCORE_CONFIG.maxScore,
+			);
+			expect(tracker.getScore("acc", "codex:gpt-5.1")).toBe(
+				DEFAULT_HEALTH_SCORE_CONFIG.maxScore,
+			);
+			// ...while a different identity is untouched.
+			expect(tracker.getScore("other", "codex")).toBeLessThan(
+				DEFAULT_HEALTH_SCORE_CONFIG.maxScore,
+			);
+		});
+
+		it("normalizes a numeric account key to its string form", () => {
+			// Write under the numeric key but clear with the string form: the two only
+			// reset the same entry if clearAccountKey normalizes number → string ("3").
+			tracker.recordFailure(3, "codex");
+			tracker.clearAccountKey("3");
+			expect(tracker.getScore(3, "codex")).toBe(
+				DEFAULT_HEALTH_SCORE_CONFIG.maxScore,
+			);
+		});
+	});
 });
 
 describe("TokenBucketTracker", () => {
@@ -300,6 +332,36 @@ describe("TokenBucketTracker", () => {
 
 			expect(tracker.getTokens(0)).toBe(DEFAULT_TOKEN_BUCKET_CONFIG.maxTokens);
 			expect(tracker.getTokens(1)).toBe(DEFAULT_TOKEN_BUCKET_CONFIG.maxTokens);
+		});
+	});
+
+	describe("clearAccountKey", () => {
+		it("clears every quotaKey-variant bucket for one identity (accounts-02)", () => {
+			tracker.drain("acc", "codex", 30);
+			tracker.drain("acc", "codex:gpt-5.1", 30);
+			tracker.drain("other", "codex", 30);
+
+			tracker.clearAccountKey("acc");
+
+			expect(tracker.getTokens("acc", "codex")).toBe(
+				DEFAULT_TOKEN_BUCKET_CONFIG.maxTokens,
+			);
+			expect(tracker.getTokens("acc", "codex:gpt-5.1")).toBe(
+				DEFAULT_TOKEN_BUCKET_CONFIG.maxTokens,
+			);
+			expect(tracker.getTokens("other", "codex")).toBeLessThan(
+				DEFAULT_TOKEN_BUCKET_CONFIG.maxTokens,
+			);
+		});
+
+		it("normalizes a numeric account key to its string form", () => {
+			// Drain under the string key but clear with the numeric form: the two only
+			// reset the same bucket if clearAccountKey normalizes number → string ("3").
+			tracker.drain("3", "codex", 30);
+			tracker.clearAccountKey(3);
+			expect(tracker.getTokens("3", "codex")).toBe(
+				DEFAULT_TOKEN_BUCKET_CONFIG.maxTokens,
+			);
 		});
 	});
 });

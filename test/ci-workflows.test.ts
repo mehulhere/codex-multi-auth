@@ -46,6 +46,13 @@ describe("CI workflow parity", () => {
 		expect(ci).toContain("cancel-in-progress: true");
 	});
 
+	// tests-ci-05: PR CI must run coverage so the 80% threshold gates PRs, not
+	// only the post-merge push-to-main run.
+	it("runs coverage on PRs (not only push-to-main)", () => {
+		const prCi = readWorkflow("pr-ci.yml");
+		expect(prCi).toContain("npm run coverage");
+	});
+
 	it("keeps Windows script typecheck coverage in push and PR CI", () => {
 		const ci = readWorkflow("ci.yml");
 		const prCi = readWorkflow("pr-ci.yml");

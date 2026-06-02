@@ -20,9 +20,148 @@ import {
 	THINKING_TYPES,
 	META_TYPES,
 } from "./constants.js";
+import { createLogger } from "../logger.js";
 import type { StoredMessageMeta, StoredPart, StoredTextPart } from "./types.js";
 
+const recoveryLog = createLogger("recovery-storage");
+
+/**
+ * recovery-10: corrupt session files were silently skipped (`continue`) with no
+ * signal, so a user could never tell recovery had dropped data. We now quarantine
+ * the unreadable file (rename to a `.corrupt-<ts>` sibling, preserving it for
+ * inspection rather than deleting) and track a count surfaced via
+ * {@link getRecoveryCorruptionStats} so callers can report it.
+ */
+let corruptFileCount = 0;
+const quarantinedPaths: string[] = [];
+
+// Transient read-side faults that are NOT corruption: a Windows lock from
+// antivirus / file-indexer / concurrent writer (EBUSY/EPERM/EACCES/EAGAIN) or a
+// file that vanished mid-scan (ENOENT) from a concurrent rotation. Quarantining
+// (renaming) on these would hide healthy recovery state behind a transient race.
+const TRANSIENT_READ_CODES = new Set([
+	"EBUSY",
+	"EPERM",
+	"EACCES",
+	"EAGAIN",
+	"ENOENT",
+]);
+
+function isTransientReadError(error: unknown): boolean {
+	const code = (error as NodeJS.ErrnoException | undefined)?.code;
+	return typeof code === "string" && TRANSIENT_READ_CODES.has(code);
+}
+
+/**
+ * Decide what to do with a file whose read+parse failed (recovery-10).
+ *
+ * Only a *successful read followed by a parse/validation failure* is treated as
+ * corruption and quarantined. A transient FS-lock or ENOENT read error is a
+ * race, not corruption, so we leave the file in place and skip it this pass
+ * (a later pass reads it cleanly). Returns true when the caller should count it
+ * as quarantined corruption, false when it was a transient skip.
+ */
+function handleUnreadableFile(filePath: string, error: unknown): void {
+	if (isTransientReadError(error)) {
+		// Transient lock / concurrent-rotation race: do not quarantine, just skip.
+		recoveryLog.debug("skipping recovery file on transient read error", {
+			path: filePath,
+			reason: error instanceof Error ? error.message : String(error),
+		});
+		return;
+	}
+	quarantineCorruptFile(filePath, error);
+}
+
+function quarantineCorruptFile(filePath: string, error: unknown): void {
+	corruptFileCount += 1;
+	const reason = error instanceof Error ? error.message : String(error);
+	try {
+		const target = `${filePath}.corrupt-${Date.now()}`;
+		// Route through renameSyncWithRetry so a transient Windows EBUSY/EPERM/
+		// ENOTEMPTY/EAGAIN lock on the quarantine move is retried with backoff
+		// rather than abandoning a genuinely-corrupt file in place.
+		renameSyncWithRetry(filePath, target);
+		quarantinedPaths.push(target);
+		recoveryLog.warn("quarantined corrupt recovery file", { path: target, reason });
+	} catch (renameError) {
+		// If we cannot move it (e.g. Windows lock), still record that it was corrupt
+		// so the count and log reflect reality; leave the file in place.
+		recoveryLog.warn("failed to quarantine corrupt recovery file", {
+			path: filePath,
+			reason,
+			renameError:
+				renameError instanceof Error ? renameError.message : String(renameError),
+		});
+	}
+}
+
+/** Snapshot of corrupt-file quarantine activity for this process (recovery-10). */
+export function getRecoveryCorruptionStats(): {
+	corruptFileCount: number;
+	quarantinedPaths: string[];
+} {
+	return { corruptFileCount, quarantinedPaths: [...quarantinedPaths] };
+}
+
+/** Test-only reset of the corruption counters. */
+export function __resetRecoveryCorruptionStats(): void {
+	corruptFileCount = 0;
+	quarantinedPaths.length = 0;
+}
+
 const SAFE_ID_PATTERN = /^[a-zA-Z0-9_-]+$/;
+
+/**
+ * recovery-02: a file can parse as JSON yet be structurally invalid (missing or
+ * non-string `id`/`type`). Such a record must not survive into `messages`/`parts`
+ * — downstream code sorts on `part.id.localeCompare(...)` and indexes by id, so a
+ * malformed record would crash a later pass instead of being quarantined now.
+ * Validate the minimal shape each reader relies on and treat a failure exactly
+ * like a parse failure (quarantine via handleUnreadableFile).
+ */
+function isValidStoredMessage(value: unknown): value is StoredMessageMeta {
+	if (typeof value !== "object" || value === null) return false;
+	const id = (value as { id?: unknown }).id;
+	if (typeof id !== "string" || !SAFE_ID_PATTERN.test(id)) {
+		// recovery-02: the id is later used to build filesystem paths (readParts(
+		// msg.id)), so a parseable-but-string id like "../poison" must be rejected
+		// here and quarantined, not allowed to escape into a path-traversal read.
+		return false;
+	}
+	// recovery-02: readMessages sorts on time.created; a parseable record with a
+	// non-numeric created (e.g. "oops") makes the comparator return NaN and falls
+	// back to scan order, mis-pointing the index-based recovery paths. When time is
+	// present it must carry a finite numeric `created`.
+	const time = (value as { time?: unknown }).time;
+	if (time !== undefined) {
+		if (typeof time !== "object" || time === null) return false;
+		const created = (time as { created?: unknown }).created;
+		if (created !== undefined && (typeof created !== "number" || !Number.isFinite(created))) {
+			return false;
+		}
+	}
+	return true;
+}
+
+function isValidStoredPart(value: unknown): value is StoredPart {
+	const id = (value as { id?: unknown } | null)?.id;
+	return (
+		typeof value === "object" &&
+		value !== null &&
+		typeof id === "string" &&
+		SAFE_ID_PATTERN.test(id) &&
+		typeof (value as { type?: unknown }).type === "string"
+	);
+}
+
+/** Error thrown for a parseable-but-structurally-invalid recovery record. */
+class InvalidRecoveryRecordError extends Error {
+	constructor(detail: string) {
+		super(`invalid recovery record: ${detail}`);
+		this.name = "InvalidRecoveryRecordError";
+	}
+}
 
 function validatePathId(id: string, name: string): void {
 	if (!SAFE_ID_PATTERN.test(id)) {
@@ -215,10 +354,22 @@ export function readMessages(sessionID: string): StoredMessageMeta[] {
 	try {
 		for (const file of readdirSync(messageDir)) {
 			if (!file.endsWith(".json")) continue;
+			const filePath = join(messageDir, file);
 			try {
-				const content = readFileSync(join(messageDir, file), "utf-8");
-				messages.push(JSON.parse(content));
-			} catch {
+				const content = readFileSync(filePath, "utf-8");
+				const parsed: unknown = JSON.parse(content);
+				if (!isValidStoredMessage(parsed)) {
+					throw new InvalidRecoveryRecordError("message missing string id");
+				}
+				messages.push(parsed);
+			} catch (error) {
+				// recovery-10: quarantine genuine corruption; skip transient FS-lock /
+				// ENOENT races (handleUnreadableFile classifies) instead of renaming a
+				// healthy file that was momentarily locked or concurrently rotated.
+				// recovery-02: a parseable-but-structurally-invalid record (no string
+				// id) is corruption too — quarantine it here rather than letting it
+				// crash a later id-based sort/index pass.
+				handleUnreadableFile(filePath, error);
 				continue;
 			}
 		}
@@ -227,10 +378,15 @@ export function readMessages(sessionID: string): StoredMessageMeta[] {
 	}
 
 	return messages.sort((a, b) => {
-		const aTime = a.time?.created ?? 0;
-		const bTime = b.time?.created ?? 0;
+		const aTime = a?.time?.created ?? 0;
+		const bTime = b?.time?.created ?? 0;
 		if (aTime !== bTime) return aTime - bTime;
-		return a.id.localeCompare(b.id);
+		// recovery-02: a parseable-but-malformed record can lack `id`; guard the
+		// comparator so a missing/non-string id cannot throw out of the sort (which
+		// runs outside the per-file try/catch above) and crash readMessages.
+		const aId = typeof a?.id === "string" ? a.id : "";
+		const bId = typeof b?.id === "string" ? b.id : "";
+		return aId.localeCompare(bId);
 	});
 }
 
@@ -247,10 +403,22 @@ export function readParts(messageID: string): StoredPart[] {
 	try {
 		for (const file of readdirSync(partDir)) {
 			if (!file.endsWith(".json")) continue;
+			const filePath = join(partDir, file);
 			try {
-				const content = readFileSync(join(partDir, file), "utf-8");
-				parts.push(JSON.parse(content));
-			} catch {
+				const content = readFileSync(filePath, "utf-8");
+				const parsed: unknown = JSON.parse(content);
+				if (!isValidStoredPart(parsed)) {
+					throw new InvalidRecoveryRecordError("part missing string id/type");
+				}
+				parts.push(parsed);
+			} catch (error) {
+				// recovery-10: quarantine genuine corruption; skip transient FS-lock /
+				// ENOENT races (handleUnreadableFile classifies) instead of renaming a
+				// healthy file that was momentarily locked or concurrently rotated.
+				// recovery-02: a parseable record missing a string id/type is corruption
+				// too — quarantine here so the id-sort in findMessagesWithOrphanThinking
+				// (and type checks elsewhere) can't crash on it.
+				handleUnreadableFile(filePath, error);
 				continue;
 			}
 		}
@@ -299,6 +467,9 @@ export function injectTextPart(
 	messageID: string,
 	text: string,
 ): boolean {
+	// recovery-03: validate before joining into a filesystem path, matching the
+	// read path. Without this, a crafted messageID could escape PART_STORAGE.
+	validatePathId(messageID, "messageID");
 	const partDir = join(PART_STORAGE, messageID);
 
 	try {
@@ -400,6 +571,7 @@ export function prependThinkingPart(
 	sessionID: string,
 	messageID: string,
 ): boolean {
+	validatePathId(messageID, "messageID"); // recovery-03
 	const partDir = join(PART_STORAGE, messageID);
 
 	try {
@@ -435,10 +607,12 @@ export function prependThinkingPart(
 }
 
 export function stripThinkingParts(messageID: string): boolean {
+	validatePathId(messageID, "messageID"); // recovery-03
 	const partDir = join(PART_STORAGE, messageID);
 	if (!existsSync(partDir)) return false;
 
 	let anyRemoved = false;
+	let anyTargetFailed = false;
 	try {
 		for (const file of readdirSync(partDir)) {
 			if (!file.endsWith(".json")) continue;
@@ -449,6 +623,11 @@ export function stripThinkingParts(messageID: string): boolean {
 				if (THINKING_TYPES.has(part.type)) {
 					if (safeUnlinkWithRetry(filePath)) {
 						anyRemoved = true;
+					} else {
+						// recovery-05: a thinking part we targeted could NOT be removed.
+						// Reporting success here would let the auto-resume loop believe
+						// the message is clean and retry forever, burning quota.
+						anyTargetFailed = true;
 					}
 				}
 			} catch {
@@ -459,7 +638,8 @@ export function stripThinkingParts(messageID: string): boolean {
 		return false;
 	}
 
-	return anyRemoved;
+	// Only report success when every targeted thinking part was actually removed.
+	return anyRemoved && !anyTargetFailed;
 }
 
 // =============================================================================
@@ -533,6 +713,7 @@ export function replaceEmptyTextParts(
 	messageID: string,
 	replacementText: string,
 ): boolean {
+	validatePathId(messageID, "messageID"); // recovery-03
 	const partDir = join(PART_STORAGE, messageID);
 	if (!existsSync(partDir)) return false;
 

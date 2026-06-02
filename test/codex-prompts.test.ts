@@ -8,6 +8,8 @@ vi.mock("node:fs", () => ({
 		readFile: vi.fn(),
 		writeFile: vi.fn(),
 		mkdir: vi.fn(),
+		rename: vi.fn(),
+		rm: vi.fn(),
 	},
 }));
 
@@ -26,11 +28,17 @@ import {
 const mockedReadFile = vi.mocked(fs.readFile);
 const mockedWriteFile = vi.mocked(fs.writeFile);
 const mockedMkdir = vi.mocked(fs.mkdir);
+const mockedRename = vi.mocked(fs.rename);
+const mockedRm = vi.mocked(fs.rm);
 
 describe("Codex Prompts Module", () => {
 	beforeEach(() => {
 		vi.clearAllMocks();
 		__clearCacheForTesting();
+		// writeCacheAtomically uses rename + rm; default them to resolved so the
+		// atomic cache write path works in tests that don't set them explicitly.
+		mockedRename.mockResolvedValue(undefined);
+		mockedRm.mockResolvedValue(undefined);
 		mockFetch = vi.fn();
 		global.fetch = mockFetch as unknown as typeof fetch;
 	});
@@ -151,6 +159,239 @@ describe("Codex Prompts Module", () => {
 				const result = await getCodexInstructions("gpt-5.2");
 				expect(result).toBe("disk cached instructions");
 			});
+
+			// prompts-03: a sha256 in the meta is verified against disk content.
+			it("serves disk cache when the sha256 matches", async () => {
+				const { createHash } = await import("node:crypto");
+				const content = "trusted disk instructions";
+				const digest = createHash("sha256").update(content, "utf8").digest("hex");
+				mockedReadFile.mockImplementation((filePath) => {
+					if (typeof filePath === "string" && filePath.includes("-meta.json")) {
+						return Promise.resolve(JSON.stringify({
+							etag: "e",
+							tag: "rust-v0.43.0",
+							lastChecked: Date.now() - 5 * 60 * 1000,
+							url: "https://example.com",
+							sha256: digest,
+						}));
+					}
+					return Promise.resolve(content);
+				});
+
+				const result = await getCodexInstructions("gpt-5.2");
+				expect(result).toBe(content);
+				// No network fetch needed when the trusted cache is fresh.
+				expect(mockFetch).not.toHaveBeenCalled();
+			});
+
+			it("discards disk cache and refetches when the sha256 mismatches", async () => {
+				mockedReadFile.mockImplementation((filePath) => {
+					if (typeof filePath === "string" && filePath.includes("-meta.json")) {
+						return Promise.resolve(JSON.stringify({
+							etag: "e",
+							tag: "rust-v0.43.0",
+							lastChecked: Date.now() - 5 * 60 * 1000,
+							url: "https://example.com",
+							sha256: "0".repeat(64), // wrong hash for the content below
+						}));
+					}
+					return Promise.resolve("tampered disk content");
+				});
+				mockFetch.mockResolvedValueOnce({
+					ok: true,
+					json: () => Promise.resolve({ tag_name: "rust-v0.43.0" }),
+				});
+				mockFetch.mockResolvedValueOnce({
+					ok: true,
+					text: () => Promise.resolve("fresh trusted instructions"),
+					headers: { get: () => "new-etag" },
+				});
+
+				const result = await getCodexInstructions("gpt-5.2");
+				// The corrupt cache was not served; a refetch happened.
+				expect(result).toBe("fresh trusted instructions");
+				expect(mockFetch).toHaveBeenCalled();
+			});
+
+			it("does not re-serve tampered cache via a 304 after an sha256 mismatch", async () => {
+				// prompts-03 regression: a sha256 mismatch must force a FULL refetch
+				// (no If-None-Match), so a server 304 cannot bless+re-serve the corrupt
+				// disk bytes. Here the mismatch fires, the conditional header is dropped,
+				// and even if the upstream still answers 304 the tampered content must
+				// NOT come back — it falls through to the bundled instructions instead.
+				mockedReadFile.mockImplementation((filePath) => {
+					if (typeof filePath === "string" && filePath.includes("-meta.json")) {
+						return Promise.resolve(
+							JSON.stringify({
+								etag: "stale-etag",
+								tag: "rust-v0.43.0",
+								lastChecked: Date.now() - 5 * 60 * 1000,
+								url: "https://example.com",
+								sha256: "0".repeat(64), // wrong hash for the content below
+							}),
+						);
+					}
+					if (typeof filePath === "string" && filePath.includes("codex-instructions.md")) {
+						return Promise.resolve("bundled fallback instructions");
+					}
+					return Promise.resolve("tampered disk content");
+				});
+				const sentHeaders: Array<Record<string, string> | undefined> = [];
+				mockFetch.mockImplementation((_url: string, init?: RequestInit) => {
+					sentHeaders.push(init?.headers as Record<string, string> | undefined);
+					if (String(_url).includes("api.github.com")) {
+						return Promise.resolve({
+							ok: true,
+							json: () => Promise.resolve({ tag_name: "rust-v0.43.0" }),
+						});
+					}
+					// Upstream answers 304 — but since no If-None-Match was sent, the
+					// fix must not treat the tampered disk bytes as a valid body.
+					return Promise.resolve({ status: 304, ok: false });
+				});
+
+				const result = await getCodexInstructions("gpt-5.2");
+				expect(result).not.toBe("tampered disk content");
+				expect(result).toBe("bundled fallback instructions");
+				// The instructions fetch must NOT carry a conditional revalidation header.
+				const instructionsHeaders = sentHeaders.filter(Boolean) as Array<
+					Record<string, string>
+				>;
+				expect(
+					instructionsHeaders.some((h) => h && "If-None-Match" in h),
+				).toBe(false);
+			});
+
+			// prompts-03 regression: a cached entry whose meta has NO sha256 (a
+			// pre-upgrade legacy cache) is UNVERIFIED. It must not be fast-path served
+			// and must not drive conditional revalidation — it forces one full 200
+			// fetch to mint the first digest. The freshly-fetched body wins.
+			it("forces a full GET (no fast-path serve) for a legacy cache entry missing sha256", async () => {
+				mockedReadFile.mockImplementation((filePath) => {
+					if (typeof filePath === "string" && filePath.includes("-meta.json")) {
+						// Legacy meta: has lastChecked + etag but NO sha256.
+						return Promise.resolve(
+							JSON.stringify({
+								etag: "legacy-etag",
+								tag: "rust-v0.43.0",
+								lastChecked: Date.now() - 5 * 60 * 1000, // within TTL — would be served if trusted
+								url: "https://example.com",
+							}),
+						);
+					}
+					return Promise.resolve("legacy disk bytes (no sha)");
+				});
+				mockFetch.mockResolvedValueOnce({
+					ok: true,
+					json: () => Promise.resolve({ tag_name: "rust-v0.43.0" }),
+				});
+				mockFetch.mockResolvedValueOnce({
+					ok: true,
+					text: () => Promise.resolve("freshly minted instructions"),
+					headers: { get: () => "minted-etag" },
+				});
+				mockedMkdir.mockResolvedValue(undefined);
+				mockedWriteFile.mockResolvedValue(undefined);
+
+				const result = await getCodexInstructions("gpt-5.2");
+				// The legacy disk bytes were NOT served as-is; a full fetch happened.
+				expect(result).toBe("freshly minted instructions");
+				const rawGitHubUrls = mockFetch.mock.calls
+					.map((call) => call[0])
+					.filter(
+						(url): url is string =>
+							typeof url === "string" &&
+							url.includes("raw.githubusercontent.com"),
+					);
+				expect(rawGitHubUrls.length).toBeGreaterThanOrEqual(1);
+				expect(
+					rawGitHubUrls.some((url) => url.includes("gpt_5_2_prompt.md")),
+				).toBe(true);
+			});
+
+			// prompts-03 regression: the legacy (no-sha) disk bytes are still a valid
+			// OFFLINE fallback. If the forced full fetch fails (network error), the old
+			// bytes are served rather than dropping straight to bundled instructions.
+			it("keeps a no-sha legacy cache as offline fallback when the forced refetch fails", async () => {
+				mockedReadFile.mockImplementation((filePath) => {
+					if (typeof filePath === "string" && filePath.includes("-meta.json")) {
+						return Promise.resolve(
+							JSON.stringify({
+								etag: "legacy-etag",
+								tag: "rust-v0.43.0",
+								lastChecked: Date.now() - 5 * 60 * 1000,
+								url: "https://example.com",
+							}),
+						);
+					}
+					if (
+						typeof filePath === "string" &&
+						filePath.includes("codex-instructions.md")
+					) {
+						return Promise.resolve("bundled fallback instructions");
+					}
+					return Promise.resolve("legacy disk bytes (offline)");
+				});
+				// The release-tag lookup succeeds, but the instructions GET fails.
+				mockFetch.mockImplementation((url: string) => {
+					if (String(url).includes("api.github.com")) {
+						return Promise.resolve({
+							ok: true,
+							json: () => Promise.resolve({ tag_name: "rust-v0.43.0" }),
+						});
+					}
+					return Promise.reject(new Error("Network error"));
+				});
+
+				const result = await getCodexInstructions("gpt-5.2");
+				// Offline fallback uses the legacy disk bytes, NOT the bundled file.
+				expect(result).toBe("legacy disk bytes (offline)");
+			});
+
+			// prompts-03 regression: a no-sha (unverified) entry must NOT send an
+			// If-None-Match header. The metadata is cleared so the GET is a full,
+			// unconditional fetch — a 304 over un-vetted bytes can never be trusted.
+			it("does not send If-None-Match for a no-sha legacy cache entry", async () => {
+				mockedReadFile.mockImplementation((filePath) => {
+					if (typeof filePath === "string" && filePath.includes("-meta.json")) {
+						return Promise.resolve(
+							JSON.stringify({
+								etag: "legacy-etag", // present, but must be ignored without a sha
+								tag: "rust-v0.43.0",
+								lastChecked: Date.now() - 5 * 60 * 1000,
+								url: "https://example.com",
+							}),
+						);
+					}
+					return Promise.resolve("legacy disk bytes (header check)");
+				});
+				const sentHeaders: Array<Record<string, string> | undefined> = [];
+				mockFetch.mockImplementation((url: string, init?: RequestInit) => {
+					sentHeaders.push(init?.headers as Record<string, string> | undefined);
+					if (String(url).includes("api.github.com")) {
+						return Promise.resolve({
+							ok: true,
+							json: () => Promise.resolve({ tag_name: "rust-v0.43.0" }),
+						});
+					}
+					return Promise.resolve({
+						ok: true,
+						text: () => Promise.resolve("unconditional fetch body"),
+						headers: { get: () => "new-etag" },
+					});
+				});
+				mockedMkdir.mockResolvedValue(undefined);
+				mockedWriteFile.mockResolvedValue(undefined);
+
+				const result = await getCodexInstructions("gpt-5.2");
+				expect(result).toBe("unconditional fetch body");
+				const instructionsHeaders = sentHeaders.filter(Boolean) as Array<
+					Record<string, string>
+				>;
+				expect(
+					instructionsHeaders.some((h) => h && "If-None-Match" in h),
+				).toBe(false);
+			});
 		});
 
 		describe("GitHub fetch with ETag", () => {
@@ -208,8 +449,117 @@ describe("Codex Prompts Module", () => {
 				expect(result).toBe("disk cached content");
 			});
 
+			it("retries a transient EBUSY on the cache rename and still persists (windows lock)", async () => {
+				// prompts-06 / windows fs: writeCacheAtomically routes its rename calls
+				// through withFileOperationRetry, so a transient EBUSY from an antivirus
+				// or file-indexer lock must be retried rather than turning a successful
+				// fetch into a cache-write failure.
+				mockedReadFile.mockRejectedValue(new Error("ENOENT"));
+				mockFetch.mockResolvedValueOnce({
+					ok: true,
+					json: () => Promise.resolve({ tag_name: "rust-v0.50.0" }),
+				});
+				mockFetch.mockResolvedValueOnce({
+					ok: true,
+					text: () => Promise.resolve("instructions after lock contention"),
+					headers: { get: () => "fresh-etag" },
+				});
+				mockedMkdir.mockResolvedValue(undefined);
+				mockedWriteFile.mockResolvedValue(undefined);
+				// First rename throws EBUSY once, then succeeds — withFileOperationRetry
+				// must absorb the transient fault.
+				const ebusy = Object.assign(new Error("EBUSY: resource busy or locked"), {
+					code: "EBUSY",
+				});
+				mockedRename.mockRejectedValueOnce(ebusy);
+				mockedRename.mockResolvedValue(undefined);
+
+				const result = await getCodexInstructions("gpt-5.2");
+				expect(result).toBe("instructions after lock contention");
+				// At least one extra rename attempt beyond the initial failed one.
+				expect(mockedRename.mock.calls.length).toBeGreaterThanOrEqual(2);
+			});
+
+			it("retries a transient EBUSY on temp-file cleanup (windows lock)", async () => {
+				// prompts-06 / windows fs: writeCacheAtomically's finally cleanup routes
+				// fs.rm through withFileOperationRetry, so a transient EBUSY on the temp
+				// sibling is retried rather than leaking a *.tmp file.
+				mockedReadFile.mockRejectedValue(new Error("ENOENT"));
+				mockFetch.mockResolvedValueOnce({
+					ok: true,
+					json: () => Promise.resolve({ tag_name: "rust-v0.51.0" }),
+				});
+				mockFetch.mockResolvedValueOnce({
+					ok: true,
+					text: () => Promise.resolve("instructions with rm contention"),
+					headers: { get: () => "rm-etag" },
+				});
+				mockedMkdir.mockResolvedValue(undefined);
+				mockedWriteFile.mockResolvedValue(undefined);
+				mockedRename.mockResolvedValue(undefined);
+				// First rm throws EBUSY once, then succeeds — withFileOperationRetry
+				// must absorb the transient fault and still resolve the fetch.
+				const ebusy = Object.assign(new Error("EBUSY: resource busy or locked"), {
+					code: "EBUSY",
+				});
+				mockedRm.mockRejectedValueOnce(ebusy);
+				mockedRm.mockResolvedValue(undefined);
+
+				const result = await getCodexInstructions("gpt-5.2");
+				expect(result).toBe("instructions with rm contention");
+				// At least one extra rm attempt beyond the initial failed one.
+				expect(mockedRm.mock.calls.length).toBeGreaterThanOrEqual(2);
+			});
+
+			it("does not hang when the release API body stalls (mid-body timeout)", async () => {
+				// prompts-02: the fetch AbortSignal only covers connect+headers, so a
+				// release API response that stalls in .json() must be bounded by
+				// withBodyTimeout rather than hanging getLatestReleaseTag() forever.
+				// The JSON read rejects on timeout; the code must fall through to the
+				// HTML fallback and still return a tag. Fake timers drive the bound so
+				// the test does not wait the real 10s.
+				vi.useFakeTimers();
+				try {
+					mockedReadFile.mockRejectedValue(new Error("ENOENT"));
+					mockFetch.mockResolvedValueOnce({
+						ok: true,
+						// Never resolves: simulates a server that sent headers then stalled.
+						json: () => new Promise(() => {}),
+					});
+					mockFetch.mockResolvedValueOnce({
+						ok: true,
+						url: "https://github.com/openai/codex/releases/tag/rust-v0.52.0",
+						text: () => Promise.resolve(""),
+					});
+					mockFetch.mockResolvedValueOnce({
+						ok: true,
+						text: () => Promise.resolve("instructions after stalled api"),
+						headers: { get: () => "stall-etag" },
+					});
+					mockedMkdir.mockResolvedValue(undefined);
+					mockedWriteFile.mockResolvedValue(undefined);
+
+					const pending = getCodexInstructions("gpt-5.2");
+					// Let the stalled json() race start, then trip the body timeout.
+					await vi.advanceTimersByTimeAsync(10_000);
+					const result = await pending;
+					expect(result).toBe("instructions after stalled api");
+				} finally {
+					vi.useRealTimers();
+				}
+			});
+
 			it("should refresh stale cache in background when release tag changes", async () => {
 				const oldTimestamp = Date.now() - 20 * 60 * 1000;
+				// Post prompts-03: only a VERIFIED (sha-bearing) entry takes the
+				// stale-while-revalidate path. A matching sha256 makes "old content"
+				// trusted, so it is served immediately while the tag change drives a
+				// background refresh to "new version content". (A no-sha entry would
+				// instead force a full blocking fetch and never serve the stale body.)
+				const { createHash } = await import("node:crypto");
+				const oldDigest = createHash("sha256")
+					.update("old content", "utf8")
+					.digest("hex");
 				mockedReadFile.mockImplementation((filePath) => {
 					if (typeof filePath === "string" && filePath.includes("-meta.json")) {
 						return Promise.resolve(JSON.stringify({
@@ -217,6 +567,7 @@ describe("Codex Prompts Module", () => {
 							tag: "rust-v0.40.0",
 							lastChecked: oldTimestamp,
 							url: "https://example.com",
+							sha256: oldDigest,
 						}));
 					}
 					return Promise.resolve("old content");

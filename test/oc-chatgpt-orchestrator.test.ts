@@ -1,4 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
+import { mkdtemp, stat, readFile } from "node:fs/promises";
+import { promises as fs } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { removeWithRetry } from "./helpers/remove-with-retry.js";
 
 import {
 	applyOcChatgptSync,
@@ -141,6 +146,66 @@ describe("oc-chatgpt orchestrator", () => {
 		}
 	});
 
+	// chatgpt-import-06: planning must return a structured error (not throw) when
+	// loading the target fails, mirroring applyOcChatgptSync's guarded behavior.
+	it("returns plan-error when loading the target throws", async () => {
+		const result = await planOcChatgptSync({
+			source: sourceStorage,
+			// destination omitted -> loadTargetStorage is invoked
+			dependencies: {
+				detectTarget: () => ({
+					kind: "target",
+					descriptor: {
+						scope: "global",
+						root: "C:/target",
+						accountPath: "C:/target/openai-codex-accounts.json",
+						backupRoot: "C:/target/backups",
+						source: "default-global",
+						resolution: "accounts",
+					},
+				}),
+				loadTargetStorage: async () => {
+					throw new Error("corrupt destination file");
+				},
+			},
+		});
+
+		expect(result.kind).toBe("plan-error");
+		if (result.kind === "plan-error") {
+			expect(result.cause).toBe("load");
+			expect(String((result.error as Error).message)).toContain("corrupt destination");
+			expect(result.target.accountPath).toContain("openai-codex-accounts.json");
+		}
+	});
+
+	it("returns plan-error when previewing the merge throws", async () => {
+		const result = await planOcChatgptSync({
+			source: sourceStorage,
+			destination: destinationStorage,
+			dependencies: {
+				detectTarget: () => ({
+					kind: "target",
+					descriptor: {
+						scope: "global",
+						root: "C:/target",
+						accountPath: "C:/target/openai-codex-accounts.json",
+						backupRoot: "C:/target/backups",
+						source: "default-global",
+						resolution: "accounts",
+					},
+				}),
+				previewMerge: () => {
+					throw new Error("preview boom");
+				},
+			},
+		});
+
+		expect(result.kind).toBe("plan-error");
+		if (result.kind === "plan-error") {
+			expect(result.cause).toBe("preview");
+		}
+	});
+
 	it("returns applied when persist succeeds", async () => {
 		const persistMerged = vi.fn(
 			async () => "C:/target/openai-codex-accounts.json",
@@ -182,6 +247,107 @@ describe("oc-chatgpt orchestrator", () => {
 			expect(result.persistedPath).toBe("C:/target/openai-codex-accounts.json");
 			expect(result.preview.toAdd).toHaveLength(1);
 			expect(result.preview.unchangedDestinationOnly).toHaveLength(1);
+		}
+	});
+
+	// Regression (chatgpt-import-01/02): the default persister writes the merged
+	// secret-bearing account file to the live destination. It must do so atomically
+	// (so a crash cannot truncate the live store) and with owner-only 0o600 perms
+	// (the file embeds raw refresh tokens). Exercises the REAL persistMergedDefault
+	// by omitting the persistMerged dependency.
+	it("default persister writes the merged file atomically and 0o600", async () => {
+		const dir = await mkdtemp(join(tmpdir(), "codex-oc-persist-"));
+		const accountPath = join(dir, "openai-codex-accounts.json");
+		try {
+			const result = await applyOcChatgptSync({
+				source: sourceStorage,
+				destination: destinationStorage,
+				dependencies: {
+					detectTarget: () => ({
+						kind: "target",
+						descriptor: {
+							scope: "global",
+							root: dir,
+							accountPath,
+							backupRoot: join(dir, "backups"),
+							source: "default-global",
+							resolution: "accounts",
+						},
+					}),
+					// no persistMerged → real persistMergedDefault runs
+				},
+			});
+
+			expect(result.kind).toBe("applied");
+			if (result.kind === "applied") {
+				expect(result.persistedPath).toBe(accountPath);
+			}
+
+			// File landed (atomic rename completed) and no temp file leaked behind.
+			const written = JSON.parse(await readFile(accountPath, "utf-8"));
+			expect(written.accounts.length).toBeGreaterThanOrEqual(2);
+
+			if (process.platform !== "win32") {
+				const mode = (await stat(accountPath)).mode & 0o777;
+				expect(mode).toBe(0o600);
+			}
+		} finally {
+			await removeWithRetry(dir, { recursive: true, force: true });
+		}
+	});
+
+	// Cross-platform atomicity check: the destination must only ever appear via an
+	// atomic rename. Spy on the shared node:fs promises object (the module imports
+	// `promises as fs` and writes through it) with call-through, and prove the temp+
+	// rename path: writeFile targets a ".tmp" sibling and rename commits that exact tmp
+	// → the destination. A direct (non-atomic) write would fail the ".tmp" assertion.
+	it("default persister writes via a .tmp file then renames it onto the destination", async () => {
+		const dir = await mkdtemp(join(tmpdir(), "codex-oc-persist-atomic-"));
+		const accountPath = join(dir, "openai-codex-accounts.json");
+		const writeFileSpy = vi.spyOn(fs, "writeFile");
+		const renameSpy = vi.spyOn(fs, "rename");
+		try {
+			const result = await applyOcChatgptSync({
+				source: sourceStorage,
+				destination: destinationStorage,
+				dependencies: {
+					detectTarget: () => ({
+						kind: "target",
+						descriptor: {
+							scope: "global",
+							root: dir,
+							accountPath,
+							backupRoot: join(dir, "backups"),
+							source: "default-global",
+							resolution: "accounts",
+						},
+					}),
+				},
+			});
+			expect(result.kind).toBe("applied");
+
+			// writeFile wrote to a ".tmp" sibling, never directly to the destination.
+			const writeTarget = String(writeFileSpy.mock.calls[0]?.[0]);
+			expect(writeFileSpy).toHaveBeenCalledTimes(1);
+			expect(writeTarget.endsWith(".tmp")).toBe(true);
+			expect(writeTarget).not.toBe(accountPath);
+
+			// rename committed that exact tmp → the destination.
+			const renameArgs = renameSpy.mock.calls[0];
+			expect(renameSpy).toHaveBeenCalledTimes(1);
+			expect(String(renameArgs?.[0])).toBe(writeTarget);
+			expect(String(renameArgs?.[1])).toBe(accountPath);
+
+			// Destination is complete + parseable (rename committed) and no .tmp leaked.
+			const parsed = JSON.parse(await readFile(accountPath, "utf-8"));
+			expect(parsed.version).toBe(3);
+			const { readdir } = await import("node:fs/promises");
+			const leftovers = (await readdir(dir)).filter((f) => f.endsWith(".tmp"));
+			expect(leftovers).toEqual([]);
+		} finally {
+			writeFileSpy.mockRestore();
+			renameSpy.mockRestore();
+			await removeWithRetry(dir, { recursive: true, force: true });
 		}
 	});
 

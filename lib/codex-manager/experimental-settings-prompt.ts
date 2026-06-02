@@ -1,4 +1,5 @@
 import { createInterface } from "node:readline/promises";
+import { formatWaitTime } from "../accounts.js";
 import type {
 	ApplyOcChatgptSyncOptions,
 	OcChatgptSyncApplyResult,
@@ -7,7 +8,11 @@ import type {
 } from "../oc-chatgpt-orchestrator.js";
 import type { AccountStorageV3 } from "../storage.js";
 import type { PluginConfig } from "../types.js";
-import type { MenuItem, select } from "../ui/select.js";
+import type {
+	MenuItem,
+	select,
+} from "../ui/select.js";
+import { BACKEND_NUMBER_OPTION_BY_KEY } from "./backend-settings-schema.js";
 import type { UiRuntimeOptions } from "../ui/runtime.js";
 import type {
 	ExperimentalSettingsAction,
@@ -88,6 +93,17 @@ export async function promptExperimentalSettingsMenu<TTargetState>(
 	let draft = params.cloneBackendPluginConfig(params.initialConfig);
 	const copy = params.copy;
 
+	// settings-hub-01: derive the refresh-interval bounds from the single backend
+	// schema entry so this panel and the backend settings panel can never diverge
+	// (they previously used different min/step: 60000/60000 here vs 5000/5000 in
+	// the schema). Fall back to the historical values if the schema entry is absent.
+	const refreshIntervalOption = BACKEND_NUMBER_OPTION_BY_KEY.get(
+		"proactiveRefreshIntervalMs",
+	);
+	const refreshIntervalMin = refreshIntervalOption?.min ?? 60_000;
+	const refreshIntervalMax = refreshIntervalOption?.max ?? 600_000;
+	const refreshIntervalStep = refreshIntervalOption?.step ?? 60_000;
+
 	while (true) {
 		const action = await params.select<ExperimentalSettingsAction>(
 			[
@@ -107,7 +123,7 @@ export async function promptExperimentalSettingsMenu<TTargetState>(
 					color: "yellow",
 				},
 				{
-					label: `${copy.experimentalRefreshInterval}: ${Math.round((draft.proactiveRefreshIntervalMs ?? 60000) / 60000)} min`,
+					label: `${copy.experimentalRefreshInterval}: ${formatWaitTime(draft.proactiveRefreshIntervalMs ?? 60000)}`,
 					value: { type: "back" },
 					disabled: true,
 					hideUnavailableSuffix: true,
@@ -146,8 +162,8 @@ export async function promptExperimentalSettingsMenu<TTargetState>(
 			draft = {
 				...draft,
 				proactiveRefreshIntervalMs: Math.max(
-					60_000,
-					(draft.proactiveRefreshIntervalMs ?? 60000) - 60000,
+					refreshIntervalMin,
+					(draft.proactiveRefreshIntervalMs ?? 60000) - refreshIntervalStep,
 				),
 			};
 			continue;
@@ -156,8 +172,8 @@ export async function promptExperimentalSettingsMenu<TTargetState>(
 			draft = {
 				...draft,
 				proactiveRefreshIntervalMs: Math.min(
-					600000,
-					(draft.proactiveRefreshIntervalMs ?? 60000) + 60000,
+					refreshIntervalMax,
+					(draft.proactiveRefreshIntervalMs ?? 60000) + refreshIntervalStep,
 				),
 			};
 			continue;

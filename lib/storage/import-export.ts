@@ -1,6 +1,7 @@
 import { existsSync, promises as fs } from "node:fs";
 import { dirname } from "node:path";
 import { AnyAccountStorageSchema, safeParseJson } from "../schemas.js";
+import { shouldRetryFileOperation } from "../fs-retry.js";
 import type { AccountStorageV3 } from "../storage.js";
 
 const EXPORT_RENAME_MAX_ATTEMPTS = 4;
@@ -16,13 +17,38 @@ async function renameExportFileWithRetry(
 			await fs.rename(sourcePath, destinationPath);
 			return;
 		} catch (error) {
-			const code = (error as NodeJS.ErrnoException).code;
+			// storage-07: use the shared retryable-code set (adds ENOTEMPTY/EACCES)
+			// rather than the local EPERM/EBUSY/EAGAIN subset.
 			const canRetry =
-				(code === "EPERM" || code === "EBUSY" || code === "EAGAIN") &&
-				attempt + 1 < EXPORT_RENAME_MAX_ATTEMPTS;
+				shouldRetryFileOperation(error) && attempt + 1 < EXPORT_RENAME_MAX_ATTEMPTS;
 			if (!canRetry) {
 				throw error;
 			}
+			await new Promise((resolve) =>
+				setTimeout(resolve, EXPORT_RENAME_BASE_DELAY_MS * 2 ** attempt),
+			);
+		}
+	}
+}
+
+/**
+ * Best-effort removal of the staged export temp file, retried on transient
+ * Windows locks via the same shared retryable-code set as the rename. The temp
+ * file briefly holds the full account export (refresh tokens), so a single-shot
+ * unlink that loses to a transient EACCES/ENOTEMPTY/EBUSY would strand a
+ * secret-bearing `.tmp` next to the destination. Never throws.
+ */
+async function unlinkExportFileBestEffort(tempPath: string): Promise<void> {
+	for (let attempt = 0; attempt < EXPORT_RENAME_MAX_ATTEMPTS; attempt += 1) {
+		try {
+			await fs.unlink(tempPath);
+			return;
+		} catch (error) {
+			const code = (error as NodeJS.ErrnoException | undefined)?.code;
+			if (code === "ENOENT") return; // already gone (e.g. rename consumed it)
+			const canRetry =
+				shouldRetryFileOperation(error) && attempt + 1 < EXPORT_RENAME_MAX_ATTEMPTS;
+			if (!canRetry) return; // give up silently; cleanup is best-effort
 			await new Promise((resolve) =>
 				setTimeout(resolve, EXPORT_RENAME_BASE_DELAY_MS * 2 ** attempt),
 			);
@@ -69,11 +95,7 @@ export async function exportAccountsToFile(params: {
 		});
 		await renameExportFileWithRetry(tempPath, params.resolvedPath);
 	} catch (error) {
-		try {
-			await fs.unlink(tempPath);
-		} catch {
-			// Ignore cleanup failures for staged export files.
-		}
+		await unlinkExportFileBestEffort(tempPath);
 		throw error;
 	}
 	params.logInfo("Exported accounts", {

@@ -585,6 +585,27 @@ describe("Documentation Integrity", () => {
 		});
 	});
 
+	it("keeps the SECURITY.md override versions aligned with package.json (docs-supplychain-03)", () => {
+		const pkg = JSON.parse(read("package.json")) as {
+			overrides?: Record<string, unknown>;
+		};
+		const security = read("SECURITY.md");
+		const honoPin = pkg.overrides?.hono;
+		expect(typeof honoPin).toBe("string");
+		// SECURITY.md cites the hono override version in its rationale; it must match
+		// the actual pin so the doc cannot silently drift (it claimed 4.12.14 while
+		// package.json pinned 4.12.18).
+		expect(security).toContain(`pinned to \`${String(honoPin)}\``);
+
+		// docs-supplychain-03 (rollup): SECURITY.md also documents a pinned rationale
+		// for the rollup override, which can drift unnoticed. SECURITY.md phrases the
+		// rollup pin as a range (`^4.59.0`) while package.json's override is the exact
+		// version (`4.59.0`), so assert the documented `^`-prefixed form.
+		const rollupPin = pkg.overrides?.rollup;
+		expect(typeof rollupPin).toBe("string");
+		expect(security).toContain(`pinned to \`^${String(rollupPin)}\``);
+	});
+
 	it("keeps governance templates and security reporting guidance present", () => {
 		const prTemplate = ".github/pull_request_template.md";
 		const issueConfig = ".github/ISSUE_TEMPLATE/config.yml";

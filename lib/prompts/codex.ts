@@ -1,10 +1,68 @@
 import { promises as fs } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { createHash } from "node:crypto";
 import type { CacheMetadata, GitHubRelease } from "../types.js";
 import { logWarn, logError, logDebug } from "../logger.js";
 import { getCodexCacheDir } from "../runtime-paths.js";
 import { getModelProfile, type PromptModelFamily } from "../request/helpers/model-map.js";
+import { fetchWithTimeout, readBodyTextGuarded, withBodyTimeout } from "./fetch-utils.js";
+import { withFileOperationRetry } from "../fs-retry.js";
+
+/** SHA-256 of cache content for integrity verification (prompts-03). */
+function sha256(content: string): string {
+	return createHash("sha256").update(content, "utf8").digest("hex");
+}
+
+/**
+ * Atomically write content + meta (prompts-06).
+ *
+ * The previous parallel writeFile of cacheFile and cacheMetaFile could tear:
+ * a crash between them left content and meta (etag/sha) out of sync. Write each
+ * to a temp sibling then rename, and write the content before the meta so the
+ * meta's sha always describes a content file already on disk.
+ *
+ * Note on atomicity: this is a *two-rename* operation (content, then meta), not
+ * a single atomic commit. If the second rename fails permanently the disk holds
+ * new content with stale meta — which the next read self-heals via the sha256
+ * integrity check (mismatch ⇒ discard + refetch). Each fs step is wrapped in
+ * withFileOperationRetry so a transient Windows EBUSY/EPERM/ENOTEMPTY/EACCES
+ * from antivirus, the file indexer, or a concurrent reader is retried with
+ * backoff instead of turning a successful fetch into a cache-write failure.
+ */
+async function writeCacheAtomically(
+	cacheFile: string,
+	cacheMetaFile: string,
+	content: string,
+	meta: CacheMetadata,
+): Promise<void> {
+	await withFileOperationRetry(() => fs.mkdir(CACHE_DIR, { recursive: true }));
+	const nonce = `${Date.now()}-${process.pid}-${Math.random().toString(36).slice(2, 8)}`;
+	const contentTmp = `${cacheFile}.${nonce}.tmp`;
+	const metaTmp = `${cacheMetaFile}.${nonce}.tmp`;
+	try {
+		await withFileOperationRetry(() =>
+			fs.writeFile(contentTmp, content, { encoding: "utf8" }),
+		);
+		await withFileOperationRetry(() =>
+			fs.writeFile(metaTmp, JSON.stringify(meta), { encoding: "utf8" }),
+		);
+		await withFileOperationRetry(() => fs.rename(contentTmp, cacheFile));
+		await withFileOperationRetry(() => fs.rename(metaTmp, cacheMetaFile));
+	} finally {
+		// Route cleanup through withFileOperationRetry too: a transient Windows
+		// EBUSY/EPERM/ENOTEMPTY/EACCES from antivirus/the indexer/a concurrent
+		// reader on the temp sibling would otherwise leak a *.tmp file. force:true
+		// keeps ENOENT (already-renamed) a no-op; the catch swallows a persistent
+		// failure so cleanup never masks a successful write.
+		await withFileOperationRetry(() => fs.rm(contentTmp, { force: true })).catch(
+			() => undefined,
+		);
+		await withFileOperationRetry(() => fs.rm(metaTmp, { force: true })).catch(
+			() => undefined,
+		);
+	}
+}
 
 const GITHUB_API_RELEASES =
 	"https://api.github.com/repos/openai/codex/releases/latest";
@@ -116,9 +174,12 @@ async function getLatestReleaseTag(): Promise<string> {
 	}
 
 	try {
-		const response = await fetch(GITHUB_API_RELEASES);
+		const response = await fetchWithTimeout(GITHUB_API_RELEASES, { json: true });
 		if (response.ok) {
-			const data = (await response.json()) as GitHubRelease;
+			// Guard the body read: the fetch AbortSignal only covers connect+headers
+			// (see fetch-utils), so a release API response that stalls mid-body would
+			// otherwise hang getLatestReleaseTag() indefinitely on this blocking path.
+			const data = (await withBodyTimeout(response, response.json())) as GitHubRelease;
 			if (data.tag_name) {
 				latestReleaseTagCache = {
 					tag: data.tag_name,
@@ -131,7 +192,7 @@ async function getLatestReleaseTag(): Promise<string> {
 		// Fall through to HTML fallback
 	}
 
-	const htmlResponse = await fetch(GITHUB_HTML_RELEASES);
+	const htmlResponse = await fetchWithTimeout(GITHUB_HTML_RELEASES);
 	if (!htmlResponse.ok) {
 		throw new Error(
 			`Failed to fetch latest release: ${htmlResponse.status}`,
@@ -151,7 +212,8 @@ async function getLatestReleaseTag(): Promise<string> {
 		}
 	}
 
-	const html = await htmlResponse.text();
+	// Same mid-body-stall guard as the JSON path above for the HTML fallback.
+	const html = await withBodyTimeout(htmlResponse, htmlResponse.text());
 	const match = html.match(/\/openai\/codex\/releases\/tag\/([^"]+)/);
 	if (match && match[1]) {
 		const tag = match[1];
@@ -206,21 +268,48 @@ export async function getCodexInstructions(
 		}
 	}
 
+	// prompts-03: once we know the disk content fails its sha256, it must not be
+	// trusted anywhere downstream — not served, not used as the 304 revalidation
+	// body, and not used as the offline fallback in the catch below. Track a
+	// "usable" view of the disk content separate from the raw read.
+	let usableDiskContent = diskContent;
+
 	if (diskContent && cachedMetadata?.lastChecked) {
-		if (now - cachedMetadata.lastChecked < CACHE_TTL_MS) {
+		// prompts-03: a sha256 mismatch means a corrupted/tampered cache — discard it
+		// everywhere (not served, not the 304 body, not the offline fallback). A
+		// MISSING sha (pre-upgrade legacy cache) is merely *unverified*: it must not
+		// be fast-path served and must not drive conditional revalidation (a 304
+		// would mint a fresh digest over un-vetted bytes), so we force one full 200
+		// fetch to establish trust — but we keep the old bytes as an offline fallback
+		// in case that fetch fails.
+		const priorSha = cachedMetadata.sha256;
+		if (!priorSha) {
+			// Unverified legacy entry: clear meta so no If-None-Match is sent and the
+			// cache isn't served as-is; retain usableDiskContent for offline fallback.
+			cachedMetadata = null;
+		} else if (priorSha !== sha256(diskContent)) {
+			logWarn(`Discarding corrupt prompt cache for ${modelFamily} (sha256 mismatch)`);
+			// Force a full refetch: drop the corrupt body so it cannot be served or
+			// used as the catch fallback, and clear the cached metadata so no
+			// If-None-Match is sent (a 304 would otherwise re-serve and re-bless the
+			// exact corrupt content this check is meant to reject).
+			usableDiskContent = null;
+			cachedMetadata = null;
+		} else if (now - cachedMetadata.lastChecked < CACHE_TTL_MS) {
 			setCacheEntry(modelFamily, { content: diskContent, timestamp: now });
 			return diskContent;
+		} else {
+			// Stale-while-revalidate: return stale cache immediately and refresh in background.
+			setCacheEntry(modelFamily, { content: diskContent, timestamp: now });
+			void refreshInstructionsInBackground(
+				modelFamily,
+				promptFile,
+				cacheFile,
+				cacheMetaFile,
+				cachedMetadata,
+			);
+			return diskContent;
 		}
-		// Stale-while-revalidate: return stale cache immediately and refresh in background.
-		setCacheEntry(modelFamily, { content: diskContent, timestamp: now });
-		void refreshInstructionsInBackground(
-			modelFamily,
-			promptFile,
-			cacheFile,
-			cacheMetaFile,
-			cachedMetadata,
-		);
-		return diskContent;
 	}
 
 	if (cached && now - cached.timestamp >= CACHE_TTL_MS) {
@@ -250,10 +339,10 @@ export async function getCodexInstructions(
 			`Failed to fetch ${modelFamily} instructions from GitHub: ${err.message}`,
 		);
 
-		if (diskContent) {
+		if (usableDiskContent) {
 			logWarn(`Using cached ${modelFamily} instructions`);
-			setCacheEntry(modelFamily, { content: diskContent, timestamp: now });
-			return diskContent;
+			setCacheEntry(modelFamily, { content: usableDiskContent, timestamp: now });
+			return usableDiskContent;
 		}
 
 		logWarn(`Falling back to bundled instructions for ${modelFamily}`);
@@ -287,50 +376,57 @@ async function fetchAndPersistInstructions(
 		headers["If-None-Match"] = cachedETag;
 	}
 
-	const response = await fetch(instructionsUrl, { headers });
-	if (response.status === 304) {
+	const response = await fetchWithTimeout(instructionsUrl, { headers });
+	// A 304 is only meaningful if we actually sent a conditional request. When the
+	// caller cleared the metadata (e.g. an sha256 mismatch forced a full refetch),
+	// cachedETag is null and no If-None-Match was sent, so a 304 here cannot be
+	// trusted to describe our disk content — fall through to the error path rather
+	// than re-serving (and re-blessing) whatever is on disk.
+	if (response.status === 304 && cachedETag) {
 		const diskContent = await readFileOrNull(cacheFile);
-		if (diskContent) {
+		// Only re-serve the disk content if it still matches the integrity hash we
+		// had on record. Recomputing and trusting the hash unconditionally would
+		// launder tampered bytes; verifying against the prior sha closes that.
+		const priorSha = cachedMetadata?.sha256;
+		// Require a prior sha to trust a 304: without one the on-disk bytes are
+		// unverified, so re-serving them and minting a fresh digest would launder
+		// un-vetted content. A missing sha forces the full-fetch path below.
+		const diskIntegrityOk =
+			diskContent !== null && !!priorSha && priorSha === sha256(diskContent);
+		if (diskContent && diskIntegrityOk) {
 			setCacheEntry(modelFamily, { content: diskContent, timestamp: Date.now() });
-			await fs.mkdir(CACHE_DIR, { recursive: true });
-			await fs.writeFile(
-				cacheMetaFile,
-				JSON.stringify(
-					{
-						etag: cachedETag,
-						tag: latestTag,
-						lastChecked: Date.now(),
-						url: instructionsUrl,
-					} satisfies CacheMetadata,
-				),
-				"utf8",
-			);
+			// Refresh the meta (lastChecked) atomically and re-affirm the content sha
+			// so a 304 keeps the integrity record in sync with the on-disk content.
+			await writeCacheAtomically(cacheFile, cacheMetaFile, diskContent, {
+				etag: cachedETag,
+				tag: latestTag,
+				lastChecked: Date.now(),
+				url: instructionsUrl,
+				sha256: sha256(diskContent),
+			});
 			return diskContent;
 		}
+		// 304 but the disk content is missing or fails its integrity check: treat as
+		// a fetch failure so the caller falls back to bundled instructions.
+		throw new Error("304 revalidation failed integrity check");
 	}
 
 	if (!response.ok) {
 		throw new Error(`HTTP ${response.status}`);
 	}
 
-	const instructions = await response.text();
+	// Size-cap + reject empty bodies (prompts-04/05) before caching/serving.
+	const instructions = await readBodyTextGuarded(response);
 	const newETag = response.headers.get("etag");
-	await fs.mkdir(CACHE_DIR, { recursive: true });
-	await Promise.all([
-		fs.writeFile(cacheFile, instructions, "utf8"),
-		fs.writeFile(
-			cacheMetaFile,
-			JSON.stringify(
-				{
-					etag: newETag,
-					tag: latestTag,
-					lastChecked: Date.now(),
-					url: instructionsUrl,
-				} satisfies CacheMetadata,
-			),
-			"utf8",
-		),
-	]);
+	// prompts-03/06: write content + meta atomically with a content sha256 so the
+	// cache cannot tear and can be integrity-checked on the next read.
+	await writeCacheAtomically(cacheFile, cacheMetaFile, instructions, {
+		etag: newETag,
+		tag: latestTag,
+		lastChecked: Date.now(),
+		url: instructionsUrl,
+		sha256: sha256(instructions),
+	});
 	setCacheEntry(modelFamily, { content: instructions, timestamp: Date.now() });
 	return instructions;
 }

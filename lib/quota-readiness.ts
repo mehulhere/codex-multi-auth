@@ -3,7 +3,7 @@ import type { AccountMetadataV3 } from "./storage.js";
 
 export type QuotaCacheAccountRef = Pick<AccountMetadataV3, "accountId" | "email">;
 
-type QuotaWindowLike = Pick<QuotaCacheWindow, "usedPercent" | "resetAtMs">;
+type QuotaWindowLike = Pick<QuotaCacheWindow, "usedPercent" | "resetAtMs" | "windowMinutes">;
 
 export function normalizeQuotaAccountId(value: string | undefined): string | null {
 	const trimmed = value?.trim();
@@ -77,8 +77,23 @@ export function quotaLeftPercentFromUsed(
 function quotaWindowIsExhausted(
 	window: QuotaWindowLike | undefined,
 	now = Date.now(),
+	updatedAt?: number,
 ): boolean {
 	if (typeof window?.resetAtMs === "number" && now >= window.resetAtMs) {
+		return false;
+	}
+	// quota-forecast-02: a window can be 100% used with NO resetAtMs. Without a
+	// staleness escape that reads as "exhausted forever". When we know when the
+	// snapshot was taken (updatedAt) and the window length (windowMinutes),
+	// synthesize a conservative expiry: once a full window has elapsed since the
+	// snapshot, the window must have rolled over, so stop treating it as exhausted.
+	if (
+		typeof window?.resetAtMs !== "number" &&
+		typeof updatedAt === "number" &&
+		typeof window?.windowMinutes === "number" &&
+		window.windowMinutes > 0 &&
+		now >= updatedAt + window.windowMinutes * 60_000
+	) {
 		return false;
 	}
 	const leftPercent = quotaLeftPercentFromUsed(window?.usedPercent);
@@ -86,14 +101,15 @@ function quotaWindowIsExhausted(
 }
 
 export function isQuotaCacheEntryExhausted(
-	entry: Pick<QuotaCacheEntry, "primary" | "secondary"> | null | undefined,
+	entry: Pick<QuotaCacheEntry, "primary" | "secondary"> & { updatedAt?: number } | null | undefined,
 	now = Date.now(),
 ): boolean {
 	// Codex quota windows are cumulative gates: a 0% remaining active window blocks use
 	// even if another window still has quota left.
+	const updatedAt = entry?.updatedAt;
 	return (
-		quotaWindowIsExhausted(entry?.primary, now) ||
-		quotaWindowIsExhausted(entry?.secondary, now)
+		quotaWindowIsExhausted(entry?.primary, now, updatedAt) ||
+		quotaWindowIsExhausted(entry?.secondary, now, updatedAt)
 	);
 }
 

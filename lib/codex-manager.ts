@@ -19,6 +19,7 @@ import {
 	REDIRECT_URI,
 } from "./auth/auth.js";
 import { runDeviceAuthFlow } from "./auth/device-auth.js";
+import { resolveOrgOverride } from "./auth/org-override.js";
 import {
 	copyTextToClipboard,
 	isBrowserLaunchSuppressed,
@@ -37,6 +38,7 @@ import {
 	runBestCommand,
 } from "./codex-manager/commands/best.js";
 import { runAccountCommand } from "./codex-manager/commands/account.js";
+import { ACCOUNT_MANAGER_COMMANDS } from "./codex-manager/account-manager-commands.js";
 import { runBudgetCommand } from "./codex-manager/commands/budget.js";
 import { runBridgeCommand } from "./codex-manager/commands/bridge.js";
 import { runCheckCommand } from "./codex-manager/commands/check.js";
@@ -201,36 +203,6 @@ type TokenSuccessWithAccount = TokenSuccess & {
 };
 type PromptTone = "accent" | "success" | "warning" | "danger" | "muted";
 const log = createLogger("codex-manager");
-const ACCOUNT_MANAGER_COMMANDS = new Set([
-	"login",
-	"list",
-	"status",
-	"switch",
-	"unpin",
-	"workspace",
-	"best",
-	"check",
-	"features",
-	"usage",
-	"verify-flagged",
-	"verify",
-	"forecast",
-	"report",
-	"fix",
-	"doctor",
-	"uninstall",
-	"account",
-	"budget",
-	"bridge",
-	"integrations",
-	"models",
-	"monitor",
-	"rotation",
-	"why-selected",
-	"config",
-	"init-config",
-	"debug",
-]);
 
 interface ModelInspection {
 	requested: string;
@@ -1286,10 +1258,20 @@ async function syncCodexCliActiveSelectionIfDrifted(
 	}
 }
 
+/**
+ * Resolve the account-id selection for freshly-minted tokens.
+ *
+ * The org-override precedence (explicit `login --org` wins over the ambient
+ * CODEX_AUTH_ACCOUNT_ID env, for this call only) lives in the internal
+ * lib/auth/org-override.ts module so it can be unit-tested without exporting this
+ * CLI-internal function. Threading the org as a parameter avoids mutating
+ * process.env for the duration of a login, which raced on concurrent re-entry.
+ */
 function resolveAccountSelection(
 	tokens: TokenSuccess,
+	orgOverride?: string,
 ): TokenSuccessWithAccount {
-	const override = (process.env.CODEX_AUTH_ACCOUNT_ID ?? "").trim();
+	const override = resolveOrgOverride(orgOverride);
 	if (override) {
 		return {
 			...tokens,
@@ -2790,25 +2772,13 @@ async function runAuthLogin(args: string[]): Promise<number> {
 	const loginOptions = parsedArgs.options;
 	// `--org <id>` binds this login to a specific workspace/org so the same
 	// email's personal vs business/team workspace can be registered on demand
-	// (issue #491). It reuses the CODEX_AUTH_ACCOUNT_ID override that every login
-	// resolver already honors. Scope it to this invocation and restore the prior
-	// value in a finally so a later login in the same process (menu re-entry, a
-	// reused test worker) is never silently bound to a stale org.
-	if (!loginOptions.org) {
-		return runAuthLoginFlow(loginOptions);
+	// (issue #491). The org is threaded explicitly into resolveAccountSelection
+	// (no process.env mutation), so concurrent re-entry (menu re-entry, a reused
+	// test worker) can never bind a login to a stale org via a shared global.
+	if (loginOptions.org) {
+		console.log(`Binding this login to workspace org id: ${loginOptions.org}`);
 	}
-	const previousAccountIdOverride = process.env.CODEX_AUTH_ACCOUNT_ID;
-	process.env.CODEX_AUTH_ACCOUNT_ID = loginOptions.org;
-	console.log(`Binding this login to workspace org id: ${loginOptions.org}`);
-	try {
-		return await runAuthLoginFlow(loginOptions);
-	} finally {
-		if (previousAccountIdOverride === undefined) {
-			delete process.env.CODEX_AUTH_ACCOUNT_ID;
-		} else {
-			process.env.CODEX_AUTH_ACCOUNT_ID = previousAccountIdOverride;
-		}
-	}
+	return runAuthLoginFlow(loginOptions);
 }
 
 async function runAuthLoginFlow(
@@ -3191,7 +3161,7 @@ async function runAuthLoginFlow(
 				return 1;
 			}
 
-			const resolved = resolveAccountSelection(tokenResult);
+			const resolved = resolveAccountSelection(tokenResult, loginOptions.org);
 			await persistAccountPool([resolved], false);
 			await syncSelectionToCodex(resolved);
 
@@ -3573,6 +3543,7 @@ export async function runCodexMultiAuthCli(rawArgs: string[]): Promise<number> {
 					.catch(() => null),
 			loadAppHelperStatus: readAppRuntimeHelperAccountSignal,
 			loadQuotaCache,
+			json: rest.includes("--json") || rest.includes("-j"),
 		});
 	}
 	if (command === "switch") {

@@ -400,6 +400,47 @@ function isLookalikeSibling(baseDir: string, targetPath: string): boolean {
 	return boundary !== sep && boundary !== "/" && boundary !== "\\";
 }
 
+/**
+ * Canonicalize the deepest existing ancestor of `targetPath` via realpath so a
+ * symlink inside an approved root that points outside it cannot pass the purely
+ * lexical containment check (storage-02). We canonicalize the nearest existing
+ * ancestor (the target itself may not exist yet for export/write paths) and join
+ * the remaining non-existent segments back on. Returns the original path if
+ * realpath is unavailable/fails, so behavior degrades to the lexical guard rather
+ * than throwing spuriously.
+ */
+function canonicalizeExistingPrefix(targetPath: string): string {
+	let current = targetPath;
+	const trailing: string[] = [];
+	// Walk up until we find a path component that exists on disk.
+	//
+	// The 4096 cap is a defensive upper bound on path depth, chosen to exceed any
+	// real filesystem path: Linux PATH_MAX is ~4096 *bytes* total (so far fewer
+	// components), and Windows is 260 (legacy MAX_PATH) up to 32767 with long-path
+	// support — none of which approach 4096 nested directories. It exists purely so
+	// a pathological input (e.g. a crafted string of separators) can never spin this
+	// loop forever; the `parent === current` root check below is the normal exit.
+	// Keep the bound: each iteration performs an existsSync syscall, which is slow on
+	// Windows when antivirus filter drivers or network/UNC drives are in play, so we
+	// must not let the walk run unbounded.
+	for (let i = 0; i < 4096; i++) {
+		if (existsSync(current)) break;
+		const parent = dirname(current);
+		if (parent === current) {
+			// Reached the filesystem root without finding an existing ancestor.
+			return targetPath;
+		}
+		trailing.unshift(basename(current));
+		current = parent;
+	}
+	try {
+		const realBase = realpathSync(current);
+		return trailing.length > 0 ? join(realBase, ...trailing) : realBase;
+	} catch {
+		return targetPath;
+	}
+}
+
 export function resolvePath(filePath: string): string {
 	let resolved: string;
 	if (filePath.startsWith("~")) {
@@ -435,6 +476,56 @@ export function resolvePath(filePath: string): string {
 		throw new Error(
 			`Access denied: path must be within home directory, project directory, or temp directory`,
 		);
+	}
+
+	// storage-02: re-verify containment against the realpath-canonicalized path so
+	// a symlink within an approved root that resolves outside it is rejected. If
+	// the lexical guard passed but the canonical path escapes every approved root,
+	// the path is a symlink-escape and must be denied.
+	//
+	// Performance note (deliberate correctness-over-speed tradeoff): this block can
+	// invoke canonicalizeExistingPrefix up to four times per resolvePath call — once
+	// for the target, then for home, projectRoot, and tmp when the canonical target
+	// differs from the raw one. Each call walks the directory tree with existsSync +
+	// realpathSync, so on Windows (AV filter drivers, UNC/network drives) and for deep
+	// paths this is many syscalls. We accept that cost: resolvePath is the security
+	// boundary for all file access, and canonicalizing every approved root is what lets
+	// us reject genuine symlink escapes without falsely denying legitimate files under a
+	// root that is itself reached via a symlink (e.g. macOS /var -> /private/var). The
+	// roots are few and shallow, so the extra walks stay bounded in practice.
+	const canonical = canonicalizeExistingPrefix(resolved);
+	if (canonical !== resolved) {
+		// Compare the canonical target against CANONICAL roots, not the raw ones:
+		// an approved root can itself live under a symlink (e.g. macOS tmpdir
+		// /var/folders/... realpaths to /private/var/folders/...). Comparing a
+		// canonicalized target against a non-canonical root would falsely reject a
+		// legitimate file under that root. Canonicalizing both sides keeps the
+		// symlink-escape rejection while avoiding that false denial.
+		const canonicalHome = canonicalizeExistingPrefix(home);
+		const canonicalProjectRoot = canonicalizeExistingPrefix(projectRoot);
+		const canonicalTmp = canonicalizeExistingPrefix(tmp);
+		const escapesRawRoots =
+			isLookalikeSibling(home, canonical) ||
+			isLookalikeSibling(projectRoot, canonical) ||
+			isLookalikeSibling(tmp, canonical) ||
+			(!isWithinDirectory(home, canonical) &&
+				!isWithinDirectory(projectRoot, canonical) &&
+				!isWithinDirectory(tmp, canonical));
+		const escapesCanonicalRoots =
+			isLookalikeSibling(canonicalHome, canonical) ||
+			isLookalikeSibling(canonicalProjectRoot, canonical) ||
+			isLookalikeSibling(canonicalTmp, canonical) ||
+			(!isWithinDirectory(canonicalHome, canonical) &&
+				!isWithinDirectory(canonicalProjectRoot, canonical) &&
+				!isWithinDirectory(canonicalTmp, canonical));
+		// Only deny when the canonical target is outside BOTH the raw and the
+		// canonical root sets — i.e. it is a genuine escape, not just a root that
+		// happens to be reached via a symlink.
+		if (escapesRawRoots && escapesCanonicalRoots) {
+			throw new Error(
+				`Access denied: path resolves (via symlink) outside the home, project, or temp directory`,
+			);
+		}
 	}
 
 	return resolved;

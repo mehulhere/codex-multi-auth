@@ -1,7 +1,7 @@
 import { promises as fs } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
 	exportAccountsToFile,
 	mergeImportedAccounts,
@@ -10,6 +10,11 @@ import {
 import { removeWithRetry } from "./helpers/remove-with-retry.js";
 
 describe("import export helpers", () => {
+	afterEach(() => {
+		vi.restoreAllMocks();
+		vi.useRealTimers();
+	});
+
 	it("merges imported accounts with dedupe guardrails", () => {
 		const result = mergeImportedAccounts({
 			existing: {
@@ -111,4 +116,57 @@ describe("import export helpers", () => {
 			await removeWithRetry(root, { recursive: true, force: true });
 		}
 	});
+
+	it.each([
+		// storage-07: prove renameExportFileWithRetry honours the widened shared
+		// retryable set (ENOTEMPTY/EACCES) via shouldRetryFileOperation, not just
+		// the legacy EPERM/EBUSY/EAGAIN subset.
+		"ENOTEMPTY",
+		"EACCES",
+	] as const)(
+		"retries transient %s errors when committing the export",
+		async (code) => {
+			// Stub the staging writes so the test does not touch real disk and so
+			// fake timers can drain the rename backoff deterministically.
+			const mkdirSpy = vi.spyOn(fs, "mkdir");
+			mkdirSpy.mockResolvedValue(undefined as never);
+			const writeFileSpy = vi.spyOn(fs, "writeFile");
+			writeFileSpy.mockResolvedValue(undefined);
+
+			vi.useFakeTimers();
+			const renameSpy = vi.spyOn(fs, "rename");
+			let attempts = 0;
+			renameSpy.mockImplementation(async () => {
+				if (attempts < 1) {
+					attempts += 1;
+					const error = new Error(code) as NodeJS.ErrnoException;
+					error.code = code;
+					throw error;
+				}
+				return undefined;
+			});
+			const logInfo = vi.fn();
+
+			const exportPromise = exportAccountsToFile({
+				resolvedPath: join(tmpdir(), "codex-import-export-retry.json"),
+				force: true,
+				storage: {
+					version: 3,
+					accounts: [{ refreshToken: "token-a" }],
+					activeIndex: 0,
+					activeIndexByFamily: {},
+				},
+				logInfo,
+			});
+
+			await vi.runAllTimersAsync();
+			await expect(exportPromise).resolves.toBeUndefined();
+			// Failed attempt + successful retry => rename called more than once.
+			expect(renameSpy).toHaveBeenCalledTimes(2);
+			expect(logInfo).toHaveBeenCalledWith("Exported accounts", {
+				path: join(tmpdir(), "codex-import-export-retry.json"),
+				count: 1,
+			});
+		},
+	);
 });

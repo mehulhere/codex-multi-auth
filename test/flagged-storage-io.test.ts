@@ -19,6 +19,8 @@ describe("flagged storage io helpers", () => {
 	});
 
 	afterEach(async () => {
+		vi.restoreAllMocks();
+		vi.useRealTimers();
 		try {
 			await fs.rm(testTmpRoot, { recursive: true, force: true });
 		} catch {
@@ -73,4 +75,50 @@ describe("flagged storage io helpers", () => {
 			}),
 		).resolves.toBeUndefined();
 	});
+
+	it.each([
+		// storage-07: prove unlinkWithRetry honours the widened shared retryable
+		// set (ENOTEMPTY/EACCES), not just the legacy EBUSY subset.
+		"ENOTEMPTY",
+		"EACCES",
+	] as const)(
+		"retries transient %s errors while clearing flagged storage",
+		async (code) => {
+			// Marker write is a real fs.writeFile; stub it so the test does not
+			// depend on real disk I/O and so fake timers can drain the retry
+			// backoff without racing a live write.
+			const writeFileSpy = vi.spyOn(fs, "writeFile");
+			writeFileSpy.mockResolvedValue(undefined);
+
+			vi.useFakeTimers();
+			const unlinkSpy = vi.spyOn(fs, "unlink");
+			let attempts = 0;
+			unlinkSpy.mockImplementation(async (targetPath) => {
+				if (String(targetPath).endsWith("tmp-flagged.json") && attempts < 1) {
+					attempts += 1;
+					const error = new Error(code) as NodeJS.ErrnoException;
+					error.code = code;
+					throw error;
+				}
+				return undefined as never;
+			});
+
+			const clearPromise = clearFlaggedAccountsOnDisk({
+				path: join(testTmpRoot, "tmp-flagged.json"),
+				markerPath: join(testTmpRoot, "tmp-flagged.marker"),
+				backupPaths: [],
+				logError: vi.fn(),
+			});
+
+			await vi.runAllTimersAsync();
+			await expect(clearPromise).resolves.toBeUndefined();
+			// Retried at least once on the primary path (failed attempt + retry)
+			// plus the marker unlink, so the spy fires more than once overall.
+			expect(unlinkSpy.mock.calls.length).toBeGreaterThan(1);
+			const primaryUnlinkCalls = unlinkSpy.mock.calls.filter((call) =>
+				String(call[0]).endsWith("tmp-flagged.json"),
+			);
+			expect(primaryUnlinkCalls.length).toBeGreaterThan(1);
+		},
+	);
 });

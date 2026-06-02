@@ -1,5 +1,6 @@
 import { promises as fs } from "node:fs";
 import { dirname } from "node:path";
+import { withFileOperationRetry } from "./fs-retry.js";
 import {
 	type OcChatgptMergePreview,
 	type OcChatgptPreviewPayload,
@@ -38,7 +39,21 @@ type OcChatgptSyncPlanReady = {
 	destination: AccountStorageV3 | null;
 };
 
-export type OcChatgptSyncPlanResult = OcChatgptSyncPlanReady | BlockedDetection;
+// chatgpt-import-06: a structured error result so planOcChatgptSync can report a
+// failure to load/preview the target (e.g. a corrupt destination file) the same
+// way applyOcChatgptSync already does, instead of throwing an uncaught error out
+// of the planning step.
+type OcChatgptSyncPlanError = {
+	kind: "plan-error";
+	target: OcChatgptTargetDescriptor;
+	error: unknown;
+	cause: "load" | "preview";
+};
+
+export type OcChatgptSyncPlanResult =
+	| OcChatgptSyncPlanReady
+	| BlockedDetection
+	| OcChatgptSyncPlanError;
 
 type DetectOptions = {
 	explicitRoot?: string | null;
@@ -103,16 +118,29 @@ export async function planOcChatgptSync(
 	}
 
 	const descriptor = detection.descriptor;
-	const destination =
-		options.destination === undefined
-			? await (
-					options.dependencies?.loadTargetStorage ?? loadTargetStorageDefault
-				)(descriptor)
-			: options.destination;
-	const preview = previewMerge({
-		source: options.source,
-		destination,
-	});
+	let destination: AccountStorageV3 | null;
+	try {
+		destination =
+			options.destination === undefined
+				? await (
+						options.dependencies?.loadTargetStorage ?? loadTargetStorageDefault
+					)(descriptor)
+				: options.destination;
+	} catch (error) {
+		// chatgpt-import-06: a corrupt/unreadable destination must not throw out of
+		// planning; return a structured error like applyOcChatgptSync does.
+		return { kind: "plan-error", target: descriptor, error, cause: "load" };
+	}
+
+	let preview: OcChatgptMergePreview;
+	try {
+		preview = previewMerge({
+			source: options.source,
+			destination,
+		});
+	} catch (error) {
+		return { kind: "plan-error", target: descriptor, error, cause: "preview" };
+	}
 
 	return {
 		kind: "ready",
@@ -158,8 +186,45 @@ async function persistMergedDefault(
 	merged: AccountStorageV3,
 ): Promise<string> {
 	const path = target.accountPath;
-	await fs.mkdir(dirname(path), { recursive: true });
-	await fs.writeFile(path, `${JSON.stringify(merged, null, 2)}\n`, "utf-8");
+	// The merged file embeds raw refresh tokens for every account and overwrites the
+	// live, watched account store. Write atomically (temp + rename) at mode 0o600 so a
+	// crash mid-write cannot truncate the destination and the secrets are never created
+	// at the process umask. Create the parent at 0o700 too (matching auth-01) so the
+	// directory is not world-listable — otherwise other users could enumerate the
+	// filenames, including the `.tmp` intermediary that briefly holds the same secrets.
+	const dir = dirname(path);
+	await fs.mkdir(dir, { recursive: true, mode: 0o700 });
+	// mkdir's `mode` is ignored on an already-existing dir and on win32; on POSIX
+	// re-assert 0o700 so a pre-existing loose-perm dir is tightened (matches the
+	// refresh-lease hardening). win32 relies on the user-profile ACL like the main
+	// account store does — POSIX bits are not enforced there.
+	if (process.platform !== "win32") {
+		await fs.chmod(dir, 0o700).catch(() => undefined);
+	}
+	const tempPath = `${path}.${Date.now()}.${Math.random().toString(36).slice(2, 8)}.tmp`;
+	const content = `${JSON.stringify(merged, null, 2)}\n`;
+	try {
+		await fs.writeFile(tempPath, content, { encoding: "utf-8", mode: 0o600 });
+		if (process.platform !== "win32") {
+			await fs.chmod(tempPath, 0o600).catch(() => undefined);
+		}
+		// Route the atomic rename through withFileOperationRetry: on Windows the
+		// destination is a live, watched store, so a concurrent reader/indexer can
+		// hold it briefly and surface EBUSY/EPERM/ENOTEMPTY/EACCES. Retrying with
+		// backoff turns a transient lock into a successful merge instead of a
+		// spurious error (mirrors the account-save path).
+		await withFileOperationRetry(() => fs.rename(tempPath, path));
+	} finally {
+		try {
+			// Route cleanup through withFileOperationRetry too: if the rename failed
+			// and a transient Windows EBUSY/EPERM lingers, a single-shot unlink would
+			// leave a secret-bearing .tmp next to the live account store. force:true
+			// keeps ENOENT (rename already consumed it) a no-op.
+			await withFileOperationRetry(() => fs.rm(tempPath, { force: true }));
+		} catch {
+			// Best-effort temp cleanup; rename success removes it, ENOENT is expected.
+		}
+	}
 	return path;
 }
 
@@ -179,6 +244,10 @@ export async function applyOcChatgptSync(
 			},
 		});
 
+		if (plan.kind === "plan-error") {
+			// Map the structured planning error onto the apply error variant.
+			return { kind: "error", target: plan.target, error: plan.error };
+		}
 		if (plan.kind !== "ready") {
 			return plan;
 		}

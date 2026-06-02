@@ -19,6 +19,14 @@ export interface LocalBridgeOptions {
 	fetchImpl?: typeof fetch;
 	requireAuth?: boolean;
 	verifyBearerToken?: typeof verifyLocalClientBearerToken;
+	/**
+	 * Client API key for an auth-enabled runtime proxy (runtime-proxy-03). When
+	 * set, the bridge replaces the inbound client's Authorization with this key on
+	 * the forwarded request, so it can talk to a runtime proxy that requires a
+	 * per-process client token. The inbound request is still authenticated by the
+	 * bridge's own verifyBearerToken check first.
+	 */
+	runtimeClientApiKey?: string;
 }
 
 const DEFAULT_HOST = "127.0.0.1";
@@ -38,7 +46,35 @@ const DECODED_UPSTREAM_RESPONSE_HEADERS = new Set(["content-encoding"]);
 
 function isLoopbackHost(host: string): boolean {
 	const normalized = host.trim().toLowerCase();
-	return normalized === "127.0.0.1" || normalized === "localhost" || normalized === "::1";
+	return (
+		normalized === "127.0.0.1" ||
+		normalized === "localhost" ||
+		normalized === "::1" ||
+		// new URL("http://[::1]:port").hostname yields the bracketed form, so the
+		// IPv6 loopback runtime proxy must match here too (mirrors the guard in
+		// lib/runtime-rotation-proxy.ts). Without this, a valid [::1] runtimeBaseUrl
+		// is falsely rejected as non-loopback.
+		normalized === "[::1]"
+	);
+}
+
+/** Strip surrounding brackets from an IPv6 literal: "[::1]" -> "::1". */
+function stripIpv6Brackets(host: string): string {
+	const trimmed = host.trim();
+	return trimmed.startsWith("[") && trimmed.endsWith("]")
+		? trimmed.slice(1, -1)
+		: trimmed;
+}
+
+/** Raw literal for server.listen (IPv6 must be unbracketed: "::1", not "[::1]"). */
+function toBindHost(host: string): string {
+	return stripIpv6Brackets(host);
+}
+
+/** Authority for a URL: IPv6 must be bracketed ("[::1]"), IPv4/hostnames as-is. */
+function toUrlHost(host: string): string {
+	const bare = stripIpv6Brackets(host);
+	return bare.includes(":") ? `[${bare}]` : bare;
 }
 
 function responseHeadersForClient(headers: Headers): Headers {
@@ -51,12 +87,27 @@ function responseHeadersForClient(headers: Headers): Headers {
 	return result;
 }
 
-function forwardHeaders(headers: Headers): Headers {
+function forwardHeaders(headers: Headers, runtimeClientApiKey?: string): Headers {
 	const result = new Headers(headers);
 	for (const key of HOP_BY_HOP_HEADERS) {
 		result.delete(key);
 	}
 	result.delete("host");
+	// runtime-proxy-02: never forward inbound client credentials upstream. Beyond
+	// Authorization (handled below), an inbound `x-api-key` would also leak the
+	// caller's local credential across the bridge boundary and could change which
+	// auth the runtime proxy evaluates — strip it unconditionally.
+	result.delete("x-api-key");
+	// runtime-proxy-03: present the runtime proxy's client token. We replace the
+	// inbound client's Authorization (already validated by the bridge) rather than
+	// forwarding it verbatim, so the bridge can authenticate to an auth-enabled
+	// runtime proxy. When no key is configured, strip any inbound Authorization to
+	// avoid leaking the caller's bridge token upstream (runtime-proxy-02).
+	if (runtimeClientApiKey && runtimeClientApiKey.trim().length > 0) {
+		result.set("authorization", `Bearer ${runtimeClientApiKey.trim()}`);
+	} else {
+		result.delete("authorization");
+	}
 	return result;
 }
 
@@ -132,14 +183,48 @@ export async function startLocalBridge(
 	if (!isLoopbackHost(host)) {
 		throw new Error("Local bridge only supports loopback hosts.");
 	}
+	// Normalize once: server.listen needs the raw IPv6 literal ("::1"), while the
+	// emitted baseUrl / request URL authority needs the bracketed form ("[::1]").
+	// Using the raw host for both (the prior bug) made "[::1]" fail the bind and
+	// "::1" produce an invalid "http://::1:port".
+	const bindHost = toBindHost(host);
+	const urlHost = toUrlHost(host);
 	const runtimeBaseUrl = options.runtimeBaseUrl.trim().replace(/\/+$/, "");
 	if (!runtimeBaseUrl) {
 		throw new Error("Local bridge requires a runtimeBaseUrl.");
+	}
+	// Egress guard (runtime-proxy-02): the bridge forwards the caller's bearer token
+	// to runtimeBaseUrl. That target must be the loopback runtime proxy, never an
+	// arbitrary remote host — otherwise a misconfigured base URL would exfiltrate the
+	// local client token (and, downstream, managed account material) off-box.
+	let runtimeHost: string;
+	try {
+		runtimeHost = new URL(runtimeBaseUrl).hostname;
+	} catch {
+		throw new Error(`Local bridge runtimeBaseUrl is not a valid URL: ${runtimeBaseUrl}`);
+	}
+	if (!isLoopbackHost(runtimeHost)) {
+		throw new Error(
+			`Local bridge refuses to forward to non-loopback runtimeBaseUrl host "${runtimeHost}". ` +
+				"It must target the loopback runtime proxy.",
+		);
 	}
 	const port = options.port ?? 0;
 	const fetchImpl = options.fetchImpl ?? (undiciFetch as typeof fetch);
 	const requireAuth = options.requireAuth ?? true;
 	const verifyBearerToken = options.verifyBearerToken ?? verifyLocalClientBearerToken;
+	const runtimeClientApiKey = options.runtimeClientApiKey?.trim() || undefined;
+	if (runtimeClientApiKey && !requireAuth) {
+		// Security: forwarding a runtime client key while accepting unauthenticated
+		// inbound requests turns the bridge into an open local capability proxy —
+		// any local process that can reach the loopback port gets upstream access
+		// for free. The runtime-proxy-03 feature (inject a client key to reach an
+		// auth-enabled proxy) is only safe when inbound auth is also required, so
+		// fail fast on this combination rather than silently granting it.
+		throw new Error(
+			"Local bridge requires requireAuth=true when runtimeClientApiKey is configured.",
+		);
+	}
 	const app = new Hono();
 
 	app.get("/health", (context) =>
@@ -180,7 +265,7 @@ export async function startLocalBridge(
 		try {
 			upstream = await fetchImpl(targetUrl, {
 				method: request.method,
-				headers: forwardHeaders(request.headers),
+				headers: forwardHeaders(request.headers, runtimeClientApiKey),
 				body:
 					request.method === "GET" || request.method === "HEAD"
 						? undefined
@@ -239,7 +324,7 @@ export async function startLocalBridge(
 	const server = createServer((req, res) => {
 		void (async () => {
 			try {
-				const webRequest = await toWebRequest(req, host, resolvedPort);
+				const webRequest = await toWebRequest(req, urlHost, resolvedPort);
 				writeWebResponse(res, await app.fetch(webRequest));
 			} catch (error) {
 				if (!res.headersSent) {
@@ -278,13 +363,13 @@ export async function startLocalBridge(
 		};
 		server.once("error", onError);
 		server.once("listening", onListening);
-		server.listen(port, host);
+		server.listen(port, bindHost);
 	});
 
 	return {
-		host,
+		host: bindHost,
 		port: resolvedPort,
-		baseUrl: `http://${host}:${resolvedPort}`,
+		baseUrl: `http://${urlHost}:${resolvedPort}`,
 		close: async () => {
 			await closeServer(server, sockets);
 		},

@@ -44,6 +44,46 @@ const configSaveQueues = new Map<string, Promise<void>>();
 const RETRYABLE_FS_CODES = new Set(["EBUSY", "EPERM"]);
 const RETRYABLE_CONFIG_READ_CODES = new Set(["EBUSY", "EPERM", "EAGAIN"]);
 
+/**
+ * Synchronous readFileSync with bounded retry on transient FS-lock codes.
+ *
+ * loadPluginConfig() is synchronous, so a transient EBUSY/EPERM/EAGAIN on a
+ * Windows lock used to fall straight through to the catch and silently revert to
+ * DEFAULT_PLUGIN_CONFIG, discarding the user's real settings (config-04). This
+ * mirrors the async retry already used by readConfigRecordFromPath (5 total
+ * attempts). ENOENT and SyntaxError are not retryable and propagate unchanged.
+ */
+function readFileSyncWithConfigRetry(configPath: string): string {
+	const maxAttempts = 5;
+	let lastError: unknown;
+	for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+		try {
+			return readFileSync(configPath, "utf-8");
+		} catch (error) {
+			lastError = error;
+			const code = (error as NodeJS.ErrnoException | undefined)?.code;
+			if (
+				typeof code === "string" &&
+				RETRYABLE_CONFIG_READ_CODES.has(code) &&
+				attempt < maxAttempts - 1
+			) {
+				// Immediate retry — NOT a blocking sleep. loadPluginConfig() is
+				// synchronous and runs on startup, so the previous Atomics.wait froze
+				// the entire event loop for up to ~150ms on a transient Windows AV /
+				// indexer lock. An immediate re-read costs microseconds and a brief
+				// exclusive lock is typically released by the next attempt; if it
+				// genuinely persists we fail fast (the caller falls back to defaults)
+				// rather than stalling the process.
+				continue;
+			}
+			throw error;
+		}
+	}
+	// Exhausted attempts on a retryable code: surface the last error so the caller
+	// classifies it (unreadable) instead of silently returning stale/empty content.
+	throw lastError;
+}
+
 type ConfigReadState =
 	| { status: "missing" }
 	| { status: "ok"; record: Record<string, unknown> }
@@ -105,7 +145,12 @@ export function __resetConfigWarningCacheForTests(): void {
  */
 function resolvePluginConfigPath(): string | null {
 	const envPath = (process.env.CODEX_MULTI_AUTH_CONFIG_PATH ?? "").trim();
-	if (envPath.length > 0) {
+	// Only honor the env override when it actually points at an existing file.
+	// A set-but-not-yet-created CODEX_MULTI_AUTH_CONFIG_PATH must be treated as
+	// absent here, otherwise the fallback returns it unconditionally and the
+	// caller's read throws ENOENT — masking a real legacy config on disk and
+	// collapsing to defaults (split-brain with the unified/legacy sources).
+	if (envPath.length > 0 && existsSync(envPath)) {
 		return envPath;
 	}
 
@@ -236,9 +281,22 @@ export function getDefaultPluginConfig(): PluginConfig {
  */
 export function loadPluginConfig(): PluginConfig {
 	try {
-		const unifiedConfig = loadUnifiedPluginConfigSync();
-		let userConfig: unknown = unifiedConfig;
+		// config-02: keep load precedence symmetric with save. savePluginConfig
+		// writes to CODEX_MULTI_AUTH_CONFIG_PATH first (when set), so the load must
+		// prefer that same env path; otherwise a save to the env path would be
+		// invisible to the next load (which would read unified settings instead) —
+		// a split-brain. Only when the env path is unset do we prefer unified.
+		const envConfigPath = (process.env.CODEX_MULTI_AUTH_CONFIG_PATH ?? "").trim();
+		let userConfig: unknown;
 		let sourceKind: "unified" | "file" = "unified";
+		if (envConfigPath.length > 0 && existsSync(envConfigPath)) {
+			const fileContent = readFileSyncWithConfigRetry(envConfigPath);
+			userConfig = JSON.parse(stripUtf8Bom(fileContent)) as unknown;
+			sourceKind = "file";
+		} else {
+			userConfig = loadUnifiedPluginConfigSync();
+			sourceKind = "unified";
+		}
 
 		if (!isRecord(userConfig)) {
 			const configPath = resolvePluginConfigPath();
@@ -246,7 +304,7 @@ export function loadPluginConfig(): PluginConfig {
 				return { ...DEFAULT_PLUGIN_CONFIG };
 			}
 
-			const fileContent = readFileSync(configPath, "utf-8");
+			const fileContent = readFileSyncWithConfigRetry(configPath);
 			const normalizedFileContent = stripUtf8Bom(fileContent);
 			userConfig = JSON.parse(normalizedFileContent) as unknown;
 			sourceKind = "file";
@@ -453,7 +511,14 @@ function readConfigRecordFromPath(
 ): Record<string, unknown> | null {
 	if (!existsSync(configPath)) return null;
 	try {
-		const fileContent = readFileSync(configPath, "utf-8");
+		// config-08: reuse the same bounded transient-FS retry that
+		// loadPluginConfig() uses. A single-shot readFileSync here meant a
+		// transient Windows EBUSY/EPERM/EAGAIN lock made `config explain` report
+		// storageKind "unreadable" even though loadPluginConfig() succeeded after
+		// retrying — a split-brain. ENOENT and SyntaxError remain non-retryable and
+		// fall through to the catch below (returns null), so genuinely-missing and
+		// genuinely-unreadable files behave exactly as before.
+		const fileContent = readFileSyncWithConfigRetry(configPath);
 		const normalizedFileContent = stripUtf8Bom(fileContent);
 		const parsed = JSON.parse(normalizedFileContent) as unknown;
 		return isRecord(parsed) ? parsed : null;
@@ -522,6 +587,30 @@ function resolveStoredPluginConfigRecord(): {
 	storageKind: ConfigExplainStorageKind;
 	record: Record<string, unknown> | null;
 } {
+	// config-01: mirror loadPluginConfig()'s precedence exactly. loadPluginConfig
+	// prefers CODEX_MULTI_AUTH_CONFIG_PATH (when set + present) over unified
+	// settings; the explain report must report the SAME source/path/storageKind,
+	// otherwise `config explain` describes a different file than the one actually
+	// loaded when the env override is active (a split-brain).
+	const envConfigPath = (process.env.CODEX_MULTI_AUTH_CONFIG_PATH ?? "").trim();
+	if (envConfigPath.length > 0 && existsSync(envConfigPath)) {
+		const record = readConfigRecordFromPath(envConfigPath);
+		if (record) {
+			return {
+				configPath: envConfigPath,
+				storageKind: "file",
+				record,
+			};
+		}
+		// Env path is set and exists but is unreadable/invalid: report it as the
+		// active (unreadable) source rather than masking it behind unified.
+		return {
+			configPath: envConfigPath,
+			storageKind: "unreadable",
+			record: null,
+		};
+	}
+
 	const unifiedConfig = loadUnifiedPluginConfigSync();
 	if (isRecord(unifiedConfig)) {
 		return {
@@ -1900,6 +1989,24 @@ const CONFIG_EXPLAIN_ENTRIES: ConfigExplainMeta[] = [
 		key: "preemptiveQuotaMaxDeferralMs",
 		envNames: ["CODEX_AUTH_PREEMPTIVE_QUOTA_MAX_DEFERRAL_MS"],
 		getValue: getPreemptiveQuotaMaxDeferralMs,
+	},
+	// config-01/config-07: these three live settings were missing from the explain
+	// report, so `config explain` silently under-reported the effective config. A
+	// parity test (test/config-explain.test.ts) now guards this class of drift.
+	{
+		key: "responseContinuation",
+		envNames: ["CODEX_AUTH_RESPONSE_CONTINUATION"],
+		getValue: getResponseContinuation,
+	},
+	{
+		key: "backgroundResponses",
+		envNames: ["CODEX_AUTH_BACKGROUND_RESPONSES"],
+		getValue: getBackgroundResponses,
+	},
+	{
+		key: "routingMutex",
+		envNames: ["CODEX_AUTH_ROUTING_MUTEX"],
+		getValue: getRoutingMutexMode,
 	},
 ];
 

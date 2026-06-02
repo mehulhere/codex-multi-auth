@@ -5,6 +5,7 @@ import {
 	runStatusCommand,
 	type StatusCommandDeps,
 } from "../lib/codex-manager/commands/status.js";
+import { runCodexMultiAuthCli } from "../lib/codex-manager.js";
 import type { AccountStorageV3, StorageHealthSummary } from "../lib/storage.js";
 import type { RuntimeObservabilitySnapshot } from "../lib/runtime/runtime-observability.js";
 
@@ -347,6 +348,100 @@ describe("runStatusCommand", () => {
 			expect.stringContaining("1. Account 1 (one@example.com) [current, quota-exhausted]"),
 		);
 	});
+
+	// cli-manager-03: status/list support --json (single machine-readable object).
+	it("emits a single JSON object when json is set", async () => {
+		const logInfo = vi.fn();
+		const deps = createStatusDeps({ json: true, logInfo });
+
+		const result = await runStatusCommand(deps);
+
+		expect(result).toBe(0);
+		expect(logInfo).toHaveBeenCalledTimes(1);
+		const payload = JSON.parse(String(logInfo.mock.calls[0]?.[0]));
+		expect(payload.accountCount).toBe(2);
+		expect(payload.storagePath).toBe("/tmp/codex.json");
+		expect(Array.isArray(payload.accounts)).toBe(true);
+		expect(payload.accounts[0]).toMatchObject({ index: 0, current: true });
+	});
+
+	it("emits JSON for empty storage when json is set", async () => {
+		const logInfo = vi.fn();
+		const deps = createStatusDeps({
+			json: true,
+			logInfo,
+			loadAccounts: vi.fn(async () => null),
+		});
+
+		const result = await runStatusCommand(deps);
+
+		expect(result).toBe(0);
+		expect(logInfo).toHaveBeenCalledTimes(1);
+		const payload = JSON.parse(String(logInfo.mock.calls[0]?.[0]));
+		expect(payload.accountCount).toBe(0);
+		expect(payload.accounts).toEqual([]);
+		// cli-manager-03: the empty-storage shape emits the same keys as the
+		// populated one (null) so a --json consumer sees one stable shape.
+		expect(payload).toMatchObject({
+			activeIndex: null,
+			pinnedAccountIndex: null,
+			recommendedIndex: null,
+			recommendationReason: null,
+			runtimeInUseIndex: null,
+		});
+	});
+});
+
+// cli-manager-03 (plumbing): the runStatusCommand tests above prove behavior once
+// `json` is already true. This block exercises the CLI arg → json-flag mapping in
+// runCodexMultiAuthCli ("status"/"list" with -j/--json), which a wrapper-routing
+// regression would otherwise leave uncovered. Runs against the global test
+// sandbox (no real ~/.codex), so storage is empty and the JSON object is the
+// empty-storage shape.
+describe("runCodexMultiAuthCli status/list --json plumbing", () => {
+	for (const args of [["status", "-j"], ["status", "--json"], ["list", "-j"], ["list", "--json"]]) {
+		it(`maps ${args.join(" ")} to a single JSON object`, async () => {
+			const logSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
+			try {
+				const code = await runCodexMultiAuthCli(args);
+				expect(code).toBe(0);
+				// Exactly one machine-readable line emitted.
+				expect(logSpy).toHaveBeenCalledTimes(1);
+				const payload = JSON.parse(String(logSpy.mock.calls[0]?.[0]));
+				expect(typeof payload.accountCount).toBe("number");
+				expect(Array.isArray(payload.accounts)).toBe(true);
+			} finally {
+				logSpy.mockRestore();
+			}
+		});
+	}
+});
+
+// cli-manager-03: the `auth list` / `auth status` wrapper form must map -j/--json
+// the same way the bare `status`/`list` form does (codex-manager.ts:3547). A
+// wrapper-routing regression would otherwise leave the auth-prefixed path
+// emitting text instead of the machine-readable object.
+describe("runCodexMultiAuthCli auth list/status --json plumbing", () => {
+	for (const args of [
+		["auth", "list", "-j"],
+		["auth", "list", "--json"],
+		["auth", "status", "-j"],
+		["auth", "status", "--json"],
+	]) {
+		it(`maps ${args.join(" ")} to a single JSON object`, async () => {
+			const logSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
+			try {
+				const code = await runCodexMultiAuthCli(args);
+				expect(code).toBe(0);
+				expect(logSpy).toHaveBeenCalledTimes(1);
+				const payload = JSON.parse(String(logSpy.mock.calls[0]?.[0]));
+				expect(typeof payload.accountCount).toBe("number");
+				expect(Array.isArray(payload.accounts)).toBe(true);
+			} finally {
+				logSpy.mockRestore();
+			}
+		});
+	}
 });
 
 describe("runFeaturesCommand", () => {

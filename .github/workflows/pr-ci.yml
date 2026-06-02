@@ -44,8 +44,10 @@ jobs:
       - name: Run ESLint
         run: npm run lint
 
-      - name: Run tests
-        run: npm test
+      - name: Run tests with coverage
+        # tests-ci-05: run coverage on PRs so the 80% threshold gates the PR,
+        # not only the post-merge push-to-main run in ci.yml.
+        run: npm run coverage
 
       - name: Build
         run: npm run build

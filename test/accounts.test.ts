@@ -16,6 +16,7 @@ import {
 	getHealthTracker,
 	getTokenTracker,
 	resetTrackers,
+	DEFAULT_TOKEN_BUCKET_CONFIG,
 } from "../lib/rotation.js";
 import { CodexAuthError } from "../lib/errors.js";
 import {
@@ -1041,6 +1042,156 @@ describe("AccountManager", () => {
 			expect(remaining[1]?.refreshToken).toBe("token-3");
 			expect(remaining[0]?.index).toBe(0);
 			expect(remaining[1]?.index).toBe(1);
+		});
+
+		// Regression (accounts-02): removing an account must clear its identity-keyed
+		// health/token state so a later re-add of the same identity starts fresh
+		// instead of inheriting the old penalty.
+		it("clears identity-keyed health state when an account is removed", () => {
+			const now = Date.now();
+			const stored = {
+				version: 3 as const,
+				activeIndex: 0,
+				accounts: [
+					{ refreshToken: "tok-a", accountId: "acc_stable", addedAt: now, lastUsed: now },
+					{ refreshToken: "tok-b", accountId: "acc_other", addedAt: now, lastUsed: now },
+				],
+			};
+			const manager = new AccountManager(undefined, stored);
+
+			const target = manager
+				.getAccountsSnapshot()
+				.find((a) => a.accountId === "acc_stable");
+			expect(target).toBeDefined();
+			// Resolve the real identity key the trackers use (e.g. "account:acc_stable").
+			const identityKey = getRuntimeTrackerKey(target!);
+			expect(identityKey).toBe("account:acc_stable");
+
+			// accounts-02 (extended): consume a token and open the breaker BEFORE the
+			// health failures (an open breaker would otherwise block consumeToken), so
+			// the regression fails if removeAccount stops clearing token buckets
+			// (lib/rotation.ts clearAccountKey) or stale circuit breakers
+			// (lib/circuit-breaker.ts). Use a LIVE reference for these mutations.
+			const liveStable = manager.getAccountByIndex(0);
+			expect(liveStable?.accountId).toBe("acc_stable");
+			expect(manager.consumeToken(liveStable!, "codex")).toBe(true);
+			const tokenTracker = getTokenTracker();
+			expect(tokenTracker.getTokens(identityKey, "codex")).toBeLessThan(
+				DEFAULT_TOKEN_BUCKET_CONFIG.maxTokens,
+			);
+			const breakerKey = getAccountIdentityKey(liveStable!)!;
+			const breaker = getCircuitBreaker(breakerKey);
+			breaker.recordFailure();
+			breaker.recordFailure();
+			breaker.recordFailure();
+			expect(breaker.getState()).toBe("open");
+
+			// Drive the stable account's health score down via repeated failures.
+			// recordFailure keys health by quotaKey = family ("codex").
+			for (let i = 0; i < 5; i++) manager.recordFailure(target!, "codex");
+			const penalized = getHealthTracker().getScore(identityKey, "codex");
+			expect(penalized).toBeLessThan(100);
+
+			// Use a LIVE reference for removal: removeAccount matches by object
+			// identity, and the snapshot above is a shallow copy that would not match.
+			const liveTarget = manager.getAccountByIndex(0);
+			expect(liveTarget?.accountId).toBe("acc_stable");
+			expect(manager.removeAccount(liveTarget!)).toBe(true);
+
+			// After removal the identity-keyed health entry is gone, so a fresh lookup
+			// for the same identity returns the default max score (no inherited penalty).
+			const afterRemoval = getHealthTracker().getScore(identityKey, "codex");
+			expect(afterRemoval).toBe(100);
+			expect(afterRemoval).toBeGreaterThan(penalized);
+
+			// Token bucket reset: a fresh lookup for the same identity reports the
+			// full default capacity (the consumed token did not carry over).
+			expect(tokenTracker.getTokens(identityKey, "codex")).toBe(
+				DEFAULT_TOKEN_BUCKET_CONFIG.maxTokens,
+			);
+			// Circuit breaker reset: a fresh breaker for the same identity is closed.
+			expect(getCircuitBreaker(breakerKey).getState()).toBe("closed");
+		});
+
+		// Regression (accounts-02 / phase-1): tracker state is WRITTEN under the
+		// pinned getRuntimeTrackerKey, which stays STABLE across later identity
+		// enrichment. Removal cleanup must clear that stable key, NOT the recomputed
+		// getRuntimeAccountIdentityKey. When an account is first tracked under an
+		// older key shape (here email-only) and then gains an accountId, the two
+		// keys DIVERGE; clearing only the recomputed key leaves stale health/token
+		// entries behind, so a later re-add inherits stale penalties.
+		it("clears tracker state under the stable tracker key after identity enrichment on removal", () => {
+			const now = Date.now();
+			const stored = {
+				version: 3 as const,
+				activeIndex: 0,
+				accounts: [
+					// Email-only at construction: pinned tracker key will be
+					// "email:<key>" (a string of the pre-enrichment shape), not numeric.
+					{
+						refreshToken: "tok-enrich",
+						email: "stale@example.com",
+						addedAt: now,
+						lastUsed: now,
+					},
+					{ refreshToken: "tok-other", accountId: "acc_other", addedAt: now, lastUsed: now },
+				],
+			};
+			const manager = new AccountManager(undefined, stored);
+
+			const account = manager.getAccountByIndex(0)!;
+			const healthTracker = getHealthTracker();
+			const tokenTracker = getTokenTracker();
+
+			// Pin + capture the stable tracker key BEFORE enrichment. consumeToken
+			// calls getRuntimeTrackerKey internally, which pins _runtimeTrackerKey.
+			// Consume the token FIRST: the recordFailure loop below opens the circuit
+			// breaker, which would otherwise block consumeToken.
+			expect(manager.consumeToken(account, "codex")).toBe(true);
+			const stableTrackerKey = getRuntimeTrackerKey(account);
+			expect(stableTrackerKey).toBe("email:stale@example.com");
+
+			// Drive health down, all keyed by the stable key.
+			for (let i = 0; i < 5; i++) manager.recordFailure(account, "codex");
+			const penalizedScore = healthTracker.getScore(stableTrackerKey, "codex");
+			expect(penalizedScore).toBeLessThan(100);
+			expect(tokenTracker.getTokens(stableTrackerKey, "codex")).toBeLessThan(
+				DEFAULT_TOKEN_BUCKET_CONFIG.maxTokens,
+			);
+
+			// Enrich identity so the account gains an accountId. The pinned tracker
+			// key stays "email:stale@example.com", but the RECOMPUTED identity key
+			// now folds in the accountId and therefore DIVERGES from it.
+			const payload = Buffer.from(
+				JSON.stringify({
+					email: "stale@example.com",
+					"https://api.openai.com/auth": {
+						chatgpt_account_id: "acc_enriched",
+					},
+					exp: Math.floor((now + 3600000) / 1000),
+				}),
+			).toString("base64url");
+			manager.updateFromAuth(account, {
+				type: "oauth",
+				access: `header.${payload}.signature`,
+				refresh: "tok-enrich-rotated",
+				expires: now + 3600000,
+			});
+			expect(account.accountId).toBe("acc_enriched");
+			expect(getRuntimeTrackerKey(account)).toBe(stableTrackerKey);
+			// Crux of the bug: recomputed identity key differs from the stable one.
+			expect(getRuntimeAccountIdentityKey(account)).not.toBe(stableTrackerKey);
+
+			// Remove the (live) account. Cleanup must clear the STABLE tracker key.
+			expect(manager.removeAccount(account)).toBe(true);
+
+			// Under the buggy code (clear only the recomputed identity key), the
+			// stale entries under the stable key survive: getScore < 100 and
+			// getTokens < max. The fix clears the stable key, so both reset.
+			expect(healthTracker.getScore(stableTrackerKey, "codex")).toBe(100);
+			expect(tokenTracker.getTokens(stableTrackerKey, "codex")).toBe(
+				DEFAULT_TOKEN_BUCKET_CONFIG.maxTokens,
+			);
 		});
 
 		it("returns false when removing non-existent account", () => {

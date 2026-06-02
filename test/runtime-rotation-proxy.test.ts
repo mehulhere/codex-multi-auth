@@ -324,6 +324,100 @@ describe("runtime rotation proxy", () => {
 		).rejects.toThrow("clientApiKey");
 	});
 
+	// Regression (runtime-proxy-01): the proxy forwards managed OAuth tokens and must
+	// stay loopback-only. A non-loopback host must be refused unless explicitly opted in.
+	it("refuses to bind a non-loopback host by default", async () => {
+		const now = Date.now();
+		const accountManager = new AccountManager(undefined, createStorage(now));
+		const { fetchImpl } = createRecordingFetch(() => textEventStream());
+
+		await expect(
+			startRuntimeRotationProxy({
+				accountManager,
+				fetchImpl,
+				clientApiKey: DEFAULT_CLIENT_API_KEY,
+				host: "0.0.0.0",
+				upstreamBaseUrl: "https://example.test/backend-api",
+			}),
+		).rejects.toThrow(/non-loopback/i);
+	});
+
+	it("refuses a non-loopback host unconditionally (no opt-out)", async () => {
+		const now = Date.now();
+		const accountManager = new AccountManager(undefined, createStorage(now));
+		const { fetchImpl } = createRecordingFetch(() => textEventStream());
+
+		// The proxy forwards managed OAuth tokens, so binding off-box is refused with
+		// no escape hatch — 0.0.0.0 must throw rather than expose accounts.
+		await expect(
+			startRuntimeRotationProxy({
+				accountManager,
+				fetchImpl,
+				clientApiKey: DEFAULT_CLIENT_API_KEY,
+				host: "0.0.0.0",
+				upstreamBaseUrl: "https://example.test/backend-api",
+			}),
+		).rejects.toThrow(/loopback-only/i);
+	});
+
+	// Regression (runtime-proxy IPv6 bug): the loopback guard accepted both "::1"
+	// and "[::1]", but the bind and the emitted baseUrl conflated the two forms.
+	// server.listen needs the RAW literal ("::1") or the bind misbehaves, while the
+	// baseUrl needs the BRACKETED literal so "http://[::1]:port" parses. Both input
+	// spellings must end up listening (port > 0) AND emit a bracketed baseUrl.
+	it.each(["::1", "[::1]"])(
+		"normalizes IPv6 loopback host %s for both bind and baseUrl",
+		async (hostInput) => {
+			const now = Date.now();
+			const accountManager = new AccountManager(undefined, createStorage(now));
+			const { fetchImpl } = createRecordingFetch(() => textEventStream());
+
+			const proxy = await startProxy({
+				accountManager,
+				fetchImpl,
+				options: { host: hostInput },
+			});
+
+			// Server actually bound (raw literal accepted by listen()).
+			expect(proxy.port).toBeGreaterThan(0);
+			// baseUrl always emits the bracketed IPv6 authority, regardless of input form.
+			expect(proxy.baseUrl).toContain(`http://[::1]:`);
+			expect(proxy.baseUrl).toBe(`http://[::1]:${proxy.port}`);
+
+			await proxy.close();
+		},
+	);
+	it("applies routingMutex=enabled to the account manager at startup", async () => {
+		const prev = process.env.CODEX_AUTH_ROUTING_MUTEX;
+		process.env.CODEX_AUTH_ROUTING_MUTEX = "enabled";
+		try {
+			const now = Date.now();
+			const accountManager = new AccountManager(undefined, createStorage(now));
+			const { fetchImpl } = createRecordingFetch(() => textEventStream());
+			const proxy = await startProxy({ accountManager, fetchImpl });
+			expect(accountManager.getRoutingMutexMode()).toBe("enabled");
+			await proxy.close();
+		} finally {
+			if (prev === undefined) delete process.env.CODEX_AUTH_ROUTING_MUTEX;
+			else process.env.CODEX_AUTH_ROUTING_MUTEX = prev;
+		}
+	});
+
+	it("leaves routingMutex in legacy mode by default", async () => {
+		const prev = process.env.CODEX_AUTH_ROUTING_MUTEX;
+		delete process.env.CODEX_AUTH_ROUTING_MUTEX;
+		try {
+			const now = Date.now();
+			const accountManager = new AccountManager(undefined, createStorage(now));
+			const { fetchImpl } = createRecordingFetch(() => textEventStream());
+			const proxy = await startProxy({ accountManager, fetchImpl });
+			expect(accountManager.getRoutingMutexMode()).toBe("legacy");
+			await proxy.close();
+		} finally {
+			if (prev !== undefined) process.env.CODEX_AUTH_ROUTING_MUTEX = prev;
+		}
+	});
+
 	it("records post-startup server errors without throwing uncaught errors", async () => {
 		const now = Date.now();
 		const accountManager = new AccountManager(undefined, createStorage(now));
@@ -358,6 +452,31 @@ describe("runtime rotation proxy", () => {
 		expect(payload.error?.code).toBe("runtime_policy_unavailable");
 		expect(calls).toHaveLength(0);
 		expect(proxy.getStatus().lastError).toBe("policy store unreadable");
+	});
+
+	it("masks email/token material in getStatus().lastError (errors-logging-08)", async () => {
+		const now = Date.now();
+		const accountManager = new AccountManager(undefined, createStorage(now));
+		const { fetchImpl } = createRecordingFetch(() => textEventStream());
+		// Inject a failure whose message embeds a bearer token and an email so a
+		// future refactor that drops the masking would leak secrets through the
+		// status surface. getStatus() must redact both on read.
+		vi.spyOn(runtimePolicy, "loadRuntimePolicyState").mockRejectedValueOnce(
+			new Error("refresh failed Bearer sk-supersecrettokenvalue123 for bob@example.com"),
+		);
+		const proxy = await startProxy({ accountManager, fetchImpl });
+
+		await postResponses(proxy, { model: "gpt-5.3-codex", input: "hello" });
+
+		const lastError = proxy.getStatus().lastError ?? "";
+		// Raw secrets must NOT survive into the status surface.
+		expect(lastError).not.toContain("bob@example.com");
+		expect(lastError).not.toContain("sk-supersecrettokenvalue123");
+		// And the masked markers should be present: email redacted to its prefix +
+		// tld, and the bearer token collapsed to head...tail (maskToken).
+		expect(lastError).toContain("bo***@***.com");
+		expect(lastError).toContain("Bearer...");
+		await proxy.close();
 	});
 
 	it("closes active streaming clients during shutdown", async () => {
