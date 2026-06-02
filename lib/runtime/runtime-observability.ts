@@ -195,13 +195,19 @@ function ensureSnapshotState(): RuntimeObservabilitySnapshot {
 async function writeSnapshot(snapshot: RuntimeObservabilitySnapshot): Promise<void> {
 	const dir = getCodexMultiAuthDir();
 	const path = getSnapshotPath();
-	await fs.mkdir(dir, { recursive: true });
+	// The snapshot persists account identifiers (lastAccountId/label/index), so
+	// keep it owner-only on POSIX like the other sensitive writers (logger,
+	// local-client-tokens). mode is a no-op on win32 (ACL-based).
+	await fs.mkdir(dir, { recursive: true, mode: 0o700 });
 	let lastError: unknown = null;
 	for (let attempt = 0; attempt < 3; attempt += 1) {
 		const tempPath = `${path}.${process.pid}.${Date.now()}.${attempt}.tmp`;
 		let moved = false;
 		try {
-			await fs.writeFile(tempPath, JSON.stringify(snapshot, null, 2), "utf-8");
+			await fs.writeFile(tempPath, JSON.stringify(snapshot, null, 2), {
+				encoding: "utf-8",
+				mode: 0o600,
+			});
 			await fs.rename(tempPath, path);
 			moved = true;
 			return;

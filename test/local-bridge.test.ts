@@ -317,13 +317,15 @@ describe("local bridge", () => {
 			headers: {
 				authorization: "Bearer inbound-client-token",
 				"x-api-key": "inbound-secret-key",
+				cookie: "session=inbound-cookie-secret",
 			},
 		});
 
 		const forwarded = calls.find((c) => c.url.endsWith("/v1/models"));
 		const headers = new Headers(forwarded?.init?.headers as HeadersInit);
-		// runtime-proxy-02: neither inbound credential header crosses the bridge.
+		// runtime-proxy-02: no inbound credential header crosses the bridge.
 		expect(headers.get("authorization")).toBeNull();
 		expect(headers.get("x-api-key")).toBeNull();
+		expect(headers.get("cookie")).toBeNull();
 	});
 });
