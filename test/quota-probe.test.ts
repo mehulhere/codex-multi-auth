@@ -389,6 +389,42 @@ describe("quota-probe", () => {
 		await expect(promise).rejects.toThrow("boom");
 	});
 
+	it("does not mask an instruction-fetch failure on a later model as CodexUnavailableError", async () => {
+		// First model: unsupported (sawUnsupportedModel = true).
+		const unsupported = new Response(
+			JSON.stringify({
+				detail:
+					"The 'gpt-5.3-codex' model is not supported when using Codex with a ChatGPT account.",
+			}),
+			{ status: 400, headers: new Headers({ "content-type": "application/json" }) },
+		);
+		const fetchMock = vi.fn().mockResolvedValueOnce(unsupported);
+		vi.stubGlobal("fetch", fetchMock);
+
+		getUnsupportedCodexModelInfoMock.mockReturnValue({
+			isUnsupported: true,
+			unsupportedModel: "gpt-5.3-codex",
+			message: "unsupported",
+		});
+
+		// Second model: getCodexInstructions rejects -> outer catch -> sawOtherFailure.
+		getCodexInstructionsMock
+			.mockResolvedValueOnce("instructions:gpt-5.3-codex")
+			.mockRejectedValueOnce(new Error("instruction fetch failed"));
+
+		const promise = fetchCodexQuotaSnapshot({
+			accountId: "acc-instr",
+			accessToken: "token-instr",
+			model: "gpt-5.3-codex",
+			fallbackModels: ["gpt-5.2-codex"],
+		});
+
+		// A transient instruction error must surface, not be swallowed into CodexUnavailableError.
+		await expect(promise).rejects.not.toBeInstanceOf(CodexUnavailableError);
+		await expect(promise).rejects.toThrow("instruction fetch failed");
+		expect(fetchMock).toHaveBeenCalledTimes(1);
+	});
+
 	it("throws generic failure when no normalized probe models are available", async () => {
 		const fetchMock = vi.fn();
 		vi.stubGlobal("fetch", fetchMock);

@@ -450,7 +450,7 @@ function styleAccountDetailText(
 				? "success"
 				: fallbackTone;
 		const suffixTone: PromptTone =
-			/re-login|stale|warning|retry|fallback/i.test(suffix)
+			/re-login|stale|warning|retry|fallback|unavailable|not available/i.test(suffix)
 				? "warning"
 				: /failed|error/i.test(suffix)
 					? "danger"
@@ -464,7 +464,7 @@ function styleAccountDetailText(
 	}
 
 	if (/rate-limited/i.test(compact)) return stylePromptText(compact, "danger");
-	if (/re-login|stale|warning|fallback/i.test(compact))
+	if (/re-login|stale|warning|fallback|unavailable|not available/i.test(compact))
 		return stylePromptText(compact, "warning");
 	if (/failed|error/i.test(compact)) return stylePromptText(compact, "danger");
 	if (/ok|working|succeeded|valid/i.test(compact))

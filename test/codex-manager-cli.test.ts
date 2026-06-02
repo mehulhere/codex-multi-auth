@@ -1,4 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { CodexUnavailableError } from "../lib/errors.js";
+// quota-probe is mocked below; reference the note as a literal to avoid a
+// top-level import racing the hoisted vi.mock factory.
+const CODEX_UNAVAILABLE_PROBE_NOTE_LITERAL = "Codex not available for this account";
 
 const loadAccountsMock = vi.fn();
 const loadFlaggedAccountsMock = vi.fn();
@@ -4051,6 +4055,45 @@ describe("codex manager cli commands", () => {
 				String(call[0]).includes("network timeout"),
 			),
 		).toBe(true);
+	});
+
+	it("prints the friendly codex-unavailable note instead of raw probe detail", async () => {
+		const now = Date.now();
+		loadAccountsMock.mockResolvedValueOnce({
+			version: 3,
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0 },
+			accounts: [
+				{
+					email: "best@example.com",
+					accountId: "acc_best",
+					refreshToken: "refresh-best",
+					accessToken: "access-best",
+					expiresAt: now + 3_600_000,
+					addedAt: now - 1_000,
+					lastUsed: now - 1_000,
+					enabled: true,
+				},
+			],
+		});
+		fetchCodexQuotaSnapshotMock.mockRejectedValueOnce(
+			new CodexUnavailableError(
+				"The 'gpt-5-codex' model is not supported when using Codex with a ChatGPT account.",
+			),
+		);
+		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+
+		const exitCode = await runCodexMultiAuthCli(["auth", "best", "--live"]);
+
+		expect(exitCode).toBe(0);
+		const lines = logSpy.mock.calls.map((call) => String(call[0]));
+		expect(
+			lines.some((l) => l.includes(CODEX_UNAVAILABLE_PROBE_NOTE_LITERAL)),
+		).toBe(true);
+		// the raw upstream error / JSON must not leak to the user
+		expect(lines.join("\n")).not.toContain("is not supported when using Codex");
+		expect(lines.join("\n")).not.toContain('"detail"');
 	});
 
 	it("reuses the queued refresh result across concurrent live best runs", async () => {

@@ -1,5 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { runRuntimeAccountCheck } from "../lib/runtime/account-check.js";
+import { CodexUnavailableError } from "../lib/errors.js";
+import { CODEX_UNAVAILABLE_PROBE_NOTE } from "../lib/quota-probe.js";
 
 describe("runRuntimeAccountCheck", () => {
 	it("reports when there are no accounts to check", async () => {
@@ -380,5 +382,78 @@ describe("runRuntimeAccountCheck", () => {
 		expect(saveFlaggedAccounts).toHaveBeenCalledTimes(1);
 		expect(saveAccounts).toHaveBeenCalledTimes(1);
 		expect(saveFlaggedAccounts.mock.invocationCallOrder[0]).toBeLessThan(saveAccounts.mock.invocationCallOrder[0]);
+	});
+
+	it("treats a codex-unavailable quota probe as a warning, not a hard error", async () => {
+		const showLine = vi.fn();
+		const state = {
+			flaggedStorage: { version: 1 as const, accounts: [] },
+			removeFromActive: new Set<string>(),
+			storageChanged: false,
+			flaggedChanged: false,
+			ok: 0,
+			errors: 0,
+			warnings: 0,
+			disabled: 0,
+		};
+		await runRuntimeAccountCheck(false, {
+			hydrateEmails: async (storage) => storage,
+			loadAccounts: async () => ({
+				version: 3,
+				accounts: [
+					{
+						email: "nocodex@example.com",
+						refreshToken: "fresh-refresh-nocodex",
+						accessToken: "usable-access",
+						accountId: "nocodex-account",
+						accountIdSource: "manual",
+						expiresAt: 9_999_999,
+						addedAt: 1,
+						lastUsed: 1,
+						enabled: true,
+					},
+				],
+				activeIndex: 0,
+				activeIndexByFamily: { codex: 0 },
+			}),
+			createEmptyStorage: () => ({ version: 3, accounts: [], activeIndex: 0, activeIndexByFamily: {} }),
+			loadFlaggedAccounts: async () => ({ version: 1, accounts: [] }),
+			createAccountCheckWorkingState: () => state,
+			lookupCodexCliTokensByEmail: async () => null,
+			extractAccountId: () => "nocodex-account",
+			shouldUpdateAccountIdFromToken: () => false,
+			sanitizeEmail: (email) => email,
+			extractAccountEmail: () => undefined,
+			queuedRefresh: vi.fn(async () => ({ type: "failed" as const, reason: "invalid_grant" })),
+			isRuntimeFlaggableFailure: () => false,
+			fetchCodexQuotaSnapshot: async () => {
+				throw new CodexUnavailableError(
+					"The 'gpt-5-codex' model is not supported when using Codex with a ChatGPT account.",
+				);
+			},
+			resolveRequestAccountId: () => "nocodex-account",
+			formatCodexQuotaLine: () => "quota ok",
+			clampRuntimeActiveIndices: vi.fn(),
+			MODEL_FAMILIES: ["codex"],
+			saveAccounts: vi.fn(async () => {}),
+			invalidateAccountManagerCache: vi.fn(),
+			saveFlaggedAccounts: vi.fn(async () => {}),
+			now: () => 10_000,
+			showLine,
+		});
+
+		// counted as a warning + ok, not an error
+		expect(state.warnings).toBe(1);
+		expect(state.errors).toBe(0);
+		expect(state.ok).toBe(1);
+
+		const lines = showLine.mock.calls.map((call) => String(call[0]));
+		// friendly note is shown without an ERROR prefix or raw JSON
+		const noteLine = lines.find((l) => l.includes(CODEX_UNAVAILABLE_PROBE_NOTE));
+		expect(noteLine).toBeDefined();
+		expect(noteLine).not.toContain("ERROR");
+		expect(lines.join("\n")).not.toContain("is not supported when using Codex");
+		// summary reflects the warning bucket
+		expect(lines.some((l) => /Results:.*1 warning/.test(l))).toBe(true);
 	});
 });
