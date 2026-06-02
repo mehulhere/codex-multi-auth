@@ -945,6 +945,37 @@ describe('Logger Module', () => {
 				expect.objectContaining({ path: expect.any(String) }),
 			);
 		});
+
+		it("re-creates the log dir after it disappears mid-session (ENOENT cache reset)", async () => {
+			// ensureLogDir caches "ready" after the first success. If LOG_DIR is later
+			// deleted, writeFileSync fails ENOENT and — without invalidation — the dir
+			// would never be recreated until restart. The ENOENT failure must clear the
+			// cache so the NEXT logRequest re-runs mkdir.
+			mockExistsSync.mockReturnValue(false);
+			mockMkdirSync.mockReset();
+			mockMkdirSync.mockImplementation(() => undefined);
+			const { logRequest: logRequestEnabled } = await loadLoggerModule({
+				ENABLE_PLUGIN_REQUEST_LOGGING: "1",
+				CODEX_CONSOLE_LOG: "1",
+			});
+
+			// 1st call: dir created once, write succeeds → cache marked ready.
+			mockWriteFileSync.mockImplementationOnce(() => undefined);
+			logRequestEnabled("first", { ok: true });
+			const mkdirAfterFirst = mockMkdirSync.mock.calls.length;
+
+			// Dir vanishes: the next write throws ENOENT.
+			mockWriteFileSync.mockImplementationOnce(() => {
+				throw Object.assign(new Error("no dir"), { code: "ENOENT" });
+			});
+			logRequestEnabled("vanished", { ok: true });
+
+			// 3rd call: cache was invalidated, so ensureLogDir runs mkdir again.
+			mockWriteFileSync.mockImplementationOnce(() => undefined);
+			logRequestEnabled("recovered", { ok: true });
+
+			expect(mockMkdirSync.mock.calls.length).toBeGreaterThan(mkdirAfterFirst);
+		});
 	});
 
 	describe('scoped logger when debug is enabled', () => {

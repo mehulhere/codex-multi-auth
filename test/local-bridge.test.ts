@@ -44,6 +44,31 @@ describe("local bridge", () => {
 		).rejects.toThrow("loopback");
 	});
 
+	it.each(["::1", "[::1]"])(
+		"binds and emits a parseable baseUrl for IPv6 loopback host %s",
+		async (hostInput) => {
+			// Regression: server.listen needs the raw "::1" (bracketed "[::1]" fails
+			// the bind), while baseUrl needs the bracketed form ("http://::1:port" is
+			// invalid). Both input shapes must start successfully and yield a baseUrl
+			// that round-trips through new URL().
+			const { fetchImpl } = createFetch();
+			const server = await startLocalBridge({
+				host: hostInput,
+				runtimeBaseUrl: "http://127.0.0.1:9999/",
+				fetchImpl,
+				requireAuth: false,
+			});
+			openServers.push(server);
+			expect(server.port).toBeGreaterThan(0);
+			// baseUrl must parse and carry the bracketed IPv6 authority.
+			const parsed = new URL(server.baseUrl);
+			expect(parsed.hostname).toBe("[::1]");
+			expect(parsed.port).toBe(String(server.port));
+			// The returned host is the raw (unbracketed) literal used for the bind.
+			expect(server.host).toBe("::1");
+		},
+	);
+
 	it("accepts an IPv6-loopback runtimeBaseUrl ([::1])", async () => {
 		// Regression: new URL("http://[::1]:port").hostname yields the bracketed
 		// "[::1]", which the egress guard must treat as loopback. It previously only

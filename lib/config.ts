@@ -55,23 +55,33 @@ const RETRYABLE_CONFIG_READ_CODES = new Set(["EBUSY", "EPERM", "EAGAIN"]);
  */
 function readFileSyncWithConfigRetry(configPath: string): string {
 	const maxAttempts = 5;
-	for (let attempt = 0; ; attempt += 1) {
+	let lastError: unknown;
+	for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
 		try {
 			return readFileSync(configPath, "utf-8");
 		} catch (error) {
+			lastError = error;
 			const code = (error as NodeJS.ErrnoException | undefined)?.code;
 			if (
 				typeof code === "string" &&
 				RETRYABLE_CONFIG_READ_CODES.has(code) &&
 				attempt < maxAttempts - 1
 			) {
-				// Non-busy sync sleep via Atomics.wait on a throwaway buffer.
-				Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10 * 2 ** attempt);
+				// Immediate retry — NOT a blocking sleep. loadPluginConfig() is
+				// synchronous and runs on startup, so the previous Atomics.wait froze
+				// the entire event loop for up to ~150ms on a transient Windows AV /
+				// indexer lock. An immediate re-read costs microseconds and a brief
+				// exclusive lock is typically released by the next attempt; if it
+				// genuinely persists we fail fast (the caller falls back to defaults)
+				// rather than stalling the process.
 				continue;
 			}
 			throw error;
 		}
 	}
+	// Exhausted attempts on a retryable code: surface the last error so the caller
+	// classifies it (unreadable) instead of silently returning stale/empty content.
+	throw lastError;
 }
 
 type ConfigReadState =

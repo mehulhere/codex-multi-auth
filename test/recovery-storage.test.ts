@@ -240,6 +240,62 @@ describe("RecoveryStorage", () => {
 			expect(stats.quarantinedPaths.some((p) => p.includes("noid.json"))).toBe(true);
 		});
 
+		it("quarantines a parseable record whose string id is path-unsafe (recovery-02)", () => {
+			// `{ "id": "../poison" }` parses and is a string, but the id is later used
+			// to build filesystem paths (readParts(msg.id)). A traversal id must be
+			// quarantined here, never allowed to escape into a path-traversal read.
+			storage.__resetRecoveryCorruptionStats();
+			const sessionID = "sess";
+			const messageDir = join(MESSAGE_STORAGE, sessionID);
+
+			fsMock.existsSync.mockImplementation(
+				(path: string) => path === MESSAGE_STORAGE || path === messageDir,
+			);
+			fsMock.readdirSync.mockReturnValue(["good.json", "poison.json"]);
+			fsMock.readFileSync.mockImplementation((path: string) => {
+				if (path === join(messageDir, "good.json")) {
+					return JSON.stringify({ id: "good", sessionID, role: "assistant", time: { created: 1 } });
+				}
+				if (path === join(messageDir, "poison.json")) {
+					return JSON.stringify({ id: "../poison", sessionID, role: "assistant", time: { created: 2 } });
+				}
+				return "";
+			});
+
+			const result = storage.readMessages(sessionID);
+			// The traversal record is dropped; only the safe one survives.
+			expect(result.map((msg) => msg.id)).toEqual(["good"]);
+			expect(fsMock.renameSync).toHaveBeenCalledWith(
+				join(messageDir, "poison.json"),
+				expect.stringContaining(".corrupt-"),
+			);
+		});
+
+		it("quarantines a part whose string id is path-unsafe (recovery-02)", () => {
+			storage.__resetRecoveryCorruptionStats();
+			const messageID = "msg";
+			const partDir = join(PART_STORAGE, messageID);
+
+			fsMock.existsSync.mockImplementation((path: string) => path === partDir);
+			fsMock.readdirSync.mockReturnValue(["ok.json", "evil.json"]);
+			fsMock.readFileSync.mockImplementation((path: string) => {
+				if (path === join(partDir, "ok.json")) {
+					return JSON.stringify({ id: "1", messageID, sessionID: "s", type: "text", text: "hi" });
+				}
+				if (path === join(partDir, "evil.json")) {
+					return JSON.stringify({ id: "../../etc", messageID, sessionID: "s", type: "text" });
+				}
+				return "";
+			});
+
+			const result = storage.readParts(messageID);
+			expect(result.map((p) => p.id)).toEqual(["1"]);
+			expect(fsMock.renameSync).toHaveBeenCalledWith(
+				join(partDir, "evil.json"),
+				expect.stringContaining(".corrupt-"),
+			);
+		});
+
 		it("retries a transient EBUSY on the quarantine rename, then succeeds", () => {
 			// recovery-10 / windows fs: genuine corruption is quarantined, and the
 			// quarantine rename routes through renameSyncWithRetry so a transient

@@ -121,18 +121,25 @@ const SAFE_ID_PATTERN = /^[a-zA-Z0-9_-]+$/;
  * like a parse failure (quarantine via handleUnreadableFile).
  */
 function isValidStoredMessage(value: unknown): value is StoredMessageMeta {
+	const id = (value as { id?: unknown } | null)?.id;
 	return (
 		typeof value === "object" &&
 		value !== null &&
-		typeof (value as { id?: unknown }).id === "string"
+		typeof id === "string" &&
+		// recovery-02: the id is later used to build filesystem paths (readParts(
+		// msg.id)), so a parseable-but-string id like "../poison" must be rejected
+		// here and quarantined, not allowed to escape into a path-traversal read.
+		SAFE_ID_PATTERN.test(id)
 	);
 }
 
 function isValidStoredPart(value: unknown): value is StoredPart {
+	const id = (value as { id?: unknown } | null)?.id;
 	return (
 		typeof value === "object" &&
 		value !== null &&
-		typeof (value as { id?: unknown }).id === "string" &&
+		typeof id === "string" &&
+		SAFE_ID_PATTERN.test(id) &&
 		typeof (value as { type?: unknown }).type === "string"
 	);
 }

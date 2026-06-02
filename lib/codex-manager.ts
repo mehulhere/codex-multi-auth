@@ -19,6 +19,7 @@ import {
 	REDIRECT_URI,
 } from "./auth/auth.js";
 import { runDeviceAuthFlow } from "./auth/device-auth.js";
+import { resolveOrgOverride } from "./auth/org-override.js";
 import {
 	copyTextToClipboard,
 	isBrowserLaunchSuppressed,
@@ -1260,24 +1261,17 @@ async function syncCodexCliActiveSelectionIfDrifted(
 /**
  * Resolve the account-id selection for freshly-minted tokens.
  *
- * @internal Exported for unit testing of the org-override contract (the explicit
- * `login --org` argument must win over the ambient CODEX_AUTH_ACCOUNT_ID env for
- * that call only); not part of the public CLI surface.
+ * The org-override precedence (explicit `login --org` wins over the ambient
+ * CODEX_AUTH_ACCOUNT_ID env, for this call only) lives in the internal
+ * lib/auth/org-override.ts module so it can be unit-tested without exporting this
+ * CLI-internal function. Threading the org as a parameter avoids mutating
+ * process.env for the duration of a login, which raced on concurrent re-entry.
  */
-export function resolveAccountSelection(
+function resolveAccountSelection(
 	tokens: TokenSuccess,
 	orgOverride?: string,
 ): TokenSuccessWithAccount {
-	// An explicit org (from `login --org <id>`) takes precedence over the ambient
-	// CODEX_AUTH_ACCOUNT_ID env override. Threading it as a parameter avoids
-	// mutating process.env for the duration of a login, which raced on concurrent
-	// re-entry (menu re-entry / a reused test worker) and could bind a later login
-	// to a stale org. The env override is still honored as a fallback so the
-	// runtime-proxy mechanism that sets it is unchanged.
-	// A blank/whitespace explicit org is treated as absent so it falls back to the
-	// env override (an empty `--org ""` must not suppress CODEX_AUTH_ACCOUNT_ID).
-	const explicitOrg = orgOverride?.trim();
-	const override = (explicitOrg || process.env.CODEX_AUTH_ACCOUNT_ID || "").trim();
+	const override = resolveOrgOverride(orgOverride);
 	if (override) {
 		return {
 			...tokens,

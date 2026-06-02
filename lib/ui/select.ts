@@ -446,12 +446,24 @@ export async function select<T>(items: MenuItem<T>[], options: SelectOptions<T>)
 				// best effort
 			}
 
+			// Each teardown step runs in its own try so a throw in one (setRawMode is
+			// notoriously fragile) cannot skip the others. Cursor restoration in
+			// particular must always run, or a thrown setRawMode would leave the
+			// terminal cursor hidden after the prompt exits.
 			try {
 				stdin.setRawMode(wasRaw);
+			} catch {
+				// best effort
+			}
+			try {
 				stdin.pause();
+			} catch {
+				// best effort
+			}
+			try {
 				stdout.write(ANSI.show);
 			} catch {
-				// best effort cleanup
+				// best effort
 			}
 
 			process.removeListener("SIGINT", onSignal);

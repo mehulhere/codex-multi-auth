@@ -388,6 +388,14 @@ export function logRequest(stage: string, data: Record<string, unknown>): void {
 		logToConsole("info", `[${PLUGIN_NAME}] Logged ${stage} to ${filename}`);
 	} catch (e) {
 		const error = e as Error;
+		// If the log dir vanished after we cached it as ready (deleted/rotated/moved
+		// out from under us), a write fails with ENOENT and would stay broken until
+		// restart because ensureLogDir is a no-op once ready. Invalidate the cache on
+		// a directory-missing failure so the next logRequest re-creates the dir.
+		const code = (e as NodeJS.ErrnoException | undefined)?.code;
+		if (code === "ENOENT") {
+			logDirReady = false;
+		}
 		logToApp("error", `Failed to write log: ${error.message}`);
 		logToConsole("error", `[${PLUGIN_NAME}] Failed to write log: ${error.message}`);
 	}

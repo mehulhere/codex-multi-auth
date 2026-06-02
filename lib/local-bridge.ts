@@ -58,6 +58,25 @@ function isLoopbackHost(host: string): boolean {
 	);
 }
 
+/** Strip surrounding brackets from an IPv6 literal: "[::1]" -> "::1". */
+function stripIpv6Brackets(host: string): string {
+	const trimmed = host.trim();
+	return trimmed.startsWith("[") && trimmed.endsWith("]")
+		? trimmed.slice(1, -1)
+		: trimmed;
+}
+
+/** Raw literal for server.listen (IPv6 must be unbracketed: "::1", not "[::1]"). */
+function toBindHost(host: string): string {
+	return stripIpv6Brackets(host);
+}
+
+/** Authority for a URL: IPv6 must be bracketed ("[::1]"), IPv4/hostnames as-is. */
+function toUrlHost(host: string): string {
+	const bare = stripIpv6Brackets(host);
+	return bare.includes(":") ? `[${bare}]` : bare;
+}
+
 function responseHeadersForClient(headers: Headers): Headers {
 	const result = new Headers();
 	for (const [key, value] of headers.entries()) {
@@ -164,6 +183,12 @@ export async function startLocalBridge(
 	if (!isLoopbackHost(host)) {
 		throw new Error("Local bridge only supports loopback hosts.");
 	}
+	// Normalize once: server.listen needs the raw IPv6 literal ("::1"), while the
+	// emitted baseUrl / request URL authority needs the bracketed form ("[::1]").
+	// Using the raw host for both (the prior bug) made "[::1]" fail the bind and
+	// "::1" produce an invalid "http://::1:port".
+	const bindHost = toBindHost(host);
+	const urlHost = toUrlHost(host);
 	const runtimeBaseUrl = options.runtimeBaseUrl.trim().replace(/\/+$/, "");
 	if (!runtimeBaseUrl) {
 		throw new Error("Local bridge requires a runtimeBaseUrl.");
@@ -299,7 +324,7 @@ export async function startLocalBridge(
 	const server = createServer((req, res) => {
 		void (async () => {
 			try {
-				const webRequest = await toWebRequest(req, host, resolvedPort);
+				const webRequest = await toWebRequest(req, urlHost, resolvedPort);
 				writeWebResponse(res, await app.fetch(webRequest));
 			} catch (error) {
 				if (!res.headersSent) {
@@ -338,13 +363,13 @@ export async function startLocalBridge(
 		};
 		server.once("error", onError);
 		server.once("listening", onListening);
-		server.listen(port, host);
+		server.listen(port, bindHost);
 	});
 
 	return {
-		host,
+		host: bindHost,
 		port: resolvedPort,
-		baseUrl: `http://${host}:${resolvedPort}`,
+		baseUrl: `http://${urlHost}:${resolvedPort}`,
 		close: async () => {
 			await closeServer(server, sockets);
 		},
