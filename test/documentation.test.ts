@@ -579,10 +579,19 @@ describe("Documentation Integrity", () => {
 			url: "https://github.com/ndycode/codex-multi-auth/issues",
 		});
 		expect(packageJson.bin).toEqual({
+			mcodex: "scripts/mcodex",
 			"codex-multi-auth-app-launcher": "scripts/codex-app-launcher.js",
 			"codex-multi-auth-codex": "scripts/codex.js",
 			"codex-multi-auth": "scripts/codex-multi-auth.js",
 		});
+		// Every declared bin must also be published via files[]; otherwise npm can
+		// ship a package whose bin points at a missing shim (e.g. mcodex) while this
+		// test still passes on the bin map alone.
+		for (const binTarget of Object.values(packageJson.bin)) {
+			expect(packageJson.files).toEqual(
+				expect.arrayContaining([binTarget]),
+			);
+		}
 	});
 
 	it("keeps the SECURITY.md override versions aligned with package.json (docs-supplychain-03)", () => {
