@@ -1,4 +1,6 @@
 import { maskEmail } from "../logger.js";
+import { CODEX_UNAVAILABLE_PROBE_NOTE } from "../quota-probe.js";
+import { isCodexUnavailableError } from "../errors.js";
 import type { ModelFamily } from "../prompts/codex.js";
 import type { AccountStorageV3, FlaggedAccountMetadataV1 } from "../storage.js";
 import type { AccountIdSource, TokenResult } from "../types.js";
@@ -295,7 +297,11 @@ export async function runRuntimeAccountCheck(
 				);
 			} catch (error) {
 				state.errors += 1;
-				const message = error instanceof Error ? error.message : String(error);
+				const message = isCodexUnavailableError(error)
+					? CODEX_UNAVAILABLE_PROBE_NOTE
+					: error instanceof Error
+						? error.message
+						: String(error);
 				deps.showLine(
 					`[${i + 1}/${total}] ${label}: ERROR (${message.slice(0, 160)})`,
 				);

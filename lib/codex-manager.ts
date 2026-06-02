@@ -162,6 +162,7 @@ import {
 	type CodexQuotaSnapshot,
 	fetchCodexQuotaSnapshot,
 	formatQuotaSnapshotLine,
+	CODEX_UNAVAILABLE_PROBE_NOTE,
 } from "./quota-probe.js";
 import { isCodexUnavailableError } from "./errors.js";
 import { queuedRefresh } from "./refresh-queue.js";
@@ -2270,7 +2271,7 @@ async function runHealthCheck(options: HealthCheckOptions = {}): Promise<void> {
 						warnings += 1;
 						if (isCodexUnavailableError(error)) {
 							healthDetail =
-								"signed in and working (Codex not available for this account)";
+								`signed in and working (${CODEX_UNAVAILABLE_PROBE_NOTE})`;
 						} else {
 							const message = normalizeFailureDetail(
 								error instanceof Error ? error.message : String(error),
@@ -2371,7 +2372,7 @@ async function runHealthCheck(options: HealthCheckOptions = {}): Promise<void> {
 						warnings += 1;
 						if (isCodexUnavailableError(error)) {
 							healthyMessage =
-								"working now (Codex not available for this account)";
+								`working now (${CODEX_UNAVAILABLE_PROBE_NOTE})`;
 						} else {
 							const message = normalizeFailureDetail(
 								error instanceof Error ? error.message : String(error),

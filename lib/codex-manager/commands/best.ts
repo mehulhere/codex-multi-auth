@@ -1,5 +1,5 @@
 import type { ForecastAccountResult } from "../../forecast.js";
-import type { CodexQuotaSnapshot } from "../../quota-probe.js";
+import { type CodexQuotaSnapshot, describeCodexProbeFailure } from "../../quota-probe.js";
 import { resolveNormalizedModel } from "../../request/helpers/model-map.js";
 import type { AccountStorageV3 } from "../../storage.js";
 import type { TokenFailure, TokenResult } from "../../types.js";
@@ -208,9 +208,8 @@ export async function runBestCommand(
 			});
 			liveQuotaByIndex.set(i, liveQuota);
 		} catch (error) {
-			const message = deps.normalizeFailureDetail(
-				error instanceof Error ? error.message : String(error),
-				undefined,
+			const message = describeCodexProbeFailure(error, (raw) =>
+				deps.normalizeFailureDetail(raw, undefined),
 			);
 			probeErrors.push(`${deps.formatAccountLabel(account, i)}: ${message}`);
 		}

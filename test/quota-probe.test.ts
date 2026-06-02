@@ -23,7 +23,12 @@ vi.mock("../lib/request/fetch-helpers.js", () => ({
 	getUnsupportedCodexModelInfo: getUnsupportedCodexModelInfoMock,
 }));
 
-import { fetchCodexQuotaSnapshot, formatQuotaSnapshotLine } from "../lib/quota-probe.js";
+import {
+	fetchCodexQuotaSnapshot,
+	formatQuotaSnapshotLine,
+	describeCodexProbeFailure,
+	CODEX_UNAVAILABLE_PROBE_NOTE,
+} from "../lib/quota-probe.js";
 import { CodexUnavailableError } from "../lib/errors.js";
 
 function makeQuotaHeaders(overrides: Record<string, string> = {}): Headers {
@@ -482,5 +487,28 @@ describe("quota-probe", () => {
 		expect(line).not.toContain("resets");
 		expect(line).not.toContain("plan:");
 		expect(line).not.toContain("active:");
+	});
+
+	describe("describeCodexProbeFailure", () => {
+		it("returns the friendly note for CodexUnavailableError (issue #501)", () => {
+			const error = new CodexUnavailableError(
+				"The 'gpt-5-codex' model is not supported when using Codex with a ChatGPT account.",
+			);
+			expect(describeCodexProbeFailure(error)).toBe(CODEX_UNAVAILABLE_PROBE_NOTE);
+			expect(describeCodexProbeFailure(error, (raw) => `norm:${raw}`)).toBe(
+				CODEX_UNAVAILABLE_PROBE_NOTE,
+			);
+		});
+
+		it("falls back to the raw message for other errors", () => {
+			expect(describeCodexProbeFailure(new Error("boom"))).toBe("boom");
+			expect(describeCodexProbeFailure("plain string")).toBe("plain string");
+		});
+
+		it("applies the normalizer to non-unavailable errors when provided", () => {
+			expect(
+				describeCodexProbeFailure(new Error("  messy  "), (raw) => raw.trim()),
+			).toBe("messy");
+		});
 	});
 });

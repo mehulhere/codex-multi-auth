@@ -13,7 +13,11 @@ import {
 	type ForecastAccountResult,
 } from "../forecast.js";
 import { loadQuotaCache, saveQuotaCache, type QuotaCacheData } from "../quota-cache.js";
-import { fetchCodexQuotaSnapshot, formatQuotaSnapshotLine } from "../quota-probe.js";
+import {
+	fetchCodexQuotaSnapshot,
+	formatQuotaSnapshotLine,
+	describeCodexProbeFailure,
+} from "../quota-probe.js";
 import { queuedRefresh } from "../refresh-queue.js";
 import {
 	getStoragePath,
@@ -349,9 +353,8 @@ export async function runForecast(
 				}
 			}
 		} catch (error) {
-			const message = deps.normalizeFailureDetail(
-				error instanceof Error ? error.message : String(error),
-				undefined,
+			const message = describeCodexProbeFailure(error, (raw) =>
+				deps.normalizeFailureDetail(raw, undefined),
 			);
 			probeErrors.push(`${formatAccountLabel(account, i)}: ${message}`);
 		}
@@ -523,9 +526,8 @@ export async function runReport(
 				});
 				liveQuotaByIndex.set(i, liveQuota);
 			} catch (error) {
-				const message = deps.normalizeFailureDetail(
-					error instanceof Error ? error.message : String(error),
-					undefined,
+				const message = describeCodexProbeFailure(error, (raw) =>
+					deps.normalizeFailureDetail(raw, undefined),
 				);
 				probeErrors.push(`${formatAccountLabel(account, i)}: ${message}`);
 			}

@@ -219,7 +219,8 @@ vi.mock("../lib/codex-cli/state.js", () => ({
 	loadCodexCliState: loadCodexCliStateMock,
 }));
 
-vi.mock("../lib/quota-probe.js", () => ({
+vi.mock("../lib/quota-probe.js", async (importOriginal) => ({
+	...(await importOriginal<typeof import("../lib/quota-probe.js")>()),
 	fetchCodexQuotaSnapshot: fetchCodexQuotaSnapshotMock,
 	formatQuotaSnapshotLine: vi.fn(() => "probe-ok"),
 }));
