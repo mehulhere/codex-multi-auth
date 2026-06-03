@@ -124,6 +124,242 @@ describe("plugin config save paths", () => {
     expect(leakedTemps).toHaveLength(0);
   });
 
+  it("does not lose a concurrent env-path update (mtime compare-and-swap)", async () => {
+    const configPath = join(tempDir, "plugin-config.json");
+    process.env.CODEX_MULTI_AUTH_CONFIG_PATH = configPath;
+    await fs.writeFile(
+      configPath,
+      JSON.stringify({ codexMode: true, preserved: 1 }),
+      "utf8",
+    );
+    // Pin a known starting mtime so the simulated concurrent write below
+    // produces a clearly different timestamp.
+    const baseTime = new Date("2026-01-01T00:00:00.000Z");
+    await fs.utimes(configPath, baseTime, baseTime);
+
+    const originalReadFile = fs.readFile.bind(fs);
+    let injectedConcurrentWrite = false;
+    const readSpy = vi
+      .spyOn(fs, "readFile")
+      .mockImplementation(async (...args) => {
+        const result = await originalReadFile(
+          ...(args as Parameters<typeof fs.readFile>),
+        );
+        if (
+          String(args[0]) === configPath &&
+          !injectedConcurrentWrite
+        ) {
+          // Simulate another process landing a write AFTER our read but
+          // BEFORE our rename. The CAS must detect the mtime change, abort
+          // with ESTALE, then re-read and merge so this key is not lost.
+          injectedConcurrentWrite = true;
+          const concurrentTime = new Date("2026-01-02T00:00:00.000Z");
+          await fs.writeFile(
+            configPath,
+            JSON.stringify({
+              codexMode: true,
+              preserved: 1,
+              concurrentKey: "from-other-process",
+            }),
+            "utf8",
+          );
+          await fs.utimes(configPath, concurrentTime, concurrentTime);
+        }
+        return result;
+      });
+
+    try {
+      const { savePluginConfig } = await import("../lib/config.js");
+      await savePluginConfig({ fastSession: true });
+    } finally {
+      readSpy.mockRestore();
+    }
+
+    const parsed = JSON.parse(await fs.readFile(configPath, "utf8")) as Record<
+      string,
+      unknown
+    >;
+    // The concurrent process's key survives (not clobbered) and our patch applies.
+    expect(parsed.concurrentKey).toBe("from-other-process");
+    expect(parsed.fastSession).toBe(true);
+    expect(parsed.codexMode).toBe(true);
+    expect(parsed.preserved).toBe(1);
+  });
+
+  it("retries a transient stat failure during an env-path save (config-08)", async () => {
+    const configPath = join(tempDir, "plugin-config.json");
+    process.env.CODEX_MULTI_AUTH_CONFIG_PATH = configPath;
+    await fs.writeFile(
+      configPath,
+      JSON.stringify({ codexMode: true, preserved: 1 }),
+      "utf8",
+    );
+
+    const originalStat = fs.stat.bind(fs);
+    let injectedStatFailure = false;
+    const statSpy = vi.spyOn(fs, "stat").mockImplementation(async (...args) => {
+      // One-shot EBUSY on the first mtime probe of the config file. Without the
+      // bounded retry in getConfigFileMtimeMs, this transient Windows lock would
+      // abort the whole save.
+      if (String(args[0]) === configPath && !injectedStatFailure) {
+        injectedStatFailure = true;
+        const error = new Error("busy") as NodeJS.ErrnoException;
+        error.code = "EBUSY";
+        throw error;
+      }
+      return originalStat(...(args as Parameters<typeof fs.stat>));
+    });
+
+    try {
+      const { savePluginConfig } = await import("../lib/config.js");
+      await savePluginConfig({ fastSession: true });
+    } finally {
+      statSpy.mockRestore();
+    }
+
+    expect(injectedStatFailure).toBe(true);
+    const parsed = JSON.parse(await fs.readFile(configPath, "utf8")) as Record<
+      string,
+      unknown
+    >;
+    expect(parsed.fastSession).toBe(true);
+    expect(parsed.codexMode).toBe(true);
+    expect(parsed.preserved).toBe(1);
+  });
+
+  it("does not lose a concurrent env-path update injected at rename time (config-09)", async () => {
+    const configPath = join(tempDir, "plugin-config.json");
+    process.env.CODEX_MULTI_AUTH_CONFIG_PATH = configPath;
+    await fs.writeFile(
+      configPath,
+      JSON.stringify({ codexMode: true, preserved: 1 }),
+      "utf8",
+    );
+    // Pin a known starting mtime so the simulated concurrent write produces a
+    // clearly different timestamp.
+    const baseTime = new Date("2026-01-01T00:00:00.000Z");
+    await fs.utimes(configPath, baseTime, baseTime);
+
+    const originalRename = fs.rename.bind(fs);
+    let injectedConcurrentWrite = false;
+    const renameSpy = vi
+      .spyOn(fs, "rename")
+      .mockImplementation(async (...args) => {
+        const dest = String(args[1]);
+        // Simulate another process landing a write at the very last moment:
+        // AFTER our mtime CAS passed but BEFORE our rename commits — the window
+        // the existing readFile-injection test cannot reach. The atomic writer
+        // surfaces ESTALE; the second-line CAS loop must re-read and re-merge so
+        // the competing key is not clobbered.
+        if (dest === configPath && !injectedConcurrentWrite) {
+          injectedConcurrentWrite = true;
+          const concurrentTime = new Date("2026-01-02T00:00:00.000Z");
+          await fs.writeFile(
+            configPath,
+            JSON.stringify({
+              codexMode: true,
+              preserved: 1,
+              concurrentKey: "from-other-process",
+            }),
+            "utf8",
+          );
+          await fs.utimes(configPath, concurrentTime, concurrentTime);
+          const staleError = new Error(
+            "config changed during rename",
+          ) as NodeJS.ErrnoException;
+          staleError.code = "ESTALE";
+          throw staleError;
+        }
+        return originalRename(...(args as Parameters<typeof fs.rename>));
+      });
+
+    try {
+      const { savePluginConfig } = await import("../lib/config.js");
+      await savePluginConfig({ fastSession: true });
+    } finally {
+      renameSpy.mockRestore();
+    }
+
+    expect(injectedConcurrentWrite).toBe(true);
+    const parsed = JSON.parse(await fs.readFile(configPath, "utf8")) as Record<
+      string,
+      unknown
+    >;
+    // The last-moment competing key survives and our patch still applies.
+    expect(parsed.concurrentKey).toBe("from-other-process");
+    expect(parsed.fastSession).toBe(true);
+    expect(parsed.codexMode).toBe(true);
+    expect(parsed.preserved).toBe(1);
+  });
+
+  it("takes over a stale foreign lock and removes only its own lock (config-18)", async () => {
+    const configPath = join(tempDir, "plugin-config.json");
+    process.env.CODEX_MULTI_AUTH_CONFIG_PATH = configPath;
+    await fs.writeFile(configPath, JSON.stringify({ preserved: 1 }), "utf8");
+
+    // Seed a STALE foreign-owned lock (different owner, already expired). Our
+    // save must take it over, complete, and clean up.
+    const lockPath = `${configPath}.lock`;
+    await fs.writeFile(
+      lockPath,
+      `${JSON.stringify({
+        pid: 999999,
+        owner: "other-owner-token",
+        acquiredAt: Date.now() - 60_000,
+        expiresAt: Date.now() - 30_000,
+      })}\n`,
+      "utf8",
+    );
+
+    const { savePluginConfig } = await import("../lib/config.js");
+    await savePluginConfig({ fastSession: true });
+
+    const parsed = JSON.parse(await fs.readFile(configPath, "utf8")) as Record<
+      string,
+      unknown
+    >;
+    expect(parsed.fastSession).toBe(true);
+    expect(parsed.preserved).toBe(1);
+    // Our own lock is released after the save.
+    await expect(fs.access(lockPath)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("does not delete a live foreign lock and times out instead (config-18)", async () => {
+    const configPath = join(tempDir, "plugin-config.json");
+    process.env.CODEX_MULTI_AUTH_CONFIG_PATH = configPath;
+    await fs.writeFile(configPath, JSON.stringify({ preserved: 1 }), "utf8");
+
+    // Seed a LIVE foreign-owned lock (different owner, not expired). Our save
+    // must respect it (wait then time out) and must NOT delete the other
+    // owner's lockfile.
+    const lockPath = `${configPath}.lock`;
+    const foreignPayload = `${JSON.stringify({
+      pid: 999999,
+      owner: "other-owner-token",
+      acquiredAt: Date.now(),
+      expiresAt: Date.now() + 60_000,
+    })}\n`;
+    await fs.writeFile(lockPath, foreignPayload, "utf8");
+
+    const { savePluginConfig } = await import("../lib/config.js");
+    await expect(savePluginConfig({ fastSession: true })).rejects.toMatchObject({
+      code: "ELOCKTIMEOUT",
+    });
+
+    // The foreign lock is untouched (same owner token, not stomped).
+    const lockAfter = JSON.parse(await fs.readFile(lockPath, "utf8")) as {
+      owner?: string;
+    };
+    expect(lockAfter.owner).toBe("other-owner-token");
+    // And our save did not partially apply.
+    const parsed = JSON.parse(await fs.readFile(configPath, "utf8")) as Record<
+      string,
+      unknown
+    >;
+    expect(parsed.fastSession).toBeUndefined();
+    await fs.rm(lockPath, { force: true });
+  }, 15_000);
+
   it("writes through unified settings when env path is unset", async () => {
     delete process.env.CODEX_MULTI_AUTH_CONFIG_PATH;
     const unifiedPath = join(tempDir, "settings.json");

@@ -27,8 +27,35 @@ export interface CreatedLocalClientToken {
 
 const TOKEN_FILE_NAME = "local-client-tokens.json";
 const TOKEN_PREFIX = "cma_local";
-const RETRYABLE_FS_CODES = new Set(["EBUSY", "EPERM"]);
-let writeQueue: Promise<void> = Promise.resolve();
+// Debounce window for persisting a record's lastUsedAt. Bearer verification is
+// on the auth hot path (every authenticated bridge request), so writing the
+// store to disk on each verify serializes behind the shared write queue and
+// triggers a temp-write+rename per request (with Windows rename-lock retries).
+// lastUsedAt is informational only (surfaced by `bridge token list`), so we
+// coalesce updates: advance it in-memory every verify but only flush to disk
+// once it has moved at least this far past the persisted value.
+const LAST_USED_PERSIST_THRESHOLD_MS = 60_000;
+const RETRYABLE_FS_CODES = new Set([
+	"EBUSY",
+	"EPERM",
+	"EAGAIN",
+	"ENOTEMPTY",
+	"EACCES",
+]);
+let writeQueue: Promise<unknown> = Promise.resolve();
+
+// Serialize a task on the shared write queue so each task runs only after the
+// previous one has fully settled. Routing the entire read-modify-write through
+// here (not just the final write) ensures every mutation observes the prior
+// committed state, preventing lost updates between concurrent public ops.
+function enqueue<T>(task: () => Promise<T>): Promise<T> {
+	const queued = writeQueue.catch(() => undefined).then(task);
+	writeQueue = queued.then(
+		() => undefined,
+		() => undefined,
+	);
+	return queued;
+}
 
 function isRetryableFsError(error: unknown): boolean {
 	const code = (error as NodeJS.ErrnoException | undefined)?.code;
@@ -132,46 +159,56 @@ export async function loadLocalClientTokenStore(): Promise<LocalClientTokenStore
 	}
 }
 
+async function writeStoreToDisk(store: LocalClientTokenStore): Promise<void> {
+	const path = getLocalClientTokenPath();
+	const payload = normalizeStore(store);
+	const dir = getCodexMultiAuthDir();
+	// This store holds token hashes, so keep the directory owner-only on POSIX
+	// (mode is a no-op on win32 / ACL-based).
+	await fs.mkdir(dir, { recursive: true, mode: 0o700 });
+	// mkdir's mode only applies to a freshly-created dir; an upgrade with a
+	// pre-existing multi-auth dir keeps its old (possibly world-listable) perms,
+	// so re-assert 0o700 on POSIX. Best-effort: a chmod failure must not break
+	// the write (the 0o600 file below still protects the hashes).
+	if (process.platform !== "win32") {
+		try {
+			await fs.chmod(dir, 0o700);
+		} catch {
+			// Best-effort hardening only.
+		}
+	}
+	const tempPath = `${path}.${process.pid}.${Date.now()}.${Math.random().toString(36).slice(2, 8)}.tmp`;
+	let moved = false;
+	try {
+		await fs.writeFile(tempPath, `${JSON.stringify(payload, null, 2)}\n`, {
+			encoding: "utf8",
+			mode: 0o600,
+		});
+		for (let attempt = 0; attempt < 5; attempt += 1) {
+			try {
+				await fs.rename(tempPath, path);
+				moved = true;
+				return;
+			} catch (error) {
+				if (!isRetryableFsError(error) || attempt >= 4) throw error;
+				await sleep(10 * 2 ** attempt);
+			}
+		}
+	} finally {
+		if (!moved) {
+			try {
+				await fs.unlink(tempPath);
+			} catch {
+				// Best-effort temp cleanup.
+			}
+		}
+	}
+}
+
 export async function saveLocalClientTokenStore(
 	store: LocalClientTokenStore,
 ): Promise<void> {
-	const path = getLocalClientTokenPath();
-	const payload = normalizeStore(store);
-	const task = async (): Promise<void> => {
-		await fs.mkdir(getCodexMultiAuthDir(), { recursive: true, mode: 0o700 });
-		const tempPath = `${path}.${process.pid}.${Date.now()}.${Math.random().toString(36).slice(2, 8)}.tmp`;
-		let moved = false;
-		try {
-			await fs.writeFile(tempPath, `${JSON.stringify(payload, null, 2)}\n`, {
-				encoding: "utf8",
-				mode: 0o600,
-			});
-			for (let attempt = 0; attempt < 5; attempt += 1) {
-				try {
-					await fs.rename(tempPath, path);
-					moved = true;
-					return;
-				} catch (error) {
-					if (!isRetryableFsError(error) || attempt >= 4) throw error;
-					await sleep(10 * 2 ** attempt);
-				}
-			}
-		} finally {
-			if (!moved) {
-				try {
-					await fs.unlink(tempPath);
-				} catch {
-					// Best-effort temp cleanup.
-				}
-			}
-		}
-	};
-	const queued = writeQueue.catch(() => undefined).then(task);
-	writeQueue = queued.then(
-		() => undefined,
-		() => undefined,
-	);
-	await queued;
+	await enqueue(() => writeStoreToDisk(store));
 }
 
 export function createLocalClientTokenRecord(input: {
@@ -195,11 +232,13 @@ export async function addLocalClientToken(input: {
 	label?: string;
 	now?: number;
 } = {}): Promise<CreatedLocalClientToken> {
-	const store = await loadLocalClientTokenStore();
-	const created = createLocalClientTokenRecord(input);
-	store.tokens.push(created.record);
-	await saveLocalClientTokenStore(store);
-	return created;
+	return enqueue(async () => {
+		const store = await loadLocalClientTokenStore();
+		const created = createLocalClientTokenRecord(input);
+		store.tokens.push(created.record);
+		await writeStoreToDisk(store);
+		return created;
+	});
 }
 
 export async function rotateLocalClientToken(input: {
@@ -207,30 +246,34 @@ export async function rotateLocalClientToken(input: {
 	label?: string;
 	now?: number;
 }): Promise<CreatedLocalClientToken | null> {
-	const store = await loadLocalClientTokenStore();
-	const existing = store.tokens.find((record) => record.id === input.id);
-	if (!existing || existing.revokedAt !== null) return null;
-	const now = input.now ?? Date.now();
-	existing.revokedAt = now;
-	const created = createLocalClientTokenRecord({
-		label: input.label ?? existing.label,
-		now,
+	return enqueue(async () => {
+		const store = await loadLocalClientTokenStore();
+		const existing = store.tokens.find((record) => record.id === input.id);
+		if (!existing || existing.revokedAt !== null) return null;
+		const now = input.now ?? Date.now();
+		existing.revokedAt = now;
+		const created = createLocalClientTokenRecord({
+			label: input.label ?? existing.label,
+			now,
+		});
+		store.tokens.push(created.record);
+		await writeStoreToDisk(store);
+		return created;
 	});
-	store.tokens.push(created.record);
-	await saveLocalClientTokenStore(store);
-	return created;
 }
 
 export async function revokeLocalClientToken(
 	id: string,
 	now = Date.now(),
 ): Promise<boolean> {
-	const store = await loadLocalClientTokenStore();
-	const existing = store.tokens.find((record) => record.id === id);
-	if (!existing || existing.revokedAt !== null) return false;
-	existing.revokedAt = now;
-	await saveLocalClientTokenStore(store);
-	return true;
+	return enqueue(async () => {
+		const store = await loadLocalClientTokenStore();
+		const existing = store.tokens.find((record) => record.id === id);
+		if (!existing || existing.revokedAt !== null) return false;
+		existing.revokedAt = now;
+		await writeStoreToDisk(store);
+		return true;
+	});
 }
 
 export async function verifyLocalClientBearerToken(
@@ -241,14 +284,25 @@ export async function verifyLocalClientBearerToken(
 	const token = match?.[1]?.trim();
 	if (!token) return null;
 	const tokenHash = hashToken(token);
-	const store = await loadLocalClientTokenStore();
-	const record = store.tokens.find(
-		(entry) => entry.revokedAt === null && entry.tokenHash === tokenHash,
-	);
-	if (!record) return null;
-	record.lastUsedAt = now;
-	await saveLocalClientTokenStore(store);
-	return record;
+	return enqueue(async () => {
+		const store = await loadLocalClientTokenStore();
+		const record = store.tokens.find(
+			(entry) => entry.revokedAt === null && entry.tokenHash === tokenHash,
+		);
+		if (!record) return null;
+		// Token match (verification correctness) is decided above and never
+		// depends on lastUsedAt. Always advance lastUsedAt in-memory so callers
+		// see a fresh value, but only flush to disk when it has not been
+		// persisted yet, or has advanced past the debounce threshold. This keeps
+		// steady-state verifies off the disk-write path while still recording
+		// recent usage on a coarse (>=60s) cadence.
+		const persisted = record.lastUsedAt;
+		record.lastUsedAt = now;
+		if (persisted === null || now - persisted >= LAST_USED_PERSIST_THRESHOLD_MS) {
+			await writeStoreToDisk(store);
+		}
+		return record;
+	});
 }
 
 export function resetLocalClientTokenWriteQueueForTests(): void {

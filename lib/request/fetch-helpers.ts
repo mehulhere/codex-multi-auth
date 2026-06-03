@@ -194,6 +194,7 @@ function isUnsupportedCodexModelForChatGpt(status: number, bodyText: string): bo
 	if (!bodyText) return false;
 	return (
 		CHATGPT_CODEX_UNSUPPORTED_MODEL_PATTERN.test(bodyText) ||
+		NORMALIZED_UNSUPPORTED_MODEL_PATTERN.test(bodyText) ||
 		MODEL_ACCESS_DENIED_PATTERN.test(bodyText)
 	);
 }
@@ -217,6 +218,7 @@ export function getUnsupportedCodexModelInfo(
 		}
 		const isUnsupportedDetail =
 			CHATGPT_CODEX_UNSUPPORTED_MODEL_PATTERN.test(detail) ||
+			NORMALIZED_UNSUPPORTED_MODEL_PATTERN.test(detail) ||
 			MODEL_ACCESS_DENIED_PATTERN.test(detail);
 		if (!isUnsupportedDetail) {
 			return { isUnsupported: false };
@@ -242,6 +244,7 @@ export function getUnsupportedCodexModelInfo(
 		code === CHATGPT_CODEX_UNSUPPORTED_MODEL_CODE ||
 		(message
 			? CHATGPT_CODEX_UNSUPPORTED_MODEL_PATTERN.test(message) ||
+				NORMALIZED_UNSUPPORTED_MODEL_PATTERN.test(message) ||
 				MODEL_ACCESS_DENIED_PATTERN.test(message)
 			: false);
 

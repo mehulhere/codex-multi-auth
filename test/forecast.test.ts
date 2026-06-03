@@ -710,4 +710,105 @@ describe("forecast helpers", () => {
 			"No healthy accounts are available",
 		);
 	});
+
+	it("returns null recommendation when all accounts are policy-blocked/exhausted", () => {
+		// Blocked/exhausted accounts report availability === "unavailable" with
+		// hardFailure === false and disabled === false. They must not be
+		// recommended with a misleading "pick shortest wait".
+		const now = 1_700_000_000_000;
+		const results = evaluateForecastAccounts([
+			{
+				index: 0,
+				now,
+				isCurrent: true,
+				account: {
+					refreshToken: "a",
+					addedAt: now - 1_000,
+					lastUsed: now - 1_000,
+				},
+				runtimeOverlay: { policyBlockedIndexes: [0] },
+			},
+			{
+				index: 1,
+				now,
+				isCurrent: false,
+				account: {
+					refreshToken: "b",
+					addedAt: now - 1_000,
+					lastUsed: now - 1_000,
+				},
+				runtimeOverlay: {
+					lastPoolExhaustionSkipReasons: { "1": "token-exhausted" },
+				},
+			},
+		]);
+
+		// Sanity: both are unavailable but neither disabled nor hard-failed.
+		expect(results.every((r) => r.availability === "unavailable")).toBe(true);
+		expect(results.every((r) => !r.disabled && !r.hardFailure)).toBe(true);
+
+		const recommendation = recommendForecastAccount(results);
+		expect(recommendation.recommendedIndex).toBeNull();
+		expect(recommendation.reason).toContain("blocked or exhausted");
+	});
+
+	it("returns null recommendation when all accounts are quota-exhausted", () => {
+		// Quota-exhausted accounts are classified availability === "delayed" (not
+		// "unavailable") so display/sorting still treat them as a timed wait. The
+		// recommendation must still return null instead of a misleading "pick
+		// shortest wait" when every account in the pool is exhausted.
+		const now = 1_700_000_000_000;
+		const accounts = [
+			{
+				email: "a@example.com",
+				accountId: "acc_a",
+				refreshToken: "refresh-a",
+				addedAt: now - 10_000,
+				lastUsed: now - 10_000,
+			},
+			{
+				email: "b@example.com",
+				accountId: "acc_b",
+				refreshToken: "refresh-b",
+				addedAt: now - 10_000,
+				lastUsed: now - 10_000,
+			},
+		];
+		const quotaCache = {
+			version: 1 as const,
+			updatedAt: now,
+			byAccountId: {
+				acc_a: {
+					accountId: "acc_a",
+					status: 200,
+					model: "gpt-5.3-codex",
+					updatedAt: now,
+					primary: { usedPercent: 100, resetAtMs: now + 60_000 },
+					secondary: { usedPercent: 100, resetAtMs: now + 120_000 },
+				},
+				acc_b: {
+					accountId: "acc_b",
+					status: 200,
+					model: "gpt-5.3-codex",
+					updatedAt: now,
+					primary: { usedPercent: 100, resetAtMs: now + 90_000 },
+					secondary: { usedPercent: 100, resetAtMs: now + 180_000 },
+				},
+			},
+			byEmail: {},
+		};
+		const results = evaluateForecastAccounts([
+			{ index: 0, now, isCurrent: true, account: accounts[0], allAccounts: accounts, quotaCache },
+			{ index: 1, now, isCurrent: false, account: accounts[1], allAccounts: accounts, quotaCache },
+		]);
+
+		// Sanity: both are "delayed" + exhausted, neither disabled nor hard-failed.
+		expect(results.every((r) => r.availability === "delayed")).toBe(true);
+		expect(results.every((r) => r.exhausted)).toBe(true);
+		expect(results.every((r) => !r.disabled && !r.hardFailure)).toBe(true);
+
+		const recommendation = recommendForecastAccount(results);
+		expect(recommendation.recommendedIndex).toBeNull();
+		expect(recommendation.reason).toContain("blocked or exhausted");
+	});
 });

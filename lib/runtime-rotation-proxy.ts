@@ -1,5 +1,5 @@
 import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, statSync } from "node:fs";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import type { Socket } from "node:net";
 import {
@@ -7,6 +7,7 @@ import {
 	extractAccountId,
 	type ManagedAccount,
 } from "./accounts.js";
+import { withRoutingMutex } from "./routing-mutex.js";
 import { getStoragePath } from "./storage.js";
 import {
 	getFetchTimeoutMs,
@@ -349,8 +350,21 @@ function recordLastRuntimeAccount(
  * cache. The hashing cost is negligible for the small accounts.json file
  * (typically < 50KB) and keeps cache correctness independent of FS mtime
  * resolution. See #474.
+ *
+ * We additionally retain the last-seen `mtimeMs`/`size` so the hot path can
+ * skip the `readFileSync` + sha1 entirely when neither has changed since the
+ * previous read AND the cached mtime has settled past
+ * `MTIME_SHORTCIRCUIT_SETTLE_MS` (the common case — the proxy reads on every
+ * request but the file only mutates on a `switch`/`unpin`/`best` CLI
+ * invocation, then sits quiescent). The sha1 remains the source of truth:
+ * when `mtimeMs`/`size` differ, were never cached, or the mtime is too recent
+ * to trust against same-tick writes, we re-read and hash, so the content-hash
+ * path still protects against the coarse-mtime collision described above
+ * whenever the file is re-read.
  */
 interface StorageMetaSnapshot {
+	mtimeMs: number;
+	size: number;
 	contentHash: string;
 	pinnedAccountIndex: number | null;
 	affinityGeneration: number;
@@ -366,6 +380,18 @@ export interface StorageMeta {
 // corrupt each other's snapshots. See issue #474.
 const STORAGE_META_CACHE: Map<string, StorageMetaSnapshot> = new Map();
 
+// The mtime+size short-circuit (L3) may only be trusted once the cached
+// mtime is far enough in the past that no *subsequent* write could share the
+// same coarse mtime tick. Filesystems report mtime at wildly different
+// granularities (ext4 ns, FAT 2s, some network/Windows volumes ~1s, and CI
+// containers occasionally coarser), and our writers use atomic rename, so two
+// rapid CLI bumps can land on an identical mtimeMs. Within this settle window
+// we therefore ignore mtime equality and fall back to the read + sha1 path
+// (the real source of truth). Outside it, the file has been quiescent long
+// enough that mtime equality provably means "unchanged", so we skip the read.
+// 2s comfortably exceeds the coarsest mtime granularity we expect in practice.
+const MTIME_SHORTCIRCUIT_SETTLE_MS = 2_000;
+
 function hashStorageBytes(bytes: Buffer): string {
 	return createHash("sha1").update(bytes).digest("hex");
 }
@@ -378,7 +404,11 @@ function metaFromSnapshot(snapshot: StorageMetaSnapshot): StorageMeta {
 }
 
 /**
- * Cheap, hot-path-safe single read with mtime-cache short-circuit. Transient
+ * Cheap, hot-path-safe single read with mtime-cache short-circuit. When the
+ * file's `mtimeMs` and `size` match the cached snapshot for this path we
+ * return the cached value WITHOUT reading or hashing the file. Only when
+ * mtime/size differ (or were never cached) do we `readFileSync` + sha1 and,
+ * if the content hash still matches, skip the `JSON.parse`. Transient
  * failures (EBUSY/EPERM/EACCES/EAGAIN, partial-write SyntaxError) fall through
  * to the last cached value for this path; defaults are only returned when the
  * file has never been successfully read.
@@ -396,11 +426,38 @@ export function readStorageMetaFromDisk(
 		return { pinnedAccountIndex: null, affinityGeneration: 0 };
 	}
 	try {
+		// mtime+size short-circuit (L3): when neither has changed since the last
+		// successful read AND the cached mtime has settled (see
+		// MTIME_SHORTCIRCUIT_SETTLE_MS) we return the cached snapshot without
+		// reading or hashing the file. During the settle window we deliberately
+		// fall through to the read + sha1 path below, which stays the source of
+		// truth and protects against the coarse-mtime collision described on
+		// StorageMetaSnapshot. So this is a pure fast path for the common
+		// "file quiescent, proxy polling every request" case.
+		const stats = statSync(storagePath);
+		const cachedByStat = STORAGE_META_CACHE.get(storagePath);
+		if (
+			cachedByStat &&
+			cachedByStat.mtimeMs === stats.mtimeMs &&
+			cachedByStat.size === stats.size &&
+			Date.now() - stats.mtimeMs > MTIME_SHORTCIRCUIT_SETTLE_MS
+		) {
+			return metaFromSnapshot(cachedByStat);
+		}
 		const bytes = readFileSync(storagePath);
 		const contentHash = hashStorageBytes(bytes);
 		const cached = STORAGE_META_CACHE.get(storagePath);
 		if (cached && cached.contentHash === contentHash) {
-			return metaFromSnapshot(cached);
+			// Content is byte-identical despite the mtime/size change (e.g. an
+			// atomic-rename rewrite of the same bytes). Refresh the stat fields so
+			// the next request takes the fast path, but skip the JSON.parse.
+			const refreshed: StorageMetaSnapshot = {
+				...cached,
+				mtimeMs: stats.mtimeMs,
+				size: stats.size,
+			};
+			STORAGE_META_CACHE.set(storagePath, refreshed);
+			return metaFromSnapshot(refreshed);
 		}
 		const parsed = JSON.parse(bytes.toString("utf8")) as {
 			pinnedAccountIndex?: unknown;
@@ -419,6 +476,8 @@ export function readStorageMetaFromDisk(
 				? parsed.affinityGeneration
 				: 0;
 		const snapshot: StorageMetaSnapshot = {
+			mtimeMs: stats.mtimeMs,
+			size: stats.size,
 			contentHash,
 			pinnedAccountIndex,
 			affinityGeneration,
@@ -497,7 +556,21 @@ async function persistRuntimeActiveAccount(
 		// (syncCodexCliActiveSelectionForIndex), which is the lost-update window the
 		// mutex exists to close. In legacy mode markSwitchedLocked runs inline, so
 		// behavior is unchanged by default.
-		await accountManager.markSwitchedLocked(account, "rotation", family);
+		//
+		// L4 fix: in "enabled" mode the SELECTION path already committed the cursor
+		// for this account inside the routing mutex (atomic select+commit, see the
+		// hot-path caller). Re-running markSwitchedLocked here — after the upstream
+		// fetch, in a *separate* critical section — would redundantly re-advance the
+		// cursor and could clobber a concurrent request's atomic advance that landed
+		// while this request was awaiting upstream. So only do the locked cursor
+		// commit in legacy mode, where selection does NOT commit under a lock and
+		// this remains the sole commit site (preserving legacy behavior exactly).
+		// `saveToDiskDebounced` + CLI sync still run in both modes: they snapshot the
+		// current in-memory state / mirror the CLI selection and do not advance the
+		// in-memory rotation cursor.
+		if (accountManager.getRoutingMutexMode() !== "enabled") {
+			await accountManager.markSwitchedLocked(account, "rotation", family);
+		}
 		accountManager.saveToDiskDebounced();
 		await accountManager.syncCodexCliActiveSelectionForIndex(account.index);
 	} catch {
@@ -1052,6 +1125,24 @@ function getQuotaNearExhaustionWaitMs(
 	return candidates.length > 0 ? Math.max(...candidates) : 0;
 }
 
+/**
+ * `chooseAccount` is a SYNC selector that internally advances the rotation
+ * cursor (the session-affinity-preferred branch and the round-robin fallback
+ * both call `accountManager.markSwitched(...)`, and the hybrid selector advances
+ * its own cursor). It does NOT acquire the routing mutex itself.
+ *
+ * Concurrency (L4): when `routingMutex === "enabled"`, the proxy hot path runs
+ * this whole call AND the subsequent `markSwitchedLocked` commit inside a single
+ * `withRoutingMutex` acquisition, so concurrent requests serialize selection +
+ * cursor advance and cannot stampede the same account. `withRoutingMutex` is
+ * reentrant (AsyncLocalStorage), so the nested `markSwitchedLocked` — and the
+ * later one in `persistRuntimeActiveAccount` — run inline without re-acquiring
+ * the non-reentrant FIFO queue (no deadlock). In legacy mode the inline
+ * `markSwitched` calls below are used unchanged and no lock is taken, so default
+ * behavior and perf are identical. See the hot-path caller in
+ * `startRuntimeRotationProxy` and the regression in
+ * `test/runtime-rotation-proxy.test.ts`.
+ */
 export function chooseAccount(params: {
 	accountManager: AccountManager;
 	sessionAffinityStore: SessionAffinityStore | null;
@@ -1131,6 +1222,7 @@ export function chooseAccount(params: {
 			if (reason) {
 				skipReasons?.set(preferred.index, reason);
 			} else {
+			// L4 (deferred): unlocked cursor mutation — see chooseAccount header.
 			accountManager.markSwitched(preferred, "rotation", family);
 			return preferred;
 			}
@@ -1178,6 +1270,7 @@ export function chooseAccount(params: {
 		if (!reason) {
 			const live = accountManager.getAccountByIndex(account.index);
 			if (!live) continue;
+			// L4 (deferred): unlocked cursor mutation — see chooseAccount header.
 			accountManager.markSwitched(live, "rotation", family);
 			return live;
 		}
@@ -1499,6 +1592,17 @@ export async function startRuntimeRotationProxy(
 		let accountManager = activeAccountManager;
 		try {
 			const incomingUrl = new URL(req.url ?? "/", "http://127.0.0.1");
+			// Authenticate before discriminating path/method so an unauthenticated
+			// caller cannot enumerate which endpoints exist: an unknown caller always
+			// gets 401, never a 404 that would confirm a path is invalid (vs. just
+			// unauthorized). Authorized callers still fall through to the 404 below
+			// when they hit an unsupported path/method.
+			const incomingHeaders = headersFromIncoming(req);
+			if (!isAuthorizedClient(incomingHeaders, clientApiKey)) {
+				writeUnauthorized(res);
+				return;
+			}
+
 			const isResponsesRequest =
 				req.method === "POST" && isResponsesPath(incomingUrl.pathname);
 			const isModelsRequest =
@@ -1508,12 +1612,6 @@ export async function startRuntimeRotationProxy(
 				isThreadGoalPath(incomingUrl.pathname);
 			if (!isResponsesRequest && !isModelsRequest && !isThreadGoalRequest) {
 				writeMethodOrPathError(res);
-				return;
-			}
-
-			const incomingHeaders = headersFromIncoming(req);
-			if (!isAuthorizedClient(incomingHeaders, clientApiKey)) {
-				writeUnauthorized(res);
 				return;
 			}
 
@@ -1638,20 +1736,55 @@ export async function startRuntimeRotationProxy(
 					now() - lastGlobalSwitchAt < minRotationIntervalMs
 						? { [lastGlobalAccountIndex]: 1000 }
 						: {};
-				const selected = chooseAccount({
-					accountManager,
-					sessionAffinityStore,
-					sessionKey: context.sessionKey,
-					family: context.family,
-					model: context.model,
-					attemptedIndexes,
-					now: now(),
-					policy: policyDecision,
-					pinnedIndex,
-					skipReasons: accountSkipReasons,
-					stickyBoostByAccount: rotationStickyBoost,
-					pidOffsetEnabled,
-				});
+				// L4 fix (routing mutex): when `routingMutex === "enabled"`, run the
+				// selection AND the cursor commit inside ONE mutex acquisition so two
+				// concurrent requests cannot read the same cursor and stampede before
+				// the locked commit lands. `chooseAccount` is sync and mutates the
+				// cursor internally (session-affinity `markSwitched`, the hybrid
+				// selector's own advance, and the round-robin fallback `markSwitched`);
+				// holding the mutex across the whole call serializes all of those.
+				// We then `markSwitchedLocked` the winner to (a) re-commit the cursor
+				// under the lock across the await boundary and (b) hand
+				// `persistRuntimeActiveAccount` a cursor that is already correct. That
+				// later `markSwitchedLocked` runs INLINE (reentrant) within this held
+				// section, so there is no double-acquire and no deadlock on the
+				// non-reentrant FIFO queue. In legacy mode the inline `markSwitched`
+				// calls inside `chooseAccount` are used unchanged and no lock is taken,
+				// so default behavior and perf are identical to before.
+				const selectAccount = (): ManagedAccount | null =>
+					chooseAccount({
+						accountManager,
+						sessionAffinityStore,
+						sessionKey: context.sessionKey,
+						family: context.family,
+						model: context.model,
+						attemptedIndexes,
+						now: now(),
+						policy: policyDecision,
+						pinnedIndex,
+						skipReasons: accountSkipReasons,
+						stickyBoostByAccount: rotationStickyBoost,
+						pidOffsetEnabled,
+					});
+				const selected =
+					routingMutexMode === "enabled"
+						? await withRoutingMutex(routingMutexMode, async () => {
+								const candidate = selectAccount();
+								if (candidate && pinnedIndex === null) {
+									// Re-commit the cursor under the held mutex. Skipped when a
+									// manual pin is active so the proxy never clobbers the pin
+									// (see #474); pinned selections are deterministic and need no
+									// cursor advance. Runs inline via reentrancy — see comment
+									// above.
+									await accountManager.markSwitchedLocked(
+										candidate,
+										"rotation",
+										context.family,
+									);
+								}
+								return candidate;
+							})
+						: selectAccount();
 				if (!selected) {
 					if (
 						!reloadedAfterNoAccount &&

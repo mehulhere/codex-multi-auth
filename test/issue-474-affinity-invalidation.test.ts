@@ -1,4 +1,9 @@
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+	mkdtempSync,
+	promises as fs,
+	utimesSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -16,6 +21,26 @@ import {
 	type AccountStorageV3,
 	normalizeAccountStorage,
 } from "../lib/storage.js";
+
+const RETRYABLE_REMOVE_CODES = new Set(["EBUSY", "EPERM", "EACCES", "EAGAIN", "ENOTEMPTY"]);
+async function removeWithRetry(
+	targetPath: string,
+	options: { recursive?: boolean; force?: boolean },
+): Promise<void> {
+	for (let attempt = 0; attempt < 6; attempt += 1) {
+		try {
+			await fs.rm(targetPath, options);
+			return;
+		} catch (error) {
+			const code = (error as NodeJS.ErrnoException).code;
+			if (code === "ENOENT") return;
+			if (!code || !RETRYABLE_REMOVE_CODES.has(code) || attempt === 5) {
+				throw error;
+			}
+			await new Promise((resolve) => setTimeout(resolve, 25 * 2 ** attempt));
+		}
+	}
+}
 
 function createStorage(
 	now: number,
@@ -57,11 +82,11 @@ beforeEach(() => {
 	resetPinCacheForTesting();
 });
 
-afterEach(() => {
+afterEach(async () => {
 	resetPinCacheForTesting();
 	for (const dir of tmpDirs.splice(0, tmpDirs.length)) {
 		try {
-			rmSync(dir, { recursive: true, force: true });
+			await removeWithRetry(dir, { recursive: true, force: true });
 		} catch {
 			// best-effort cleanup
 		}
@@ -213,6 +238,61 @@ describe("issue #474 — affinity invalidation on user storage events", () => {
 				"utf8",
 			);
 			expect(readStorageMetaFromDisk(path).affinityGeneration).toBe(0);
+		});
+
+		// L3: the hot path must short-circuit on stat (mtime+size) without
+		// re-reading or re-hashing the file when nothing has changed and the
+		// file has been quiescent. We prove this behaviorally: age the file's
+		// mtime past the settle window, read once (caches the snapshot), then
+		// rewrite with DIFFERENT bytes while forcing mtime+size back to the
+		// previously-seen (aged) values. A correct short-circuit returns the
+		// stale cached snapshot because it never read the new bytes.
+		it("skips re-reading the file when mtime and size are unchanged and settled", () => {
+			const path = makeTmpStoragePath();
+			const a = JSON.stringify(
+				createStorage(Date.now(), 2, { affinityGeneration: 1 }),
+			);
+			const b = JSON.stringify(
+				createStorage(Date.now(), 2, { affinityGeneration: 2 }),
+			);
+			// Sanity: same byte length so size cannot betray the change. The two
+			// payloads differ only in the single-digit affinityGeneration value.
+			expect(Buffer.byteLength(a)).toBe(Buffer.byteLength(b));
+
+			writeFileSync(path, a, "utf8");
+			// Age the mtime well past the settle window so the short-circuit is
+			// allowed to trust mtime equality on the next read.
+			const aged = Date.now() / 1000 - 60;
+			utimesSync(path, aged, aged);
+			expect(readStorageMetaFromDisk(path).affinityGeneration).toBe(1);
+
+			// Overwrite with different content, then pin mtime+atime back to the
+			// cached (aged) value; size is already identical. Short-circuit fires.
+			writeFileSync(path, b, "utf8");
+			utimesSync(path, aged, aged);
+			expect(readStorageMetaFromDisk(path).affinityGeneration).toBe(1);
+		});
+
+		// L3 safety: within the settle window mtime equality is NOT trusted (two
+		// rapid same-size CLI bumps can share a coarse mtime tick), so the read +
+		// sha1 path must still observe a content change. This guards the
+		// Windows/coarse-FS collision the content hash exists to defeat.
+		it("does not short-circuit on a freshly written file (settle window)", () => {
+			const path = makeTmpStoragePath();
+			writeStorageFile(
+				path,
+				createStorage(Date.now(), 2, { affinityGeneration: 1 }),
+			);
+			expect(readStorageMetaFromDisk(path).affinityGeneration).toBe(1);
+
+			// Rewrite immediately. Even if the OS reports an identical mtime for
+			// both writes, the file is inside the settle window so we re-read and
+			// the sha1 mismatch surfaces the new generation.
+			writeStorageFile(
+				path,
+				createStorage(Date.now(), 2, { affinityGeneration: 2 }),
+			);
+			expect(readStorageMetaFromDisk(path).affinityGeneration).toBe(2);
 		});
 	});
 

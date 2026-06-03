@@ -76,7 +76,35 @@ describe("runWorkspaceCommand", () => {
 		const deps = createDeps();
 		const result = await runWorkspaceCommand(["abc"], deps);
 		expect(result).toBe(1);
-		expect(deps.logError).toHaveBeenCalledWith("Invalid account index: abc");
+		expect(deps.logError).toHaveBeenCalledWith("Invalid account index (must be a positive integer): abc");
+		expect(deps.saveAccounts).not.toHaveBeenCalled();
+	});
+
+	it("rejects a fractional account index instead of truncating it", async () => {
+		// "1.9" must NOT be silently parsed as account 1 (parseInt truncation).
+		const deps = createDeps();
+		const result = await runWorkspaceCommand(["1.9"], deps);
+		expect(result).toBe(1);
+		expect(deps.logError).toHaveBeenCalledWith("Invalid account index (must be a positive integer): 1.9");
+		expect(deps.saveAccounts).not.toHaveBeenCalled();
+	});
+
+	it("rejects an account index with trailing garbage instead of truncating it", async () => {
+		const deps = createDeps();
+		const result = await runWorkspaceCommand(["2abc", "1"], deps);
+		expect(result).toBe(1);
+		expect(deps.logError).toHaveBeenCalledWith("Invalid account index (must be a positive integer): 2abc");
+		expect(deps.saveAccounts).not.toHaveBeenCalled();
+	});
+
+	it("rejects a fractional workspace index instead of truncating it", async () => {
+		// "2.9" must NOT be silently parsed as workspace 2.
+		const deps = createDeps();
+		const result = await runWorkspaceCommand(["1", "2.9"], deps);
+		expect(result).toBe(1);
+		expect(deps.logError).toHaveBeenCalledWith(
+			"Invalid workspace index (must be a positive integer). Valid range: 1-2",
+		);
 		expect(deps.saveAccounts).not.toHaveBeenCalled();
 	});
 
@@ -133,7 +161,7 @@ describe("runWorkspaceCommand", () => {
 		const result = await runWorkspaceCommand(["1", "xyz"], deps);
 		expect(result).toBe(1);
 		expect(deps.logError).toHaveBeenCalledWith(
-			"Invalid workspace index. Valid range: 1-2",
+			"Invalid workspace index (must be a positive integer). Valid range: 1-2",
 		);
 		expect(deps.saveAccounts).not.toHaveBeenCalled();
 	});

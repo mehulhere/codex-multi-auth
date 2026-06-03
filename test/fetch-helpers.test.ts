@@ -822,6 +822,34 @@ describe('createEntitlementErrorResponse', () => {
 			expect(info.unsupportedModel).toBe('gpt-5.3-codex-spark');
 		});
 
+		it('flags normalized "not currently available" wording as unsupported in the nested-error branch', () => {
+			// request-fetch: the nested-error message uses the normalized
+			// "not currently available for this chatgpt account" wording without the
+			// unsupported code; it must still be classified as unsupported (not a
+			// transient error) so model fallback engages.
+			const info = getUnsupportedCodexModelInfo({
+				error: {
+					message:
+						"The model 'gpt-5.3-codex' is not currently available for this chatgpt account.",
+				},
+			});
+
+			expect(info.isUnsupported).toBe(true);
+			expect(info.unsupportedModel).toBe('gpt-5.3-codex');
+		});
+
+		it('flags normalized "not currently available" wording as unsupported in the flat-detail branch', () => {
+			// Same wording delivered via the flat `{ detail: "..." }` envelope used by
+			// the quota endpoint must also be treated as unsupported.
+			const info = getUnsupportedCodexModelInfo({
+				detail:
+					"The model 'gpt-5.3-codex' is not currently available for this chatgpt account.",
+			});
+
+			expect(info.isUnsupported).toBe(true);
+			expect(info.unsupportedModel).toBe('gpt-5.3-codex');
+		});
+
 		it('resolves Spark fallback chain to current gpt-5.3-codex first', () => {
 			const errorBody = {
 				error: {
@@ -1157,6 +1185,28 @@ describe('createEntitlementErrorResponse', () => {
 					httpStatus: 401,
 				}),
 			);
+		});
+
+		it('rewrites normalized "not currently available" 400 wording as an entitlement error', async () => {
+			// request-fetch: a 400 body using the normalized
+			// "not currently available for this chatgpt account" wording (without the
+			// legacy "not supported when using codex" phrasing) must still trigger the
+			// entitlement-error rewrite + fallback guidance, matching
+			// getUnsupportedCodexModelInfo.
+			const response = new Response(
+				"The model 'gpt-5.3-codex' is not currently available for this chatgpt account.",
+				{ status: 400 },
+			);
+
+			const { response: result } = await handleErrorResponse(response);
+			const json = (await result.json()) as {
+				error: { message: string; type?: string; code?: string; unsupported_model?: string };
+			};
+
+			expect(json.error.type).toBe('entitlement_error');
+			expect(json.error.code).toBe('model_not_supported_with_chatgpt_account');
+			expect(json.error.unsupported_model).toBe('gpt-5.3-codex');
+			expect(json.error.message).toContain('entitlement gate');
 		});
 	});
 

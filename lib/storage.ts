@@ -135,6 +135,7 @@ import {
 } from "./storage/storage-parser.js";
 import {
 	getTransactionSnapshotState,
+	isStorageLockHeld,
 	runInTransactionSnapshotContext,
 	withAccountStorageTransaction as runWithAccountStorageTransaction,
 	withStorageLock,
@@ -1800,7 +1801,21 @@ async function saveAccountsUnlocked(storage: AccountStorageV3): Promise<void> {
 		walPath,
 		storageBackupEnabled: storageBackupEnabled && existsSync(path),
 		ensureDirectory: async () => {
-			await fs.mkdir(dirname(path), { recursive: true });
+			const dir = dirname(path);
+			// Account storage holds OAuth token material, so keep its directory
+			// owner-only on POSIX (mode is a no-op on win32 / ACL-based).
+			await fs.mkdir(dir, { recursive: true, mode: 0o700 });
+			// mkdir's mode only applies to a freshly-created dir; a pre-existing dir
+			// from an earlier build keeps its old (possibly world-listable) perms, so
+			// re-assert 0o700 on POSIX. Best-effort: a chmod failure must not break
+			// the save (the atomic write still uses mode 0o600 for the file itself).
+			if (process.platform !== "win32") {
+				try {
+					await fs.chmod(dir, 0o700);
+				} catch {
+					// Best-effort hardening only.
+				}
+			}
 		},
 		ensureGitignore: () => ensureGitignore(path),
 		looksLikeSyntheticFixtureStorage,
@@ -2081,15 +2096,36 @@ export async function loadFlaggedAccounts(): Promise<FlaggedAccountStorageV1> {
 				isRecord,
 				now: () => Date.now(),
 			}),
-		persistRecoveredBackup: async (storage, resetMarkerPath) =>
-			withStorageLock(async () => {
+		persistRecoveredBackup: async (storage, resetMarkerPath) => {
+			// When loadFlaggedAccounts runs inside an already-held storage lock
+			// (e.g. withAccountAndFlaggedStorageTransaction or
+			// withFlaggedStorageTransaction loading current flagged state), the
+			// global mutex has no reentrancy. Re-acquiring it here would deadlock,
+			// so persist via the unlocked save while still respecting the reset
+			// marker. Otherwise acquire the lock as usual.
+			const recover = async (): Promise<boolean> => {
 				if (existsSync(resetMarkerPath)) {
 					return false;
 				}
 				await saveFlaggedAccountsUnlocked(storage);
 				return true;
-			}),
-		saveFlaggedAccounts,
+			};
+			return isStorageLockHeld() ? recover() : withStorageLock(recover);
+		},
+		saveFlaggedAccounts: async (storage) => {
+			// Mirror persistRecoveredBackup above: loadFlaggedAccountsState's legacy
+			// migration persists via this callback, and loadFlaggedAccounts can run
+			// inside an already-held storage lock
+			// (withAccountAndFlaggedStorageTransaction / withFlaggedStorageTransaction).
+			// The global mutex is non-reentrant, so re-acquiring it via the locking
+			// saveFlaggedAccounts would deadlock — use the unlocked save when the lock
+			// is already held, otherwise acquire it as usual.
+			if (isStorageLockHeld()) {
+				await saveFlaggedAccountsUnlocked(storage);
+				return;
+			}
+			await saveFlaggedAccounts(storage);
+		},
 		loadFlaggedAccountsState,
 		logError: (message, details) => {
 			log.error(message, details);

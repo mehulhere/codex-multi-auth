@@ -63,6 +63,21 @@ describe("quota cache", () => {
     expect(fileContent).toContain('"version": 1');
   });
 
+  it("keeps the cache directory owner-only (0o700) on POSIX", async () => {
+    // The quota cache sits alongside at-rest secrets; the dir must not be
+    // world-listable. mode is a no-op on win32 (ACL-based), so skip there.
+    if (process.platform === "win32") return;
+    // beforeEach already created tempDir, so this exercises the chmod-on-an-
+    // EXISTING-dir path (mkdir's mode only applies to a fresh dir). Loosen it to
+    // 0o755 first; if saveQuotaCache failed to re-assert 0o700 the test fails.
+    await fs.chmod(tempDir, 0o755);
+    const { saveQuotaCache } = await import("../lib/quota-cache.js");
+    await saveQuotaCache({ byAccountId: {}, byEmail: {} });
+    const stats = await fs.stat(tempDir);
+    // Low 9 perm bits should be rwx------ (0o700).
+    expect(stats.mode & 0o777).toBe(0o700);
+  });
+
   it("ignores cache files with unsupported version", async () => {
     const { loadQuotaCache, getQuotaCachePath } =
       await import("../lib/quota-cache.js");

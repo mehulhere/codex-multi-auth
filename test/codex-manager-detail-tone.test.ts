@@ -69,4 +69,55 @@ describe("styleAccountDetailText tone precedence", () => {
 		expect(styled).toContain(ANSI.red);
 		expect(styled).not.toContain(ANSI.yellow);
 	});
+
+	it("does not render a 'working' prefix green when the failure is inside the quota segment", () => {
+		// Reachable from runHealthCheck: a failed live probe still emits a quota
+		// percent, so "failed" is trapped inside the (…%) parens while the prefix
+		// reads "working". The prefix must NOT render green over a real failure.
+		const styled = styleAccountDetailText(
+			"signed in and working (live check failed: timeout 0%)",
+		);
+		expect(styled).toContain(ANSI.red);
+		expect(styled).not.toContain(ANSI.green);
+	});
+
+	it("clamps an out-of-range quota percent to 100% in the styled quota segment", () => {
+		// A malformed quota summary like "5h 999%" must be clamped to [0,100] before
+		// tone selection and rendering, so it renders identically to "5h 100%"
+		// (success/green) and never surfaces the bogus 999% value to the user.
+		const clamped = styleAccountDetailText("acct (5h 999%)");
+		const hundred = styleAccountDetailText("acct (5h 100%)");
+		expect(clamped).toContain("100%");
+		expect(clamped).not.toContain("999%");
+		expect(clamped).toContain(ANSI.green);
+		expect(clamped).toBe(hundred);
+	});
+
+	it("renders the 0% lower bound as danger (red) without crashing", () => {
+		// 0% is the clamp lower bound; quotaToneFromLeftPercent(0) => "danger"
+		// (0 <= 15). It must render the literal "0%" in red, never drop the value
+		// or throw on the boundary.
+		const styled = styleAccountDetailText("acct (5h 0%)");
+		expect(styled).toContain("0%");
+		expect(styled).toContain(ANSI.red);
+		expect(styled).not.toContain(ANSI.green);
+	});
+
+	it("does not render a soft-failure detail green via an unanchored success keyword", () => {
+		// The success regex is /\b(ok|working|succeeded|valid)\b/ — without word
+		// boundaries, "invalid"/"revoked"/"token" would match (valid in invalid,
+		// ok in revoked/token) and color a failure detail green. These details have
+		// no "failed"/"error" keyword, so the danger pre-check does not catch them.
+		for (const detail of [
+			"token is invalid or expired",
+			"refresh token revoked",
+		]) {
+			const styled = styleAccountDetailText(detail);
+			expect(styled).not.toContain(ANSI.green);
+		}
+		// A genuine success keyword on a word boundary still renders green.
+		expect(styleAccountDetailText("signed in and working")).toContain(
+			ANSI.green,
+		);
+	});
 });

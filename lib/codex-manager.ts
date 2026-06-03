@@ -392,7 +392,10 @@ function styleQuotaSummary(summary: string): string {
 			return stylePromptText(segment, "muted");
 		}
 		const windowLabel = match[1] ?? "";
-		const leftPercent = Number.parseInt(match[2] ?? "", 10);
+		const leftPercent = Math.max(
+			0,
+			Math.min(100, Number.parseInt(match[2] ?? "", 10)),
+		);
 		if (!Number.isFinite(leftPercent)) {
 			return stylePromptText(segment, "muted");
 		}
@@ -419,9 +422,14 @@ export function styleAccountDetailText(
 		const quota = (quotaMatch[2] ?? "").trim();
 		const suffix = (quotaMatch[3] ?? "").trim();
 
-		const prefixTone: PromptTone = /failed|error/i.test(prefix)
+		// danger wins across the WHOLE detail: a failure keyword anywhere — even
+		// trapped inside the (…%) quota segment, e.g.
+		// "signed in and working (live check failed: … 0%)" — must keep the prefix
+		// red, never let a "working"/"ok" prefix render green over a real failure.
+		const detailHasFailure = /failed|error|rate-limited/i.test(compact);
+		const prefixTone: PromptTone = detailHasFailure
 			? "danger"
-			: /ok|working|succeeded|valid/i.test(prefix)
+			: /\b(ok|working|succeeded|valid)\b/i.test(prefix)
 				? "success"
 				: fallbackTone;
 		const suffixTone: PromptTone =
@@ -445,7 +453,7 @@ export function styleAccountDetailText(
 	if (/failed|error/i.test(compact)) return stylePromptText(compact, "danger");
 	if (/re-login|stale|warning|fallback|unavailable|not available/i.test(compact))
 		return stylePromptText(compact, "warning");
-	if (/ok|working|succeeded|valid/i.test(compact))
+	if (/\b(ok|working|succeeded|valid)\b/i.test(compact))
 		return stylePromptText(compact, "success");
 	return stylePromptText(compact, fallbackTone);
 }
