@@ -212,4 +212,43 @@ describe("runtime observability snapshot versioning", () => {
 			"2": "token-exhausted",
 		});
 	});
+
+	it("clears a single account's stale skip reason on recovery", async () => {
+		process.env.VITEST = "";
+		const mod = await import("../lib/runtime/runtime-observability.js");
+		mod.recordRuntimePoolExhaustion({
+			reason: "rate-limit",
+			retryAfterMs: 5000,
+			accountSkipReasons: { "0": "token-exhausted", "1": "rate-limited" },
+		});
+		expect(mod.getRuntimeObservabilitySnapshot().accountSkipReasons).toEqual({
+			"0": "token-exhausted",
+			"1": "rate-limited",
+		});
+
+		mod.recordRuntimeAccountRecovery(0);
+
+		const after = mod.getRuntimeObservabilitySnapshot();
+		expect(after.accountSkipReasons).toEqual({ "1": "rate-limited" });
+		expect(after.lastPoolExhaustionSkipReasons).toEqual({ "1": "rate-limited" });
+	});
+
+	it("is a no-op when the recovered account has no recorded skip reason", async () => {
+		process.env.VITEST = "";
+		const mod = await import("../lib/runtime/runtime-observability.js");
+		mod.recordRuntimePoolExhaustion({
+			reason: "rate-limit",
+			retryAfterMs: 5000,
+			accountSkipReasons: { "1": "rate-limited" },
+		});
+		const before = mod.getRuntimeObservabilitySnapshot().updatedAt;
+
+		mod.recordRuntimeAccountRecovery(0);
+		mod.recordRuntimeAccountRecovery(-1);
+		mod.recordRuntimeAccountRecovery(2.5);
+
+		const after = mod.getRuntimeObservabilitySnapshot();
+		expect(after.accountSkipReasons).toEqual({ "1": "rate-limited" });
+		expect(after.updatedAt).toBe(before);
+	});
 });

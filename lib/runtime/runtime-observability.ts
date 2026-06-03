@@ -300,6 +300,36 @@ export function recordRuntimeReset(reason: string): void {
 	});
 }
 
+/**
+ * Clear a single account's persisted runtime skip reason after it serves a
+ * successful request. The overlay (`accountSkipReasons`) is otherwise only
+ * written wholesale on pool exhaustion and cleared wholesale on a runtime
+ * reset, so without this a stale reason lingers on disk and the forecast keeps
+ * reporting a working account as unavailable. This is a no-op when the account
+ * has no recorded skip reason, so the common success path does not write.
+ */
+export function recordRuntimeAccountRecovery(index: number): void {
+	if (!Number.isInteger(index) || index < 0) {
+		return;
+	}
+	const key = String(index);
+	const current = ensureSnapshotState();
+	const hasOverlay = current.accountSkipReasons?.[key] !== undefined;
+	const hasPoolReason =
+		current.lastPoolExhaustionSkipReasons?.[key] !== undefined;
+	if (!hasOverlay && !hasPoolReason) {
+		return;
+	}
+	mutateRuntimeObservabilitySnapshot((snapshot) => {
+		if (snapshot.accountSkipReasons?.[key] !== undefined) {
+			delete snapshot.accountSkipReasons[key];
+		}
+		if (snapshot.lastPoolExhaustionSkipReasons?.[key] !== undefined) {
+			delete snapshot.lastPoolExhaustionSkipReasons[key];
+		}
+	});
+}
+
 export async function loadPersistedRuntimeObservabilitySnapshot(): Promise<RuntimeObservabilitySnapshot | null> {
 	const path = getSnapshotPath();
 	if (!existsSync(path)) {

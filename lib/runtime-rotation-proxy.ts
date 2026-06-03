@@ -37,6 +37,7 @@ import { CURRENT_CODEX_MODEL } from "./request/helpers/model-map.js";
 import { queuedRefresh } from "./refresh-queue.js";
 import {
 	mutateRuntimeObservabilitySnapshot,
+	recordRuntimeAccountRecovery,
 	recordRuntimePoolExhaustion,
 	recordRuntimeReload,
 	recordRuntimeReset,
@@ -2142,6 +2143,13 @@ export async function startRuntimeRotationProxy(
 				}
 
 				accountManager.recordSuccess(refreshed.account, context.family, context.model);
+				// A successful request proves the account is usable, so clear any
+				// stale runtime skip reason persisted for it on a prior pool
+				// exhaustion. Without this the overlay reason (e.g. "token-exhausted",
+				// "rate-limited") lingers on disk until an explicit runtime reset and
+				// the forecast keeps reporting this working account as unavailable.
+				// No-op when no reason is recorded, so the hot path stays write-free.
+				recordRuntimeAccountRecovery(refreshed.account.index);
 				const nearExhaustionWaitMs = getQuotaNearExhaustionWaitMs(
 					upstream.headers,
 					quotaRemainingPercentThreshold,
