@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { CodexUnavailableError } from "../lib/errors.js";
+import { DEFAULT_MODEL } from "../lib/request/helpers/model-map.js";
 // quota-probe is mocked below; reference the note as a literal to avoid a
 // top-level import racing the hoisted vi.mock factory.
 const CODEX_UNAVAILABLE_PROBE_NOTE_LITERAL = "Codex not available for this account";
@@ -745,7 +746,7 @@ describe("codex manager cli commands", () => {
 		confirmMock.mockResolvedValue(true);
 		fetchCodexQuotaSnapshotMock.mockResolvedValue({
 			status: 200,
-			model: "gpt-5.3-codex",
+			model: DEFAULT_MODEL,
 			primary: {},
 			secondary: {},
 		});
@@ -1772,7 +1773,7 @@ describe("codex manager cli commands", () => {
 				acc_forecast: {
 					updatedAt: expect.any(Number),
 					status: 200,
-					model: "gpt-5.3-codex",
+					model: DEFAULT_MODEL,
 					planType: undefined,
 					primary: {
 						usedPercent: undefined,
@@ -2003,6 +2004,26 @@ describe("codex manager cli commands", () => {
 		expect(saveAccountsMock).not.toHaveBeenCalled();
 		expect(queuedRefreshMock).not.toHaveBeenCalled();
 		expect(setCodexCliActiveSelectionMock).not.toHaveBeenCalled();
+		expect(logSpy.mock.calls[0]?.[0]).toContain("codex-multi-auth best");
+	});
+
+	it("rejects a flag-like value after best --model instead of consuming it", async () => {
+		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+		const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+
+		// "--model --live" must NOT swallow --live as the model value.
+		const exitCode = await runCodexMultiAuthCli([
+			"auth",
+			"best",
+			"--model",
+			"--live",
+		]);
+
+		expect(exitCode).toBe(1);
+		expect(errorSpy).toHaveBeenCalledWith("Missing value for --model");
+		expect(loadAccountsMock).not.toHaveBeenCalled();
+		expect(saveAccountsMock).not.toHaveBeenCalled();
 		expect(logSpy.mock.calls[0]?.[0]).toContain("codex-multi-auth best");
 	});
 
@@ -2969,7 +2990,7 @@ describe("codex manager cli commands", () => {
 				"owner@example.com": {
 					updatedAt: now - 5_000,
 					status: 200,
-					model: "gpt-5.3-codex",
+					model: "gpt-5.5",
 					primary: {
 						usedPercent: 95,
 						windowMinutes: 300,
@@ -3055,7 +3076,7 @@ describe("codex manager cli commands", () => {
 			expect(setCodexCliActiveSelectionMock).toHaveBeenCalledTimes(1);
 			expect(
 				logSpy.mock.calls.some((call) =>
-					String(call[0]).includes("Result: 2 working"),
+					String(call[0]).includes("Result: 2 Codex available"),
 				),
 			).toBe(true);
 		} finally {
@@ -3101,7 +3122,7 @@ describe("codex manager cli commands", () => {
 				"alpha@example.com": {
 					updatedAt: now - 10_000,
 					status: 200,
-					model: "gpt-5.3-codex",
+					model: "gpt-5.5",
 					primary: {
 						usedPercent: 15,
 						windowMinutes: 300,
@@ -3245,12 +3266,88 @@ describe("codex manager cli commands", () => {
 		expect(queuedRefreshMock).not.toHaveBeenCalled();
 		expect(saveAccountsMock).not.toHaveBeenCalled();
 		expect(fetchCodexQuotaSnapshotMock).toHaveBeenCalledTimes(1);
+		expect(fetchCodexQuotaSnapshotMock).toHaveBeenCalledWith(
+			expect.objectContaining({ model: DEFAULT_MODEL }),
+		);
 		expect(setCodexCliActiveSelectionMock).toHaveBeenCalledTimes(1);
 		expect(
 			logSpy.mock.calls.some((call) =>
 				String(call[0]).includes("live session OK"),
 			),
 		).toBe(true);
+	});
+
+	it("does not label Codex-unavailable live checks as working now", async () => {
+		const now = Date.now();
+		loadAccountsMock.mockResolvedValueOnce({
+			version: 3,
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0 },
+			accounts: [
+				{
+					accountId: "acc_fresh_unavailable",
+					email: "fresh-unavailable@example.com",
+					refreshToken: "refresh-fresh-unavailable",
+					accessToken: "access-fresh-unavailable",
+					expiresAt: now + 60 * 60 * 1000,
+					addedAt: now - 1_000,
+					lastUsed: now - 1_000,
+					enabled: true,
+				},
+				{
+					accountId: "acc_refreshed_unavailable",
+					email: "refreshed-unavailable@example.com",
+					refreshToken: "refresh-refreshed-unavailable",
+					accessToken: "access-refreshed-unavailable-old",
+					expiresAt: now - 1_000,
+					addedAt: now - 2_000,
+					lastUsed: now - 2_000,
+					enabled: true,
+				},
+			],
+		});
+		queuedRefreshMock.mockResolvedValueOnce({
+			type: "success",
+			access: "access-refreshed-unavailable-next",
+			refresh: "refresh-refreshed-unavailable-next",
+			expires: now + 60 * 60 * 1000,
+			idToken: "id-refreshed-unavailable-next",
+		});
+		fetchCodexQuotaSnapshotMock
+			.mockRejectedValueOnce(
+				new CodexUnavailableError(
+					"The requested Codex model is not available for this account.",
+				),
+			)
+			.mockRejectedValueOnce(
+				new CodexUnavailableError(
+					"The requested Codex model is not available for this account.",
+				),
+			);
+		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+
+		const exitCode = await runCodexMultiAuthCli(["auth", "check"]);
+
+		expect(exitCode).toBe(0);
+		expect(queuedRefreshMock).toHaveBeenCalledTimes(1);
+		expect(fetchCodexQuotaSnapshotMock).toHaveBeenCalledTimes(2);
+		const output = logSpy.mock.calls.map((call) => String(call[0])).join("\n");
+		const unavailableRows = output
+			.split("\n")
+			.filter((line) => line.includes(CODEX_UNAVAILABLE_PROBE_NOTE_LITERAL));
+		expect(unavailableRows).toHaveLength(2);
+		expect(unavailableRows.every((line) => line.includes("signed in;"))).toBe(
+			true,
+		);
+		expect(output).not.toContain(
+			`signed in and working (${CODEX_UNAVAILABLE_PROBE_NOTE_LITERAL})`,
+		);
+		expect(output).not.toContain(
+			`working now (${CODEX_UNAVAILABLE_PROBE_NOTE_LITERAL})`,
+		);
+		expect(output).toContain("Result: 0 Codex available | 2 signed in only");
+		expect(output).not.toContain("Result: 2 working");
 	});
 
 	it("does not mutate loaded quota cache when live check account save fails", async () => {
@@ -3302,7 +3399,7 @@ describe("codex manager cli commands", () => {
 				acc_live: {
 					updatedAt: expect.any(Number),
 					status: 200,
-					model: "gpt-5.3-codex",
+					model: DEFAULT_MODEL,
 					planType: undefined,
 					primary: {
 						usedPercent: undefined,
@@ -6924,6 +7021,55 @@ describe("codex manager cli commands", () => {
 		).toBe(true);
 	});
 
+	it("deep-check counts a refresh failure with a still-valid session as signed-in-only", async () => {
+		// forceRefresh + liveProbe + queuedRefresh failure while the session token is
+		// still usable must take the "refresh failed but works right now" path and
+		// land in the live summary as "signed in only", not "need re-login".
+		const now = Date.now();
+		const storage = {
+			version: 3,
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0 },
+			accounts: [
+				{
+					email: "a@example.com",
+					accountId: "acc_a",
+					refreshToken: "refresh-a",
+					accessToken: "access-a",
+					// Unexpired access token => hasUsableAccessToken() true =>
+					// sessionLikelyValid true.
+					expiresAt: now + 3_600_000,
+					addedAt: now - 1_000,
+					lastUsed: now - 1_000,
+					enabled: true,
+				},
+			],
+		};
+		loadAccountsMock.mockResolvedValue(storage);
+		promptLoginModeMock
+			.mockResolvedValueOnce({ mode: "deep-check" })
+			.mockResolvedValueOnce({ mode: "cancel" });
+		// Refresh fails transiently (NOT a hard/revoked failure) so the session
+		// stays valid and the account is signed-in-only, not need-re-login.
+		queuedRefreshMock.mockResolvedValueOnce({
+			type: "error",
+			reason: "network",
+			message: "temporary network failure",
+		});
+		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+
+		const exitCode = await runCodexMultiAuthCli(["auth", "login"]);
+		expect(exitCode).toBe(0);
+		const output = logSpy.mock.calls.map((call) => String(call[0])).join("\n");
+		// Per-account warning row.
+		expect(output).toContain("refresh failed");
+		expect(output).toContain("but this account still works right now");
+		// Live summary: signed-in-only, not need-re-login.
+		expect(output).toContain("signed in only");
+		expect(output).not.toContain("1 need re-login");
+	});
+
 	it("runs quick check from login menu with live probe", async () => {
 		const now = Date.now();
 		const storage = {
@@ -7050,7 +7196,7 @@ describe("codex manager cli commands", () => {
 				acc_a: {
 					updatedAt: expect.any(Number),
 					status: 200,
-					model: "gpt-5.3-codex",
+					model: DEFAULT_MODEL,
 					planType: undefined,
 					primary: {
 						usedPercent: undefined,
@@ -7263,12 +7409,12 @@ describe("codex manager cli commands", () => {
 		expect(fetchCodexQuotaSnapshotMock).toHaveBeenNthCalledWith(1, {
 			accountId: "workspace-alpha",
 			accessToken: "access-alpha",
-			model: "gpt-5.3-codex",
+			model: DEFAULT_MODEL,
 		});
 		expect(fetchCodexQuotaSnapshotMock).toHaveBeenNthCalledWith(2, {
 			accountId: "workspace-beta",
 			accessToken: "access-beta",
-			model: "gpt-5.3-codex",
+			model: DEFAULT_MODEL,
 		});
 		expect(saveQuotaCacheMock).toHaveBeenCalledTimes(1);
 		expect(saveQuotaCacheMock).toHaveBeenCalledWith({
@@ -9830,14 +9976,14 @@ describe("codex manager cli commands", () => {
 		expect(payload.accounts.enabled).toBe(1);
 		expect(payload.accounts.disabled).toBe(1);
 		expect(payload.modelSelection).toEqual({
-			requested: "gpt-5.3-codex",
-			normalized: "gpt-5.3-codex",
+			requested: "gpt-5.5",
+			normalized: "gpt-5.5",
 			remapped: false,
-			promptFamily: "gpt-5-codex",
+			promptFamily: "gpt-5.2",
 			capabilities: {
-				toolSearch: false,
-				computerUse: false,
-				compaction: false,
+				toolSearch: true,
+				computerUse: true,
+				compaction: true,
 			},
 		});
 	});

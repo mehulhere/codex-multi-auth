@@ -25,6 +25,7 @@ import {
 } from "../../quota-probe.js";
 import { type ModelFamily } from "../../prompts/codex.js";
 import {
+	DEFAULT_MODEL,
 	getModelCapabilities,
 	getModelProfile,
 	resolveNormalizedModel,
@@ -127,7 +128,7 @@ function printReportUsage(logInfo: (message: string) => void): void {
 			"  --live, -l         Probe live quota headers via Codex backend",
 			"  --json, -j         Print machine-readable JSON output",
 			"  --explain          Print per-account reasoning in text mode",
-			"  --model, -m        Probe model for live mode (default: gpt-5.3-codex)",
+			`  --model, -m        Probe model for live mode (default: ${DEFAULT_MODEL})`,
 			"  --max-accounts N   Limit how many enabled accounts live mode can consider",
 			"  --max-probes N     Limit how many live quota probes can run",
 			"  --cached-only      Skip refreshes and only use already-usable access tokens",
@@ -141,7 +142,7 @@ function parseReportArgs(args: string[]): ParsedArgsResult<ReportCliOptions> {
 		live: false,
 		json: false,
 		explain: false,
-		model: "gpt-5.3-codex",
+		model: DEFAULT_MODEL,
 		cachedOnly: false,
 	};
 
@@ -165,15 +166,19 @@ function parseReportArgs(args: string[]): ParsedArgsResult<ReportCliOptions> {
 			continue;
 		}
 		if (arg === "--model" || arg === "-m") {
-			const value = args[i + 1];
-			if (!value) return { ok: false, message: "Missing value for --model" };
+			const value = args[i + 1]?.trim();
+			if (!value || value.startsWith("-")) {
+				return { ok: false, message: "Missing value for --model" };
+			}
 			options.model = value;
 			i += 1;
 			continue;
 		}
 		if (arg.startsWith("--model=")) {
 			const value = arg.slice("--model=".length).trim();
-			if (!value) return { ok: false, message: "Missing value for --model" };
+			if (!value || value.startsWith("-")) {
+				return { ok: false, message: "Missing value for --model" };
+			}
 			options.model = value;
 			continue;
 		}
@@ -305,7 +310,7 @@ export async function runReportCommand(
 		return 1;
 	}
 	const options = parsedArgs.options;
-	const requestedModel = options.model?.trim() || "gpt-5.3-codex";
+	const requestedModel = options.model?.trim() || DEFAULT_MODEL;
 	const modelInspection = inspectRequestedModel(requestedModel);
 
 	deps.setStoragePath(null);

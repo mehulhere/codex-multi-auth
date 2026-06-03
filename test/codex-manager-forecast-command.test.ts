@@ -5,6 +5,7 @@ import {
 } from "../lib/codex-manager/commands/forecast.js";
 import { CodexUnavailableError } from "../lib/errors.js";
 import { CODEX_UNAVAILABLE_PROBE_NOTE } from "../lib/quota-probe.js";
+import { DEFAULT_MODEL } from "../lib/request/helpers/model-map.js";
 import type { AccountStorageV3 } from "../lib/storage.js";
 
 function createStorage(): AccountStorageV3 {
@@ -125,6 +126,9 @@ describe("runForecastCommand", () => {
 		expect(deps.logInfo).toHaveBeenCalledWith(
 			expect.stringContaining("codex-multi-auth forecast"),
 		);
+		expect(deps.logInfo).toHaveBeenCalledWith(
+			expect.stringContaining(`(default: ${DEFAULT_MODEL})`),
+		);
 	});
 
 	it("rejects invalid options", async () => {
@@ -132,6 +136,28 @@ describe("runForecastCommand", () => {
 		const result = await runForecastCommand(["--bogus"], deps);
 		expect(result).toBe(1);
 		expect(deps.logError).toHaveBeenCalledWith("Unknown option: --bogus");
+	});
+
+	it("rejects a flag-like value after --model instead of consuming it", async () => {
+		// "--model --json" must NOT swallow --json as the model value.
+		const deps = createDeps();
+		const result = await runForecastCommand(["--model", "--json"], deps);
+		expect(result).toBe(1);
+		expect(deps.logError).toHaveBeenCalledWith("Missing value for --model");
+	});
+
+	it("rejects an empty flag-like --model= value", async () => {
+		const deps = createDeps();
+		const result = await runForecastCommand(["--model=--json"], deps);
+		expect(result).toBe(1);
+		expect(deps.logError).toHaveBeenCalledWith("Missing value for --model");
+	});
+
+	it("rejects a whitespace-only --model value", async () => {
+		const deps = createDeps();
+		const result = await runForecastCommand(["--model", "   "], deps);
+		expect(result).toBe(1);
+		expect(deps.logError).toHaveBeenCalledWith("Missing value for --model");
 	});
 
 	it("prints json output for populated storage", async () => {

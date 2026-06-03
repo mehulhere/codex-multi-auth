@@ -14,7 +14,7 @@ import {
 } from "../forecast-report-shared.js";
 import type { QuotaCacheData } from "../../quota-cache.js";
 import { type CodexQuotaSnapshot, describeCodexProbeFailure } from "../../quota-probe.js";
-import { resolveNormalizedModel } from "../../request/helpers/model-map.js";
+import { DEFAULT_MODEL, resolveNormalizedModel } from "../../request/helpers/model-map.js";
 import { type AccountMetadataV3, type AccountStorageV3 } from "../../storage.js";
 import type { TokenFailure, TokenResult } from "../../types.js";
 
@@ -136,7 +136,7 @@ function printForecastUsage(logInfo: (message: string) => void): void {
 			"  --live, -l         Probe live quota headers via Codex backend",
 			"  --json, -j         Print machine-readable JSON output",
 			"  --explain          Include structured recommendation reasoning",
-			"  --model, -m        Probe model for live mode (default: gpt-5.3-codex)",
+			`  --model, -m        Probe model for live mode (default: ${DEFAULT_MODEL})`,
 			"  --no-runtime-overlay  Ignore persisted runtime skip diagnostics",
 		].join("\n"),
 	);
@@ -149,7 +149,7 @@ function parseForecastArgs(
 		live: false,
 		json: false,
 		explain: false,
-		model: "gpt-5.3-codex",
+		model: DEFAULT_MODEL,
 		runtimeOverlay: true,
 	};
 
@@ -173,15 +173,19 @@ function parseForecastArgs(
 			continue;
 		}
 		if (arg === "--model" || arg === "-m") {
-			const value = args[i + 1];
-			if (!value) return { ok: false, message: "Missing value for --model" };
+			const value = args[i + 1]?.trim();
+			if (!value || value.startsWith("-")) {
+				return { ok: false, message: "Missing value for --model" };
+			}
 			options.model = value;
 			i += 1;
 			continue;
 		}
 		if (arg.startsWith("--model=")) {
 			const value = arg.slice("--model=".length).trim();
-			if (!value) return { ok: false, message: "Missing value for --model" };
+			if (!value || value.startsWith("-")) {
+				return { ok: false, message: "Missing value for --model" };
+			}
 			options.model = value;
 			continue;
 		}
@@ -211,7 +215,7 @@ export async function runForecastCommand(
 		return 1;
 	}
 	const options = parsedArgs.options;
-	const requestedModel = options.model?.trim() || "gpt-5.3-codex";
+	const requestedModel = options.model?.trim() || DEFAULT_MODEL;
 	const probeModel = resolveNormalizedModel(requestedModel);
 	const display = deps.loadDashboardDisplaySettings
 		? (await deps.loadDashboardDisplaySettings().catch(() => null)) ??

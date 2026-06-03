@@ -40,7 +40,7 @@ import {
 } from "../codex-cli/state.js";
 import { setCodexCliActiveSelection } from "../codex-cli/writer.js";
 import { MODEL_FAMILIES, type ModelFamily } from "../prompts/codex.js";
-import { resolveNormalizedModel } from "../request/helpers/model-map.js";
+import { DEFAULT_MODEL, resolveNormalizedModel } from "../request/helpers/model-map.js";
 import { loadPersistedRuntimeObservabilitySnapshot } from "../runtime/runtime-observability.js";
 import type { AccountIdSource, TokenFailure, TokenResult } from "../types.js";
 
@@ -142,7 +142,7 @@ export function printFixUsage(): void {
 			"  --dry-run, -n      Preview changes without writing storage",
 			"  --json, -j         Print machine-readable JSON output",
 			"  --live, -l         Run live session probe before deciding health",
-			"  --model, -m        Probe model for live mode (default: gpt-5.3-codex)",
+			`  --model, -m        Probe model for live mode (default: ${DEFAULT_MODEL})`,
 			"",
 			"Behavior:",
 			"  - Refreshes tokens for enabled accounts",
@@ -194,7 +194,7 @@ export function parseFixArgs(args: string[]): ParsedArgsResult<FixCliOptions> {
 		dryRun: false,
 		json: false,
 		live: false,
-		model: "gpt-5.3-codex",
+		model: DEFAULT_MODEL,
 	};
 
 	for (let i = 0; i < args.length; i += 1) {
@@ -213,8 +213,8 @@ export function parseFixArgs(args: string[]): ParsedArgsResult<FixCliOptions> {
 			continue;
 		}
 		if (argValue === "--model" || argValue === "-m") {
-			const value = args[i + 1];
-			if (!value) {
+			const value = args[i + 1]?.trim();
+			if (!value || value.startsWith("-")) {
 				return { ok: false, message: "Missing value for --model" };
 			}
 			options.model = value;
@@ -223,7 +223,7 @@ export function parseFixArgs(args: string[]): ParsedArgsResult<FixCliOptions> {
 		}
 		if (argValue.startsWith("--model=")) {
 			const value = argValue.slice("--model=".length).trim();
-			if (!value) {
+			if (!value || value.startsWith("-")) {
 				return { ok: false, message: "Missing value for --model" };
 			}
 			options.model = value;
@@ -1197,7 +1197,7 @@ export async function runFix(
 		return 1;
 	}
 	const options = parsedArgs.options;
-	const probeModel = resolveNormalizedModel(options.model.trim() || "gpt-5.3-codex");
+	const probeModel = resolveNormalizedModel(options.model.trim() || DEFAULT_MODEL);
 	const display = DEFAULT_DASHBOARD_DISPLAY_SETTINGS;
 	const quotaCache = options.live ? await loadQuotaCache() : null;
 	const workingQuotaCache = quotaCache ? deps.cloneQuotaCacheData(quotaCache) : null;

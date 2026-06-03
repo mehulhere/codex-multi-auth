@@ -1,3 +1,7 @@
+import { DEFAULT_MODEL } from "../request/helpers/model-map.js";
+
+const DEFAULT_LIVE_PROBE_MODEL = DEFAULT_MODEL;
+
 export function printUsage(): void {
 	console.log(
 		[
@@ -147,7 +151,7 @@ export function printBestUsage(): void {
 			"Options:",
 			"  --live, -l         Probe live quota headers via Codex backend before switching",
 			"  --json, -j         Print machine-readable JSON output",
-			"  --model, -m        Probe model for live mode (default: gpt-5.3-codex)",
+			`  --model, -m        Probe model for live mode (default: ${DEFAULT_LIVE_PROBE_MODEL})`,
 			"",
 			"Behavior:",
 			"  - Chooses the healthiest account using forecast scoring",
@@ -160,7 +164,7 @@ export function parseBestArgs(args: string[]): ParsedBestArgs {
 	const options: BestCliOptions = {
 		live: false,
 		json: false,
-		model: "gpt-5.3-codex",
+		model: DEFAULT_LIVE_PROBE_MODEL,
 		modelProvided: false,
 	};
 
@@ -179,8 +183,8 @@ export function parseBestArgs(args: string[]): ParsedBestArgs {
 			continue;
 		}
 		if (arg === "--model" || arg === "-m") {
-			const value = args[i + 1];
-			if (!value) {
+			const value = args[i + 1]?.trim();
+			if (!value || value.startsWith("-")) {
 				return {
 					ok: false,
 					reason: "error",
@@ -194,7 +198,7 @@ export function parseBestArgs(args: string[]): ParsedBestArgs {
 		}
 		if (arg.startsWith("--model=")) {
 			const value = arg.slice("--model=".length).trim();
-			if (!value) {
+			if (!value || value.startsWith("-")) {
 				return {
 					ok: false,
 					reason: "error",

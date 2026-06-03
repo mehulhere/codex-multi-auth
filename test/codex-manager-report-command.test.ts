@@ -4,6 +4,7 @@ import {
 	runReportCommand,
 } from "../lib/codex-manager/commands/report.js";
 import { CodexUnavailableError } from "../lib/errors.js";
+import { DEFAULT_MODEL } from "../lib/request/helpers/model-map.js";
 import { CODEX_UNAVAILABLE_PROBE_NOTE } from "../lib/quota-probe.js";
 import type { AccountStorageV3, StorageHealthSummary } from "../lib/storage.js";
 
@@ -90,6 +91,17 @@ describe("runReportCommand", () => {
 
 		expect(result).toBe(1);
 		expect(deps.logError).toHaveBeenCalledWith("Unknown option: --bogus");
+	});
+
+	it("rejects a flag-like or whitespace-only --model value instead of consuming it", async () => {
+		// Split-arg form trims before validating, so "  -x" / "   " can't slip
+		// through and silently fall back to the default model.
+		for (const bad of ["--json", "  -x", "   "]) {
+			const deps = createDeps();
+			const result = await runReportCommand(["--model", bad], deps);
+			expect(result).toBe(1);
+			expect(deps.logError).toHaveBeenCalledWith("Missing value for --model");
+		}
 	});
 
 	it("rejects invalid live probe budget values", async () => {
@@ -520,7 +532,7 @@ describe("runReportCommand", () => {
 		expect(deps.fetchCodexQuotaSnapshot).toHaveBeenCalledWith({
 			accountId: "acct-live",
 			accessToken: "access-token-1",
-			model: "gpt-5.3-codex",
+			model: DEFAULT_MODEL,
 		});
 	});
 

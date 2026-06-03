@@ -2,7 +2,9 @@ import { describe, expect, it, vi } from "vitest";
 import {
 	parseAuthLoginArgs,
 	parseBestArgs,
+	printBestUsage,
 } from "../lib/codex-manager/help.js";
+import { DEFAULT_MODEL } from "../lib/request/helpers/model-map.js";
 
 describe("codex-manager help parsers", () => {
 	it("parses login flags without printing usage", () => {
@@ -89,6 +91,15 @@ describe("codex-manager help parsers", () => {
 	});
 
 	it("parses best args and treats help as a first-class result", () => {
+		expect(parseBestArgs([])).toEqual({
+			ok: true,
+			options: {
+				live: false,
+				json: false,
+				model: DEFAULT_MODEL,
+				modelProvided: false,
+			},
+		});
 		expect(parseBestArgs(["--live", "--json", "--model", "gpt-5"])).toEqual({
 			ok: true,
 			options: {
@@ -104,6 +115,17 @@ describe("codex-manager help parsers", () => {
 		});
 	});
 
+	it("renders the default probe model from DEFAULT_MODEL in best usage", () => {
+		const logSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
+
+		printBestUsage();
+
+		expect(logSpy).toHaveBeenCalledTimes(1);
+		const usage = String(logSpy.mock.calls[0]?.[0]);
+		expect(usage).toContain(`(default: ${DEFAULT_MODEL})`);
+		logSpy.mockRestore();
+	});
+
 	it("reports missing model values and unknown flags", () => {
 		expect(parseBestArgs(["--model"])).toEqual({
 			ok: false,
@@ -115,5 +137,37 @@ describe("codex-manager help parsers", () => {
 			reason: "error",
 			message: "Unknown option: --bogus",
 		});
+	});
+
+	it("rejects a flag-like value after --model instead of consuming it", () => {
+		// "best --model --json" / "--model --live" must not swallow the next flag.
+		expect(parseBestArgs(["--model", "--json"])).toEqual({
+			ok: false,
+			reason: "error",
+			message: "Missing value for --model",
+		});
+		expect(parseBestArgs(["--model", "--live"])).toEqual({
+			ok: false,
+			reason: "error",
+			message: "Missing value for --model",
+		});
+		expect(parseBestArgs(["--model=--json"])).toEqual({
+			ok: false,
+			reason: "error",
+			message: "Missing value for --model",
+		});
+		// A whitespace-only value trims to empty and must be rejected too.
+		expect(parseBestArgs(["--model", "   "])).toEqual({
+			ok: false,
+			reason: "error",
+			message: "Missing value for --model",
+		});
+		// The short -m alias is first-class too.
+		expect(parseBestArgs(["-m", "--json"])).toEqual({
+			ok: false,
+			reason: "error",
+			message: "Missing value for --model",
+		});
+		expect(parseBestArgs(["-m", "gpt-5.5"]).ok).toBe(true);
 	});
 });

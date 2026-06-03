@@ -114,6 +114,7 @@ const {
 	runDoctor,
 	runFix,
 	runVerifyFlagged,
+	parseFixArgs,
 } = await import("../lib/codex-manager/repair-commands.js");
 
 function createDeps(
@@ -159,6 +160,35 @@ describe("repair-commands direct deps coverage", () => {
 
 	afterEach(() => {
 		vi.restoreAllMocks();
+	});
+
+	it("parseFixArgs rejects a flag-like value after --model instead of consuming it", () => {
+		// "fix --model --json" / "--model --live" must not swallow the next flag.
+		expect(parseFixArgs(["--model", "--json"])).toEqual({
+			ok: false,
+			message: "Missing value for --model",
+		});
+		expect(parseFixArgs(["--model", "--live"])).toEqual({
+			ok: false,
+			message: "Missing value for --model",
+		});
+		expect(parseFixArgs(["--model=--json"])).toEqual({
+			ok: false,
+			message: "Missing value for --model",
+		});
+		// A whitespace-only value trims to empty and must be rejected too.
+		expect(parseFixArgs(["--model", "   "])).toEqual({
+			ok: false,
+			message: "Missing value for --model",
+		});
+		// The short -m form is first-class too and must reject flag-like values.
+		expect(parseFixArgs(["-m", "--json"])).toEqual({
+			ok: false,
+			message: "Missing value for --model",
+		});
+		// A real model value is still accepted (both long and short forms).
+		expect(parseFixArgs(["--model", "gpt-5.5"]).ok).toBe(true);
+		expect(parseFixArgs(["-m", "gpt-5.5"]).ok).toBe(true);
 	});
 
 	it("runVerifyFlagged uses the injected identity resolver in the direct no-restore flow", async () => {
