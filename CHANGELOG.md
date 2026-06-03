@@ -19,6 +19,10 @@ See [docs/releases/v2.2.2.md](docs/releases/v2.2.2.md) for full details.
   persists on disk after its window has expired; the overlay is now
   cross-referenced against the time-aware disk state before being applied, and
   `doctor`'s `forecast-runtime-alignment` warning clears with it (#507)
+- a successful request now clears that account's persisted runtime skip reason
+  via `recordRuntimeAccountRecovery`, so non-time-bounded reasons such as
+  `token-exhausted` (which the forecast cannot validate against disk) no longer
+  linger after the account recovers (#507)
 
 ## [2.1.3] - 2026-05-01
 
