@@ -1,8 +1,8 @@
-import { stdin as input, stdout as output } from "node:process";
+﻿import { stdin as input, stdout as output } from "node:process";
 import { createInterface } from "node:readline/promises";
 import type { DashboardDisplaySettings } from "../dashboard-settings.js";
 import { ANSI } from "../ui/ansi.js";
-import { UI_COPY } from "../ui/copy.js";
+import { UI_COPY } from "../ui/ui-copy.js";
 import {
 	stringifyLogArgs,
 	stylePromptText,

@@ -1,4 +1,4 @@
-import { stdin as input, stdout as output } from "node:process";
+﻿import { stdin as input, stdout as output } from "node:process";
 import { sanitizeEmail } from "../accounts.js";
 import type { promptLoginMode } from "../cli.js";
 import { MODEL_FAMILIES } from "../prompts/codex.js";
@@ -11,7 +11,7 @@ import {
 	setStoragePath,
 	withAccountStorageTransaction,
 } from "../storage.js";
-import { UI_COPY } from "../ui/copy.js";
+import { UI_COPY } from "../ui/ui-copy.js";
 import { getUiRuntimeOptions } from "../ui/runtime.js";
 import { type MenuItem, select } from "../ui/select.js";
 import { runSwitchCommand } from "./commands/switch.js";

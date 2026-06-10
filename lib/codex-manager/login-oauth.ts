@@ -1,4 +1,4 @@
-import { stdin as input, stdout as output } from "node:process";
+﻿import { stdin as input, stdout as output } from "node:process";
 import { createInterface } from "node:readline/promises";
 import {
 	extractAccountEmail,
@@ -30,7 +30,7 @@ import {
 	withAccountStorageTransaction,
 } from "../storage.js";
 import type { AccountIdSource, TokenResult } from "../types.js";
-import { UI_COPY } from "../ui/copy.js";
+import { UI_COPY } from "../ui/ui-copy.js";
 import {
 	type AccountPoolWriteOutcome,
 	applyAccountPoolResults,

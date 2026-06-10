@@ -1,4 +1,4 @@
-import { isBrowserLaunchSuppressed } from "../auth/browser.js";
+﻿import { isBrowserLaunchSuppressed } from "../auth/browser.js";
 import { promptAddAnotherAccount, promptLoginMode } from "../cli.js";
 import { ACCOUNT_LIMITS } from "../constants.js";
 import { loadDashboardDisplaySettings } from "../dashboard-settings.js";
@@ -16,7 +16,7 @@ import {
 	setStoragePath,
 	StorageError,
 } from "../storage.js";
-import { UI_COPY } from "../ui/copy.js";
+import { UI_COPY } from "../ui/ui-copy.js";
 import { confirm } from "../ui/confirm.js";
 import { stylePromptText } from "./formatters/index.js";
 import { runHealthCheck } from "./health-check.js";
