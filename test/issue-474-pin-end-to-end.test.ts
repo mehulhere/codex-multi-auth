@@ -26,6 +26,11 @@ import {
  * pin contract and affinity invalidation hold across real network requests.
  */
 
+// This suite imports the storage module (and its consumers) statically, so
+// the hoisted vi.mock factory runs before the test module body evaluates.
+// The mock instances therefore stay in vi.hoisted; the module shape delegates
+// to the shared storage factory (test/helpers/cli-test-fixtures.ts), which
+// the factory resolves lazily via dynamic import.
 const {
 	saveAccountsMock,
 	withAccountStorageTransactionMock,
@@ -34,14 +39,12 @@ const {
 	withAccountStorageTransactionMock: vi.fn(),
 }));
 
-vi.mock("../lib/storage.js", async (importOriginal) => {
-	const actual = await importOriginal<typeof import("../lib/storage.js")>();
-	return {
-		...actual,
+vi.mock("../lib/storage.js", async () =>
+	(await import("./helpers/cli-test-fixtures.js")).storageModuleMock({
 		saveAccounts: saveAccountsMock,
 		withAccountStorageTransaction: withAccountStorageTransactionMock,
-	};
-});
+	}),
+);
 
 const CLIENT_API_KEY = "runtime-secret";
 const ACCOUNT_COUNT = 2;

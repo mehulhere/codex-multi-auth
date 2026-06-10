@@ -4,23 +4,34 @@ import {
 	DEFAULT_DASHBOARD_DISPLAY_SETTINGS,
 } from "../lib/dashboard-settings.js";
 import { UI_COPY } from "../lib/ui/copy.js";
-import {
-	type DashboardDisplayPanelDeps,
-	promptDashboardDisplayPanel,
-} from "../lib/codex-manager/dashboard-display-panel.js";
+import type { DashboardDisplayPanelDeps } from "../lib/codex-manager/dashboard-display-panel.js";
+import { createUiPromptMocks } from "./helpers/cli-test-fixtures.js";
 
-const { selectMock, getUiRuntimeOptionsMock } = vi.hoisted(() => ({
-	selectMock: vi.fn(),
-	getUiRuntimeOptionsMock: vi.fn(() => ({ theme: "test-theme" })),
-}));
+// Shared ui-prompt mock group (test/helpers/cli-test-fixtures.ts). The panel
+// module is only imported lazily inside promptPanel below, so the hoisted
+// vi.mock factories never run before these module-level consts initialize.
+// The ui/runtime mock stays inline: the helper has no factory for it.
+const uiMocks = createUiPromptMocks();
+const { select: selectMock } = uiMocks;
+const getUiRuntimeOptionsMock = vi.fn(() => ({ theme: "test-theme" }));
 
-vi.mock("../lib/ui/select.js", () => ({
-	select: selectMock,
-}));
+vi.mock("../lib/ui/select.js", async () =>
+	(await import("./helpers/cli-test-fixtures.js")).uiSelectModuleMock(uiMocks),
+);
 
 vi.mock("../lib/ui/runtime.js", () => ({
 	getUiRuntimeOptions: getUiRuntimeOptionsMock,
 }));
+
+/** Lazily import the panel under test so the mocks above are wired first. */
+async function promptPanel(
+	settings: DashboardDisplaySettings,
+): Promise<DashboardDisplaySettings | null> {
+	const { promptDashboardDisplayPanel } = await import(
+		"../lib/codex-manager/dashboard-display-panel.js"
+	);
+	return promptDashboardDisplayPanel(settings, buildDeps());
+}
 
 const stdinIsTTYDescriptor = Object.getOwnPropertyDescriptor(
 	process.stdin,
@@ -146,7 +157,7 @@ describe("promptDashboardDisplayPanel", () => {
 	it("returns null without TTY access", async () => {
 		setInteractiveTTY(false);
 
-		const result = await promptDashboardDisplayPanel(createSettings(), buildDeps());
+		const result = await promptPanel(createSettings());
 
 		expect(result).toBeNull();
 		expect(selectMock).not.toHaveBeenCalled();
@@ -160,7 +171,7 @@ describe("promptDashboardDisplayPanel", () => {
 			})
 			.mockResolvedValueOnce({ type: "save" });
 
-		const result = await promptDashboardDisplayPanel(createSettings(), buildDeps());
+		const result = await promptPanel(createSettings());
 
 		expect(result?.menuShowStatusBadge).toBe(false);
 		expect(selectMock).toHaveBeenCalledTimes(2);
@@ -175,7 +186,7 @@ describe("promptDashboardDisplayPanel", () => {
 			.mockResolvedValueOnce({ type: "reset" })
 			.mockResolvedValueOnce({ type: "save" });
 
-		const result = await promptDashboardDisplayPanel(createSettings(), buildDeps());
+		const result = await promptPanel(createSettings());
 
 		expect(result?.menuShowStatusBadge).toBe(
 			DEFAULT_DASHBOARD_DISPLAY_SETTINGS.menuShowStatusBadge,
@@ -187,12 +198,11 @@ describe("promptDashboardDisplayPanel", () => {
 			.mockResolvedValueOnce({ type: "cycle-sort-mode" })
 			.mockResolvedValueOnce({ type: "save" });
 
-		const result = await promptDashboardDisplayPanel(
+		const result = await promptPanel(
 			createSettings({
 				menuSortMode: "manual",
 				menuSortEnabled: false,
 			}),
-			buildDeps(),
 		);
 
 		expect(result?.menuSortMode).toBe("ready-first");
@@ -204,12 +214,11 @@ describe("promptDashboardDisplayPanel", () => {
 			.mockResolvedValueOnce({ type: "cycle-layout-mode" })
 			.mockResolvedValueOnce({ type: "save" });
 
-		const result = await promptDashboardDisplayPanel(
+		const result = await promptPanel(
 			createSettings({
 				menuLayoutMode: "compact-details",
 				menuShowDetailsForUnselectedRows: false,
 			}),
-			buildDeps(),
 		);
 
 		expect(result?.menuLayoutMode).toBe("expanded-rows");
@@ -219,7 +228,7 @@ describe("promptDashboardDisplayPanel", () => {
 	it("returns null when the panel is cancelled", async () => {
 		selectMock.mockResolvedValueOnce({ type: "cancel" });
 
-		const result = await promptDashboardDisplayPanel(createSettings(), buildDeps());
+		const result = await promptPanel(createSettings());
 
 		expect(result).toBeNull();
 	});

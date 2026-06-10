@@ -1,23 +1,40 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { OAuthAuthDetails } from "../lib/types.js";
+import {
+  createCodexCliWriterMocks,
+  createStorageMocks,
+  pickMocks,
+} from "./helpers/cli-test-fixtures.js";
 
-const mockLoadAccounts = vi.fn();
-const mockSaveAccounts = vi.fn();
-const mockWithAccountStorageTransaction = vi.fn();
+// Shared mock groups (test/helpers/cli-test-fixtures.ts); the vi.mock
+// factories below resolve the helper lazily so hoisting stays safe (the
+// accounts module is only ever imported dynamically via
+// importAccountsModule). Storage is narrowed to the exact set this suite
+// used to override. The codex-cli state mock stays inline: this suite needs
+// the actual module spread (isCodexCliSyncEnabled and friends must stay
+// real), which diverges from the helper's full-replacement shape.
+const storageMocks = pickMocks(createStorageMocks(), [
+  "loadAccounts",
+  "saveAccounts",
+  "withAccountStorageTransaction",
+]);
+const codexCliWriterMocks = createCodexCliWriterMocks();
+const {
+  loadAccounts: mockLoadAccounts,
+  saveAccounts: mockSaveAccounts,
+  withAccountStorageTransaction: mockWithAccountStorageTransaction,
+} = storageMocks;
+const { setCodexCliActiveSelection: mockSetCodexCliActiveSelection } =
+  codexCliWriterMocks;
 const mockLoadCodexCliState = vi.fn();
 const mockSyncAccountStorageFromCodexCli = vi.fn();
-const mockSetCodexCliActiveSelection = vi.fn();
 const mockSelectHybridAccount = vi.fn();
 
-vi.mock("../lib/storage.js", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("../lib/storage.js")>();
-  return {
-    ...actual,
-    loadAccounts: mockLoadAccounts,
-    saveAccounts: mockSaveAccounts,
-    withAccountStorageTransaction: mockWithAccountStorageTransaction,
-  };
-});
+vi.mock("../lib/storage.js", async () =>
+  (await import("./helpers/cli-test-fixtures.js")).storageModuleMock(
+    storageMocks,
+  ),
+);
 
 vi.mock("../lib/codex-cli/state.js", async (importOriginal) => {
   const actual =
@@ -32,9 +49,11 @@ vi.mock("../lib/codex-cli/sync.js", () => ({
   syncAccountStorageFromCodexCli: mockSyncAccountStorageFromCodexCli,
 }));
 
-vi.mock("../lib/codex-cli/writer.js", () => ({
-  setCodexCliActiveSelection: mockSetCodexCliActiveSelection,
-}));
+vi.mock("../lib/codex-cli/writer.js", async () =>
+  (await import("./helpers/cli-test-fixtures.js")).codexCliWriterModuleMock(
+    codexCliWriterMocks,
+  ),
+);
 
 vi.mock("../lib/rotation.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../lib/rotation.js")>();

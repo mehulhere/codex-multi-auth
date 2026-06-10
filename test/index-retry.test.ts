@@ -378,10 +378,11 @@ vi.mock("../lib/accounts.js", async () => {
 	};
 });
 
-vi.mock("../lib/storage.js", async () => {
-	const actual = await vi.importActual("../lib/storage.js");
-	return {
-		...actual,
+// Shared module shape (test/helpers/cli-test-fixtures.ts): actual storage
+// module spread plus this suite's bespoke stub overrides. The overrides stay
+// inline (plain stubs, not vi.fn instances) because no test asserts on them.
+vi.mock("../lib/storage.js", async () =>
+	(await import("./helpers/cli-test-fixtures.js")).storageModuleMock({
 		getStoragePath: () => "",
 		loadAccounts: async () => null,
 		saveAccounts: async () => {},
@@ -395,8 +396,8 @@ vi.mock("../lib/storage.js", async () => {
 		setStorageBackupEnabled: () => {},
 		exportAccounts: async () => {},
 		importAccounts: async () => ({ imported: 0, total: 0 }),
-	};
-});
+	}),
+);
 
 vi.mock("../lib/recovery.js", () => ({
 	createSessionRecoveryHook: () => null,

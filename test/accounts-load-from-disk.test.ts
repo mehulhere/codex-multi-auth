@@ -1,6 +1,11 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { AccountManager } from "../lib/accounts.js";
 
+// This suite imports the accounts module (and the mocked modules) statically,
+// so the hoisted vi.mock factories run before the test module body evaluates.
+// The mock instances therefore stay in vi.hoisted; the module shapes delegate
+// to the shared factories (test/helpers/cli-test-fixtures.ts), which the
+// factories resolve lazily via dynamic import.
 const {
   mockLoadAccounts,
   mockSaveAccounts,
@@ -11,27 +16,29 @@ const {
   mockWithAccountStorageTransaction: vi.fn(),
 }));
 
-vi.mock("../lib/storage.js", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("../lib/storage.js")>();
-  return {
-    ...actual,
+vi.mock("../lib/storage.js", async () =>
+  (await import("./helpers/cli-test-fixtures.js")).storageModuleMock({
     loadAccounts: mockLoadAccounts,
     saveAccounts: mockSaveAccounts,
     withAccountStorageTransaction: mockWithAccountStorageTransaction,
-  };
-});
+  }),
+);
 
 vi.mock("../lib/codex-cli/sync.js", () => ({
   syncAccountStorageFromCodexCli: vi.fn(),
 }));
 
-vi.mock("../lib/codex-cli/state.js", () => ({
-  loadCodexCliState: vi.fn(),
-}));
+vi.mock("../lib/codex-cli/state.js", async () => {
+  const fixtures = await import("./helpers/cli-test-fixtures.js");
+  return fixtures.codexCliStateModuleMock(fixtures.createCodexCliStateMocks());
+});
 
-vi.mock("../lib/codex-cli/writer.js", () => ({
-  setCodexCliActiveSelection: vi.fn().mockResolvedValue(undefined),
-}));
+vi.mock("../lib/codex-cli/writer.js", async () => {
+  const fixtures = await import("./helpers/cli-test-fixtures.js");
+  return fixtures.codexCliWriterModuleMock(
+    fixtures.createCodexCliWriterMocks(),
+  );
+});
 
 import { syncAccountStorageFromCodexCli } from "../lib/codex-cli/sync.js";
 import { loadCodexCliState } from "../lib/codex-cli/state.js";
