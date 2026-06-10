@@ -75,6 +75,9 @@ beforeEach(() => {
 	saveAccountsMock.mockResolvedValue(undefined);
 	setCodexCliActiveSelectionMock.mockResolvedValue(true);
 	readAffinityGenerationFromDiskMock.mockReturnValue(0);
+	// Loud default: only the stale-token tests may reach the refresh queue,
+	// and they install their own result. Anything else is a test bug.
+	queuedRefreshMock.mockRejectedValue(new Error("unexpected refresh call"));
 	warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
 });
 
@@ -284,6 +287,46 @@ describe("persistAndSyncSelectedAccount", () => {
 		expect(readAffinityGenerationFromDiskMock).toHaveBeenCalledWith(
 			"/tmp/accounts.json",
 		);
+	});
+
+	it("keeps the in-memory generation when it is ahead of the disk", async () => {
+		// The normal case after several in-process switches: memory leads disk,
+		// and a swapped Math.max argument order would regress this silently.
+		const storage = {
+			...storageWith([account("a")]),
+			affinityGeneration: 7,
+		};
+		readAffinityGenerationFromDiskMock.mockReturnValue(3);
+
+		await persistAndSyncSelectedAccount({
+			storage,
+			targetIndex: 0,
+			parsed: 1,
+			switchReason: "manual",
+			bumpAffinityGeneration: true,
+		});
+
+		expect(storage.affinityGeneration).toBe(8);
+	});
+
+	it("retries the storage write through a transient EBUSY before succeeding", async () => {
+		const storage = storageWith([account("a")]);
+		saveAccountsMock
+			.mockRejectedValueOnce(
+				Object.assign(new Error("locked"), { code: "EBUSY" }),
+			)
+			.mockResolvedValueOnce(undefined);
+
+		const result = await persistAndSyncSelectedAccount({
+			storage,
+			targetIndex: 0,
+			parsed: 1,
+			switchReason: "manual",
+		});
+
+		// The Windows sharing violation is absorbed by the retry wrapper.
+		expect(result.synced).toBe(true);
+		expect(saveAccountsMock).toHaveBeenCalledTimes(2);
 	});
 
 	it("does not touch the affinity generation without the bump flag", async () => {
