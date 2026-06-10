@@ -250,6 +250,36 @@ describe("runHealthCheck live probe", () => {
 		expect(logged()).toContain("0 signed in only");
 	});
 
+	it("probes with the refreshed token after a stale session is renewed", async () => {
+		// The refresh-then-probe branch must use the rotated access token, not
+		// the stale pre-refresh one.
+		const storage = storageWith([
+			account("a", { expiresAt: STALE_EXPIRES_AT }),
+		]);
+		loadAccountsMock.mockResolvedValue(storage);
+		queuedRefreshMock.mockResolvedValue({
+			type: "success",
+			access: "access-new",
+			refresh: "refresh-new-long-enough-to-look-real",
+			expires: REAL_NOW + 7_200_000,
+			idToken: "id-new",
+		});
+		fetchCodexQuotaSnapshotMock.mockResolvedValue(snapshot());
+
+		await runHealthCheck({ liveProbe: true });
+
+		expect(fetchCodexQuotaSnapshotMock).toHaveBeenCalledExactlyOnceWith(
+			expect.objectContaining({
+				accountId: "acc_a",
+				accessToken: "access-new",
+			}),
+		);
+		expect(saveQuotaCacheMock).toHaveBeenCalledTimes(1);
+		const saved = saveQuotaCacheMock.mock.calls[0][0] as QuotaCacheData;
+		expect(saved.byAccountId.acc_a).toMatchObject({ status: 200 });
+		expect(logged()).toContain("1 Codex available");
+	});
+
 	it("treats a probe failure as signed-in-only without touching the cache", async () => {
 		const storage = storageWith([account("a")]);
 		loadAccountsMock.mockResolvedValue(storage);
