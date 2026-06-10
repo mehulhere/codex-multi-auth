@@ -102,6 +102,14 @@ export function normalizeFlaggedStorage(
 					: undefined,
 			email:
 				typeof rawAccount.email === "string" ? rawAccount.email : undefined,
+			accessToken:
+				typeof rawAccount.accessToken === "string"
+					? rawAccount.accessToken
+					: undefined,
+			expiresAt:
+				typeof rawAccount.expiresAt === "number"
+					? rawAccount.expiresAt
+					: undefined,
 			enabled:
 				typeof rawAccount.enabled === "boolean"
 					? rawAccount.enabled
@@ -113,6 +121,13 @@ export function normalizeFlaggedStorage(
 					? rawAccount.coolingDownUntil
 					: undefined,
 			cooldownReason,
+			workspaces: Array.isArray(rawAccount.workspaces)
+				? (rawAccount.workspaces as FlaggedAccountMetadataV1["workspaces"])
+				: undefined,
+			currentWorkspaceIndex:
+				typeof rawAccount.currentWorkspaceIndex === "number"
+					? rawAccount.currentWorkspaceIndex
+					: undefined,
 			flaggedAt,
 			flaggedReason:
 				typeof rawAccount.flaggedReason === "string"

@@ -219,22 +219,34 @@ export async function refreshQuotaCacheForMenu(
 		// entries meanwhile, and writing the stale clone back whole-file would
 		// silently discard them (last write wins). Re-apply this run's results
 		// onto the freshest persisted cache instead.
+		//
+		// loadQuotaCache() is documented to never throw — on any read failure it
+		// returns empty maps. We also guard the empty-maps case explicitly: if the
+		// persisted cache came back empty (read failure / empty file), fall back to
+		// nextCache so non-probed entries are not wiped. The try/catch handles any
+		// mocked or future implementation that does throw.
 		let cacheToSave = nextCache;
 		try {
 			const persisted = await loadQuotaCache();
-			for (const { account, snapshot } of appliedSnapshots) {
-				updateQuotaCacheForAccount(
-					persisted,
-					account,
-					snapshot,
-					storage.accounts,
-					emailFallbackState,
-				);
+			const persistedHasData =
+				Object.keys(persisted.byAccountId).length > 0 ||
+				Object.keys(persisted.byEmail).length > 0;
+			if (persistedHasData) {
+				for (const { account, snapshot } of appliedSnapshots) {
+					updateQuotaCacheForAccount(
+						persisted,
+						account,
+						snapshot,
+						storage.accounts,
+						emailFallbackState,
+					);
+				}
+				cacheToSave = persisted;
 			}
-			cacheToSave = persisted;
+			// else: persisted came back empty; keep cacheToSave = nextCache.
 		} catch {
-			// Fall back to the snapshot clone; saving slightly stale data beats
-			// dropping this run's probe results.
+			// loadQuotaCache threw (unexpected); fall back to the snapshot clone
+			// so non-probed entries survive.
 		}
 		try {
 			await saveQuotaCache(cacheToSave);

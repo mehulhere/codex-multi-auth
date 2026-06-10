@@ -293,6 +293,7 @@ async function persistRuntimeActiveAccount(
 	account: ManagedAccount,
 	family: ModelFamily,
 	isPinned: boolean,
+	schedulingStrategy: string,
 ): Promise<void> {
 	if (isPinned) {
 		// When the user has manually pinned an account, the proxy MUST NOT
@@ -319,7 +320,16 @@ async function persistRuntimeActiveAccount(
 		// `saveToDiskDebounced` + CLI sync still run in both modes: they snapshot the
 		// current in-memory state / mirror the CLI selection and do not advance the
 		// in-memory rotation cursor.
-		if (accountManager.getRoutingMutexMode() !== "enabled") {
+		//
+		// Sequential scheduling fix (#509): in "sequential" mode a within-request
+		// fallback to a different account must NOT advance the drain-first primary
+		// pointer — only a true primary-exhaustion in chooseAccount may do that.
+		// Apply the same guard here as the in-loop re-commit (lines 939-958) so
+		// the legacy branch cannot silently clobber the sequential drain order.
+		if (
+			accountManager.getRoutingMutexMode() !== "enabled" &&
+			schedulingStrategy !== "sequential"
+		) {
 			await accountManager.markSwitchedLocked(account, "rotation", family);
 		}
 		accountManager.saveToDiskDebounced();
@@ -1349,6 +1359,7 @@ async function handleRequestInner(
 				refreshed.account,
 				context.family,
 				isPinned && refreshed.account.index === pinnedIndex,
+				state.schedulingStrategy,
 			);
 
 			const forwarded = await forwardStreamingResponse(

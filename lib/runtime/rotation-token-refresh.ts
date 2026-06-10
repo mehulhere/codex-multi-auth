@@ -118,15 +118,27 @@ export async function ensureFreshAccessToken(params: {
 		expires: refreshResult.expires,
 	};
 	try {
-		const updatedAccount = (await commitRefreshedAuthOnce(
+		const updatedAccount = await commitRefreshedAuthOnce(
 			accountManager,
 			account,
 			auth,
-		)) ?? account;
+		);
+		// If commit succeeded, use the stored access token from the committed
+		// account — this also handles the dedup case where two concurrent callers
+		// share one commit and both end up with the same committed token.
+		// If commit returned null (account missing from storage after persist),
+		// fall back to the original account object but always use refreshResult.access:
+		// the original account may carry an expired token, and using that would
+		// cause a downstream 401 and incorrectly trigger invalidation-cooldown logic.
+		const resolvedAccount = updatedAccount ?? account;
+		const accessToken =
+			updatedAccount !== null
+				? (updatedAccount.access ?? refreshResult.access)
+				: refreshResult.access;
 		return {
 			ok: true,
-			accessToken: updatedAccount.access ?? refreshResult.access,
-			account: updatedAccount,
+			accessToken,
+			account: resolvedAccount,
 		};
 	} catch {
 		accountManager.recordFailure(account, family, model);
