@@ -321,7 +321,7 @@ describe("Documentation Integrity", () => {
 		expect(errorContracts).toContain("transformrequestbody");
 	});
 
-	it("keeps fix command flag docs aligned across README, reference, and CLI usage text", () => {
+	it("keeps command docs aligned across README, reference, and CLI usage text", () => {
 		const readme = read("README.md");
 		const commandRef = read("docs/reference/commands.md");
 		const helpPath = "lib/codex-manager/help.ts";
@@ -334,6 +334,15 @@ describe("Documentation Integrity", () => {
 			existsSync(join(projectRoot, switchPath)),
 			`${switchPath} should exist`,
 		).toBe(true);
+		const workspacePath = "lib/codex-manager/commands/workspace.ts";
+		expect(
+			existsSync(join(projectRoot, workspacePath)),
+			`${workspacePath} should exist`,
+		).toBe(true);
+		expect(commandRef).toContain(
+			"| `codex-multi-auth workspace <account> [workspace]` | List an account's tracked workspaces, or set its active workspace |",
+		);
+		expect(commandRef).toContain("## `codex-multi-auth workspace`");
 		const help = read(helpPath);
 		const switchCommand = read(switchPath);
 
