@@ -7,6 +7,33 @@ This repository's current stable release line is `2.x`.
 Current stable release notes live in `docs/releases/`.
 This top-level changelog preserves the foundational `0.x` milestones and points older iteration history to `docs/releases/legacy-pre-0.1-history.md`.
 
+## [2.3.0-beta.2] - 2026-06-11
+
+Repository audit (34 PRs), 4 correctness bug fixes, security hardening, and major
+`codex-manager.ts` / `runtime-rotation-proxy.ts` decomposition.
+See [docs/releases/v2.3.0-beta.2.md](docs/releases/v2.3.0-beta.2.md) for full details.
+
+### Fixed
+
+- Sequential scheduling pointer corruption: `persistRuntimeActiveAccount` advanced
+  the drain-first primary in legacy routing mode even when `schedulingStrategy:
+  "sequential"` was set, breaking the #509 invariant
+- Flagged accounts lost `workspaces`/`currentWorkspaceIndex` on flag→restore
+  round-trip due to `normalizeFlaggedStorage` omitting those fields
+- Quota cache wipe on transient disk failure: dead `catch` in
+  `refreshQuotaCacheForMenu` caused empty-load to save only current-run entries
+- Expired token forwarded after failed refresh commit when
+  `commitRefreshedAuthOnce` returned `null`
+
+### Security
+
+- Temp-file staging paths now use `crypto.randomBytes` instead of `Math.random()`
+- CI action steps pinned to exact commit SHAs
+- Private account response headers blocked by prefix match (not allowlist)
+- Stream stall `withTimeout` ordering fixed: reject before `onTimeout`
+
+---
+
 ## [2.2.2] - 2026-06-03
 
 Patch release for a stale runtime-overlay false positive in `forecast --live`.
