@@ -74,6 +74,10 @@ export type StorageMocks = ReturnType<typeof createStorageMocks>;
 export async function storageModuleMock(
 	overrides: Record<string, unknown>,
 ): Promise<Record<string, unknown>> {
+	// Resolved relative to test/helpers/ (this file), so it is "../../lib"
+	// here while callers register vi.mock with "../lib" relative to test/.
+	// Vitest canonicalises both to the same module; if this helper moves,
+	// update these specifiers together with the doc comments above.
 	const actual = await vi.importActual<Record<string, unknown>>(
 		"../../lib/storage.js",
 	);
@@ -115,6 +119,7 @@ export type QuotaProbeMocks = ReturnType<typeof createQuotaProbeMocks>;
 export async function quotaProbeModuleMock(
 	overrides: Record<string, unknown>,
 ): Promise<Record<string, unknown>> {
+	// Same test/helpers/-relative resolution note as storageModuleMock above.
 	const actual = await vi.importActual<Record<string, unknown>>(
 		"../../lib/quota-probe.js",
 	);
