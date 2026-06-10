@@ -87,14 +87,15 @@ import {
 	getLegacyFlaggedAccountsPath as buildLegacyFlaggedAccountsPath,
 } from "./storage/file-paths.js";
 import {
-	type AccountMetadataV1,
-	type AccountMetadataV3,
 	type AccountStorageV1,
-	type AccountStorageV3,
-	type CooldownReason,
 	migrateV1ToV3,
-	type RateLimitStateV3,
 } from "./storage/migrations.js";
+import type {
+	AccountMetadataV3,
+	AccountStorageV3,
+	CooldownReason,
+	RateLimitStateV3,
+} from "./storage/public-types.js";
 import { exportNamedBackupEntry } from "./storage/named-backup-entry.js";
 import {
 	collectNamedBackups,
@@ -145,8 +146,6 @@ export type {
 	StorageHealthSummary,
 	CooldownReason,
 	RateLimitStateV3,
-	AccountMetadataV1,
-	AccountStorageV1,
 	AccountMetadataV3,
 	AccountStorageV3,
 	NamedBackupSummary,
