@@ -49,6 +49,11 @@ class FakeServerResponse extends EventEmitter {
 	events: string[] = [];
 
 	write(chunk: Buffer): boolean {
+		// Production-faithful: writing to a destroyed ServerResponse throws
+		// ERR_STREAM_DESTROYED instead of returning false.
+		if (this.destroyed) {
+			throw new Error("ERR_STREAM_DESTROYED: write after destroy");
+		}
 		const index = this.chunks.length;
 		this.chunks.push(chunk);
 		this.events.push(`write:${index}`);
@@ -261,6 +266,39 @@ describe("forwardStreamingResponse", () => {
 		expect(res.ended).toBe(true);
 	});
 
+	it("waits for a drain per backpressured write across multiple chunks", async () => {
+		const res = new FakeServerResponse();
+		res.backpressureWrites.add(0);
+		res.backpressureWrites.add(2);
+		const status = createStatus();
+		const upstream = new Response(streamOf(
+			new TextEncoder().encode("a"),
+			new TextEncoder().encode("b"),
+			new TextEncoder().encode("c"),
+		), { status: 200 });
+
+		// Each backpressured write gets its own drain; emit one per pause.
+		const drainTimer = setInterval(() => {
+			res.events.push("drain");
+			res.emit("drain");
+		}, 15);
+		try {
+			await expect(
+				forwardStreamingResponse(upstream, res.asServerResponse(), status, vi.fn(), 5_000),
+			).resolves.toBe(true);
+		} finally {
+			clearInterval(drainTimer);
+		}
+
+		expect(Buffer.concat(res.chunks).toString("utf8")).toBe("abc");
+		const order = res.events;
+		// write:0 pauses until the first drain; write:2 pauses until another.
+		expect(order.indexOf("drain")).toBeGreaterThan(order.indexOf("write:0"));
+		expect(order.indexOf("write:1")).toBeGreaterThan(order.indexOf("drain"));
+		expect(order.lastIndexOf("drain")).toBeGreaterThan(order.indexOf("write:2"));
+		expect(res.ended).toBe(true);
+	});
+
 	it("does not park forever when the client closes during backpressure", async () => {
 		const res = new FakeServerResponse();
 		res.backpressureWrites.add(0);
@@ -281,6 +319,36 @@ describe("forwardStreamingResponse", () => {
 			forwardStreamingResponse(upstream, res.asServerResponse(), status, vi.fn(), 5_000),
 		).resolves.toBe(true);
 		expect(Buffer.concat(res.chunks).toString("utf8")).toBe("data: a\n\n");
+	});
+
+	it("fails the stream when the socket errors during backpressure", async () => {
+		// The error event settles waitForDrain silently; the failure must then
+		// surface through the next write throwing on the destroyed response and
+		// the catch block recording it.
+		const res = new FakeServerResponse();
+		res.backpressureWrites.add(0);
+		const status = createStatus();
+		const upstream = new Response(streamOf(
+			new TextEncoder().encode("data: a\n\n"),
+			new TextEncoder().encode("data: b\n\n"),
+		), { status: 200 });
+
+		setTimeout(() => {
+			// Node destroys the response on a socket error; mirror that before
+			// the emit so the forwarder's next write hits the destroyed stream.
+			res.destroyed = true;
+			res.emit("error", new Error("socket reset"));
+		}, 20);
+
+		const onStreamError = vi.fn();
+		await expect(
+			forwardStreamingResponse(upstream, res.asServerResponse(), status, onStreamError, 5_000),
+		).resolves.toBe(false);
+
+		expect(onStreamError).toHaveBeenCalledTimes(1);
+		expect(status.lastError).toContain("write after destroy");
+		expect(Buffer.concat(res.chunks).toString("utf8")).toBe("data: a\n\n");
+		expect(res.ended).toBe(false);
 	});
 
 	it("ends immediately when the upstream has no body", async () => {
