@@ -117,6 +117,9 @@ beforeEach(() => {
 	loadAccountsMock.mockImplementation(async () => accountsOnDisk);
 	getNamedBackupsMock.mockResolvedValue([]);
 	isBrowserLaunchSuppressedMock.mockReturnValue(false);
+	// Inert default so a test that forgets to set the sign-in result exits
+	// through the cancellation branch instead of crashing on undefined.
+	runSignInFlowMock.mockResolvedValue(CANCELLED);
 	resolveAccountSelectionMock.mockReturnValue(RESOLVED);
 	persistAccountPoolMock.mockImplementation(async () => {
 		accountsOnDisk = storageWith((accountsOnDisk?.accounts.length ?? 0) + 1);
@@ -262,6 +265,11 @@ describe("runAuthLogin explicit transports", () => {
 	});
 });
 
+// These tests run through the REAL promptOAuthSignInMode in
+// login-menu-actions.ts: with the TTY flags forced false it takes its
+// documented non-interactive fast path and returns "browser" (unless browser
+// launch is suppressed). The runSignInFlow transport assertions below pin
+// exactly that fallback on purpose — do not mock the prompt here.
 describe("runAuthLogin onboarding without explicit flags", () => {
 	it("prefers manual transport when browser launch is suppressed", async () => {
 		isBrowserLaunchSuppressedMock.mockReturnValue(true);
