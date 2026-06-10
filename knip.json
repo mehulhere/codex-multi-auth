@@ -1,5 +1,5 @@
 {
-	"$schema": "https://unpkg.com/knip@latest/schema.json",
+	"$schema": "https://unpkg.com/knip@6.16.1/schema.json",
 	"entry": [
 		"index.ts",
 		"lib/index.ts",
