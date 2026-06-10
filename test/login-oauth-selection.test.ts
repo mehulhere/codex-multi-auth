@@ -49,6 +49,10 @@ describe("isOAuthCancellation", () => {
 		expect(
 			isOAuthCancellation({ type: "failed", message: "flow was CANCELED" }),
 		).toBe(true);
+		// The reason field is only consulted when message is absent.
+		expect(
+			isOAuthCancellation({ type: "failed", reason: "Login Cancelled" }),
+		).toBe(true);
 		expect(isOAuthCancellation({ type: "failed", reason: "unknown" })).toBe(false);
 		expect(isOAuthCancellation({ type: "failed" })).toBe(false);
 	});
@@ -106,6 +110,7 @@ describe("resolveAccountSelection", () => {
 		const result = resolveAccountSelection(BASE_TOKENS);
 
 		expect(result.accountIdOverride).toBe("org_team");
+		expect(result.accountIdSource).toBe("org");
 		expect(result.accountLabel).toContain("Acme Team");
 		// Issue #491/#512: every workspace exposed by the token must persist so
 		// `workspace <account>` can switch between them later.
