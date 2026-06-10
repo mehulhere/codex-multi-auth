@@ -55,7 +55,11 @@ describe("cloneDashboardSettingsData", () => {
 			menuSortQuickSwitchVisibleRow: true,
 			uiThemePreset: "green",
 			uiAccentColor: "green",
+			menuShowStatusBadge: true,
+			menuShowCurrentBadge: true,
+			menuShowLastUsed: true,
 			menuShowQuotaSummary: true,
+			menuShowQuotaCooldown: true,
 			menuShowFetchStatus: true,
 			menuQuotaTtlMs: 5 * 60_000,
 			menuFocusStyle: "row-invert",
@@ -122,27 +126,33 @@ describe("dashboardSettingsDataEqual", () => {
 		).toBe(true);
 	});
 
-	it("detects a difference in any single field", () => {
+	it.each([
+		["menuQuotaTtlMs", { menuQuotaTtlMs: 60_000 }],
+		["uiThemePreset", { uiThemePreset: "mono" }],
+		["uiAccentColor", { uiAccentColor: "cyan" }],
+		["showQuotaDetails", { showQuotaDetails: false }],
+		["showPerAccountRows", { showPerAccountRows: false }],
+		["actionAutoReturnMs", { actionAutoReturnMs: 500 }],
+		["actionPauseOnKey", { actionPauseOnKey: false }],
+		["menuAutoFetchLimits", { menuAutoFetchLimits: false }],
+		["menuSortEnabled", { menuSortEnabled: false }],
+		["menuSortPinCurrent", { menuSortPinCurrent: true }],
+		[
+			"menuSortQuickSwitchVisibleRow",
+			{ menuSortQuickSwitchVisibleRow: false },
+		],
+		["menuShowStatusBadge", { menuShowStatusBadge: false }],
+		["menuShowCurrentBadge", { menuShowCurrentBadge: false }],
+		["menuShowLastUsed", { menuShowLastUsed: false }],
+		["menuShowQuotaSummary", { menuShowQuotaSummary: false }],
+		["menuShowQuotaCooldown", { menuShowQuotaCooldown: false }],
+		["menuShowFetchStatus", { menuShowFetchStatus: false }],
+		["menuHighlightCurrentRow", { menuHighlightCurrentRow: false }],
+	] as const satisfies ReadonlyArray<
+		readonly [string, Partial<DashboardDisplaySettings>]
+	>)("detects a difference in %s alone", (_field, override) => {
 		expect(
-			dashboardSettingsDataEqual(
-				settings(),
-				settings({ menuQuotaTtlMs: 60_000 }),
-				deps,
-			),
-		).toBe(false);
-		expect(
-			dashboardSettingsDataEqual(
-				settings(),
-				settings({ uiThemePreset: "mono" }),
-				deps,
-			),
-		).toBe(false);
-		expect(
-			dashboardSettingsDataEqual(
-				settings(),
-				settings({ showQuotaDetails: false }),
-				deps,
-			),
+			dashboardSettingsDataEqual(settings(), settings(override), deps),
 		).toBe(false);
 	});
 
