@@ -158,6 +158,12 @@ function createDeps(
 describe("repair-commands direct deps coverage", () => {
 	beforeEach(() => {
 		vi.clearAllMocks();
+		// clearAllMocks wipes call history but keeps mockImplementation, so the
+		// transaction mocks set inline by individual tests must be reset here or
+		// they bleed into later tests that rely on the default behavior.
+		storageMocks.withAccountStorageTransaction.mockReset();
+		storageMocks.withFlaggedStorageTransaction.mockReset();
+		storageMocks.withAccountAndFlaggedStorageTransaction.mockReset();
 		existsSyncMock.mockReturnValue(false);
 		quotaCacheMocks.loadQuotaCache.mockResolvedValue(null);
 		codexCliStateMocks.loadCodexCliState.mockResolvedValue(null);
