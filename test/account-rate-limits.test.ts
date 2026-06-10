@@ -61,6 +61,9 @@ describe("account rate-limit helpers", () => {
 			["undefined", undefined, 7, 7],
 			["NaN", Number.NaN, 7, 7],
 			["Infinity", Number.POSITIVE_INFINITY, 7, 7],
+			// Non-finite short-circuits to the fallback before the negative
+			// clamp, so -Infinity yields the fallback rather than 0.
+			["-Infinity", Number.NEGATIVE_INFINITY, 7, 7],
 			["negative", -3, 7, 0],
 			["fractional", 3.9, 7, 3],
 			["zero", 0, 7, 0],
@@ -103,6 +106,19 @@ describe("account rate-limit helpers", () => {
 	});
 
 	describe("isRateLimitedForFamily", () => {
+		it("treats a null model the same as no model (family key only)", () => {
+			vi.useFakeTimers();
+			vi.setSystemTime(NOW);
+			const entity = entityWith({ "gpt-5.2": NOW + 60_000 });
+			expect(isRateLimitedForFamily(entity, "gpt-5.2", null)).toBe(true);
+			const modelScopedOnly = entityWith({
+				"gpt-5.2:gpt-5.2-codex": NOW + 60_000,
+			});
+			expect(isRateLimitedForFamily(modelScopedOnly, "gpt-5.2", null)).toBe(
+				false,
+			);
+		});
+
 		it("honors a model-scoped limit even when the family is clear", () => {
 			vi.useFakeTimers();
 			vi.setSystemTime(NOW);
