@@ -90,6 +90,16 @@ function isRetryableAuthSetterError(error: unknown): boolean {
 
 /**
  * Refreshes the OAuth token and updates stored credentials
+ *
+ * Mutation contract: on success the passed `currentAuth` object is updated
+ * IN PLACE (access/refresh/expires) after the persistence await, and the same
+ * reference is returned. Same-account refreshes are serialized by
+ * `queuedRefresh`, so two concurrent calls for one account coalesce rather
+ * than race; callers must still not share one Auth object across calls for
+ * DIFFERENT accounts, and must not read token fields from a shared reference
+ * while a refresh for it is in flight (the window between the persistence
+ * await and the mutation block exposes the pre-refresh values).
+ *
  * @param currentAuth - Current auth state
  * @param client - Codex client for updating stored credentials
  * @returns Updated auth (throws on failure)
