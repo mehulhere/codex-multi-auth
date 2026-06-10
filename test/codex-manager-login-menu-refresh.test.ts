@@ -146,6 +146,33 @@ describe("refreshQuotaCacheForMenu", () => {
 		}
 	});
 
+	it("still resolves and warns when both the reload and the save fail", async () => {
+		// Windows can hold the cache file locked across the whole refresh cycle:
+		// the reload falls back to the snapshot clone AND the save then rejects.
+		// The refresh must resolve with the clone and surface the same warning.
+		loadQuotaCacheMock.mockRejectedValue(new Error("EBUSY"));
+		saveQuotaCacheMock.mockRejectedValue(new Error("EBUSY: locked"));
+		const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+		try {
+			const result = await refreshQuotaCacheForMenu(
+				createStorage(Date.now()),
+				emptyCache(),
+				60_000,
+			);
+
+			expect(loadQuotaCacheMock).toHaveBeenCalledTimes(1);
+			expect(saveQuotaCacheMock).toHaveBeenCalledTimes(1);
+			expect(result.byAccountId.acc_a).toMatchObject({ status: 200 });
+			expect(result.byAccountId.acc_b).toMatchObject({ status: 200 });
+			expect(warnSpy).toHaveBeenCalledWith(
+				expect.stringContaining("Quota cache save failed: EBUSY: locked"),
+			);
+		} finally {
+			warnSpy.mockRestore();
+		}
+	});
+
 	it("does not reload or save when every probe fails", async () => {
 		fetchCodexQuotaSnapshotMock.mockRejectedValue(new Error("network"));
 
