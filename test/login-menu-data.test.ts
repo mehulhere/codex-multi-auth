@@ -6,12 +6,21 @@ import {
 import type { QuotaCacheData, QuotaCacheEntry } from "../lib/quota-cache.js";
 import type { AccountMetadataV3, AccountStorageV3 } from "../lib/storage.js";
 
-const { loadCodexCliStateMock, setCodexCliActiveSelectionMock } = vi.hoisted(
-	() => ({
-		loadCodexCliStateMock: vi.fn(),
-		setCodexCliActiveSelectionMock: vi.fn(),
-	}),
-);
+const {
+	loadCodexCliStateMock,
+	setCodexCliActiveSelectionMock,
+	loadRuntimeSnapshotMock,
+	getAppBindStatusMock,
+	readAppRuntimeHelperAccountSignalMock,
+	resolveRuntimeCurrentAccountMock,
+} = vi.hoisted(() => ({
+	loadCodexCliStateMock: vi.fn(),
+	setCodexCliActiveSelectionMock: vi.fn(),
+	loadRuntimeSnapshotMock: vi.fn(),
+	getAppBindStatusMock: vi.fn(),
+	readAppRuntimeHelperAccountSignalMock: vi.fn(),
+	resolveRuntimeCurrentAccountMock: vi.fn(),
+}));
 
 vi.mock("../lib/codex-cli/state.js", () => ({
 	loadCodexCliState: loadCodexCliStateMock,
@@ -21,8 +30,37 @@ vi.mock("../lib/codex-cli/writer.js", () => ({
 	setCodexCliActiveSelection: setCodexCliActiveSelectionMock,
 }));
 
+vi.mock("../lib/runtime/runtime-observability.js", async (importOriginal) => {
+	const actual = await importOriginal<
+		typeof import("../lib/runtime/runtime-observability.js")
+	>();
+	return {
+		...actual,
+		loadPersistedRuntimeObservabilitySnapshot: loadRuntimeSnapshotMock,
+	};
+});
+
+vi.mock("../lib/runtime/app-bind.js", async (importOriginal) => {
+	const actual = await importOriginal<
+		typeof import("../lib/runtime/app-bind.js")
+	>();
+	return { ...actual, getAppBindStatus: getAppBindStatusMock };
+});
+
+vi.mock("../lib/runtime/runtime-current-account.js", async (importOriginal) => {
+	const actual = await importOriginal<
+		typeof import("../lib/runtime/runtime-current-account.js")
+	>();
+	return {
+		...actual,
+		readAppRuntimeHelperAccountSignal: readAppRuntimeHelperAccountSignalMock,
+		resolveRuntimeCurrentAccount: resolveRuntimeCurrentAccountMock,
+	};
+});
+
 const {
 	countMenuQuotaRefreshTargets,
+	loadRuntimeCurrentSelectionForStorage,
 	syncCodexCliActiveSelectionIfDrifted,
 	toExistingAccountInfo,
 } = await import("../lib/codex-manager/login-menu-data.js");
@@ -321,6 +359,20 @@ describe("syncCodexCliActiveSelectionIfDrifted", () => {
 		});
 	});
 
+	it("propagates a skipped CLI write as false", async () => {
+		// e.g. Windows EBUSY preventing the auth.json write: the writer reports
+		// false and the caller must see that, not a swallowed true.
+		loadCodexCliStateMock.mockResolvedValue({ activeAccountId: "acc_other" });
+		setCodexCliActiveSelectionMock.mockResolvedValue(false);
+
+		const result = await syncCodexCliActiveSelectionIfDrifted(
+			storageWith([account("a")]),
+		);
+
+		expect(result).toBe(false);
+		expect(setCodexCliActiveSelectionMock).toHaveBeenCalledTimes(1);
+	});
+
 	it("matches by sanitized email when account ids are unavailable", async () => {
 		loadCodexCliStateMock.mockResolvedValue({
 			activeEmail: "  A@EXAMPLE.COM ",
@@ -350,5 +402,74 @@ describe("syncCodexCliActiveSelectionIfDrifted", () => {
 
 		expect(result).toBe(false);
 		expect(loadCodexCliStateMock).not.toHaveBeenCalled();
+	});
+});
+
+describe("loadRuntimeCurrentSelectionForStorage", () => {
+	const SELECTION = {
+		index: 1,
+		source: "app-bind" as const,
+		matchedBy: "account-id" as const,
+		updatedAt: NOW,
+	};
+
+	it("feeds all three runtime signals into the resolver and returns its result", async () => {
+		const snapshot = { generatedAt: NOW };
+		const router = { running: true, port: 4242 };
+		const helperSignal = { source: "app-helper" as const };
+		loadRuntimeSnapshotMock.mockResolvedValue(snapshot);
+		getAppBindStatusMock.mockResolvedValue({ running: true, router });
+		readAppRuntimeHelperAccountSignalMock.mockReturnValue(helperSignal);
+		resolveRuntimeCurrentAccountMock.mockReturnValue(SELECTION);
+		const storage = storageWith([account("a"), account("b")]);
+
+		const result = await loadRuntimeCurrentSelectionForStorage(storage, NOW);
+
+		expect(result).toBe(SELECTION);
+		expect(resolveRuntimeCurrentAccountMock).toHaveBeenCalledExactlyOnceWith(
+			storage,
+			{
+				runtimeSnapshot: snapshot,
+				appBindStatus: router,
+				appHelperStatus: helperSignal,
+			},
+			{ now: NOW },
+		);
+	});
+
+	it("drops the app-bind signal when the router is not running", async () => {
+		loadRuntimeSnapshotMock.mockResolvedValue(null);
+		getAppBindStatusMock.mockResolvedValue({ running: false, router: { running: false } });
+		readAppRuntimeHelperAccountSignalMock.mockReturnValue(null);
+		resolveRuntimeCurrentAccountMock.mockReturnValue(null);
+
+		const result = await loadRuntimeCurrentSelectionForStorage(
+			storageWith([account("a")]),
+			NOW,
+		);
+
+		expect(result).toBeNull();
+		expect(resolveRuntimeCurrentAccountMock).toHaveBeenCalledExactlyOnceWith(
+			expect.anything(),
+			expect.objectContaining({ appBindStatus: null }),
+			{ now: NOW },
+		);
+	});
+
+	it("treats failing signal sources as absent instead of throwing", async () => {
+		loadRuntimeSnapshotMock.mockRejectedValue(new Error("corrupt snapshot"));
+		getAppBindStatusMock.mockRejectedValue(new Error("no router"));
+		readAppRuntimeHelperAccountSignalMock.mockReturnValue(null);
+		resolveRuntimeCurrentAccountMock.mockReturnValue(null);
+
+		await expect(
+			loadRuntimeCurrentSelectionForStorage(storageWith([account("a")]), NOW),
+		).resolves.toBeNull();
+
+		expect(resolveRuntimeCurrentAccountMock).toHaveBeenCalledExactlyOnceWith(
+			expect.anything(),
+			{ runtimeSnapshot: null, appBindStatus: null, appHelperStatus: null },
+			{ now: NOW },
+		);
 	});
 });
