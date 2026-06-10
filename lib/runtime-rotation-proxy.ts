@@ -51,76 +51,51 @@ import {
 } from "./policy/runtime-policy.js";
 import { isWorkspaceDisabledError } from "./request/fetch-helpers.js";
 import { createLogger, maskString, runWithCorrelationId } from "./logger.js";
+import {
+	buildPinnedUnavailableErrorBody,
+	buildTokenInvalidationBody,
+	extractErrorCodeFromBody,
+	getQuotaNearExhaustionWaitMs,
+	isTokenInvalidationError,
+	isTokenRefreshRetryable,
+	normalizeExhaustionStatus,
+	parseRetryAfterBodyMs,
+	parseRetryAfterHeaderMs,
+} from "./request/rate-limit-decision.js";
+import {
+	forwardStreamingResponse,
+	HOP_BY_HOP_HEADERS,
+	readErrorBody,
+	responseHeadersForClient,
+	withTimeout,
+} from "./request/stream-failover-runtime.js";
+import type {
+	ExhaustionReason,
+	RequestContext,
+	RuntimeProxyHttpError,
+	RuntimeRotationAccountIdentity,
+	RuntimeRotationProxyOptions,
+	RuntimeRotationProxyServer,
+	RuntimeRotationProxyStatus,
+} from "./runtime/rotation-server-types.js";
 import { SessionAffinityStore } from "./session-affinity.js";
-import type { OAuthAuthDetails, RequestBody, TokenResult } from "./types.js";
+import type { OAuthAuthDetails, RequestBody } from "./types.js";
 import { isRecord } from "./utils.js";
 
-export interface RuntimeRotationProxyServer {
-	host: string;
-	port: number;
-	baseUrl: string;
-	close: () => Promise<void>;
-	getStatus: () => RuntimeRotationProxyStatus;
-}
-
-export interface RuntimeRotationProxyStatus {
-	startedAt: number;
-	totalRequests: number;
-	upstreamRequests: number;
-	retries: number;
-	rotations: number;
-	streamsStarted: number;
-	lastError: string | null;
-	lastAccountIndex: number | null;
-	lastAccountLabel: string | null;
-	lastAccountId: string | null;
-	lastAccountUpdatedAt: number | null;
-}
-
-export interface RuntimeRotationProxyOptions {
-	host?: string;
-	port?: number;
-	upstreamBaseUrl?: string;
-	clientApiKey: string;
-	accountManager?: AccountManager;
-	fetchImpl?: typeof fetch;
-	now?: () => number;
-	quotaRemainingPercentThreshold?: number;
-	maxRequestBodyBytes?: number;
-	fetchTimeoutMs?: number;
-	streamStallTimeoutMs?: number;
-}
-
-interface RequestContext {
-	body: Buffer;
-	headers: Headers;
-	method: "GET" | "POST";
-	upstreamPath: string;
-	model: string | null;
-	family: ModelFamily;
-	stream: boolean;
-	sessionKey: string | null;
-}
-
-type ExhaustionReason =
-	| "rate-limit"
-	| "server-error"
-	| "network-error"
-	| "auth-failure"
-	| "budget"
-	| "deactivated"
-	| "no-account";
-type RuntimeProxyHttpError = Error & {
-	statusCode: number;
-	code: string;
-};
-
-interface RuntimeRotationAccountIdentity {
-	index: number;
-	label: string;
-	accountId: string | null;
-	updatedAt: number;
-}
+// Re-exports: these symbols were defined in this module before the §4.1.3
+// phase-1 carve and are part of its public surface (lib/index.ts star-exports
+// this file; tests and scripts import them from here). Keep every existing
+// import path working.
+export type {
+	RuntimeRotationProxyOptions,
+	RuntimeRotationProxyServer,
+	RuntimeRotationProxyStatus,
+} from "./runtime/rotation-server-types.js";
+export {
+	buildPinnedUnavailableErrorBody,
+	buildTokenInvalidationBody,
+} from "./request/rate-limit-decision.js";
+export type { PinnedUnavailableErrorBody } from "./request/rate-limit-decision.js";
 
 const DEFAULT_HOST = "127.0.0.1";
 
@@ -172,46 +147,8 @@ const DEFAULT_AUTH_FAILURE_COOLDOWN_MS = 30_000;
 
 const DEFAULT_MAX_RUNTIME_ACCOUNT_ATTEMPTS = 4;
 
-// Phrases observed in upstream 401 response bodies when OpenAI/Microsoft has
-// explicitly revoked an OAuth token (as opposed to a generic expired-token 401
-// that can be retried after a refresh). Matching is case-insensitive substring.
-// If anti-abuse detection triggers different wording in production, add the new
-// phrase here and record the source provider and date. See issue #495.
-const TOKEN_INVALIDATION_PHRASES = [
-	"invalidated oauth token",
-	"authentication token has been invalidated",
-	"oauth token has been invalidated",
-	"token has been invalidated",
-] as const;
-
-function isTokenInvalidationError(bodyText: string): boolean {
-	const lower = bodyText.toLowerCase();
-	return TOKEN_INVALIDATION_PHRASES.some((phrase) => lower.includes(phrase));
-}
 const MAX_REQUEST_BODY_BYTES = 64 * 1024 * 1024;
 const MAX_THREAD_GOAL_FALLBACKS = 512;
-const HOP_BY_HOP_HEADERS = new Set([
-	"connection",
-	"content-length",
-	"expect",
-	"keep-alive",
-	"proxy-authenticate",
-	"proxy-authorization",
-	"te",
-	"trailer",
-	"transfer-encoding",
-	"upgrade",
-]);
-const PRIVATE_CLIENT_RESPONSE_HEADERS = new Set([
-	"x-codex-multi-auth-account-index",
-	"x-codex-multi-auth-account-label",
-	"x-codex-multi-auth-account-email",
-	"x-codex-multi-auth-account-id",
-]);
-const DECODED_UPSTREAM_RESPONSE_HEADERS = new Set([
-	// Node fetch returns decoded bytes while preserving the upstream encoding header.
-	"content-encoding",
-]);
 const ALLOWED_RESPONSES_PATHS = new Set([
 	URL_PATHS.RESPONSES,
 	URL_PATHS.CODEX_RESPONSES,
@@ -582,18 +519,6 @@ async function persistRuntimeActiveAccount(
 	}
 }
 
-function responseHeadersForClient(upstreamHeaders: Headers): Record<string, string> {
-	const headers: Record<string, string> = {};
-	for (const [key, value] of upstreamHeaders.entries()) {
-		const normalizedKey = key.toLowerCase();
-		if (HOP_BY_HOP_HEADERS.has(normalizedKey)) continue;
-		if (PRIVATE_CLIENT_RESPONSE_HEADERS.has(normalizedKey)) continue;
-		if (DECODED_UPSTREAM_RESPONSE_HEADERS.has(normalizedKey)) continue;
-		headers[key] = value;
-	}
-	return headers;
-}
-
 function createRuntimeProxyHttpError(
 	message: string,
 	statusCode: number,
@@ -825,19 +750,6 @@ function hasUsableAccessToken(
 	);
 }
 
-function isTokenRefreshRetryable(result: Extract<TokenResult, { type: "failed" }>): boolean {
-	if (result.reason === "network_error" || result.reason === "unknown") return true;
-	if (result.reason === "invalid_response") return true;
-	if (result.reason === "http_error") {
-		return !(
-			result.statusCode === HTTP_STATUS.BAD_REQUEST ||
-			result.statusCode === HTTP_STATUS.UNAUTHORIZED ||
-			result.statusCode === HTTP_STATUS.FORBIDDEN
-		);
-	}
-	return false;
-}
-
 const runtimeRefreshCommitQueues = new WeakMap<
 	AccountManager,
 	Map<string, Promise<ManagedAccount | null>>
@@ -937,199 +849,6 @@ function resolveAccountId(account: ManagedAccount, accessToken: string): string 
 	const stored = account.accountId?.trim();
 	if (stored) return stored;
 	return extractAccountId(accessToken)?.trim() || null;
-}
-
-function parseRetryAfterHeaderMs(headers: Headers, now: number): number | null {
-	const retryAfterMs = headers.get("retry-after-ms");
-	if (retryAfterMs) {
-		const parsed = Number.parseInt(retryAfterMs, 10);
-		if (Number.isFinite(parsed) && parsed > 0) return parsed;
-	}
-	const retryAfter = headers.get("retry-after");
-	if (!retryAfter) return null;
-	const asSeconds = Number.parseInt(retryAfter, 10);
-	if (Number.isFinite(asSeconds) && asSeconds > 0) return asSeconds * 1000;
-	const asDate = Date.parse(retryAfter);
-	if (Number.isFinite(asDate) && asDate > now) return asDate - now;
-	return null;
-}
-
-function parseRetryAfterBodyMs(bodyText: string, now: number): number | null {
-	if (!bodyText.trim()) return null;
-	try {
-		const parsed = JSON.parse(bodyText) as unknown;
-		if (!isRecord(parsed) || !isRecord(parsed.error)) return null;
-		const retryAfterMs = Number(parsed.error.retry_after_ms);
-		if (Number.isFinite(retryAfterMs) && retryAfterMs > 0) return retryAfterMs;
-		const retryAfterSeconds = Number(parsed.error.retry_after);
-		if (Number.isFinite(retryAfterSeconds) && retryAfterSeconds > 0) {
-			return retryAfterSeconds * 1000;
-		}
-		const resetAtRaw = Number(parsed.error.resets_at ?? parsed.error.reset_at);
-		if (Number.isFinite(resetAtRaw) && resetAtRaw > 0) {
-			const resetAtMs = resetAtRaw < 10_000_000_000 ? resetAtRaw * 1000 : resetAtRaw;
-			if (resetAtMs > now) return resetAtMs - now;
-		}
-	} catch {
-		return null;
-	}
-	return null;
-}
-
-async function readErrorBody(
-	response: Response,
-	timeoutMs: number,
-	maxBytes = 1024 * 1024,
-): Promise<string> {
-	// The outbound fetch's abort timer is cleared once headers arrive, so a
-	// stalled error body would otherwise hang this handler forever (the success
-	// path is per-chunk stall-bounded; the error path was not). Read the body via
-	// a reader, bound it by an idle timeout AND a size cap, and cancel the stream
-	// on timeout/overflow so the socket is released.
-	const body = response.body;
-	if (!body || typeof body.getReader !== "function") {
-		// Fallback for impls without a streamable body: race text() against a timer.
-		try {
-			return await withTimeout(
-				response.text(),
-				timeoutMs,
-				() => undefined,
-				"error body stalled",
-			);
-		} catch {
-			return "";
-		}
-	}
-	const reader = body.getReader();
-	const chunks: Uint8Array[] = [];
-	let total = 0;
-	try {
-		for (;;) {
-			let idleTimer: ReturnType<typeof setTimeout> | undefined;
-			const idle = new Promise<never>((_resolve, reject) => {
-				idleTimer = setTimeout(
-					() => reject(new Error("error body stalled")),
-					Math.max(1, timeoutMs),
-				);
-			});
-			let result: Awaited<ReturnType<typeof reader.read>>;
-			try {
-				result = await Promise.race([reader.read(), idle]);
-			} finally {
-				if (idleTimer) clearTimeout(idleTimer);
-			}
-			if (result.done) break;
-			if (result.value) {
-				total += result.value.byteLength;
-				if (total > maxBytes) break; // cap: enough for diagnostics, no OOM
-				chunks.push(result.value);
-			}
-		}
-	} catch {
-		// stalled or errored — fall through with whatever we have
-	} finally {
-		await reader.cancel().catch(() => undefined);
-	}
-	try {
-		return Buffer.concat(chunks).toString("utf8");
-	} catch {
-		return "";
-	}
-}
-
-const TOKEN_INVALIDATED_CODE = "token_invalidated";
-const TOKEN_INVALIDATED_FALLBACK_MESSAGE =
-	"OAuth token has been invalidated. Please re-login.";
-
-// Both invalidation exit paths (refresh-failure and upstream-401) must hand the
-// client the same machine-readable shape — { error: { message, code:
-// "token_invalidated" } } — so a consumer keying off error.code behaves
-// identically regardless of which vector fired. The upstream forwards a raw body
-// with no guaranteed code, so we wrap it here while preserving its human-readable
-// message when one is present.
-export function buildTokenInvalidationBody(upstreamBodyText: string): string {
-	let message = TOKEN_INVALIDATED_FALLBACK_MESSAGE;
-	const trimmed = upstreamBodyText.trim();
-	if (trimmed) {
-		try {
-			const parsed = JSON.parse(trimmed) as unknown;
-			if (isRecord(parsed)) {
-				const direct = parsed.message;
-				if (typeof direct === "string" && direct.trim()) {
-					message = direct.trim();
-				} else if (isRecord(parsed.error)) {
-					const nested = parsed.error.message;
-					if (typeof nested === "string" && nested.trim()) {
-						message = nested.trim();
-					}
-				}
-			}
-		} catch {
-			// Non-JSON upstream body (e.g. HTML error page): keep the stable fallback
-			// message rather than echoing markup back to the client.
-		}
-	}
-	return JSON.stringify({ error: { message, code: TOKEN_INVALIDATED_CODE } });
-}
-
-function extractErrorCodeFromBody(bodyText: string): string | null {
-	if (!bodyText.trim()) return null;
-	try {
-		const parsed = JSON.parse(bodyText) as unknown;
-		if (!isRecord(parsed)) return null;
-		const directCode = parsed.code;
-		if (typeof directCode === "string" && directCode.trim()) {
-			return directCode.trim();
-		}
-		const maybeError = parsed.error;
-		if (!isRecord(maybeError)) return null;
-		const nestedCode = maybeError.code;
-		return typeof nestedCode === "string" && nestedCode.trim()
-			? nestedCode.trim()
-			: null;
-	} catch {
-		return null;
-	}
-}
-
-function getQuotaWindowWaitMs(headers: Headers, prefix: string, now: number): number {
-	const resetAfterSeconds = Number.parseInt(
-		headers.get(`${prefix}-reset-after-seconds`) ?? "",
-		10,
-	);
-	if (Number.isFinite(resetAfterSeconds) && resetAfterSeconds > 0) {
-		return resetAfterSeconds * 1000;
-	}
-	const resetAtRaw = headers.get(`${prefix}-reset-at`);
-	if (!resetAtRaw) return 0;
-	const trimmed = resetAtRaw.trim();
-	let resetAtMs = 0;
-	if (/^\d+$/.test(trimmed)) {
-		const parsed = Number.parseInt(trimmed, 10);
-		if (Number.isFinite(parsed) && parsed > 0) {
-			resetAtMs = parsed < 10_000_000_000 ? parsed * 1000 : parsed;
-		}
-	} else {
-		const parsedDate = Date.parse(trimmed);
-		if (Number.isFinite(parsedDate)) resetAtMs = parsedDate;
-	}
-	return resetAtMs > now ? resetAtMs - now : 0;
-}
-
-function getQuotaNearExhaustionWaitMs(
-	headers: Headers,
-	remainingThreshold: number,
-	now: number,
-): number {
-	const usedThreshold = 100 - Math.max(0, Math.min(100, remainingThreshold));
-	const candidates: number[] = [];
-	for (const prefix of ["x-codex-primary", "x-codex-secondary"]) {
-		const used = Number(headers.get(`${prefix}-used-percent`) ?? "");
-		if (!Number.isFinite(used) || used < usedThreshold) continue;
-		const waitMs = getQuotaWindowWaitMs(headers, prefix, now);
-		if (waitMs > 0) candidates.push(waitMs);
-	}
-	return candidates.length > 0 ? Math.max(...candidates) : 0;
 }
 
 /**
@@ -1409,10 +1128,6 @@ function writeUnauthorized(res: ServerResponse): void {
 	});
 }
 
-function normalizeExhaustionStatus(reason: ExhaustionReason): number {
-	return reason === "rate-limit" ? HTTP_STATUS.TOO_MANY_REQUESTS : 503;
-}
-
 function writePoolExhausted(params: {
 	res: ServerResponse;
 	accountManager: AccountManager;
@@ -1445,119 +1160,6 @@ function writePoolExhausted(params: {
 			hint,
 		},
 	});
-}
-
-/**
- * Build the JSON `error` body for a pinned-account 503 response. Extracted so
- * the null-reason desync path (`reason: null`, no parenthetical in `message`)
- * can be unit-tested without standing up a full proxy. The shape mirrors
- * `writePoolExhausted` so consumers can handle both 503 codes uniformly. See
- * issue #486.
- */
-export interface PinnedUnavailableErrorBody {
-	message: string;
-	code: "codex_pinned_account_unavailable";
-	pinnedAccountIndex: number | null;
-	reason: string | null;
-	account_skip_reasons: Record<string, string>;
-}
-
-export function buildPinnedUnavailableErrorBody(
-	pinnedIndex: number | null | undefined,
-	accountSkipReasons: ReadonlyMap<number, string>,
-): PinnedUnavailableErrorBody {
-	const normalizedPinnedIndex =
-		typeof pinnedIndex === "number" ? pinnedIndex : null;
-	const skipReason =
-		normalizedPinnedIndex !== null
-			? accountSkipReasons.get(normalizedPinnedIndex) ?? null
-			: null;
-	const reasonSuffix = skipReason ? ` (${skipReason})` : "";
-	const displayIndex = (normalizedPinnedIndex ?? 0) + 1;
-	return {
-		message: `Pinned account ${displayIndex} is currently unavailable${reasonSuffix}; run \`codex-multi-auth status\` for details, or \`codex-multi-auth unpin\` to allow rotation.`,
-		code: "codex_pinned_account_unavailable",
-		pinnedAccountIndex: normalizedPinnedIndex,
-		reason: skipReason,
-		account_skip_reasons: Object.fromEntries(
-			[...accountSkipReasons.entries()].map(([index, reason]) => [
-				String(index),
-				reason,
-			]),
-		),
-	};
-}
-
-async function withTimeout<T>(
-	promise: Promise<T>,
-	timeoutMs: number,
-	onTimeout: () => void,
-	message: string,
-): Promise<T> {
-	let timeout: ReturnType<typeof setTimeout> | undefined;
-	try {
-		return await Promise.race([
-			promise,
-			new Promise<T>((_resolve, reject) => {
-				timeout = setTimeout(() => {
-					onTimeout();
-					reject(new Error(message));
-				}, Math.max(1, timeoutMs));
-			}),
-		]);
-	} finally {
-		if (timeout) clearTimeout(timeout);
-	}
-}
-
-async function forwardStreamingResponse(
-	upstream: Response,
-	res: ServerResponse,
-	status: RuntimeRotationProxyStatus,
-	onStreamError: () => void,
-	streamStallTimeoutMs: number,
-): Promise<boolean> {
-	status.streamsStarted += 1;
-	res.writeHead(
-		upstream.status,
-		responseHeadersForClient(upstream.headers),
-	);
-	if (!upstream.body) {
-		res.end();
-		return true;
-	}
-
-	const reader = upstream.body.getReader();
-	res.on("close", () => {
-		if (!res.writableEnded) {
-			void reader.cancel().catch(() => undefined);
-		}
-	});
-	try {
-		while (true) {
-			const { done, value } = await withTimeout(
-				reader.read(),
-				streamStallTimeoutMs,
-				() => {
-					void reader.cancel().catch(() => undefined);
-				},
-				`upstream stream stalled after ${streamStallTimeoutMs}ms`,
-			);
-			if (done) break;
-			if (value && value.byteLength > 0) {
-				res.write(Buffer.from(value));
-			}
-		}
-		res.end();
-		return true;
-	} catch (error) {
-		status.lastError = error instanceof Error ? error.message : String(error);
-		onStreamError();
-		if (!res.destroyed) {
-			res.destroy(error instanceof Error ? error : undefined);
-		}
-		return false;
-	}
 }
 
 export async function startRuntimeRotationProxy(
