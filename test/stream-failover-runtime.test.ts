@@ -44,9 +44,15 @@ class FakeServerResponse extends EventEmitter {
 		return this;
 	}
 
+	/** Indices (0-based write order) for which write() reports a full buffer. */
+	backpressureWrites = new Set<number>();
+	events: string[] = [];
+
 	write(chunk: Buffer): boolean {
+		const index = this.chunks.length;
 		this.chunks.push(chunk);
-		return true;
+		this.events.push(`write:${index}`);
+		return !this.backpressureWrites.has(index);
 	}
 
 	end(): this {
@@ -226,6 +232,55 @@ describe("forwardStreamingResponse", () => {
 		expect(Buffer.concat(res.chunks).toString("utf8")).toBe("data: a\n\ndata: b\n\n");
 		expect(res.ended).toBe(true);
 		expect(onStreamError).not.toHaveBeenCalled();
+	});
+
+	it("pauses writes while the client buffer is full and resumes on drain", async () => {
+		const res = new FakeServerResponse();
+		res.backpressureWrites.add(0); // first write reports a full socket buffer
+		const status = createStatus();
+		// Note: the assertion is on WRITE order, not on the source's pull order —
+		// ReadableStream prefetches into its internal queue independently of the
+		// forwarder's pacing, so pull timing is not observable backpressure.
+		const upstream = new Response(streamOf(
+			new TextEncoder().encode("data: a\n\n"),
+			new TextEncoder().encode("data: b\n\n"),
+		), { status: 200 });
+
+		setTimeout(() => {
+			res.events.push("drain");
+			res.emit("drain");
+		}, 20);
+
+		await expect(
+			forwardStreamingResponse(upstream, res.asServerResponse(), status, vi.fn(), 5_000),
+		).resolves.toBe(true);
+
+		expect(Buffer.concat(res.chunks).toString("utf8")).toBe("data: a\n\ndata: b\n\n");
+		expect(res.events.indexOf("drain")).toBeGreaterThan(res.events.indexOf("write:0"));
+		expect(res.events.indexOf("write:1")).toBeGreaterThan(res.events.indexOf("drain"));
+		expect(res.ended).toBe(true);
+	});
+
+	it("does not park forever when the client closes during backpressure", async () => {
+		const res = new FakeServerResponse();
+		res.backpressureWrites.add(0);
+		const status = createStatus();
+		const upstream = new Response(streamOf(
+			new TextEncoder().encode("data: a\n\n"),
+			new TextEncoder().encode("data: b\n\n"),
+		), { status: 200 });
+
+		// The client disconnects instead of draining: the close handler cancels
+		// the upstream reader, so the next read observes done and the forwarder
+		// finishes via the existing client-close path.
+		setTimeout(() => {
+			res.emit("close");
+		}, 20);
+
+		await expect(
+			forwardStreamingResponse(upstream, res.asServerResponse(), status, vi.fn(), 5_000),
+		).resolves.toBe(true);
+		expect(Buffer.concat(res.chunks).toString("utf8")).toBe("data: a\n\n");
 	});
 
 	it("ends immediately when the upstream has no body", async () => {
