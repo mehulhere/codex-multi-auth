@@ -45,7 +45,8 @@ export function buildConfigJsonSchema(): JsonObject {
 	// The embedded definition inherits the root document's dialect; a nested
 	// `$schema` keyword would be redundant noise.
 	delete pluginConfig.$schema;
-	pluginConfig.description =
+	// ??= so a future .describe() on PluginConfigSchema wins over this default.
+	pluginConfig.description ??=
 		"Runtime plugin configuration (the `pluginConfig` section of unified settings.json, also accepted flat in CODEX_MULTI_AUTH_CONFIG_PATH overrides). Generated from PluginConfigSchema in lib/schemas.ts — do not edit by hand; run `npm run generate:schema`.";
 
 	return {

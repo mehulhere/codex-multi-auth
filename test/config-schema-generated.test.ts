@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import path from "node:path";
-import { describe, expect, it } from "vitest";
+import { beforeAll, describe, expect, it } from "vitest";
 import {
 	buildConfigJsonSchema,
 	CONFIG_SCHEMA_RELATIVE_PATH,
@@ -17,7 +17,19 @@ const committedPath = path.join(process.cwd(), CONFIG_SCHEMA_RELATIVE_PATH);
  * fail. Fix: run `npm run generate:schema` and commit the result.
  */
 describe("config.schema.json is generated from PluginConfigSchema", () => {
-	const committedRaw = readFileSync(committedPath, "utf8");
+	let committedRaw = "";
+
+	beforeAll(() => {
+		// Read inside beforeAll so a missing/locked file surfaces as a named
+		// test failure with remediation, not an ENOENT at collection time.
+		try {
+			committedRaw = readFileSync(committedPath, "utf8");
+		} catch (error) {
+			throw new Error(
+				`could not read ${CONFIG_SCHEMA_RELATIVE_PATH} — run \`npm run generate:schema\` and commit the result (${String(error)})`,
+			);
+		}
+	});
 
 	it("committed schema deep-equals the in-memory regeneration (if this fails, run `npm run generate:schema`)", () => {
 		expect(
@@ -26,15 +38,14 @@ describe("config.schema.json is generated from PluginConfigSchema", () => {
 		).toEqual(buildConfigJsonSchema());
 	});
 
+	// This doubles as the cross-process determinism check: the committed file
+	// was rendered by a separate generator invocation, so byte-equality here
+	// proves a fresh render reproduces it exactly.
 	it("committed schema matches the serialized output byte-for-byte (if this fails, run `npm run generate:schema`)", () => {
 		expect(
 			committedRaw,
 			"config/schema/config.schema.json serialization drifted — run `npm run generate:schema` and commit the result",
 		).toBe(renderConfigJsonSchema());
-	});
-
-	it("generation is deterministic across invocations", () => {
-		expect(renderConfigJsonSchema()).toBe(renderConfigJsonSchema());
 	});
 
 	it("covers every PluginConfigSchema field and preserves root metadata", () => {
