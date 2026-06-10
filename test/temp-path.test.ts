@@ -1,5 +1,20 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import { tempFileNonce, tempPathFor } from "../lib/temp-path.js";
+
+const cryptoControl = vi.hoisted(() => ({ failure: null as Error | null }));
+
+vi.mock("node:crypto", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("node:crypto")>();
+	return {
+		...actual,
+		randomBytes: (size: number) => {
+			if (cryptoControl.failure) {
+				throw cryptoControl.failure;
+			}
+			return actual.randomBytes(size);
+		},
+	};
+});
 
 describe("temp-path", () => {
 	describe("tempFileNonce", () => {
@@ -17,6 +32,18 @@ describe("temp-path", () => {
 			// pid + timestamp collide within the same millisecond, so uniqueness
 			// rests on the crypto suffix; 200 draws must never collide.
 			expect(seen.size).toBe(200);
+		});
+
+		it("propagates randomBytes failures instead of falling back to weak randomness", () => {
+			// FIPS-restricted or entropy-starved Node builds make randomBytes throw;
+			// the intended failure mode is a loud error, never a Math.random fallback.
+			cryptoControl.failure = new Error("entropy unavailable");
+			try {
+				expect(() => tempFileNonce()).toThrow("entropy unavailable");
+				expect(() => tempPathFor("/data/accounts.json")).toThrow("entropy unavailable");
+			} finally {
+				cryptoControl.failure = null;
+			}
 		});
 	});
 
