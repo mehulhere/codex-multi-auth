@@ -63,7 +63,7 @@ export function printUninstallUsage(): void {
 			"  --clear-accounts   Also remove stored account credentials (irreversible)",
 			"",
 			"Behavior:",
-			"  Reverses all postinstall changes: unbinds Codex app, removes OS launchers,",
+			"  Reverses all first-run setup changes: unbinds Codex app, removes OS launchers,",
 			"  strips plugin from Codex.json, and clears the plugin cache.",
 			"",
 			"Recommended order (npm@7+ no longer fires preuninstall lifecycle scripts,",
