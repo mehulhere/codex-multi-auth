@@ -1,9 +1,10 @@
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, writeFileSync } from "node:fs";
 import { request } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { removeWithRetry } from "./helpers/remove-with-retry.js";
 import { AccountManager } from "../lib/accounts.js";
 import { clearCircuitBreakers } from "../lib/circuit-breaker.js";
 import { HTTP_STATUS } from "../lib/constants.js";
@@ -155,7 +156,9 @@ afterEach(async () => {
 	resetRefreshQueue();
 	for (const dir of tmpDirs.splice(0, tmpDirs.length)) {
 		try {
-			rmSync(dir, { recursive: true, force: true });
+			// removeWithRetry per test/AGENTS.md: handles transient Windows
+			// EBUSY/EPERM/ENOTEMPTY locks on the proxy's storage tmp dirs.
+			await removeWithRetry(dir, { recursive: true, force: true });
 		} catch {
 			// best-effort cleanup
 		}
