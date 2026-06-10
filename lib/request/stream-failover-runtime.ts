@@ -48,8 +48,12 @@ export async function withTimeout<T>(
 			promise,
 			new Promise<T>((_resolve, reject) => {
 				timeout = setTimeout(() => {
-					onTimeout();
+					// Reject BEFORE onTimeout: onTimeout side effects (e.g. cancelling a
+					// stream reader) can settle `promise` with a clean value, and a
+					// settlement enqueued ahead of this rejection would win the race —
+					// turning a stall into a silent success.
 					reject(new Error(message));
+					onTimeout();
 				}, Math.max(1, timeoutMs));
 			}),
 		]);
