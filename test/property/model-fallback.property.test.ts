@@ -36,8 +36,21 @@ const UNSUPPORTED_BODY = {
 	},
 };
 
+// Mirror of the resolver's canonicalizeModelName transform (lowercase, strip
+// provider prefix and reasoning-effort suffix) so the expected chain stays
+// valid even if a future chain entry is added in a non-canonical spelling.
+function canonicalize(model: string): string {
+	const stripped = model.trim().toLowerCase();
+	const tail = stripped.includes("/")
+		? (stripped.split("/").pop() ?? stripped)
+		: stripped;
+	return tail.replace(/-(none|minimal|low|medium|high|xhigh)$/i, "");
+}
+
 function canonicalChainTargets(model: string): string[] {
-	return DEFAULT_UNSUPPORTED_CODEX_FALLBACK_CHAIN[model] ?? [];
+	return (DEFAULT_UNSUPPORTED_CODEX_FALLBACK_CHAIN[model] ?? []).map(
+		canonicalize,
+	);
 }
 
 describe("resolveUnsupportedCodexFallbackModel properties", () => {
