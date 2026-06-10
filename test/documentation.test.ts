@@ -334,6 +334,15 @@ describe("Documentation Integrity", () => {
 			existsSync(join(projectRoot, switchPath)),
 			`${switchPath} should exist`,
 		).toBe(true);
+		const workspacePath = "lib/codex-manager/commands/workspace.ts";
+		expect(
+			existsSync(join(projectRoot, workspacePath)),
+			`${workspacePath} should exist`,
+		).toBe(true);
+		expect(commandRef).toContain(
+			"| `codex-multi-auth workspace <account> [workspace]` | List an account's tracked workspaces, or set its active workspace |",
+		);
+		expect(commandRef).toContain("## `codex-multi-auth workspace`");
 		const help = read(helpPath);
 		const switchCommand = read(switchPath);
 
