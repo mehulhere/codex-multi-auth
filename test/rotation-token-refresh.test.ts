@@ -133,6 +133,30 @@ describe("ensureFreshAccessToken", () => {
 		});
 	});
 
+	it("falls back to the refresh result's token when the commit cannot resolve the account", async () => {
+		const accountManager = managerWith(STALE_EXPIRES);
+		const original = accountManager.getAccountByIndex(0);
+		if (!original) throw new Error("fixture account missing");
+		queuedRefreshMock.mockResolvedValue({
+			type: "success",
+			access: "access-new",
+			refresh: "refresh-new",
+			expires: NOW + 7_200_000,
+		});
+		// The account vanished from storage between refresh and persist: the
+		// commit reports null and the caller must use the freshly refreshed
+		// token, never the stale one on the original account object.
+		vi.spyOn(accountManager, "commitRefreshedAuth").mockResolvedValue(null);
+
+		const result = await ensureFreshAccessToken(refreshParams(accountManager));
+
+		expect(result.ok).toBe(true);
+		if (result.ok) {
+			expect(result.accessToken).toBe("access-new");
+			expect(result.account).toBe(original);
+		}
+	});
+
 	it("deduplicates concurrent commits for the same refreshed account", async () => {
 		const accountManager = managerWith(STALE_EXPIRES);
 		const commit = vi.spyOn(accountManager, "commitRefreshedAuth");
