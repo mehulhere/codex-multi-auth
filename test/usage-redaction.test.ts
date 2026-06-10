@@ -131,15 +131,38 @@ describe("usage ledger redaction and normalization", () => {
 				inputTokens: 1_000_000,
 				outputTokens: 1_000_000,
 			});
-			expect(row.costUsd).toBe(
-				estimateUsageCostUsd("gpt-5.2", row.tokens),
-			);
+			// Literal pin of the gpt-5.2 price card ($1.25/M input + $10/M
+			// output), not just delegation: a wrong table entry must fail here.
+			expect(row.costUsd).toBe(11.25);
+			expect(row.costUsd).toBe(estimateUsageCostUsd("gpt-5.2", row.tokens));
 			expect(
 				normalizeUsageLedgerRow({ outcome: "success", costUsd: -3 }).costUsd,
 			).toBe(0);
 			expect(
 				normalizeUsageLedgerRow({ outcome: "success", costUsd: 1.25 }).costUsd,
 			).toBe(1.25);
+		});
+
+		it("records a null cost for models without a price card", () => {
+			// null (not 0) so the summary aggregator can distinguish "free" from
+			// "unpriceable".
+			expect(
+				normalizeUsageLedgerRow({
+					outcome: "success",
+					model: "mystery-model",
+					inputTokens: 1_000,
+				}).costUsd,
+			).toBeNull();
+		});
+
+		it("clamps and truncates durationMs, dropping non-finite values", () => {
+			const base = { outcome: "success" } as const;
+			expect(normalizeUsageLedgerRow({ ...base, durationMs: 1234.9 }).durationMs).toBe(1234);
+			expect(normalizeUsageLedgerRow({ ...base, durationMs: -50 }).durationMs).toBe(0);
+			expect(
+				normalizeUsageLedgerRow({ ...base, durationMs: Number.NaN }).durationMs,
+			).toBeNull();
+			expect(normalizeUsageLedgerRow(base).durationMs).toBeNull();
 		});
 
 		it("fills id and createdAt defaults deterministically under fake time", () => {
