@@ -57,6 +57,25 @@ describe("withQueuedRetry retries", () => {
 		expect(delays).toEqual([50, 100]);
 	});
 
+	it.each(["EPERM", "EAGAIN", "ENOTEMPTY"])(
+		"treats %s as a retryable Windows lock code",
+		async (code) => {
+			// Windows file locks most often surface as EPERM, so the whole
+			// retryable set is pinned, not just EBUSY/EACCES.
+			const { sleep, delays } = recordingSleep();
+			const task = vi
+				.fn()
+				.mockRejectedValueOnce(errnoError(code))
+				.mockResolvedValueOnce("written");
+
+			await expect(
+				withQueuedRetry(uniqueKey(), task, { sleep }),
+			).resolves.toBe("written");
+			expect(task).toHaveBeenCalledTimes(2);
+			expect(delays).toEqual([50]);
+		},
+	);
+
 	it("honors a 429 retry-after hint, clamped into the sane range", async () => {
 		const { sleep, delays } = recordingSleep();
 		const task = vi
