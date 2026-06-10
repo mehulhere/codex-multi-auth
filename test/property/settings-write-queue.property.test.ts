@@ -2,12 +2,23 @@ import { describe, expect, it } from "vitest";
 import * as fc from "fast-check";
 import { withQueuedRetry } from "../../lib/codex-manager/settings-write-queue.js";
 
-type TaskBehavior = "ok" | "flaky" | "fatal";
+type TaskBehavior = "ok" | "flaky" | "fatal" | "exhausted";
+
+const RETRYABLE_CODES = [
+	"EBUSY",
+	"EPERM",
+	"EACCES",
+	"EAGAIN",
+	"ENOTEMPTY",
+] as const;
 
 const arbSchedule = fc.array(
 	fc.record({
 		key: fc.integer({ min: 0, max: 2 }),
-		behavior: fc.constantFrom<TaskBehavior>("ok", "flaky", "fatal"),
+		behavior: fc.constantFrom<TaskBehavior>("ok", "flaky", "fatal", "exhausted"),
+		// The transient code a flaky/exhausted task throws: the whole
+		// retryable set matters on Windows, not just EBUSY.
+		retryableCode: fc.constantFrom(...RETRYABLE_CODES),
 	}),
 	{ minLength: 1, maxLength: 12 },
 );
@@ -42,9 +53,13 @@ describe("withQueuedRetry serialization properties", () => {
 							if (spec.behavior === "fatal") {
 								throw errnoError("ENOSPC");
 							}
+							if (spec.behavior === "exhausted") {
+								// Retryable on every attempt: burns the whole budget.
+								throw errnoError(spec.retryableCode);
+							}
 							if (spec.behavior === "flaky" && !flakyFailed.has(taskIndex)) {
 								flakyFailed.add(taskIndex);
-								throw errnoError("EBUSY");
+								throw errnoError(spec.retryableCode);
 							}
 							return `result-${taskIndex}`;
 						},
@@ -60,13 +75,23 @@ describe("withQueuedRetry serialization properties", () => {
 				// their own result; a failed predecessor never blocks successors.
 				for (const result of settled) {
 					const spec = schedule[result.taskIndex];
-					if (spec.behavior === "fatal") {
+					if (spec.behavior === "fatal" || spec.behavior === "exhausted") {
 						expect(result.outcome).toBe("error");
 					} else {
 						expect(result).toMatchObject({
 							outcome: "ok",
 							value: `result-${result.taskIndex}`,
 						});
+					}
+				}
+
+				// An exhausted task burns exactly the full retry budget.
+				const allInvocations = [...invocationsByKey.values()].flat();
+				for (let taskIndex = 0; taskIndex < schedule.length; taskIndex += 1) {
+					if (schedule[taskIndex].behavior === "exhausted") {
+						expect(
+							allInvocations.filter((id) => id === taskIndex),
+						).toHaveLength(4);
 					}
 				}
 
