@@ -321,7 +321,7 @@ describe("Documentation Integrity", () => {
 		expect(errorContracts).toContain("transformrequestbody");
 	});
 
-	it("keeps fix command flag docs aligned across README, reference, and CLI usage text", () => {
+	it("keeps command docs aligned across README, reference, and CLI usage text", () => {
 		const readme = read("README.md");
 		const commandRef = read("docs/reference/commands.md");
 		const helpPath = "lib/codex-manager/help.ts";
