@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import {
@@ -11,16 +11,20 @@ import {
 	resolveRotationEnabled,
 	shouldBindCodexAppOnFirstRun,
 	shouldInstallCodexAppLauncherOnFirstRun,
+	loadLauncherInstall,
 } from "../lib/runtime/first-run.js";
+import { removeWithRetry } from "./helpers/remove-with-retry.js";
 
 const tempRoots: string[] = [];
 
-afterEach(() => {
+afterEach(async () => {
 	vi.restoreAllMocks();
 	while (tempRoots.length > 0) {
 		const root = tempRoots.pop();
 		if (root) {
-			rmSync(root, { recursive: true, force: true });
+			// removeWithRetry per test/AGENTS.md: marker files written by these
+			// tests are exactly the kind of path Windows locks transiently.
+			await removeWithRetry(root, { recursive: true, force: true });
 		}
 	}
 });
@@ -151,17 +155,87 @@ describe("first-run detection and gates", () => {
 		).toBe(true);
 	});
 
-	it("only treats node_modules installs as installed package contexts", () => {
+	it("only treats durable global-style installs as installed package contexts", () => {
+		const globalModule = path.join(
+			path.sep,
+			"usr",
+			"lib",
+			"node_modules",
+			"codex-multi-auth",
+			"dist",
+			"lib",
+			"runtime",
+			"first-run.js",
+		);
+		const projectCwd = path.join(path.sep, "home", "dev", "my-app");
+
+		expect(isInstalledPackageContext(globalModule, projectCwd)).toBe(true);
+		// dev checkout / test suite: no node_modules segment
 		expect(
 			isInstalledPackageContext(
-				path.join("usr", "lib", "node_modules", "codex-multi-auth", "dist", "lib", "runtime", "first-run.js"),
-			),
-		).toBe(true);
-		expect(
-			isInstalledPackageContext(
-				path.join("home", "dev", "codex-multi-auth", "lib", "runtime", "first-run.ts"),
+				path.join(path.sep, "home", "dev", "codex-multi-auth", "lib", "runtime", "first-run.ts"),
+				projectCwd,
 			),
 		).toBe(false);
+		// npx cache run must not mutate the machine or burn the marker
+		expect(
+			isInstalledPackageContext(
+				path.join(
+					path.sep,
+					"home",
+					"dev",
+					".npm",
+					"_npx",
+					"abc123",
+					"node_modules",
+					"codex-multi-auth",
+					"dist",
+					"lib",
+					"runtime",
+					"first-run.js",
+				),
+				projectCwd,
+			),
+		).toBe(false);
+		// project-local install (module under the invoking cwd) is not global
+		expect(
+			isInstalledPackageContext(
+				path.join(projectCwd, "node_modules", "codex-multi-auth", "dist", "lib", "runtime", "first-run.js"),
+				projectCwd,
+			),
+		).toBe(false);
+	});
+});
+
+describe("loadLauncherInstall", () => {
+	function launcherDir(): string {
+		const root = mkdtempSync(path.join(tmpdir(), "codex-first-run-launcher-"));
+		tempRoots.push(root);
+		return root;
+	}
+
+	it("falls back to the second candidate when only it exists", async () => {
+		const dir = launcherDir();
+		const second = path.join(dir, "second.mjs");
+		writeFileSync(second, "export function installCodexAppLauncher() { return Promise.resolve('second'); }\n");
+		const install = await loadLauncherInstall([path.join(dir, "missing.mjs"), second]);
+		expect(install).toBeTypeOf("function");
+		await expect(install?.({ log: () => {} })).resolves.toBe("second");
+	});
+
+	it("rejects when an existing candidate fails to import", async () => {
+		const dir = launcherDir();
+		const broken = path.join(dir, "broken.mjs");
+		writeFileSync(broken, "this is not javascript {{{\n");
+		await expect(loadLauncherInstall([broken])).rejects.toThrow();
+	});
+
+	it("returns null when no candidate exists or the export is missing", async () => {
+		const dir = launcherDir();
+		expect(await loadLauncherInstall([path.join(dir, "missing.mjs")])).toBeNull();
+		const noExport = path.join(dir, "no-export.mjs");
+		writeFileSync(noExport, "export const unrelated = true;\n");
+		expect(await loadLauncherInstall([noExport])).toBeNull();
 	});
 });
 

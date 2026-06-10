@@ -13,7 +13,7 @@ import { randomBytes } from "node:crypto";
 import { existsSync, mkdirSync, readdirSync, writeFileSync } from "node:fs";
 import { open, rename, unlink } from "node:fs/promises";
 import { homedir } from "node:os";
-import { basename, dirname, join, sep } from "node:path";
+import { basename, dirname, isAbsolute, join, relative, sep } from "node:path";
 import process from "node:process";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { getCodexRuntimeRotationProxy, loadPluginConfig } from "../config.js";
@@ -206,15 +206,31 @@ export function shouldInstallCodexAppLauncherOnFirstRun(
 }
 
 /**
- * First-run setup only fires when the module runs from an installed package
- * (a path containing a `node_modules` segment, as with global and npx
- * installs). Development checkouts and the test suite run straight from the
- * repository tree and stay side-effect-free.
+ * First-run setup only fires for a durable, global-style install. The old
+ * postinstall gate was `npm_config_global`, which does not exist at CLI
+ * runtime, so this approximates it from the module location instead:
+ *
+ * - must live under a `node_modules` segment (a dev checkout or the test
+ *   suite runs straight from the repository tree and stays side-effect-free)
+ * - must NOT be an npx cache run (`.../_npx/<hash>/node_modules/...`):
+ *   someone trying the tool once must not get app bind/launcher mutations,
+ *   and must not burn the once-only marker before a real install
+ * - must NOT be a project-local install (module path inside the invoking
+ *   working directory): `npm install` into an app's node_modules is not a
+ *   machine-level install either
  */
 export function isInstalledPackageContext(
 	modulePath: string = fileURLToPath(import.meta.url),
+	cwd: string = process.cwd(),
 ): boolean {
-	return modulePath.split(sep).includes("node_modules");
+	const segments = modulePath.split(sep);
+	if (!segments.includes("node_modules")) return false;
+	if (segments.includes("_npx")) return false;
+	const fromCwd = relative(cwd, modulePath);
+	if (fromCwd && !fromCwd.startsWith("..") && !isAbsolute(fromCwd)) {
+		return false;
+	}
+	return true;
 }
 
 export function getFirstRunMarkerPath(): string {
@@ -317,8 +333,17 @@ type LauncherInstallFn = (options: {
 	log: (message: string) => void;
 }) => Promise<unknown>;
 
-async function loadLauncherInstall(): Promise<LauncherInstallFn | null> {
-	const candidates = [
+/**
+ * Resolves the launcher installer from the packaged scripts/ directory,
+ * trying the dist layout first and the source layout second.
+ *
+ * @internal `candidateOverride` exists only so tests can exercise the
+ * fallback order and failure modes with real temp files.
+ */
+export async function loadLauncherInstall(
+	candidateOverride?: readonly string[],
+): Promise<LauncherInstallFn | null> {
+	const candidates = candidateOverride ?? [
 		fileURLToPath(new URL("../../../scripts/codex-app-launcher.js", import.meta.url)),
 		fileURLToPath(new URL("../../scripts/codex-app-launcher.js", import.meta.url)),
 	];
