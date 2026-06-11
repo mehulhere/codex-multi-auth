@@ -351,6 +351,9 @@ describe("runtime rotation proxy", () => {
 		);
 		expect(missingKey).toBeInstanceOf(CodexValidationError);
 		expect((missingKey as CodexValidationError).field).toBe("clientApiKey");
+		expect((missingKey as CodexValidationError).expected).toBe(
+			"a non-empty string",
+		);
 
 		const badHost = await startRuntimeRotationProxy({
 			accountManager,
@@ -364,6 +367,7 @@ describe("runtime rotation proxy", () => {
 		);
 		expect(badHost).toBeInstanceOf(CodexValidationError);
 		expect((badHost as CodexValidationError).field).toBe("host");
+		expect((badHost as CodexValidationError).expected).toBe("a loopback host");
 		expect((badHost as CodexValidationError).context).toEqual({
 			host: "0.0.0.0",
 		});
