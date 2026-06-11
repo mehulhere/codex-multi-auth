@@ -57,6 +57,7 @@ test/
 ├── health-check.test.ts               # runHealthCheck quick + live probe paths
 ├── logger.test.ts                     # Logging functionality tests
 ├── login-flow.test.ts                 # runAuthLogin transports and cap handling
+├── login-menu-accounts.test.ts        # Account-row assembly for the login menu
 ├── login-menu-actions.test.ts         # Manage actions, identity re-resolution
 ├── login-menu-data.test.ts            # Dashboard row view model, drift sync
 ├── login-oauth-selection.test.ts      # Login-oauth account selection
