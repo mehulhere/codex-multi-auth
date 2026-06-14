@@ -1694,7 +1694,9 @@ describe("runtime rotation proxy", () => {
 		const response = await postResponses(proxy, { model: "gpt-5-codex" });
 		await response.text();
 
-		// No upstream request is issued — the account is cooled down before send.
+		// No upstream request is issued — the account is cooled down before send,
+		// exhausting the single-account pool.
+		expect(response.status).toBe(HTTP_STATUS.SERVICE_UNAVAILABLE);
 		expect(calls).toHaveLength(0);
 		expect(accountManager.getAccountByIndex(0)?.cooldownReason).toBe("auth-failure");
 		expect(accountManager.getAccountByIndex(0)?.coolingDownUntil).toBeGreaterThan(now);
