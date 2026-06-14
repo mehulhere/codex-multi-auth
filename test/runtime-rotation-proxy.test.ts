@@ -1899,6 +1899,9 @@ describe("runtime rotation proxy", () => {
 		}
 		const reloadedManager = new AccountManager(undefined, reloadedStorage);
 		const clearSpy = vi.spyOn(reloadedManager, "clearAccountTransientState");
+		const flushSpy = vi
+			.spyOn(reloadedManager, "flushPendingSave")
+			.mockResolvedValue();
 		const loadSpy = vi
 			.spyOn(AccountManager, "loadFromDisk")
 			.mockResolvedValueOnce(reloadedManager);
@@ -1917,6 +1920,9 @@ describe("runtime rotation proxy", () => {
 			expect(loadSpy).toHaveBeenCalledTimes(1);
 			expect(resetSpy).toHaveBeenCalledTimes(1);
 			expect(clearSpy).toHaveBeenCalledTimes(1);
+			// The cleared snapshot is flushed to disk synchronously so a restart
+			// inside the debounce window cannot reload the wedged state.
+			expect(flushSpy).toHaveBeenCalledTimes(1);
 			// After clearing, the reloaded accounts are selectable again.
 			expect(reloadedManager.getAccountByIndex(0)?.coolingDownUntil).toBeUndefined();
 			expect(reloadedManager.getAccountByIndex(0)?.rateLimitResetTimes).toEqual({});
@@ -1925,6 +1931,7 @@ describe("runtime rotation proxy", () => {
 			loadSpy.mockRestore();
 			resetSpy.mockRestore();
 			clearSpy.mockRestore();
+			flushSpy.mockRestore();
 		}
 	});
 

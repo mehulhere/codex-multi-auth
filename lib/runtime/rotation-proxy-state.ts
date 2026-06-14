@@ -116,6 +116,13 @@ export async function recoverStaleRuntimeState(
 		// window until the next exhaustion. Availability is preferred over
 		// honoring backoff in this already-degraded state.
 		reloaded.clearAccountTransientState();
+		// Force the cleared snapshot to disk now rather than waiting out the
+		// debounce window inside clearAccountTransientState. If the process
+		// exited during that window the next startup would reload the wedged
+		// snapshot; flushing here makes the "next reload starts clean" guarantee
+		// durable across a restart, not just best-effort. Recovery is rare
+		// (full-pool exhaustion), so the extra synchronous write is cheap.
+		await reloaded.flushPendingSave();
 		state.activeAccountManager = reloaded;
 		state.knownAccountManagers.add(reloaded);
 		state.lastStaleRuntimeReloadAt = Date.now();
