@@ -230,7 +230,8 @@ Generated snippets use `CODEX_MULTI_AUTH_LOCAL_KEY`. The Python snippet uses
 
 ## `codex-multi-auth history`
 
-Lists local Codex sessions by reading the rollout files under `~/.codex/sessions`
+Lists local Codex sessions by reading the rollout files under
+`<codex-home>/sessions` (default `~/.codex/sessions`, honoring `CODEX_HOME`)
 directly. Codex's own `codex resume` view filters threads by the `model_provider`
 recorded in each session; while runtime rotation or app bind is active that
 provider is `codex-multi-auth-runtime-proxy`, so sessions created under the

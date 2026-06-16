@@ -1,5 +1,5 @@
 import { readdirSync, readFileSync, statSync, type Dirent } from "node:fs";
-import { basename, join } from "node:path";
+import { join } from "node:path";
 import { getCodexHomeDir } from "../../runtime-paths.js";
 
 /**
@@ -92,6 +92,17 @@ function extractIdFromFilename(fileName: string): string | null {
 }
 
 /**
+ * Separator-agnostic basename. Rollout paths may carry Windows separators even
+ * when this runs on POSIX (e.g. injected paths in tests, or a CODEX_HOME on a
+ * mounted Windows volume), so split on both `/` and `\` rather than relying on
+ * the platform-specific node:path basename.
+ */
+function baseNameOf(filePath: string): string {
+	const segments = filePath.split(/[\\/]/);
+	return segments[segments.length - 1] ?? filePath;
+}
+
+/**
  * Parse a single rollout file into a session summary.
  *
  * Mirrors the index-building logic the wrapper uses (scripts/codex.js
@@ -106,7 +117,7 @@ function parseRollout(
 	deps: Required<Pick<HistoryCommandDeps, "readFile" | "statMtime">>,
 	previewLimit: number,
 ): HistorySessionDetail | null {
-	const idFromName = extractIdFromFilename(basename(rolloutPath));
+	const idFromName = extractIdFromFilename(baseNameOf(rolloutPath));
 	if (!idFromName) return null;
 
 	let content: string;
@@ -229,7 +240,14 @@ function collectSessions(
 	previewLimit: number,
 ): HistorySessionDetail[] {
 	const sessionsDir = join(resolved.getCodexHome(), "sessions");
-	const files = resolved.readDirRecursive(sessionsDir);
+	let files: string[];
+	try {
+		files = resolved.readDirRecursive(sessionsDir);
+	} catch {
+		// A missing or unreadable sessions directory is a normal "no history yet"
+		// state, not an error — return an empty listing rather than crashing.
+		files = [];
+	}
 	const sessions: HistorySessionDetail[] = [];
 	for (const file of files) {
 		const parsed = parseRollout(
@@ -271,7 +289,7 @@ function runHistoryList(
 
 	if (sessions.length === 0) {
 		resolved.logInfo(
-			"No local Codex sessions found under ~/.codex/sessions.",
+			`No local Codex sessions found under ${join(resolved.getCodexHome(), "sessions")}.`,
 		);
 		return 0;
 	}
@@ -357,7 +375,8 @@ function printHistoryUsage(resolved: ReturnType<typeof resolveDeps>): void {
 			"  list [--json]            List every local session across all providers",
 			"  show <id> [--json]       Show provider metadata and first messages for a session",
 			"",
-			"Lists rollout files under ~/.codex/sessions directly, so sessions",
+			"Lists rollout files under <codex-home>/sessions (default",
+			"~/.codex/sessions, honoring CODEX_HOME) directly, so sessions",
 			"created under a different model provider (e.g. while runtime rotation",
 			"or app bind is active) remain visible even when `codex resume` hides",
 			"them. See docs/troubleshooting.md for background.",
@@ -377,9 +396,15 @@ export function runHistoryCommand(
 		return 0;
 	}
 
-	// Default to `list` when no subcommand is given, so bare `history` is useful.
+	// Default to `list` when no subcommand is given, or when the first arg is a
+	// flag (e.g. `history --json`), so the documented `[list] [--json]` form
+	// works without an explicit `list`. A leading flag is forwarded as a list
+	// argument rather than mistaken for a subcommand.
 	if (!subcommand || subcommand === "list") {
 		return runHistoryList(rest, resolved);
+	}
+	if (subcommand.startsWith("-")) {
+		return runHistoryList([subcommand, ...rest], resolved);
 	}
 
 	if (subcommand === "show") {

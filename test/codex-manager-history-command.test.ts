@@ -190,6 +190,74 @@ describe("runHistoryCommand list", () => {
 		expect(allOutput(deps.logInfo)).toContain("No local Codex sessions found");
 	});
 
+	it("treats a leading flag as a list arg (history --json with no explicit list)", () => {
+		const deps = createDeps([
+			{
+				id: "019e9836-5001-7821-a9c2-3ffd26a1199b",
+				content: metaLine(),
+			},
+		]);
+
+		const code = runHistoryCommand(["--json"], deps);
+
+		expect(code).toBe(0);
+		expect(deps.logError).not.toHaveBeenCalled();
+		const payload = JSON.parse(allOutput(deps.logInfo));
+		expect(payload.count).toBe(1);
+		expect(payload.sessions[0].id).toBe(
+			"019e9836-5001-7821-a9c2-3ffd26a1199b",
+		);
+	});
+
+	it("reports an empty listing when readDirRecursive throws (missing dir)", () => {
+		// The default readDirRecursive swallows ENOENT internally, but an injected
+		// one that throws must not crash the command — lock the failure path.
+		const deps = createDeps([], {
+			readDirRecursive: () => {
+				throw Object.assign(new Error("ENOENT"), { code: "ENOENT" });
+			},
+		});
+
+		const code = runHistoryCommand(["list"], deps);
+
+		expect(code).toBe(0);
+		expect(allOutput(deps.logInfo)).toContain("No local Codex sessions found");
+	});
+
+	it("resolves the sessions dir from an overridden (Windows) codex home", () => {
+		const sessionFile =
+			"D:\\custom\\.codex\\sessions\\2026\\06\\05\\rollout-2026-06-05T22-35-56-019e9836-5001-7821-a9c2-3ffd26a1199b.jsonl";
+		const seenDirs: string[] = [];
+		const deps = createDeps([], {
+			getCodexHome: () => "D:\\custom\\.codex",
+			readDirRecursive: (dir: string) => {
+				seenDirs.push(dir);
+				return [sessionFile];
+			},
+			readFile: () => metaLine(),
+		});
+
+		const code = runHistoryCommand(["list", "--json"], deps);
+
+		expect(code).toBe(0);
+		// The command must look under <overridden-home>/sessions, not ~/.codex.
+		expect(seenDirs).toContain("D:\\custom\\.codex\\sessions");
+		const payload = JSON.parse(allOutput(deps.logInfo));
+		expect(payload.count).toBe(1);
+	});
+
+	it("names the overridden home in the empty-listing message", () => {
+		const deps = createDeps([], {
+			getCodexHome: () => "D:\\custom\\.codex",
+			readDirRecursive: () => [],
+		});
+
+		const code = runHistoryCommand(["list"], deps);
+
+		expect(code).toBe(0);
+		expect(allOutput(deps.logInfo)).toContain("D:\\custom\\.codex");
+	});
+
 	it("tolerates malformed JSONL lines without dropping the session", () => {
 		const deps = createDeps([
 			{
