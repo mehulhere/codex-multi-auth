@@ -874,6 +874,49 @@ describe("orphaned app-bind recovery (#614)", () => {
 		expect(unbound.status.unmanagedBind).toBe(false);
 	});
 
+	it("self-heals a half-orphan (proxy block present, model_provider already native) without duplicating keys", async () => {
+		const root = await createTempRoot("codex-app-bind-half-orphan-");
+		const codexHome = join(root, "codex-home");
+		const env = {
+			CODEX_MULTI_AUTH_DIR: join(root, "multi-auth"),
+			CODEX_MULTI_AUTH_APP_BIND_CODEX_HOME: codexHome,
+		};
+		await mkdir(codexHome, { recursive: true });
+		// Top-level provider is already native, but the proxy block lingers — the
+		// partial-orphan case that previously produced a duplicate model_provider.
+		await writeFile(
+			join(codexHome, "config.toml"),
+			[
+				'model_provider = "openai"',
+				"[profiles.default]",
+				'model = "gpt-5"',
+				"",
+				"[model_providers.codex-multi-auth-runtime-proxy]",
+				'name = "codex-multi-auth"',
+				'wire_api = "responses"',
+				"",
+			].join("\n"),
+			"utf8",
+		);
+
+		const unbound = await unbindCodexAppRuntimeRotation({
+			platform: "linux",
+			home: root,
+			env,
+			spawnDetached: false,
+		});
+
+		const restored = await readFile(join(codexHome, "config.toml"), "utf8");
+		const providerLines = (
+			restored.match(/^\s*model_provider\s*=/gm) ?? []
+		).length;
+		expect(providerLines).toBe(1);
+		expect(restored).toContain('model_provider = "openai"');
+		expect(restored).not.toContain("codex-multi-auth-runtime-proxy");
+		expect(restored).toContain("[profiles.default]");
+		expect(unbound.status.bound).toBe(false);
+	});
+
 	it("is a no-op for an already-clean config", async () => {
 		const root = await createTempRoot("codex-app-bind-clean-");
 		const codexHome = join(root, "codex-home");
