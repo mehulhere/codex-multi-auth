@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
+	configHasRuntimeRotationProvider,
+	restoreConfigTomlFromRuntimeRotationProviderWithoutBackup,
 	restoreTopLevelModelProvider,
 	restoreTopLevelResponseStorage,
 } from "../lib/runtime/config-toml.js";
@@ -111,5 +113,80 @@ describe("restoreTopLevelResponseStorage", () => {
 		const restored = restoreTopLevelResponseStorage(current, original);
 		// In-section setting should survive — only top-level residue is dropped.
 		expect(restored).toContain("disable_response_storage = false");
+	});
+});
+
+describe("configHasRuntimeRotationProvider", () => {
+	it("detects a top-level model_provider bound to the proxy", () => {
+		const config =
+			'model_provider = "codex-multi-auth-runtime-proxy"\n[profiles.default]\nmodel = "gpt-5"\n';
+		expect(configHasRuntimeRotationProvider(config)).toBe(true);
+	});
+
+	it("detects the proxy provider block even when model_provider is native", () => {
+		const config =
+			'model_provider = "openai"\n[model_providers.codex-multi-auth-runtime-proxy]\nname = "codex-multi-auth"\n';
+		expect(configHasRuntimeRotationProvider(config)).toBe(true);
+	});
+
+	it("returns false for an unbound config", () => {
+		const config = 'model_provider = "openai"\n[profiles.default]\nmodel = "gpt-5"\n';
+		expect(configHasRuntimeRotationProvider(config)).toBe(false);
+	});
+
+	it("returns false for empty config", () => {
+		expect(configHasRuntimeRotationProvider("")).toBe(false);
+	});
+
+	it("does not match a proxy id that only appears inside a non-provider section", () => {
+		// A stray mention in some other section's value must not be treated as a
+		// top-level bind (the top-level scan stops at the first table header).
+		const config =
+			'[profiles.default]\nnote = "codex-multi-auth-runtime-proxy"\n';
+		expect(configHasRuntimeRotationProvider(config)).toBe(false);
+	});
+});
+
+describe("restoreConfigTomlFromRuntimeRotationProviderWithoutBackup", () => {
+	it("rewrites a bound model_provider to the default and strips the proxy block", () => {
+		const bound = [
+			'model_provider = "codex-multi-auth-runtime-proxy"',
+			"[profiles.default]",
+			'model = "gpt-5"',
+			"",
+			"[model_providers.codex-multi-auth-runtime-proxy]",
+			'name = "codex-multi-auth"',
+			'base_url = "http://127.0.0.1:51758"',
+			"requires_openai_auth = false",
+			'wire_api = "responses"',
+			"",
+		].join("\n");
+
+		const restored =
+			restoreConfigTomlFromRuntimeRotationProviderWithoutBackup(bound);
+
+		expect(restored).toContain('model_provider = "openai"');
+		expect(restored).not.toContain("codex-multi-auth-runtime-proxy");
+		expect(restored).toContain("[profiles.default]");
+		expect(configHasRuntimeRotationProvider(restored)).toBe(false);
+	});
+
+	it("honors a custom default provider", () => {
+		const bound = 'model_provider = "codex-multi-auth-runtime-proxy"\n';
+		const restored = restoreConfigTomlFromRuntimeRotationProviderWithoutBackup(
+			bound,
+			"my-provider",
+		);
+		expect(restored).toContain('model_provider = "my-provider"');
+	});
+
+	it("preserves CRLF endings when recovering", () => {
+		const bound =
+			'model_provider = "codex-multi-auth-runtime-proxy"\r\n[model_providers.codex-multi-auth-runtime-proxy]\r\nname = "codex-multi-auth"\r\n';
+		const restored =
+			restoreConfigTomlFromRuntimeRotationProviderWithoutBackup(bound);
+		expect(restored).toContain('model_provider = "openai"');
+		expect(restored).not.toContain("codex-multi-auth-runtime-proxy");
+		expect(restored.replace(/\r\n/g, "")).not.toContain("\n");
 	});
 });
