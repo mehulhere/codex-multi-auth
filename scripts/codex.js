@@ -823,15 +823,20 @@ function maybeRefreshQuotaCacheInBackground(env = process.env) {
 	// process. The close/error handlers below remove the lock dir, but if the parent
 	// exits before the child settles they will NOT fire — in that case the lock is
 	// reclaimed by the 10-minute stale-lock recovery in acquireStatusRefreshLock.
+	const refreshChildEnv = {
+		...env,
+		CODEX_MULTI_AUTH_STATUS_REFRESH_CHILD: "1",
+		CODEX_MULTI_AUTH_STATUSLINE: "0",
+	};
+	// A forced-account pin is scoped to a single forwarded Codex run; this
+	// management child (`forecast`) must never inherit it, so it can never be
+	// coupled to a specific account if a future change routes it through the proxy.
+	delete refreshChildEnv[FORCE_ACCOUNT_INDEX_ENV];
 	const child = spawn(
 		process.execPath,
 		[scriptPath, "forecast", "--live", "--json"],
 		{
-			env: {
-				...env,
-				CODEX_MULTI_AUTH_STATUS_REFRESH_CHILD: "1",
-				CODEX_MULTI_AUTH_STATUSLINE: "0",
-			},
+			env: refreshChildEnv,
 			stdio: "ignore",
 			detached: true,
 		},

@@ -305,6 +305,13 @@ function createRuntimeRotationProxyFixtureModule(fixtureRoot: string): string {
 			"",
 			"export async function startRuntimeRotationProxy() {",
 			"  const baseUrl = process.env.CODEX_MULTI_AUTH_TEST_PROXY_BASE_URL ?? 'http://127.0.0.1:4567';",
+			// Opt-in (#623): record the forced-account pin env the proxy process actually
+			// observed, so a test can prove the value crossed the launcher -> detached
+			// app-helper boundary. Gated so it never perturbs the exact-marker assertions
+			// in other tests.
+			"  if ((process.env.CODEX_MULTI_AUTH_TEST_PROXY_MARKER_FORCED ?? '').trim() === '1') {",
+			"    appendMarker(`forced-index-env:${process.env.CODEX_MULTI_AUTH_FORCE_ACCOUNT_INDEX ?? ''}`);",
+			"  }",
 			"  if ((process.env.CODEX_MULTI_AUTH_TEST_PROXY_MARKER_ENV ?? '').trim() === '1') {",
 			"    appendMarker(`codex-home-env:${process.env.CODEX_HOME ?? ''}`);",
 			"    appendMarker(`real-home-env:${process.env.CODEX_MULTI_AUTH_REAL_CODEX_HOME ?? ''}`);",
@@ -980,6 +987,124 @@ describe("codex bin wrapper", () => {
 		// account 2 -> 0-based index 1, published for the proxy to consume.
 		expect(output).toContain("FORCED_INDEX:1");
 		// The launcher-only flag must never reach real Codex.
+		expect(output).not.toContain("--account");
+	});
+
+	it.each([
+		["email", ["exec", "--account", "account-2@example.com", "status"], {}, "1"],
+		["account id", ["exec", "--account", "acc_2", "status"], {}, "1"],
+		["--account= form", ["exec", "--account=3", "status"], {}, "2"],
+		[
+			"CODEX_MULTI_AUTH_FORCE_ACCOUNT env var",
+			["exec", "status"],
+			{ CODEX_MULTI_AUTH_FORCE_ACCOUNT: "2" },
+			"1",
+		],
+	])(
+		"resolves the forced account by %s and publishes its 0-based index (#623)",
+		(_label, args, extraEnv, expectedIndex) => {
+			const fixtureRoot = createWrapperFixture();
+			createRuntimeRotationProxyFixtureModule(fixtureRoot);
+			const originalHome = join(fixtureRoot, "codex-home");
+			writeAccountsFixture(originalHome, 3);
+			writeFileSync(
+				join(originalHome, "config.toml"),
+				'model_provider = "openai"\n',
+				"utf8",
+			);
+			const fakeBin = createCustomFakeCodexBin(fixtureRoot, [
+				"#!/usr/bin/env node",
+				'console.log(`FORWARDED:${process.argv.slice(2).join(" ")}`);',
+				'console.log(`FORCED_INDEX:${process.env.CODEX_MULTI_AUTH_FORCE_ACCOUNT_INDEX ?? ""}`);',
+				"process.exit(0);",
+			]);
+
+			const result = runWrapper(fixtureRoot, args, {
+				CODEX_MULTI_AUTH_REAL_CODEX_BIN: fakeBin,
+				CODEX_HOME: originalHome,
+				CODEX_MULTI_AUTH_RUNTIME_ROTATION_PROXY: "1",
+				OPENAI_API_KEY: undefined,
+				...extraEnv,
+			});
+
+			const output = combinedOutput(result);
+			expect(result.status).toBe(0);
+			expect(output).toContain(`FORCED_INDEX:${expectedIndex}`);
+			expect(output).not.toContain("--account");
+		},
+	);
+
+	it("the flag wins over CODEX_MULTI_AUTH_FORCE_ACCOUNT when both are set (#623)", () => {
+		const fixtureRoot = createWrapperFixture();
+		createRuntimeRotationProxyFixtureModule(fixtureRoot);
+		const originalHome = join(fixtureRoot, "codex-home");
+		writeAccountsFixture(originalHome, 3);
+		writeFileSync(
+			join(originalHome, "config.toml"),
+			'model_provider = "openai"\n',
+			"utf8",
+		);
+		const fakeBin = createCustomFakeCodexBin(fixtureRoot, [
+			"#!/usr/bin/env node",
+			'console.log(`FORCED_INDEX:${process.env.CODEX_MULTI_AUTH_FORCE_ACCOUNT_INDEX ?? ""}`);',
+			"process.exit(0);",
+		]);
+
+		const result = runWrapper(
+			fixtureRoot,
+			["exec", "--account", "1", "status"],
+			{
+				CODEX_MULTI_AUTH_REAL_CODEX_BIN: fakeBin,
+				CODEX_HOME: originalHome,
+				CODEX_MULTI_AUTH_RUNTIME_ROTATION_PROXY: "1",
+				CODEX_MULTI_AUTH_FORCE_ACCOUNT: "3",
+				OPENAI_API_KEY: undefined,
+			},
+		);
+
+		const output = combinedOutput(result);
+		expect(result.status).toBe(0);
+		// Flag `--account 1` (index 0) wins over env `...FORCE_ACCOUNT=3` (index 2).
+		expect(output).toContain("FORCED_INDEX:0");
+	});
+
+	it("propagates the resolved --account index into the detached app-helper proxy (#623)", () => {
+		const fixtureRoot = createWrapperFixture();
+		createRuntimeRotationProxyFixtureModule(fixtureRoot);
+		const originalHome = join(fixtureRoot, "codex-home");
+		const markerPath = join(fixtureRoot, "forced-helper-marker.txt");
+		mkdirSync(originalHome, { recursive: true });
+		writeAccountsFixture(originalHome, 3);
+		writeFileSync(
+			join(originalHome, "config.toml"),
+			'model_provider = "openai"\n',
+			"utf8",
+		);
+		const fakeBin = createCustomFakeCodexBin(fixtureRoot, [
+			"#!/usr/bin/env node",
+			'console.log(`FORWARDED:${process.argv.slice(2).join(" ")}`);',
+			"process.exit(0);",
+		]);
+
+		// Bare args (no forwarded subcommand) classify as the interactive TUI, which
+		// routes through a freshly spawned detached app-helper process — the one path
+		// where the pin can only travel by environment.
+		const result = runWrapper(fixtureRoot, ["--account", "2"], {
+			CODEX_MULTI_AUTH_REAL_CODEX_BIN: fakeBin,
+			CODEX_HOME: originalHome,
+			CODEX_MULTI_AUTH_RUNTIME_ROTATION_PROXY: "1",
+			CODEX_MULTI_AUTH_APP_ROTATION_IDLE_MS: "1000",
+			CODEX_MULTI_AUTH_TEST_PROXY_MARKER: markerPath,
+			CODEX_MULTI_AUTH_TEST_PROXY_MARKER_FORCED: "1",
+			OPENAI_API_KEY: undefined,
+		});
+
+		const output = combinedOutput(result);
+		if (result.status !== 0) {
+			throw new Error(output);
+		}
+		// The helper process saw the resolved index (account 2 -> 0-based 1).
+		expect(readFileSync(markerPath, "utf8")).toContain("forced-index-env:1");
 		expect(output).not.toContain("--account");
 	});
 

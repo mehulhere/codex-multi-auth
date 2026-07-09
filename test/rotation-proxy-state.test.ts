@@ -65,6 +65,7 @@ function stateInit(): RotationProxyStateInit {
 		quotaRemainingPercentThreshold: 0,
 		sessionAffinityStore: null,
 		lastObservedAffinityGeneration: 0,
+		forcedAccountIndex: null,
 	};
 }
 

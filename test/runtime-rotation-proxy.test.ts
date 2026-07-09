@@ -318,6 +318,9 @@ afterEach(async () => {
 	clearCircuitBreakers();
 	resetRefreshQueue();
 	__resetRoutingMutexForTests();
+	// Forced-account pin (#623) is read from the ambient env by startRuntimeRotationProxy;
+	// never let one test's value bleed into the next.
+	delete process.env.CODEX_MULTI_AUTH_FORCE_ACCOUNT_INDEX;
 });
 
 describe("normalizeForcedAccountIndex (#623)", () => {
@@ -792,6 +795,55 @@ describe("runtime rotation proxy", () => {
 		expect(response.status).toBe(HTTP_STATUS.SERVICE_UNAVAILABLE);
 		// The whole point of --account: it never rotates to another account.
 		expect(calls).toHaveLength(0);
+	});
+
+	it("reads the forced account from CODEX_MULTI_AUTH_FORCE_ACCOUNT_INDEX env when no option is passed (#623)", async () => {
+		// This is the exact mechanism the pin uses to cross the launcher -> detached
+		// app-helper process boundary: no option, env only.
+		process.env.CODEX_MULTI_AUTH_FORCE_ACCOUNT_INDEX = "2";
+		const now = Date.now();
+		const accountManager = new AccountManager(undefined, createStorage(now, 3));
+		const { calls, fetchImpl } = createRecordingFetch(() =>
+			textEventStream("data: forwarded\n\n"),
+		);
+		const proxy = await startProxy({ accountManager, fetchImpl });
+
+		const response = await postResponses(proxy, {
+			model: "gpt-5-codex",
+			stream: true,
+			input: [{ type: "message", role: "user", content: "hi" }],
+		});
+
+		expect(response.status).toBe(HTTP_STATUS.OK);
+		expect(calls).toHaveLength(1);
+		expect(calls[0]?.headers.get("authorization")).toBe("Bearer access-3");
+		expect(proxy.getStatus()).toMatchObject({ lastAccountIndex: 2 });
+	});
+
+	it("prefers an explicit forcedAccountIndex option over the env value (#623)", async () => {
+		process.env.CODEX_MULTI_AUTH_FORCE_ACCOUNT_INDEX = "2";
+		const now = Date.now();
+		const accountManager = new AccountManager(undefined, createStorage(now, 3));
+		const { calls, fetchImpl } = createRecordingFetch(() =>
+			textEventStream("data: forwarded\n\n"),
+		);
+		const proxy = await startProxy({
+			accountManager,
+			fetchImpl,
+			options: { forcedAccountIndex: 0 },
+		});
+
+		const response = await postResponses(proxy, {
+			model: "gpt-5-codex",
+			stream: true,
+			input: [{ type: "message", role: "user", content: "hi" }],
+		});
+
+		expect(response.status).toBe(HTTP_STATUS.OK);
+		expect(calls).toHaveLength(1);
+		// Option index 0 wins over env index 2; also proves index 0 is honored.
+		expect(calls[0]?.headers.get("authorization")).toBe("Bearer access-1");
+		expect(proxy.getStatus()).toMatchObject({ lastAccountIndex: 0 });
 	});
 
 	it("forwards model discovery requests through managed account auth", async () => {

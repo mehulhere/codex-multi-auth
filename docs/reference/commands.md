@@ -124,6 +124,9 @@ example, when driving Codex from another tool). The selector is one of:
 - an **email** (`--account work@example.com`), or
 - an **account id** (`--account acc_...`).
 
+An all-digit selector is always treated as a 1-based index, so an account whose
+id is purely numeric cannot be targeted by id — use its index or email instead.
+
 `CODEX_MULTI_AUTH_FORCE_ACCOUNT=<selector>` has the same effect for tools that set
 environment variables more easily than command-line flags; the `--account` flag
 wins when both are present.

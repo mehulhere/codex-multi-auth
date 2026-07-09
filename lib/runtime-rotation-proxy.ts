@@ -671,16 +671,17 @@ export async function startRuntimeRotationProxy(
 	}
 	const now = options.now ?? Date.now;
 	// Ephemeral per-invocation pin (issue #623). Prefer an explicit option (used by
-	// tests and the in-process inline proxy); otherwise read the numeric env the
-	// launcher publishes, which is how the value reaches a detached app-helper
-	// process. Invalid/negative values are ignored (treated as "no forced pin")
-	// rather than throwing — the launcher already validated the selector, and an
-	// out-of-range index is surfaced per-request as a deterministic pinned-account
-	// failure by chooseAccount rather than crashing proxy startup.
+	// tests and the in-process inline proxy); otherwise fall back to the numeric env
+	// the launcher publishes, which is how the value reaches a detached app-helper
+	// process. `??` means both `undefined` and an explicit `null` option defer to the
+	// env, so "no option" and "no pin" behave identically. Invalid/negative values
+	// are ignored (treated as "no forced pin") rather than throwing — the launcher
+	// already validated the selector, and an out-of-range index is surfaced
+	// per-request as a deterministic pinned-account failure by chooseAccount rather
+	// than crashing proxy startup.
 	const forcedAccountIndex = normalizeForcedAccountIndex(
-		options.forcedAccountIndex !== undefined
-			? options.forcedAccountIndex
-			: process.env.CODEX_MULTI_AUTH_FORCE_ACCOUNT_INDEX,
+		options.forcedAccountIndex ??
+			process.env.CODEX_MULTI_AUTH_FORCE_ACCOUNT_INDEX,
 	);
 	const tokenRefreshSkewMs = getTokenRefreshSkewMs(pluginConfig);
 	const networkErrorCooldownMs = getNetworkErrorCooldownMs(pluginConfig);
