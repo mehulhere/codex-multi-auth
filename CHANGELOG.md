@@ -7,6 +7,24 @@ This repository's current stable release line is `2.x`.
 Current stable release notes live in `docs/releases/`.
 This top-level changelog preserves the foundational `0.x` milestones and points older iteration history to `docs/releases/legacy-pre-0.1-history.md`.
 
+## [2.5.0] - 2026-07-10
+
+Adds the GPT-5.6 model family (Sol, Terra, Luna) and the `max`/`ultra` reasoning tiers it introduces. GPT-5.6 is opt-in: the legacy `gpt-5` alias, the default model, and the quota-probe chain are unchanged.
+See [docs/releases/v2.5.0.md](docs/releases/v2.5.0.md) for full details.
+
+### Added
+
+- `gpt-5.6-sol`, `gpt-5.6-terra`, and `gpt-5.6-luna` as first-class models, with bare `gpt-5.6` aliased to Sol. Per-tier defaults mirror the upstream Codex catalog (Sol `low`, Terra and Luna `medium`), and the tiers ship in `config/codex-modern.json` with a 372,000-token context window ([#625](https://github.com/ndycode/codex-multi-auth/pull/625))
+- Reasoning tiers `max` (all three tiers) and `ultra` (Sol and Terra only). `ultra` is a client-side subagent-delegation tier that upstream rewrites to `max` before sending, so it is accepted in config and emitted as `max`; `WireReasoningEffort` excludes it so it cannot reach the request path ([#625](https://github.com/ndycode/codex-multi-auth/pull/625))
+- Cost estimation for the new tiers: Sol `$5`/`$30`, Terra `$2.50`/`$15`, Luna `$1`/`$6` per 1M input/output tokens ([#625](https://github.com/ndycode/codex-multi-auth/pull/625))
+
+### Fixed
+
+- `gpt-5.1-codex-max` is no longer rerouted to `gpt-5.1-codex`. Its id ends in `-max`, which the new `max` effort suffix would otherwise have stripped ([#625](https://github.com/ndycode/codex-multi-auth/pull/625))
+- Unrecognised `gpt-5.6-*` identifiers no longer silently resolve to `gpt-5.5`, which meant a `gpt-5.6-sol` request ran GPT-5.5 ([#625](https://github.com/ndycode/codex-multi-auth/pull/625))
+- No GPT-5.6 tier accepts `none` or `minimal` reasoning effort; those are coerced up to a supported effort instead of being sent and rejected ([#625](https://github.com/ndycode/codex-multi-auth/pull/625))
+- `.codex-plugin/plugin.json` had drifted to `2.3.3` and is realigned to the package version
+
 ## [2.4.0] - 2026-07-09
 
 Adds per-invocation account forcing for the `codex-multi-auth-codex` wrapper. No change to existing routing, rotation, storage, or auth-flow behavior when the new flag/env var is unused.
