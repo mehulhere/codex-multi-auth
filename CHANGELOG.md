@@ -7,11 +7,14 @@ This repository's current stable release line is `2.x`.
 Current stable release notes live in `docs/releases/`.
 This top-level changelog preserves the foundational `0.x` milestones and points older iteration history to `docs/releases/legacy-pre-0.1-history.md`.
 
-## [Unreleased]
+## [2.4.0] - 2026-07-09
+
+Adds per-invocation account forcing for the `codex-multi-auth-codex` wrapper. No change to existing routing, rotation, storage, or auth-flow behavior when the new flag/env var is unused.
+See [docs/releases/v2.4.0.md](docs/releases/v2.4.0.md) for full details.
 
 ### Added
 
-- `codex-multi-auth-codex --account <index|email|id>` (and the equivalent `CODEX_MULTI_AUTH_FORCE_ACCOUNT` env var) forces a single forwarded Codex invocation onto one account. The pin is ephemeral and fail-hard: it applies to only that run's rotation-proxy instance, never mutates the persisted `switch` pin, never rotates, and errors instead of spilling onto another account when the target is unavailable or the runtime rotation proxy is disabled ([#623](https://github.com/ndycode/codex-multi-auth/issues/623))
+- `codex-multi-auth-codex --account <index|email|id>` (and the equivalent `CODEX_MULTI_AUTH_FORCE_ACCOUNT` env var) forces a single forwarded Codex invocation onto one account. The pin is ephemeral and fail-hard: it applies to only that run's rotation-proxy instance, never mutates the persisted `switch` pin, never rotates, and errors instead of spilling onto another account when the target is unavailable or the runtime rotation proxy is disabled ([#623](https://github.com/ndycode/codex-multi-auth/issues/623), [#624](https://github.com/ndycode/codex-multi-auth/pull/624))
 
 ## [2.3.3] - 2026-06-19
 
