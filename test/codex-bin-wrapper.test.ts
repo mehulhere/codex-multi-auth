@@ -344,6 +344,25 @@ function createCustomFakeCodexBin(rootDir: string, lines: string[]): string {
 	return fakeBin;
 }
 
+// Write a minimal accounts pool at <codexHome>/multi-auth/openai-codex-accounts.json
+// (the global dir the launcher resolves when the dist scoping helpers are absent),
+// so --account (#623) selector resolution has a pool to match against.
+function writeAccountsFixture(codexHome: string, count: number): void {
+	const dir = join(codexHome, "multi-auth");
+	mkdirSync(dir, { recursive: true });
+	writeFileSync(
+		join(dir, "openai-codex-accounts.json"),
+		JSON.stringify({
+			version: 3,
+			accounts: Array.from({ length: count }, (_unused, index) => ({
+				email: `account-${index + 1}@example.com`,
+				accountId: `acc_${index + 1}`,
+			})),
+		}),
+		"utf8",
+	);
+}
+
 function createFakeNativeCodexBin(rootDir: string): string {
 	if (process.platform === "win32") {
 		const fakeBin = join(rootDir, `fake-native-codex-${createdDirs.length}.ps1`);
@@ -879,6 +898,89 @@ describe("codex bin wrapper", () => {
 
 		expect(result.status).toBe(0);
 		expect(result.stdout).toContain("FORWARDED:--version");
+	});
+
+	it("errors when --account has no value (#623)", () => {
+		const fixtureRoot = createWrapperFixture();
+		const fakeBin = createFakeCodexBin(fixtureRoot);
+		const result = runWrapper(fixtureRoot, ["exec", "--account"], {
+			CODEX_MULTI_AUTH_REAL_CODEX_BIN: fakeBin,
+		});
+
+		expect(result.status).toBe(1);
+		expect(combinedOutput(result)).toContain("--account requires a value");
+	});
+
+	it("errors when --account is used but runtime rotation is disabled (#623)", () => {
+		const fixtureRoot = createWrapperFixture();
+		const fakeBin = createFakeCodexBin(fixtureRoot);
+		const result = runWrapper(fixtureRoot, ["exec", "--account", "1", "status"], {
+			CODEX_MULTI_AUTH_REAL_CODEX_BIN: fakeBin,
+			CODEX_MULTI_AUTH_RUNTIME_ROTATION_PROXY: "0",
+		});
+
+		expect(result.status).toBe(1);
+		expect(combinedOutput(result)).toContain(
+			"requires the runtime rotation proxy",
+		);
+	});
+
+	it("errors when the --account index is out of range (#623)", () => {
+		const fixtureRoot = createWrapperFixture();
+		const fakeBin = createFakeCodexBin(fixtureRoot);
+		const codexHome = join(fixtureRoot, "codex-home");
+		writeAccountsFixture(codexHome, 2);
+
+		const result = runWrapper(
+			fixtureRoot,
+			["exec", "--account", "99", "status"],
+			{
+				CODEX_MULTI_AUTH_REAL_CODEX_BIN: fakeBin,
+				CODEX_HOME: codexHome,
+				CODEX_MULTI_AUTH_RUNTIME_ROTATION_PROXY: "1",
+			},
+		);
+
+		const output = combinedOutput(result);
+		expect(result.status).toBe(1);
+		expect(output).toContain("out of range");
+		expect(output).toContain("Available accounts");
+	});
+
+	it("strips --account and publishes the resolved 0-based index for the proxy (#623)", () => {
+		const fixtureRoot = createWrapperFixture();
+		createRuntimeRotationProxyFixtureModule(fixtureRoot);
+		const originalHome = join(fixtureRoot, "codex-home");
+		writeAccountsFixture(originalHome, 3);
+		writeFileSync(
+			join(originalHome, "config.toml"),
+			'model_provider = "openai"\n',
+			"utf8",
+		);
+		const fakeBin = createCustomFakeCodexBin(fixtureRoot, [
+			"#!/usr/bin/env node",
+			'console.log(`FORWARDED:${process.argv.slice(2).join(" ")}`);',
+			'console.log(`FORCED_INDEX:${process.env.CODEX_MULTI_AUTH_FORCE_ACCOUNT_INDEX ?? ""}`);',
+			"process.exit(0);",
+		]);
+
+		const result = runWrapper(
+			fixtureRoot,
+			["exec", "--account", "2", "status"],
+			{
+				CODEX_MULTI_AUTH_REAL_CODEX_BIN: fakeBin,
+				CODEX_HOME: originalHome,
+				CODEX_MULTI_AUTH_RUNTIME_ROTATION_PROXY: "1",
+				OPENAI_API_KEY: undefined,
+			},
+		);
+
+		const output = combinedOutput(result);
+		expect(result.status).toBe(0);
+		// account 2 -> 0-based index 1, published for the proxy to consume.
+		expect(output).toContain("FORCED_INDEX:1");
+		// The launcher-only flag must never reach real Codex.
+		expect(output).not.toContain("--account");
 	});
 
 	it("repairs local session index and suppresses known Codex rollout-store noise", () => {
