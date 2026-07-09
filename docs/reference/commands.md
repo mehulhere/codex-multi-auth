@@ -89,6 +89,7 @@ Compatibility forms are supported for migrations and wrapper-routed environments
 
 | Flag | Applies to | Meaning |
 | --- | --- | --- |
+| `--account <index\|email\|id>` | `codex-multi-auth-codex` (forwarded Codex runs) | Force one account for this invocation only; the session never rotates and persisted `switch` state is untouched. Requires the runtime rotation proxy. See [Force an account for one invocation](#force-an-account-for-one-invocation) |
 | `--device-auth` | login | Use the OpenAI Codex device-code flow for remote/headless login (mutually exclusive with `--manual` / `--no-browser`) |
 | `--manual`, `--no-browser` | login | Skip browser launch and use manual callback flow (mutually exclusive with `--device-auth`) |
 | `--json` | verify-flagged, verify, why-selected, best, forecast, report, usage, budget, models, monitor, integrations, fix, doctor, config explain, debug bundle, history | Print machine-readable output |
@@ -109,6 +110,37 @@ Compatibility forms are supported for migrations and wrapper-routed environments
 | `--all` | verify | Run both `--paths` and `--flagged` together |
 | `--now`, `-n` | why-selected | Recompute the current selection from live state (default) |
 | `--last`, `-l` | why-selected | Recompute selection from current state and attach the last persisted runtime snapshot |
+
+---
+
+## Force an account for one invocation
+
+`codex-multi-auth-codex --account <selector>` pins a single account for that one
+forwarded Codex run — useful when you keep separate pools (for example, personal
+and work accounts) and want a specific invocation to use a specific account (for
+example, when driving Codex from another tool). The selector is one of:
+
+- a **1-based index** (`--account 2`, matching the numbering in `codex-multi-auth list`),
+- an **email** (`--account work@example.com`), or
+- an **account id** (`--account acc_...`).
+
+An all-digit selector is always treated as a 1-based index, so an account whose
+id is purely numeric cannot be targeted by id — use its index or email instead.
+
+`CODEX_MULTI_AUTH_FORCE_ACCOUNT=<selector>` has the same effect for tools that set
+environment variables more easily than command-line flags; the `--account` flag
+wins when both are present.
+
+The pin is **ephemeral and fail-hard**:
+
+- It applies only to this invocation and never changes the persisted `switch` pin,
+  so concurrent sessions with different `--account` values do not interfere.
+- The session never rotates. If the chosen account is rate-limited or otherwise
+  unavailable, the request fails rather than silently using a different account.
+- It requires the [runtime rotation proxy](../configuration.md#runtime-rotation-proxy).
+  If the proxy is disabled (or `CODEX_MULTI_AUTH_BYPASS=1`), or the selector does
+  not match a configured account, the wrapper exits non-zero without launching
+  Codex.
 
 ---
 

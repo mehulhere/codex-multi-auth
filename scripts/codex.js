@@ -307,6 +307,172 @@ function findAccountIndexByIdOrEmail(accounts, id, email) {
 	return -1;
 }
 
+// --- Forced-account selection (`--account`, issue #623) ---------------------
+//
+// `codex-multi-auth-codex --account <selector>` (or the CODEX_MULTI_AUTH_FORCE_ACCOUNT
+// env var) pins ONE account for a single invocation. The selector is resolved to a
+// 0-based index here in the launcher and published as CODEX_MULTI_AUTH_FORCE_ACCOUNT_INDEX,
+// which the runtime rotation proxy consumes as an ephemeral pin — never touching the
+// persisted `switch` pin on disk. The flag wins over the env var.
+const FORCE_ACCOUNT_ENV = "CODEX_MULTI_AUTH_FORCE_ACCOUNT";
+const FORCE_ACCOUNT_INDEX_ENV = "CODEX_MULTI_AUTH_FORCE_ACCOUNT_INDEX";
+
+/**
+ * Extract and strip `--account <sel>` / `--account=<sel>` from a forwarded arg
+ * list. The flag is a launcher concept; real Codex has no `--account`, so it must
+ * never be forwarded. Returns { selector, strippedArgs, error }; selector is null
+ * when the flag is absent. The last occurrence wins if repeated.
+ */
+function extractForcedAccountFlag(args) {
+	const strippedArgs = [];
+	let selector = null;
+	let sawFlag = false;
+	for (let index = 0; index < args.length; index += 1) {
+		const arg = args[index];
+		if (arg === "--account") {
+			sawFlag = true;
+			const next = args[index + 1];
+			if (typeof next !== "string") {
+				return {
+					selector: null,
+					strippedArgs: args,
+					error:
+						"codex-multi-auth: --account requires a value (account index, email, or account id).",
+				};
+			}
+			selector = next;
+			index += 1;
+			continue;
+		}
+		if (typeof arg === "string" && arg.startsWith("--account=")) {
+			sawFlag = true;
+			selector = arg.slice("--account=".length);
+			continue;
+		}
+		strippedArgs.push(arg);
+	}
+	return { selector, strippedArgs, error: null, sawFlag };
+}
+
+/**
+ * Resolve the effective forced-account selector from args (flag) or environment,
+ * with the flag taking precedence. Returns { selector, strippedArgs, error };
+ * selector is null when neither source requests a forced account.
+ */
+function resolveForcedAccountSelector(rawArgs, env = process.env) {
+	const { selector: flagSelector, strippedArgs, error, sawFlag } =
+		extractForcedAccountFlag(rawArgs);
+	if (error) {
+		return { selector: null, strippedArgs, error };
+	}
+	if (sawFlag) {
+		const trimmed = flagSelector.trim();
+		if (trimmed.length === 0) {
+			return {
+				selector: null,
+				strippedArgs,
+				error:
+					"codex-multi-auth: --account requires a non-empty value (account index, email, or account id).",
+			};
+		}
+		return { selector: trimmed, strippedArgs, error: null };
+	}
+	const envSelector = (env[FORCE_ACCOUNT_ENV] ?? "").trim();
+	if (envSelector.length > 0) {
+		return { selector: envSelector, strippedArgs, error: null };
+	}
+	return { selector: null, strippedArgs, error: null };
+}
+
+function formatForcedAccountList(accounts) {
+	const lines = accounts.map((account, index) => {
+		const email =
+			typeof account?.email === "string" && account.email.trim().length > 0
+				? account.email.trim()
+				: `account ${index + 1}`;
+		return `  ${index + 1}. ${email}`;
+	});
+	return `Available accounts:\n${lines.join("\n")}`;
+}
+
+/**
+ * Resolve a forced-account selector to a 0-based index against the same scoped
+ * accounts pool the runtime rotation proxy will load. Selector forms: a 1-based
+ * integer index, an email, or an account id. Returns { ok, index } or
+ * { ok: false, error }.
+ */
+async function resolveForcedAccountIndex(selector, env = process.env) {
+	const accountsDir = await resolveStatusAccountsDir(env);
+	const storage = readJsonFileQuiet(resolveAccountsPath(env, accountsDir));
+	const accounts = Array.isArray(storage?.accounts) ? storage.accounts : [];
+	if (accounts.length === 0) {
+		return {
+			ok: false,
+			error:
+				"codex-multi-auth: --account was set but no Codex accounts are configured. Run `codex-multi-auth login` first.",
+		};
+	}
+	if (/^\d+$/.test(selector)) {
+		const oneBased = Number.parseInt(selector, 10);
+		if (oneBased < 1 || oneBased > accounts.length) {
+			return {
+				ok: false,
+				error: `codex-multi-auth: --account ${selector} is out of range (have ${accounts.length} account${
+					accounts.length === 1 ? "" : "s"
+				}).\n${formatForcedAccountList(accounts)}`,
+			};
+		}
+		return { ok: true, index: oneBased - 1 };
+	}
+	const index = findAccountIndexByIdOrEmail(accounts, selector, selector);
+	if (index < 0) {
+		return {
+			ok: false,
+			error: `codex-multi-auth: --account "${selector}" did not match any configured account.\n${formatForcedAccountList(accounts)}`,
+		};
+	}
+	return { ok: true, index };
+}
+
+/**
+ * Preflight the `--account` flag / env var before forwarding to Codex. On success
+ * returns { forwardArgs } with the flag stripped and (when a forced account was
+ * requested) CODEX_MULTI_AUTH_FORCE_ACCOUNT_INDEX published on the environment for
+ * the proxy to consume. On failure returns { error } so the caller can exit
+ * non-zero WITHOUT launching Codex — a forced account must never silently fall
+ * back to a different one.
+ */
+async function applyForcedAccountSelection(rawArgs, env = process.env) {
+	const forced = resolveForcedAccountSelector(rawArgs, env);
+	if (forced.error) {
+		return { error: forced.error };
+	}
+	if (forced.selector === null) {
+		// Defensive: the resolved-index var is internal and only ever set below.
+		// Clear any stray value from the ambient environment so a request without
+		// --account can never inherit an unintended pin.
+		delete env[FORCE_ACCOUNT_INDEX_ENV];
+		return { forwardArgs: rawArgs };
+	}
+	// The pin can only be honored when the runtime rotation proxy is active for
+	// this command; otherwise the run would silently use a non-forced account,
+	// so fail hard instead of ignoring the flag.
+	if (!(await isRuntimeRotationProxyEnabled(forced.strippedArgs, env))) {
+		return {
+			error: [
+				"codex-multi-auth: --account requires the runtime rotation proxy, which is not active for this command.",
+				"Enable it with `codex-multi-auth rotation enable`, and make sure CODEX_MULTI_AUTH_BYPASS is not set.",
+			].join("\n"),
+		};
+	}
+	const resolved = await resolveForcedAccountIndex(forced.selector, env);
+	if (!resolved.ok) {
+		return { error: resolved.error };
+	}
+	env[FORCE_ACCOUNT_INDEX_ENV] = String(resolved.index);
+	return { forwardArgs: forced.strippedArgs };
+}
+
 function resolveModelFamilyForStatus(model) {
 	const normalized = typeof model === "string" ? model.trim().toLowerCase() : "";
 	if (normalized.startsWith("gpt-5.2")) return "gpt-5.2";
@@ -657,15 +823,20 @@ function maybeRefreshQuotaCacheInBackground(env = process.env) {
 	// process. The close/error handlers below remove the lock dir, but if the parent
 	// exits before the child settles they will NOT fire — in that case the lock is
 	// reclaimed by the 10-minute stale-lock recovery in acquireStatusRefreshLock.
+	const refreshChildEnv = {
+		...env,
+		CODEX_MULTI_AUTH_STATUS_REFRESH_CHILD: "1",
+		CODEX_MULTI_AUTH_STATUSLINE: "0",
+	};
+	// A forced-account pin is scoped to a single forwarded Codex run; this
+	// management child (`forecast`) must never inherit it, so it can never be
+	// coupled to a specific account if a future change routes it through the proxy.
+	delete refreshChildEnv[FORCE_ACCOUNT_INDEX_ENV];
 	const child = spawn(
 		process.execPath,
 		[scriptPath, "forecast", "--live", "--json"],
 		{
-			env: {
-				...env,
-				CODEX_MULTI_AUTH_STATUS_REFRESH_CHILD: "1",
-				CODEX_MULTI_AUTH_STATUSLINE: "0",
-			},
+			env: refreshChildEnv,
 			stdio: "ignore",
 			detached: true,
 		},
@@ -4766,12 +4937,22 @@ async function main() {
 		return 1;
 	}
 
+	// Resolve `--account` / CODEX_MULTI_AUTH_FORCE_ACCOUNT before forwarding: strip
+	// the launcher-only flag from the Codex args and publish the resolved pin, or
+	// fail hard so a forced account can never silently fall back to another one.
+	const forcedAccount = await applyForcedAccountSelection(rawArgs, process.env);
+	if (forcedAccount.error) {
+		console.error(forcedAccount.error);
+		return 1;
+	}
+	const forwardArgs = forcedAccount.forwardArgs;
+
 	await autoSyncManagerActiveSelectionIfEnabled();
-	await maybePrintForwardStatusLine(rawArgs);
+	await maybePrintForwardStatusLine(forwardArgs);
 	maybeRefreshQuotaCacheInBackground();
 	try {
-		return await withForwardedRuntimeObservability(rawArgs, () =>
-			forwardToRealCodex(realCodexBin, rawArgs),
+		return await withForwardedRuntimeObservability(forwardArgs, () =>
+			forwardToRealCodex(realCodexBin, forwardArgs),
 		);
 	} finally {
 		await autoSyncManagerActiveSelectionIfEnabled();

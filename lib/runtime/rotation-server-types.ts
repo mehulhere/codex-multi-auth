@@ -35,6 +35,15 @@ export interface RuntimeRotationProxyOptions {
 	maxRequestBodyBytes?: number;
 	fetchTimeoutMs?: number;
 	streamStallTimeoutMs?: number;
+	/**
+	 * Ephemeral, per-instance account pin (0-based) for a single invocation
+	 * (issue #623: `codex-multi-auth-codex --account`). When set, this proxy
+	 * routes every request to exactly this account and never rotates, without
+	 * touching the persisted `switch` pin on disk. Falls back to
+	 * `CODEX_MULTI_AUTH_FORCE_ACCOUNT_INDEX` in the environment when omitted so
+	 * the value survives the launcher -> detached app-helper process boundary.
+	 */
+	forcedAccountIndex?: number | null;
 }
 
 export interface RequestContext {

@@ -34,6 +34,13 @@ export interface RotationProxyStateInit {
 	quotaRemainingPercentThreshold: number;
 	sessionAffinityStore: SessionAffinityStore | null;
 	lastObservedAffinityGeneration: number;
+	/**
+	 * Ephemeral per-invocation account pin (0-based) or null. When a number,
+	 * the request handler treats it exactly like a manual `switch` pin — a
+	 * deterministic, fail-hard selection — but it is never written to disk, so
+	 * concurrent invocations with different pins never interfere (issue #623).
+	 */
+	forcedAccountIndex: number | null;
 }
 
 /**

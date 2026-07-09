@@ -603,6 +603,29 @@ function writePoolExhausted(params: {
 	});
 }
 
+/**
+ * Coerce a forced-account pin from an option (number) or the launcher's env
+ * string into a normalized 0-based index, or null when absent/invalid. Invalid
+ * or negative values collapse to null so an out-of-range env value can never
+ * throw at proxy startup; chooseAccount reports the deterministic
+ * pinned-account failure per-request instead. Exported for unit tests.
+ *
+ * @internal
+ */
+export function normalizeForcedAccountIndex(
+	value: number | string | null | undefined,
+): number | null {
+	if (value === null || value === undefined) {
+		return null;
+	}
+	const parsed =
+		typeof value === "number" ? value : Number.parseInt(value.trim(), 10);
+	if (!Number.isInteger(parsed) || parsed < 0) {
+		return null;
+	}
+	return parsed;
+}
+
 export async function startRuntimeRotationProxy(
 	options: RuntimeRotationProxyOptions,
 ): Promise<RuntimeRotationProxyServer> {
@@ -647,6 +670,19 @@ export async function startRuntimeRotationProxy(
 		);
 	}
 	const now = options.now ?? Date.now;
+	// Ephemeral per-invocation pin (issue #623). Prefer an explicit option (used by
+	// tests and the in-process inline proxy); otherwise fall back to the numeric env
+	// the launcher publishes, which is how the value reaches a detached app-helper
+	// process. `??` means both `undefined` and an explicit `null` option defer to the
+	// env, so "no option" and "no pin" behave identically. Invalid/negative values
+	// are ignored (treated as "no forced pin") rather than throwing — the launcher
+	// already validated the selector, and an out-of-range index is surfaced
+	// per-request as a deterministic pinned-account failure by chooseAccount rather
+	// than crashing proxy startup.
+	const forcedAccountIndex = normalizeForcedAccountIndex(
+		options.forcedAccountIndex ??
+			process.env.CODEX_MULTI_AUTH_FORCE_ACCOUNT_INDEX,
+	);
 	const tokenRefreshSkewMs = getTokenRefreshSkewMs(pluginConfig);
 	const networkErrorCooldownMs = getNetworkErrorCooldownMs(pluginConfig);
 	const serverErrorCooldownMs = getServerErrorCooldownMs(pluginConfig);
@@ -697,6 +733,7 @@ export async function startRuntimeRotationProxy(
 		quotaRemainingPercentThreshold,
 		sessionAffinityStore,
 		lastObservedAffinityGeneration,
+		forcedAccountIndex,
 	});
 
 	const server = createServer((req, res) => {
@@ -899,7 +936,13 @@ async function handleRequestInner(
 		// account. The proxy itself never bumps the generation, so its own
 		// debounced disk writes do not clear affinity. See issue #474.
 		const storageMeta = readStorageMetaFromDisk();
-		const pinnedIndex = storageMeta.pinnedAccountIndex;
+		// The ephemeral --account pin (issue #623) takes precedence over the
+		// persisted `switch` pin for this invocation, without ever mutating disk
+		// state. Use `??` (not `||`) so a forced index of 0 is honored. When set,
+		// everything downstream — deterministic pick, no cursor advance, no
+		// stale-state recovery, the `codex_pinned_account_unavailable` failure —
+		// applies unchanged because it all keys off `pinnedIndex` / `isPinned`.
+		const pinnedIndex = state.forcedAccountIndex ?? storageMeta.pinnedAccountIndex;
 		const isPinned = typeof pinnedIndex === "number";
 		if (storageMeta.affinityGeneration > state.lastObservedAffinityGeneration) {
 			state.sessionAffinityStore?.clearAll();

@@ -7,6 +7,7 @@ import {
 	startRuntimeRotationProxy,
 	buildTokenInvalidationBody,
 	chooseAccount,
+	normalizeForcedAccountIndex,
 	type RuntimeRotationProxyServer,
 } from "../lib/runtime-rotation-proxy.js";
 import { SessionAffinityStore } from "../lib/session-affinity.js";
@@ -317,6 +318,28 @@ afterEach(async () => {
 	clearCircuitBreakers();
 	resetRefreshQueue();
 	__resetRoutingMutexForTests();
+	// Forced-account pin (#623) is read from the ambient env by startRuntimeRotationProxy;
+	// never let one test's value bleed into the next.
+	delete process.env.CODEX_MULTI_AUTH_FORCE_ACCOUNT_INDEX;
+});
+
+describe("normalizeForcedAccountIndex (#623)", () => {
+	it("accepts non-negative integers from numbers and strings", () => {
+		expect(normalizeForcedAccountIndex(0)).toBe(0);
+		expect(normalizeForcedAccountIndex(3)).toBe(3);
+		expect(normalizeForcedAccountIndex("2")).toBe(2);
+		expect(normalizeForcedAccountIndex("  4 ")).toBe(4);
+	});
+
+	it("returns null for absent, blank, or invalid values", () => {
+		expect(normalizeForcedAccountIndex(null)).toBeNull();
+		expect(normalizeForcedAccountIndex(undefined)).toBeNull();
+		expect(normalizeForcedAccountIndex("")).toBeNull();
+		expect(normalizeForcedAccountIndex("   ")).toBeNull();
+		expect(normalizeForcedAccountIndex("abc")).toBeNull();
+		expect(normalizeForcedAccountIndex(-1)).toBeNull();
+		expect(normalizeForcedAccountIndex(1.5)).toBeNull();
+	});
 });
 
 describe("runtime rotation proxy", () => {
@@ -714,6 +737,113 @@ describe("runtime rotation proxy", () => {
 		});
 		expect(proxy.getStatus()).not.toHaveProperty("lastAccountEmail");
 		expect(JSON.parse(calls[0]?.bodyText ?? "{}")).toEqual(requestBody);
+	});
+
+	it("routes every request to the ephemeral forced account without rotating (#623)", async () => {
+		const now = Date.now();
+		const accountManager = new AccountManager(undefined, createStorage(now, 3));
+		const { calls, fetchImpl } = createRecordingFetch(() =>
+			textEventStream("data: forwarded\n\n"),
+		);
+		const proxy = await startProxy({
+			accountManager,
+			fetchImpl,
+			options: { forcedAccountIndex: 2 },
+		});
+		const body = {
+			model: "gpt-5-codex",
+			stream: true,
+			input: [{ type: "message", role: "user", content: "hi" }],
+		};
+
+		const first = await postResponses(proxy, body);
+		const second = await postResponses(proxy, body);
+
+		expect(first.status).toBe(HTTP_STATUS.OK);
+		expect(second.status).toBe(HTTP_STATUS.OK);
+		expect(calls).toHaveLength(2);
+		// Both requests pinned to account 3 (index 2); no rotation to 1 or 2.
+		expect(calls[0]?.headers.get("authorization")).toBe("Bearer access-3");
+		expect(calls[1]?.headers.get("authorization")).toBe("Bearer access-3");
+		expect(calls[0]?.headers.get(OPENAI_HEADERS.ACCOUNT_ID)).toBe("acc_3");
+		expect(proxy.getStatus()).toMatchObject({
+			lastAccountIndex: 2,
+			lastAccountId: "acc_3",
+		});
+	});
+
+	it("fails hard (503, no upstream call) when the forced account is unavailable (#623)", async () => {
+		const now = Date.now();
+		const accountManager = new AccountManager(undefined, createStorage(now, 2));
+		const { calls, fetchImpl } = createRecordingFetch(() =>
+			textEventStream("data: should-not-be-reached\n\n"),
+		);
+		const proxy = await startProxy({
+			accountManager,
+			fetchImpl,
+			// Out of range for a 2-account pool: the pin is deterministic, so this
+			// must fail rather than spill onto a different account.
+			options: { forcedAccountIndex: 5 },
+		});
+
+		const response = await postResponses(proxy, {
+			model: "gpt-5-codex",
+			stream: true,
+			input: [{ type: "message", role: "user", content: "hi" }],
+		});
+
+		expect(response.status).toBe(HTTP_STATUS.SERVICE_UNAVAILABLE);
+		// The whole point of --account: it never rotates to another account.
+		expect(calls).toHaveLength(0);
+	});
+
+	it("reads the forced account from CODEX_MULTI_AUTH_FORCE_ACCOUNT_INDEX env when no option is passed (#623)", async () => {
+		// This is the exact mechanism the pin uses to cross the launcher -> detached
+		// app-helper process boundary: no option, env only.
+		process.env.CODEX_MULTI_AUTH_FORCE_ACCOUNT_INDEX = "2";
+		const now = Date.now();
+		const accountManager = new AccountManager(undefined, createStorage(now, 3));
+		const { calls, fetchImpl } = createRecordingFetch(() =>
+			textEventStream("data: forwarded\n\n"),
+		);
+		const proxy = await startProxy({ accountManager, fetchImpl });
+
+		const response = await postResponses(proxy, {
+			model: "gpt-5-codex",
+			stream: true,
+			input: [{ type: "message", role: "user", content: "hi" }],
+		});
+
+		expect(response.status).toBe(HTTP_STATUS.OK);
+		expect(calls).toHaveLength(1);
+		expect(calls[0]?.headers.get("authorization")).toBe("Bearer access-3");
+		expect(proxy.getStatus()).toMatchObject({ lastAccountIndex: 2 });
+	});
+
+	it("prefers an explicit forcedAccountIndex option over the env value (#623)", async () => {
+		process.env.CODEX_MULTI_AUTH_FORCE_ACCOUNT_INDEX = "2";
+		const now = Date.now();
+		const accountManager = new AccountManager(undefined, createStorage(now, 3));
+		const { calls, fetchImpl } = createRecordingFetch(() =>
+			textEventStream("data: forwarded\n\n"),
+		);
+		const proxy = await startProxy({
+			accountManager,
+			fetchImpl,
+			options: { forcedAccountIndex: 0 },
+		});
+
+		const response = await postResponses(proxy, {
+			model: "gpt-5-codex",
+			stream: true,
+			input: [{ type: "message", role: "user", content: "hi" }],
+		});
+
+		expect(response.status).toBe(HTTP_STATUS.OK);
+		expect(calls).toHaveLength(1);
+		// Option index 0 wins over env index 2; also proves index 0 is honored.
+		expect(calls[0]?.headers.get("authorization")).toBe("Bearer access-1");
+		expect(proxy.getStatus()).toMatchObject({ lastAccountIndex: 0 });
 	});
 
 	it("forwards model discovery requests through managed account auth", async () => {
