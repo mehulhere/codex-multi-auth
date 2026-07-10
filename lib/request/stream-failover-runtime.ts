@@ -1,5 +1,7 @@
 import type { ServerResponse } from "node:http";
+import { TextDecoder } from "node:util";
 import type { RuntimeRotationProxyStatus } from "../runtime/rotation-server-types.js";
+import { isRecord } from "../utils.js";
 
 export const HOP_BY_HOP_HEADERS = new Set([
 	"connection",
@@ -140,12 +142,75 @@ function waitForDrain(res: ServerResponse): Promise<void> {
 	});
 }
 
+export interface RuntimeStreamObserver {
+	onResponseId?: (responseId: string) => void;
+	onTerminalEvent?: (type: string) => void;
+}
+
+function extractResponseId(value: unknown): string | null {
+	if (!isRecord(value)) return null;
+	const id = value.id;
+	return typeof id === "string" && id.trim() ? id.trim() : null;
+}
+
+function observeSseLine(line: string, observer: RuntimeStreamObserver): void {
+	const trimmed = line.trim();
+	if (!trimmed.startsWith("data:")) return;
+	const payload = trimmed.slice(5).trim();
+	if (!payload || payload === "[DONE]") return;
+	try {
+		const data = JSON.parse(payload) as unknown;
+		if (!isRecord(data)) return;
+		const type = typeof data.type === "string" ? data.type : "";
+		if (
+			type === "response.completed" ||
+			type === "response.done" ||
+			type === "response.incomplete" ||
+			type === "response.failed" ||
+			type === "error"
+		) {
+			observer.onTerminalEvent?.(type);
+		}
+		if (
+			type === "response.completed" ||
+			type === "response.done" ||
+			type === "response.incomplete"
+		) {
+			const responseId = extractResponseId(data.response);
+			if (responseId) observer.onResponseId?.(responseId);
+		}
+	} catch {
+		// Forwarding must stay lossless even if an upstream chunk is malformed.
+	}
+}
+
+function observeSseChunk(
+	decoder: TextDecoder,
+	buffer: { value: string },
+	chunk: Uint8Array,
+	observer: RuntimeStreamObserver | undefined,
+): void {
+	if (!observer) return;
+	buffer.value += decoder.decode(chunk, { stream: true });
+	let newlineIndex = buffer.value.indexOf("\n");
+	while (newlineIndex >= 0) {
+		const line = buffer.value.slice(0, newlineIndex);
+		buffer.value = buffer.value.slice(newlineIndex + 1);
+		observeSseLine(line, observer);
+		newlineIndex = buffer.value.indexOf("\n");
+	}
+	if (buffer.value.length > 64 * 1024) {
+		buffer.value = buffer.value.slice(-1024);
+	}
+}
+
 export async function forwardStreamingResponse(
 	upstream: Response,
 	res: ServerResponse,
 	status: RuntimeRotationProxyStatus,
 	onStreamError: () => void,
 	streamStallTimeoutMs: number,
+	observer?: RuntimeStreamObserver,
 ): Promise<boolean> {
 	status.streamsStarted += 1;
 	res.writeHead(
@@ -158,6 +223,8 @@ export async function forwardStreamingResponse(
 	}
 
 	const reader = upstream.body.getReader();
+	const decoder = observer ? new TextDecoder() : null;
+	const observerBuffer = { value: "" };
 	res.on("close", () => {
 		if (!res.writableEnded) {
 			void reader.cancel().catch(() => undefined);
@@ -175,6 +242,9 @@ export async function forwardStreamingResponse(
 			);
 			if (done) break;
 			if (value && value.byteLength > 0) {
+				if (decoder) {
+					observeSseChunk(decoder, observerBuffer, value, observer);
+				}
 				// If the response is already finished (clean end by a concurrent
 				// close-then-reader-cancel path), stop writing. Do NOT guard on
 				// res.destroyed here: a socket-error-during-backpressure scenario sets
@@ -188,6 +258,9 @@ export async function forwardStreamingResponse(
 					await waitForDrain(res);
 				}
 			}
+		}
+		if (observer && observerBuffer.value.trim()) {
+			observeSseLine(observerBuffer.value, observer);
 		}
 		res.end();
 		return true;

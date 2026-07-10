@@ -1432,6 +1432,242 @@ describe("runtime rotation proxy", () => {
 		]);
 	});
 
+	it("keeps a fork with a new prompt cache key on its parent response account", async () => {
+		const now = Date.now();
+		const accountManager = new AccountManager(undefined, createStorage(now, 3));
+		const { calls, fetchImpl } = createRecordingFetch((_call, attempt) =>
+			textEventStream(
+				`data: {"type":"response.completed","response":{"id":"resp_${attempt}","status":"completed"}}\n\n`,
+			),
+		);
+		const proxy = await startProxy({ accountManager, fetchImpl });
+
+		await (
+			await postResponses(proxy, {
+				model: "gpt-5-codex",
+				stream: true,
+				metadata: { session_id: "thread-a" },
+			})
+		).text();
+		await (
+			await postResponses(proxy, {
+				model: "gpt-5-codex",
+				stream: true,
+				prompt_cache_key: "child-thread",
+				previous_response_id: "resp_1",
+			})
+		).text();
+
+		expect(calls.map((call) => call.headers.get(OPENAI_HEADERS.ACCOUNT_ID))).toEqual([
+			"acc_1",
+			"acc_1",
+		]);
+	});
+
+	it("moves a fork with a new session header off an exhausted parent account", async () => {
+		const now = Date.now();
+		const accountManager = new AccountManager(undefined, createStorage(now, 3));
+		const { calls, fetchImpl } = createRecordingFetch((_call, attempt) =>
+			textEventStream(
+				`data: {"type":"response.completed","response":{"id":"resp_${attempt}","status":"completed"}}\n\n`,
+				attempt === 1
+					? {
+							"x-codex-primary-used-percent": "96",
+							"x-codex-primary-reset-after-seconds": "60",
+						}
+					: undefined,
+			),
+		);
+		const proxy = await startProxy({ accountManager, fetchImpl });
+
+		await (
+			await postResponses(proxy, {
+				model: "gpt-5-codex",
+				stream: true,
+				metadata: { session_id: "thread-a" },
+			})
+		).text();
+		await (
+			await postResponses(
+				proxy,
+				{
+					model: "gpt-5-codex",
+					stream: true,
+					previous_response_id: "resp_1",
+				},
+				"/responses",
+				{ [OPENAI_HEADERS.SESSION_ID]: "child-thread" },
+			)
+		).text();
+
+		expect(calls.map((call) => call.headers.get(OPENAI_HEADERS.ACCOUNT_ID))).toEqual([
+			"acc_1",
+			"acc_2",
+		]);
+	});
+
+	it.each(["response.completed", "response.done", "response.incomplete"])(
+		"binds a %s response id to the serving account",
+		async (terminalType) => {
+			const now = Date.now();
+			const accountManager = new AccountManager(undefined, createStorage(now, 3));
+			const { calls, fetchImpl } = createRecordingFetch((_call, attempt) =>
+				textEventStream(
+					`data: {"type":"${terminalType}","response":{"id":"resp_${attempt}"}}\n\n`,
+				),
+			);
+			const proxy = await startProxy({ accountManager, fetchImpl });
+
+			await (
+				await postResponses(proxy, {
+					model: "gpt-5-codex",
+					stream: true,
+					metadata: { session_id: "parent-thread" },
+				})
+			).text();
+			await (
+				await postResponses(proxy, {
+					model: "gpt-5-codex",
+					stream: true,
+					prompt_cache_key: "child-thread",
+					previous_response_id: "resp_1",
+				})
+			).text();
+
+			expect(calls.map((call) => call.headers.get(OPENAI_HEADERS.ACCOUNT_ID))).toEqual([
+				"acc_1",
+				"acc_1",
+			]);
+		},
+	);
+
+	it.each(["response.failed", "error"])(
+		"does not bind a %s response id",
+		async (terminalType) => {
+			const now = Date.now();
+			const accountManager = new AccountManager(undefined, createStorage(now, 3));
+			const { calls, fetchImpl } = createRecordingFetch((_call, attempt) =>
+				textEventStream(
+					attempt === 1
+						? `data: {"type":"${terminalType}","response":{"id":"resp_failed"}}\n\n`
+						: `data: {"type":"response.completed","response":{"id":"resp_${attempt}"}}\n\n`,
+				),
+			);
+			const proxy = await startProxy({ accountManager, fetchImpl });
+
+			await (
+				await postResponses(proxy, {
+					model: "gpt-5-codex",
+					stream: true,
+					metadata: { session_id: "failed-parent" },
+				})
+			).text();
+			await (
+				await postResponses(proxy, {
+					model: "gpt-5-codex",
+					stream: true,
+					prompt_cache_key: "failed-child",
+					previous_response_id: "resp_failed",
+				})
+			).text();
+
+			expect(calls.map((call) => call.headers.get(OPENAI_HEADERS.ACCOUNT_ID))).toEqual([
+				"acc_1",
+				"acc_2",
+			]);
+		},
+	);
+
+	it("keeps newer affinity state when an older overlapping stream completes last", async () => {
+		const now = Date.now();
+		const accountManager = new AccountManager(undefined, createStorage(now, 3));
+		let firstController: ReadableStreamDefaultController<Uint8Array> | null = null;
+		const encoder = new TextEncoder();
+		const { calls, fetchImpl } = createRecordingFetch((_call, attempt) => {
+			if (attempt === 1) {
+				return new Response(
+					new ReadableStream<Uint8Array>({
+						start(controller) {
+							firstController = controller;
+							controller.enqueue(encoder.encode(": waiting\n\n"));
+						},
+					}),
+					{
+						status: HTTP_STATUS.OK,
+						headers: { "content-type": "text/event-stream" },
+					},
+				);
+			}
+			return textEventStream(
+				`data: {"type":"response.completed","response":{"id":"resp_new"}}\n\n`,
+			);
+		});
+		const proxy = await startProxy({ accountManager, fetchImpl });
+		const updateLastResponseId = vi.spyOn(
+			SessionAffinityStore.prototype,
+			"updateLastResponseId",
+		);
+
+		try {
+			const firstResponse = await postResponses(proxy, {
+				model: "gpt-5-codex",
+				stream: true,
+				metadata: { session_id: "shared-thread" },
+			});
+			const firstAccount = accountManager.getAccountByIndex(0);
+			if (!firstAccount || !firstController) throw new Error("first request did not start");
+			accountManager.markRateLimitedWithReason(
+				firstAccount,
+				60_000,
+				"gpt-5-codex",
+				"quota",
+				"gpt-5-codex",
+			);
+
+			await (
+				await postResponses(proxy, {
+					model: "gpt-5-codex",
+					stream: true,
+					metadata: { session_id: "shared-thread" },
+				})
+			).text();
+			accountManager.clearAccountTransientState();
+
+			firstController.enqueue(
+				encoder.encode(
+					'data: {"type":"response.completed","response":{"id":"resp_old"}}\n\n',
+				),
+			);
+			firstController.close();
+			await firstResponse.text();
+
+			const responseCalls = updateLastResponseId.mock.calls.filter(
+				(call) => call[1] === "resp_new" || call[1] === "resp_old",
+			);
+			const newVersion = responseCalls.find((call) => call[1] === "resp_new")?.[3];
+			const oldVersion = responseCalls.find((call) => call[1] === "resp_old")?.[3];
+			expect(oldVersion).toBeTypeOf("number");
+			expect(newVersion).toBeTypeOf("number");
+			expect(oldVersion).toBeLessThan(newVersion as number);
+
+			await (
+				await postResponses(proxy, {
+					model: "gpt-5-codex",
+					stream: true,
+					prompt_cache_key: "fork-from-old",
+					previous_response_id: "resp_old",
+				})
+			).text();
+			expect(calls.map((call) => call.headers.get(OPENAI_HEADERS.ACCOUNT_ID))).toEqual([
+				"acc_1",
+				"acc_2",
+				"acc_1",
+			]);
+		} finally {
+			updateLastResponseId.mockRestore();
+		}
+	});
+
 	it("retries a 429 on another account before returning bytes to the client", async () => {
 		const now = Date.now();
 		const accountManager = new AccountManager(undefined, createStorage(now));

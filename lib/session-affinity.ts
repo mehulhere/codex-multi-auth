@@ -15,6 +15,13 @@ interface SessionAffinityEntry {
 	writeVersion: number;
 }
 
+interface ResponseAffinityEntry {
+	accountIndex: number;
+	expiresAt: number;
+	updatedAt: number;
+	writeVersion: number;
+}
+
 const DEFAULT_TTL_MS = 20 * 60 * 1000;
 const DEFAULT_MAX_ENTRIES = 512;
 const MAX_SESSION_KEY_LENGTH = 256;
@@ -43,6 +50,7 @@ export class SessionAffinityStore {
 	private readonly ttlMs: number;
 	private readonly maxEntries: number;
 	private readonly entries = new Map<string, SessionAffinityEntry>();
+	private readonly responseAliases = new Map<string, ResponseAffinityEntry>();
 	private writeVersionCounter = 0;
 
 	constructor(options: SessionAffinityOptions = {}) {
@@ -156,6 +164,53 @@ export class SessionAffinityStore {
 		});
 	}
 
+	bindResponseToAccount(
+		responseId: string | null | undefined,
+		accountIndex: number,
+		now = Date.now(),
+		writeVersion?: number,
+	): void {
+		const key = normalizeSessionKey(responseId);
+		if (!key) return;
+		if (!Number.isFinite(accountIndex) || accountIndex < 0) return;
+		const normalizedWriteVersion = this.normalizeWriteVersion(writeVersion);
+		const existingEntry = this.responseAliases.get(key);
+		if (
+			existingEntry &&
+			existingEntry.expiresAt > now &&
+			existingEntry.writeVersion > normalizedWriteVersion
+		) {
+			return;
+		}
+
+		this.setResponseAlias(key, {
+			accountIndex,
+			expiresAt: now + this.ttlMs,
+			updatedAt: now,
+			writeVersion: normalizedWriteVersion,
+		});
+	}
+
+	getPreferredAccountIndexForResponse(
+		responseId: string | null | undefined,
+		now = Date.now(),
+	): number | null {
+		const key = normalizeSessionKey(responseId);
+		if (!key) return null;
+
+		const entry = this.responseAliases.get(key);
+		if (!entry) return null;
+		if (entry.expiresAt <= now) {
+			this.responseAliases.delete(key);
+			return null;
+		}
+		return entry.accountIndex;
+	}
+
+	allocateWriteVersion(): number {
+		return this.normalizeWriteVersion();
+	}
+
 	forgetSession(sessionKey: string | null | undefined): void {
 		const key = normalizeSessionKey(sessionKey);
 		if (!key) return;
@@ -169,6 +224,11 @@ export class SessionAffinityStore {
 			if (entry.accountIndex === accountIndex) {
 				this.entries.delete(key);
 				removed += 1;
+			}
+		}
+		for (const [key, entry] of this.responseAliases.entries()) {
+			if (entry.accountIndex === accountIndex) {
+				this.responseAliases.delete(key);
 			}
 		}
 		if (removed > 0) {
@@ -189,6 +249,14 @@ export class SessionAffinityStore {
 				shifted += 1;
 			}
 		}
+		for (const [key, entry] of this.responseAliases.entries()) {
+			if (entry.accountIndex > removedIndex) {
+				this.responseAliases.set(key, {
+					...entry,
+					accountIndex: entry.accountIndex - 1,
+				});
+			}
+		}
 		return shifted;
 	}
 
@@ -198,6 +266,11 @@ export class SessionAffinityStore {
 			if (entry.expiresAt <= now) {
 				this.entries.delete(key);
 				removed += 1;
+			}
+		}
+		for (const [key, entry] of this.responseAliases.entries()) {
+			if (entry.expiresAt <= now) {
+				this.responseAliases.delete(key);
 			}
 		}
 		return removed;
@@ -210,8 +283,8 @@ export class SessionAffinityStore {
 	 * See issue #474.
 	 */
 	clearAll(): void {
-		if (this.entries.size === 0) return;
 		this.entries.clear();
+		this.responseAliases.clear();
 	}
 
 	size(): number {
@@ -227,11 +300,22 @@ export class SessionAffinityStore {
 		this.entries.set(key, entry);
 	}
 
-	private findOldestKey(): string | null {
+	private setResponseAlias(key: string, entry: ResponseAffinityEntry): void {
+		if (this.responseAliases.size >= this.maxEntries && !this.responseAliases.has(key)) {
+			const oldest = this.findOldestKey(this.responseAliases);
+			if (oldest) this.responseAliases.delete(oldest);
+		}
+
+		this.responseAliases.set(key, entry);
+	}
+
+	private findOldestKey(
+		entries: ReadonlyMap<string, { updatedAt: number }> = this.entries,
+	): string | null {
 		let oldestKey: string | null = null;
 		let oldestTimestamp = Number.POSITIVE_INFINITY;
 
-		for (const [key, entry] of this.entries.entries()) {
+		for (const [key, entry] of entries.entries()) {
 			if (entry.updatedAt < oldestTimestamp) {
 				oldestTimestamp = entry.updatedAt;
 				oldestKey = key;

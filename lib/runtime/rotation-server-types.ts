@@ -55,6 +55,7 @@ export interface RequestContext {
 	family: ModelFamily;
 	stream: boolean;
 	sessionKey: string | null;
+	previousResponseId: string | null;
 }
 
 export type ExhaustionReason =

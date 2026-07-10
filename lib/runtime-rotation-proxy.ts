@@ -158,6 +158,7 @@ function toUrlHost(host: string): string {
 // level-gated and carry the per-request correlation id set in handleRequest.
 const proxyLog = createLogger("runtime-proxy");
 const DEFAULT_QUOTA_REMAINING_THRESHOLD = 10;
+const DEFAULT_AFFINITY_QUOTA_FLOOR_PERCENT = 5;
 
 const DEFAULT_MAX_RUNTIME_ACCOUNT_ATTEMPTS = 4;
 
@@ -444,10 +445,6 @@ function resolveSessionKey(headers: Headers, parsedBody: RequestBody | null): st
 		const key = parsedBody.prompt_cache_key.trim();
 		if (key.length > 0) return key;
 	}
-	if (typeof parsedBody.previous_response_id === "string") {
-		const key = parsedBody.previous_response_id.trim();
-		if (key.length > 0) return key;
-	}
 	const metadata = parsedBody.metadata;
 	if (isRecord(metadata)) {
 		return (
@@ -457,6 +454,12 @@ function resolveSessionKey(headers: Headers, parsedBody: RequestBody | null): st
 		);
 	}
 	return null;
+}
+
+function resolvePreviousResponseId(parsedBody: RequestBody | null): string | null {
+	if (typeof parsedBody?.previous_response_id !== "string") return null;
+	const responseId = parsedBody.previous_response_id.trim();
+	return responseId || null;
 }
 
 function buildResponsesRequestContext(
@@ -482,6 +485,7 @@ function buildResponsesRequestContext(
 		family: getModelFamily(model ?? CURRENT_CODEX_MODEL),
 		stream: parsedBody?.stream === true,
 		sessionKey: resolveSessionKey(headers, parsedBody),
+		previousResponseId: resolvePreviousResponseId(parsedBody),
 	};
 }
 
@@ -495,6 +499,7 @@ function buildModelsRequestContext(req: IncomingMessage): RequestContext {
 		family: "codex",
 		stream: false,
 		sessionKey: null,
+		previousResponseId: null,
 	};
 }
 
@@ -523,6 +528,7 @@ function buildThreadGoalRequestContext(
 		family: "codex",
 		stream: false,
 		sessionKey,
+		previousResponseId: resolvePreviousResponseId(parsedBody),
 	};
 }
 
@@ -833,6 +839,8 @@ async function handleRequestInner(
 		}
 
 		state.status.totalRequests += 1;
+		const affinityWriteVersion =
+			state.sessionAffinityStore?.allocateWriteVersion();
 		const requestBody =
 			isResponsesRequest || (isThreadGoalRequest && req.method === "POST")
 				? await readRequestBody(req, state.maxRequestBodyBytes)
@@ -979,6 +987,7 @@ async function handleRequestInner(
 					accountManager,
 					sessionAffinityStore: state.sessionAffinityStore,
 					sessionKey: context.sessionKey,
+					previousResponseId: context.previousResponseId,
 					family: context.family,
 					model: context.model,
 					attemptedIndexes,
@@ -989,6 +998,8 @@ async function handleRequestInner(
 					stickyBoostByAccount: rotationStickyBoost,
 					pidOffsetEnabled: state.pidOffsetEnabled,
 					schedulingStrategy: state.schedulingStrategy,
+					quotaByAccountIndex: undefined,
+					affinityQuotaFloorPercent: DEFAULT_AFFINITY_QUOTA_FLOOR_PERCENT,
 				});
 			const selected =
 				state.routingMutexMode === "enabled"
@@ -1392,6 +1403,9 @@ async function handleRequestInner(
 				state.quotaRemainingPercentThreshold,
 				state.now(),
 			);
+			const previousGlobalAccountIndex = state.lastGlobalAccountIndex;
+			const previousGlobalSwitchAt = state.lastGlobalSwitchAt;
+			let globalAffinityUpdatedAt: number | null = null;
 			if (nearExhaustionWaitMs > 0) {
 				accountManager.markRateLimitedWithReason(
 					refreshed.account,
@@ -1403,15 +1417,17 @@ async function handleRequestInner(
 				state.sessionAffinityStore?.forgetSession(context.sessionKey);
 				accountManager.saveToDiskDebounced();
 			} else {
-				state.sessionAffinityStore?.remember(
+				globalAffinityUpdatedAt = state.now();
+				state.sessionAffinityStore?.rememberWithVersion(
 					context.sessionKey,
 					refreshed.account.index,
-					state.now(),
+					globalAffinityUpdatedAt,
+					affinityWriteVersion,
 				);
 				if (refreshed.account.index !== state.lastGlobalAccountIndex) {
 					state.lastGlobalAccountIndex = refreshed.account.index;
 				}
-				state.lastGlobalSwitchAt = state.now();
+				state.lastGlobalSwitchAt = globalAffinityUpdatedAt;
 			}
 			await persistRuntimeActiveAccount(
 				accountManager,
@@ -1421,6 +1437,7 @@ async function handleRequestInner(
 				state.schedulingStrategy,
 			);
 
+			let streamTerminalEvent: string | null = null;
 			const forwarded = await forwardStreamingResponse(
 				upstream,
 				res,
@@ -1440,11 +1457,47 @@ async function handleRequestInner(
 					accountManager.saveToDiskDebounced();
 				},
 				state.streamStallTimeoutMs,
+				{
+					onResponseId: (responseId) => {
+						state.sessionAffinityStore?.updateLastResponseId(
+							context.sessionKey,
+							responseId,
+							state.now(),
+							affinityWriteVersion,
+						);
+						state.sessionAffinityStore?.bindResponseToAccount(
+							responseId,
+							refreshed.account.index,
+							state.now(),
+							affinityWriteVersion,
+						);
+					},
+					onTerminalEvent: (type) => {
+						streamTerminalEvent = type;
+					},
+				},
 			);
+			const streamSucceeded =
+				forwarded &&
+				streamTerminalEvent !== "response.failed" &&
+				streamTerminalEvent !== "error";
+			if (
+				!streamSucceeded &&
+				globalAffinityUpdatedAt !== null &&
+				state.lastGlobalAccountIndex === refreshed.account.index &&
+				state.lastGlobalSwitchAt === globalAffinityUpdatedAt
+			) {
+				state.lastGlobalAccountIndex = previousGlobalAccountIndex;
+				state.lastGlobalSwitchAt = previousGlobalSwitchAt;
+			}
 			await usageRecorder.record({
-				outcome: forwarded ? "success" : "failure",
+				outcome: streamSucceeded ? "success" : "failure",
 				statusCode: upstream.status,
-				errorCode: forwarded ? null : "stream_forward_failed",
+				errorCode: streamSucceeded
+					? null
+					: forwarded
+						? streamTerminalEvent
+						: "stream_forward_failed",
 				account: refreshed.account,
 			});
 			return;
