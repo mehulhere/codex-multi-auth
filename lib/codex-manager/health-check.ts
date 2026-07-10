@@ -4,6 +4,10 @@ import {
 	formatAccountLabel,
 	sanitizeEmail,
 } from "../accounts.js";
+import {
+	isPermanentAuthFailure,
+	isRefreshTokenReuseMessage,
+} from "../auth/permanent-failure.js";
 import { setCodexCliActiveSelection } from "../codex-cli/writer.js";
 import {
 	type DashboardDisplaySettings,
@@ -278,7 +282,16 @@ export async function runHealthCheck(
 				);
 			}
 		} else {
-			const detail = normalizeFailureDetail(result.message, result.reason);
+			const normalizedDetail = normalizeFailureDetail(
+				result.message,
+				result.reason,
+			);
+			const permanentFailure = isPermanentAuthFailure(result);
+			const detail = permanentFailure
+				? isRefreshTokenReuseMessage(result.message ?? "")
+					? "refresh token reused; run codex-multi-auth login to reconnect this account"
+					: `${normalizedDetail}; run codex-multi-auth login to reconnect this account`
+				: normalizedDetail;
 			if (sessionLikelyValid) {
 				warnings += 1;
 				if (liveProbe) {
@@ -290,6 +303,10 @@ export async function runHealthCheck(
 					);
 				}
 			} else {
+				if (permanentFailure && account.enabled !== false) {
+					account.enabled = false;
+					changed = true;
+				}
 				failed += 1;
 				if (display.showPerAccountRows) {
 					console.log(

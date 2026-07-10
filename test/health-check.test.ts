@@ -214,6 +214,30 @@ describe("runHealthCheck quick check", () => {
 		expect(setCodexCliActiveSelectionMock).not.toHaveBeenCalled();
 	});
 
+	it("quarantines an expired account whose refresh token was reused", async () => {
+		const storage = storageWith([
+			account("a", { expiresAt: STALE_EXPIRES_AT }),
+			account("b"),
+		]);
+		loadAccountsMock.mockResolvedValue(storage);
+		queuedRefreshMock.mockResolvedValue({
+			type: "failed",
+			reason: "http_error",
+			statusCode: 400,
+			message:
+				"Your refresh token has already been used to generate a new access token. Please try signing in again.",
+		});
+
+		await runHealthCheck();
+
+		expect(storage.accounts[0]?.enabled).toBe(false);
+		expect(storage.accounts[1]?.enabled).not.toBe(false);
+		expect(saveAccountsMock).toHaveBeenCalledExactlyOnceWith(storage);
+		expect(logged()).toContain("refresh token reused");
+		expect(logged()).toContain("codex-multi-auth login");
+		expect(logged()).toContain("1 need re-login");
+	});
+
 	it("downgrades a failed forced refresh to a warning while the session still works", async () => {
 		const storage = storageWith([account("a")]);
 		loadAccountsMock.mockResolvedValue(storage);

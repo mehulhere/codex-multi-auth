@@ -193,6 +193,17 @@ describe("account-pool-write helper (issue #512)", () => {
 			expect(account.addedAt).toBe(NOW - 10_000);
 		});
 
+		it("re-enables a quarantined account after a successful re-login", () => {
+			const { account, outcome } = buildUpdatedAccount(
+				{ ...existing, enabled: false },
+				write(),
+			);
+
+			expect(outcome).toBe("updated");
+			expect(account.enabled).toBe(true);
+			expect(account.refreshToken).toBe("refresh-new");
+		});
+
 		it("classifies a previously-unknown workspace as 'rebound' and tracks it", () => {
 			const { account, outcome } = buildUpdatedAccount(
 				existing,

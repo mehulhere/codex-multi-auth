@@ -1419,6 +1419,7 @@ async function handleRequestInner(
 						refreshed.account,
 						state.tokenInvalidationCooldownMs,
 					);
+					accountManager.setAccountEnabled(refreshed.account.index, false);
 					state.sessionAffinityStore?.forgetSession(context.sessionKey);
 					accountManager.saveToDiskDebounced();
 					// Emit the same machine-readable shape as the refresh-failure path

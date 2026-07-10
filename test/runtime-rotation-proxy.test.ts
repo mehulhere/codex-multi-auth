@@ -3098,6 +3098,7 @@ describe("runtime rotation proxy", () => {
 		);
 		expect(calls).toHaveLength(1);
 		expect(calls[0]?.headers.get(OPENAI_HEADERS.ACCOUNT_ID)).toBe("acc_1");
+		expect(accountManager.getAccountByIndex(0)?.enabled).toBe(false);
 		expect(accountManager.getAccountByIndex(0)?.cooldownReason).toBe("auth-failure");
 		// token invalidation applies the long cooldown (~5min), not the generic 30s
 		const coolingDownUntil = accountManager.getAccountByIndex(0)?.coolingDownUntil ?? 0;
