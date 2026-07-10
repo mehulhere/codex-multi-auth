@@ -45,6 +45,12 @@ import {
 	type RuntimePolicyDecision,
 } from "./policy/runtime-policy.js";
 import { isWorkspaceDisabledError } from "./request/fetch-helpers.js";
+import {
+	loadQuotaCache,
+	saveQuotaCache,
+	upsertQuotaCacheEntryForAccount,
+	type QuotaCacheEntry,
+} from "./quota-cache.js";
 import { createLogger, maskString, runWithCorrelationId } from "./logger.js";
 import { CodexValidationError } from "./errors.js";
 import {
@@ -80,6 +86,8 @@ import type {
 	RuntimeRotationProxyStatus,
 } from "./runtime/rotation-server-types.js";
 import { readStorageMetaFromDisk } from "./runtime/rotation-storage-meta.js";
+import { parseCodexQuotaSnapshot } from "./runtime/quota-headers.js";
+import { buildRuntimeQuotaMetrics } from "./runtime/quota-routing.js";
 import {
 	applyMonotonicAuthCooldown,
 	DEFAULT_AUTH_FAILURE_COOLDOWN_MS,
@@ -157,7 +165,7 @@ function toUrlHost(host: string): string {
 // failures surfaced only as a last-write-wins status.lastError string. Logs are
 // level-gated and carry the per-request correlation id set in handleRequest.
 const proxyLog = createLogger("runtime-proxy");
-const DEFAULT_QUOTA_REMAINING_THRESHOLD = 10;
+const DEFAULT_QUOTA_REMAINING_THRESHOLD = 0;
 const DEFAULT_AFFINITY_QUOTA_FLOOR_PERCENT = 5;
 
 const DEFAULT_MAX_RUNTIME_ACCOUNT_ATTEMPTS = 4;
@@ -271,6 +279,44 @@ function accountIdentityFromAccount(
 		accountId: readTrimmedString(account.accountId),
 		updatedAt,
 	};
+}
+
+function observeUpstreamQuota(
+	state: RotationProxyState,
+	accountManager: AccountManager,
+	account: ManagedAccount,
+	model: string | null,
+	upstream: Response,
+): void {
+	const snapshot = parseCodexQuotaSnapshot(upstream.headers, upstream.status);
+	if (!snapshot) return;
+
+	const entry: QuotaCacheEntry = {
+		updatedAt: state.now(),
+		status: snapshot.status,
+		model: model ?? CURRENT_CODEX_MODEL,
+		planType: snapshot.planType,
+		primary: snapshot.primary,
+		secondary: snapshot.secondary,
+	};
+	const metrics = buildRuntimeQuotaMetrics(entry, state.now());
+	if (metrics) {
+		state.quotaByAccountIndex.set(account.index, metrics);
+	} else {
+		state.quotaByAccountIndex.delete(account.index);
+	}
+
+	const accounts = accountManager.getAccountsSnapshot();
+	if (
+		upsertQuotaCacheEntryForAccount(
+			state.quotaCache,
+			account,
+			accounts,
+			entry,
+		)
+	) {
+		void saveQuotaCache(state.quotaCache);
+	}
 }
 
 function recordLastRuntimeAccount(
@@ -707,6 +753,7 @@ export async function startRuntimeRotationProxy(
 		options.maxRequestBodyBytes ?? MAX_REQUEST_BODY_BYTES;
 	const quotaRemainingPercentThreshold =
 		options.quotaRemainingPercentThreshold ?? DEFAULT_QUOTA_REMAINING_THRESHOLD;
+	const quotaCache = options.quotaCache ?? (await loadQuotaCache());
 	const sessionAffinityStore = getSessionAffinity(pluginConfig)
 		? new SessionAffinityStore({
 				ttlMs: getSessionAffinityTtlMs(pluginConfig),
@@ -737,6 +784,7 @@ export async function startRuntimeRotationProxy(
 		maxRuntimeAccountAttempts,
 		maxRequestBodyBytes,
 		quotaRemainingPercentThreshold,
+		quotaCache,
 		sessionAffinityStore,
 		lastObservedAffinityGeneration,
 		forcedAccountIndex,
@@ -998,7 +1046,7 @@ async function handleRequestInner(
 					stickyBoostByAccount: rotationStickyBoost,
 					pidOffsetEnabled: state.pidOffsetEnabled,
 					schedulingStrategy: state.schedulingStrategy,
-					quotaByAccountIndex: undefined,
+					quotaByAccountIndex: state.quotaByAccountIndex,
 					affinityQuotaFloorPercent: DEFAULT_AFFINITY_QUOTA_FLOOR_PERCENT,
 				});
 			const selected =
@@ -1176,6 +1224,14 @@ async function handleRequestInner(
 				state.status.rotations += 1;
 				continue;
 			}
+
+			observeUpstreamQuota(
+				state,
+				accountManager,
+				refreshed.account,
+				context.model,
+				upstream,
+			);
 
 			if (upstream.status === HTTP_STATUS.TOO_MANY_REQUESTS) {
 				const bodyText = await readErrorBody(upstream, state.streamStallTimeoutMs);

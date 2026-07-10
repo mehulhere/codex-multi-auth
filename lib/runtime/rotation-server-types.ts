@@ -1,5 +1,6 @@
 import type { AccountManager } from "../accounts.js";
 import type { ModelFamily } from "../prompts/codex.js";
+import type { QuotaCacheData } from "../quota-cache.js";
 
 export interface RuntimeRotationProxyServer {
 	host: string;
@@ -32,6 +33,8 @@ export interface RuntimeRotationProxyOptions {
 	fetchImpl?: typeof fetch;
 	now?: () => number;
 	quotaRemainingPercentThreshold?: number;
+	/** Optional initial cache for isolated callers/tests; disk is loaded when omitted. */
+	quotaCache?: QuotaCacheData;
 	maxRequestBodyBytes?: number;
 	fetchTimeoutMs?: number;
 	streamStallTimeoutMs?: number;

@@ -1,4 +1,8 @@
 import { AccountManager } from "../accounts.js";
+import type { QuotaCacheData } from "../quota-cache.js";
+import { findQuotaCacheEntryForAccount } from "../quota-readiness.js";
+import type { HybridQuotaMetrics } from "../rotation.js";
+import { buildRuntimeQuotaMetrics } from "./quota-routing.js";
 import {
 	recordRuntimeReload,
 	recordRuntimeReset,
@@ -32,6 +36,7 @@ export interface RotationProxyStateInit {
 	maxRuntimeAccountAttempts: number;
 	maxRequestBodyBytes: number;
 	quotaRemainingPercentThreshold: number;
+	quotaCache: QuotaCacheData;
 	sessionAffinityStore: SessionAffinityStore | null;
 	lastObservedAffinityGeneration: number;
 	/**
@@ -55,6 +60,7 @@ export interface RotationProxyState extends RotationProxyStateInit {
 	readonly knownAccountManagers: Set<AccountManager>;
 	readonly status: RuntimeRotationProxyStatus;
 	readonly threadGoalFallbacks: Map<string, string | null>;
+	quotaByAccountIndex: Map<number, HybridQuotaMetrics>;
 	lastGlobalAccountIndex: number | null;
 	lastGlobalSwitchAt: number;
 	staleRuntimeReloadPromise: Promise<AccountManager | null> | null;
@@ -67,7 +73,7 @@ const STALE_RUNTIME_RELOAD_DEDUPE_MS = 1_000;
 export function createRotationProxyState(
 	init: RotationProxyStateInit,
 ): RotationProxyState {
-	return {
+	const state: RotationProxyState = {
 		...init,
 		knownAccountManagers: new Set<AccountManager>([init.activeAccountManager]),
 		status: {
@@ -84,11 +90,31 @@ export function createRotationProxyState(
 			lastAccountUpdatedAt: null,
 		},
 		threadGoalFallbacks: new Map<string, string | null>(),
+		quotaByAccountIndex: new Map<number, HybridQuotaMetrics>(),
 		lastGlobalAccountIndex: null,
 		lastGlobalSwitchAt: 0,
 		staleRuntimeReloadPromise: null,
 		lastStaleRuntimeReloadAt: 0,
 	};
+	rebuildQuotaByAccountIndex(state);
+	return state;
+}
+
+/** Rebuild quota metrics against the active pool's current identity/index order. */
+export function rebuildQuotaByAccountIndex(state: RotationProxyState): void {
+	const accounts = state.activeAccountManager.getAccountsSnapshot();
+	const next = new Map<number, HybridQuotaMetrics>();
+	for (const account of accounts) {
+		const entry = findQuotaCacheEntryForAccount(
+			state.quotaCache,
+			account,
+			accounts,
+		);
+		if (!entry) continue;
+		const metrics = buildRuntimeQuotaMetrics(entry, state.now());
+		if (metrics) next.set(account.index, metrics);
+	}
+	state.quotaByAccountIndex = next;
 }
 
 /** @internal */
@@ -132,6 +158,7 @@ export async function recoverStaleRuntimeState(
 		await reloaded.flushPendingSave();
 		state.activeAccountManager = reloaded;
 		state.knownAccountManagers.add(reloaded);
+		rebuildQuotaByAccountIndex(state);
 		state.lastStaleRuntimeReloadAt = Date.now();
 		recordRuntimeReload("pool-exhausted-no-account");
 		return reloaded;

@@ -20,19 +20,33 @@ import {
 import * as runtimePolicy from "../lib/policy/runtime-policy.js";
 import { resetRefreshQueue } from "../lib/refresh-queue.js";
 import { resetTrackers } from "../lib/rotation.js";
+import type { QuotaCacheData } from "../lib/quota-cache.js";
 import type { AccountStorageV3 } from "../lib/storage.js";
 
 const {
 	refreshAccessTokenMock,
+	loadQuotaCacheMock,
+	saveQuotaCacheMock,
 	saveAccountsMock,
 	withAccountStorageTransactionMock,
 } = vi.hoisted(
 	() => ({
 		refreshAccessTokenMock: vi.fn(),
+		loadQuotaCacheMock: vi.fn(),
+		saveQuotaCacheMock: vi.fn(),
 		saveAccountsMock: vi.fn(),
 		withAccountStorageTransactionMock: vi.fn(),
 	}),
 );
+
+vi.mock("../lib/quota-cache.js", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("../lib/quota-cache.js")>();
+	return {
+		...actual,
+		loadQuotaCache: loadQuotaCacheMock,
+		saveQuotaCache: saveQuotaCacheMock,
+	};
+});
 
 vi.mock("../lib/auth/auth.js", async (importOriginal) => {
 	const actual = await importOriginal<typeof import("../lib/auth/auth.js")>();
@@ -76,6 +90,40 @@ function createStorage(now: number, count = 2): AccountStorageV3 {
 			lastUsed: now - (count - index) * 60_000,
 			enabled: true,
 		})),
+	};
+}
+
+function quotaCacheFor(
+	now: number,
+	entries: Array<{
+		accountId: string;
+		left5h: number;
+		left7d: number;
+		reset7dAtMs: number;
+	}>,
+): QuotaCacheData {
+	return {
+		byAccountId: Object.fromEntries(
+			entries.map((entry) => [
+				entry.accountId,
+				{
+					updatedAt: now,
+					status: 200,
+					model: "gpt-5-codex",
+					primary: {
+						usedPercent: 100 - entry.left5h,
+						windowMinutes: 300,
+						resetAtMs: now + 60_000,
+					},
+					secondary: {
+						usedPercent: 100 - entry.left7d,
+						windowMinutes: 10_080,
+						resetAtMs: entry.reset7dAtMs,
+					},
+				},
+			]),
+		),
+		byEmail: {},
 	};
 }
 
@@ -321,6 +369,10 @@ beforeEach(() => {
 	resetRefreshQueue();
 	__resetRoutingMutexForTests();
 	refreshAccessTokenMock.mockReset();
+	loadQuotaCacheMock.mockReset();
+	loadQuotaCacheMock.mockResolvedValue({ byAccountId: {}, byEmail: {} });
+	saveQuotaCacheMock.mockReset();
+	saveQuotaCacheMock.mockResolvedValue(undefined);
 	saveAccountsMock.mockReset();
 	saveAccountsMock.mockResolvedValue(undefined);
 	withAccountStorageTransactionMock.mockReset();
@@ -1430,6 +1482,138 @@ describe("runtime rotation proxy", () => {
 		expect(
 			accountManager.getAccountByIndex(0)?.rateLimitResetTimes["gpt-5-codex"],
 		).toBeTypeOf("number");
+	});
+
+	it("loads cached quota before listening and selects the eligible account with the nearest weekly reset", async () => {
+		const now = Date.now();
+		const accountManager = new AccountManager(undefined, createStorage(now));
+		const cache = quotaCacheFor(now, [
+			{ accountId: "acc_1", left5h: 80, left7d: 60, reset7dAtMs: now + 90_000 },
+			{ accountId: "acc_2", left5h: 80, left7d: 60, reset7dAtMs: now + 30_000 },
+		]);
+		loadQuotaCacheMock.mockResolvedValue(cache);
+		const { calls, fetchImpl } = createRecordingFetch(() => textEventStream());
+
+		const proxy = await startProxy({ accountManager, fetchImpl });
+		await (await postResponses(proxy, { model: "gpt-5-codex", stream: true })).text();
+
+		expect(loadQuotaCacheMock).toHaveBeenCalledTimes(1);
+		expect(calls[0]?.headers.get(OPENAI_HEADERS.ACCOUNT_ID)).toBe("acc_2");
+	});
+
+	it("refreshes runtime quota from successful response headers, persists it, and releases below-floor affinity", async () => {
+		const now = Date.now();
+		const accountManager = new AccountManager(undefined, createStorage(now));
+		const quotaCache: QuotaCacheData = { byAccountId: {}, byEmail: {} };
+		const { calls, fetchImpl } = createRecordingFetch((_call, attempt) =>
+			textEventStream(
+				attempt === 1
+					? 'data: {"type":"response.completed","response":{"id":"resp_low","status":"completed"}}\n\n'
+					: "data: done\n\n",
+				attempt === 1
+					? {
+							"x-codex-primary-used-percent": "96",
+							"x-codex-primary-window-minutes": "300",
+							"x-codex-primary-reset-after-seconds": "60",
+							"x-codex-secondary-used-percent": "96",
+							"x-codex-secondary-window-minutes": "10080",
+							"x-codex-secondary-reset-after-seconds": "120",
+						}
+					: undefined,
+			),
+		);
+		const proxy = await startProxy({
+			accountManager,
+			fetchImpl,
+			options: { quotaCache, quotaRemainingPercentThreshold: 0 },
+		});
+
+		await (
+			await postResponses(proxy, {
+				model: "gpt-5-codex",
+				stream: true,
+				metadata: { session_id: "thread-low" },
+			})
+		).text();
+		await (
+			await postResponses(proxy, {
+				model: "gpt-5-codex",
+				stream: true,
+				prompt_cache_key: "thread-child",
+				previous_response_id: "resp_low",
+			})
+		).text();
+
+		expect(calls.map((call) => call.headers.get(OPENAI_HEADERS.ACCOUNT_ID))).toEqual([
+			"acc_1",
+			"acc_2",
+		]);
+		expect(quotaCache.byAccountId.acc_1).toMatchObject({
+			status: 200,
+			model: "gpt-5-codex",
+			primary: { usedPercent: 96, windowMinutes: 300 },
+			secondary: { usedPercent: 96, windowMinutes: 10_080 },
+		});
+		expect(saveQuotaCacheMock).toHaveBeenCalledWith(quotaCache);
+	});
+
+	it("retains cached healthy quota when a 429 has no quota headers while retrying the next account", async () => {
+		const now = Date.now();
+		const accountManager = new AccountManager(undefined, createStorage(now));
+		const quotaCache = quotaCacheFor(now, [
+			{ accountId: "acc_1", left5h: 70, left7d: 80, reset7dAtMs: now + 30_000 },
+		]);
+		const previousEntry = quotaCache.byAccountId.acc_1;
+		const { calls, fetchImpl } = createRecordingFetch((_call, attempt) =>
+			attempt === 1
+				? new Response('{"error":{"message":"limited"}}', {
+						status: HTTP_STATUS.TOO_MANY_REQUESTS,
+						headers: { "content-type": "application/json", "retry-after": "1" },
+					})
+				: textEventStream("data: recovered\n\n"),
+		);
+		const proxy = await startProxy({ accountManager, fetchImpl, options: { quotaCache } });
+
+		const response = await postResponses(proxy, { model: "gpt-5-codex", stream: true });
+		expect(response.status).toBe(HTTP_STATUS.OK);
+		await response.text();
+
+		expect(calls.map((call) => call.headers.get(OPENAI_HEADERS.ACCOUNT_ID))).toEqual([
+			"acc_1",
+			"acc_2",
+		]);
+		expect(quotaCache.byAccountId.acc_1).toBe(previousEntry);
+		expect(saveQuotaCacheMock).not.toHaveBeenCalled();
+	});
+
+	it("does not globally bench low positive quota by default", async () => {
+		const now = Date.now();
+		const accountManager = new AccountManager(undefined, createStorage(now, 1));
+		const { fetchImpl } = createRecordingFetch(() =>
+			textEventStream("data: ok\n\n", {
+				"x-codex-primary-used-percent": "99",
+				"x-codex-primary-window-minutes": "300",
+				"x-codex-primary-reset-after-seconds": "60",
+				"x-codex-secondary-used-percent": "99",
+				"x-codex-secondary-window-minutes": "10080",
+				"x-codex-secondary-reset-after-seconds": "120",
+			}),
+		);
+		const proxy = await startRuntimeRotationProxy({
+			accountManager,
+			fetchImpl,
+			upstreamBaseUrl: "https://example.test/backend-api",
+			clientApiKey: DEFAULT_CLIENT_API_KEY,
+			quotaCache: { byAccountId: {}, byEmail: {} },
+		});
+		openManagers.push(accountManager);
+		openServers.push(proxy);
+
+		await (await postResponses(proxy, { model: "gpt-5-codex", stream: true })).text();
+
+		expect(
+			accountManager.getAccountByIndex(0)?.rateLimitResetTimes["gpt-5-codex"],
+		).toBeUndefined();
 	});
 
 	it("pins repeated session requests to the first served account", async () => {

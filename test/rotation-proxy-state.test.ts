@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AccountManager } from "../lib/accounts.js";
+import type { QuotaCacheData } from "../lib/quota-cache.js";
 import type { RotationProxyStateInit } from "../lib/runtime/rotation-proxy-state.js";
 import type { AccountStorageV3 } from "../lib/storage.js";
 
@@ -19,7 +20,11 @@ vi.mock("../lib/runtime/runtime-observability.js", async (importOriginal) => {
 	};
 });
 
-const { createRotationProxyState, recoverStaleRuntimeState } = await import(
+const {
+	createRotationProxyState,
+	rebuildQuotaByAccountIndex,
+	recoverStaleRuntimeState,
+} = await import(
 	"../lib/runtime/rotation-proxy-state.js"
 );
 
@@ -44,6 +49,18 @@ function storageWith(count: number): AccountStorageV3 {
 }
 
 function stateInit(): RotationProxyStateInit {
+	const quotaCache: QuotaCacheData = {
+		byAccountId: {
+			acc_1: {
+				updatedAt: NOW - 1_000,
+				status: 200,
+				model: "gpt-5-codex",
+				primary: { usedPercent: 40, windowMinutes: 300, resetAtMs: NOW + 10_000 },
+				secondary: { usedPercent: 25, windowMinutes: 10_080, resetAtMs: NOW + 20_000 },
+			},
+		},
+		byEmail: {},
+	};
 	return {
 		activeAccountManager: new AccountManager(undefined, storageWith(1)),
 		routingMutexMode: "enabled",
@@ -63,6 +80,7 @@ function stateInit(): RotationProxyStateInit {
 		maxRuntimeAccountAttempts: 3,
 		maxRequestBodyBytes: 1024,
 		quotaRemainingPercentThreshold: 0,
+		quotaCache,
 		sessionAffinityStore: null,
 		lastObservedAffinityGeneration: 0,
 		forcedAccountIndex: null,
@@ -104,6 +122,28 @@ describe("createRotationProxyState", () => {
 		});
 		expect(state.lastGlobalAccountIndex).toBeNull();
 		expect(state.lastStaleRuntimeReloadAt).toBe(0);
+		expect(state.quotaCache).toBe(init.quotaCache);
+		expect(state.quotaByAccountIndex).toEqual(
+			new Map([[0, { left5h: 60, left7d: 75, reset7dAtMs: NOW + 20_000 }]]),
+		);
+	});
+
+	it("safely remaps cached identities after accounts reorder", () => {
+		const init = stateInit();
+		const state = createRotationProxyState(init);
+		state.activeAccountManager = new AccountManager(undefined, {
+			...storageWith(2),
+			accounts: [...storageWith(2).accounts].reverse(),
+		});
+
+		rebuildQuotaByAccountIndex(state);
+
+		expect(state.quotaByAccountIndex.has(0)).toBe(false);
+		expect(state.quotaByAccountIndex.get(1)).toEqual({
+			left5h: 60,
+			left7d: 75,
+			reset7dAtMs: NOW + 20_000,
+		});
 	});
 });
 
@@ -124,6 +164,11 @@ describe("recoverStaleRuntimeState", () => {
 		// The configured mutex mode carries over to the reloaded pool.
 		expect(reloaded.getRoutingMutexMode()).toBe("enabled");
 		expect(state.lastStaleRuntimeReloadAt).toBeGreaterThan(0);
+		expect(state.quotaByAccountIndex.get(0)).toEqual({
+			left5h: 60,
+			left7d: 75,
+			reset7dAtMs: NOW + 20_000,
+		});
 		expect(recordRuntimeResetMock).toHaveBeenCalledExactlyOnceWith(
 			"pool-exhausted-no-account",
 		);
