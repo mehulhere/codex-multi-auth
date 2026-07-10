@@ -393,6 +393,14 @@ const DEFAULT_HYBRID_SELECTION_CONFIG: HybridSelectionConfig = {
 export interface HybridSelectionOptions {
 	pidOffsetEnabled?: boolean;
 	scoreBoostByAccount?: Record<number, number>;
+	quotaByAccountIndex?: Map<number, HybridQuotaMetrics>;
+	now?: number;
+}
+
+export interface HybridQuotaMetrics {
+	left5h: number;
+	left7d: number;
+	reset7dAtMs: number;
 }
 
 /**
@@ -483,11 +491,13 @@ export function selectHybridAccount(
 		return null;
 	}
 	// istanbul ignore next -- defensive: available[0] always exists when length === 1
-	if (available.length === 1) return available[0] ?? null;
-
-	const now = Date.now();
-	let bestAccount: AccountWithMetrics | null = null;
-	let bestScore = -Infinity;
+	if (
+		available.length === 1 &&
+		resolvedOptions.quotaByAccountIndex === undefined
+	) {
+		return available[0] ?? null;
+	}
+	const now = resolvedOptions.now ?? Date.now();
 
 	// PID offset: distribute account selection across parallel processes
 	// Each process gets a small deterministic bonus based on its PID
@@ -495,7 +505,7 @@ export function selectHybridAccount(
 		? (process.pid % 100) * 0.01
 		: 0;
 
-	for (const account of available) {
+	const candidates = available.map((account) => {
 		const trackerKey = account.trackerKey ?? account.index;
 		const health = resolvedHealthTracker.getScore(trackerKey, resolvedQuotaKey);
 		const tokens = resolvedTokenTracker.getTokens(trackerKey, resolvedQuotaKey);
@@ -521,11 +531,45 @@ export function selectHybridAccount(
 				((account.index * 0.131 + pidBonus) % 1) * cfg.freshnessWeight * 0.1;
 		}
 
-		if (score > bestScore) {
-			bestScore = score;
-			bestAccount = account;
+		return {
+			account,
+			score,
+			quota: resolvedOptions.quotaByAccountIndex?.get(account.index),
+		};
+	});
+
+	const knownPositiveQuotaCandidates = candidates.filter(
+		(candidate) =>
+			candidate.quota !== undefined &&
+			candidate.quota.left5h > 0 &&
+			candidate.quota.left7d > 0 &&
+			candidate.quota.reset7dAtMs > now,
+	);
+	const fallbackCandidates = candidates.filter(
+		(candidate) => candidate.quota === undefined,
+	);
+	const eligibleCandidates =
+		knownPositiveQuotaCandidates.length > 0
+			? knownPositiveQuotaCandidates
+			: fallbackCandidates;
+
+	eligibleCandidates.sort((a, b) => {
+		if (knownPositiveQuotaCandidates.length > 0) {
+			const resetOrder =
+				(a.quota?.reset7dAtMs ?? Number.POSITIVE_INFINITY) -
+				(b.quota?.reset7dAtMs ?? Number.POSITIVE_INFINITY);
+			if (resetOrder !== 0) return resetOrder;
 		}
-	}
+		const scoreOrder = b.score - a.score;
+		if (scoreOrder !== 0) return scoreOrder;
+		return knownPositiveQuotaCandidates.length > 0
+			? a.account.index - b.account.index
+			: 0;
+	});
+
+	const bestCandidate = eligibleCandidates[0];
+	const bestAccount = bestCandidate?.account ?? null;
+	const bestScore = bestCandidate?.score ?? -Infinity;
 
 	if (bestAccount && available.length > 1) {
 		const trackerKey = bestAccount.trackerKey ?? bestAccount.index;
@@ -606,7 +650,7 @@ export function selectHybridAccountTraced(
 	const cfg = { ...DEFAULT_HYBRID_SELECTION_CONFIG, ...(params.config ?? {}) };
 	const options = params.options ?? {};
 	const quotaKey = params.quotaKey;
-	const now = Date.now();
+	const now = options.now ?? Date.now();
 	const pidBonus = options.pidOffsetEnabled ? (process.pid % 100) * 0.01 : 0;
 
 	const accounts = Array.isArray(params.accounts) ? params.accounts : [];
@@ -671,6 +715,18 @@ export function selectHybridAccountTraced(
 		selected = null;
 		selectionReason =
 			"all accounts unavailable (rate-limited, cooling down, or circuit open)";
+	} else if (options.quotaByAccountIndex) {
+		selected = selectHybridAccount({
+			accounts,
+			healthTracker: params.healthTracker,
+			tokenTracker: params.tokenTracker,
+			quotaKey,
+			config: params.config,
+			options,
+		});
+		selectionReason = selected
+			? `quota-aware hybrid selection across ${availableAccounts.length} available account(s)`
+			: "no available account has positive or unknown quota";
 	} else if (availableAccounts.length === 1) {
 		selected = availableAccounts[0] ?? null;
 		selectionReason = "single available account";
