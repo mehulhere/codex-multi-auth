@@ -9,6 +9,7 @@ import {
 } from "./runtime-observability.js";
 import type { RuntimeRotationProxyStatus } from "./rotation-server-types.js";
 import type { SessionAffinityStore } from "../session-affinity.js";
+import type { ThreadStatusStore } from "./thread-status.js";
 
 /**
  * Per-instance configuration resolved once in `startRuntimeRotationProxy`,
@@ -38,6 +39,7 @@ export interface RotationProxyStateInit {
 	quotaRemainingPercentThreshold: number;
 	quotaCache: QuotaCacheData;
 	sessionAffinityStore: SessionAffinityStore | null;
+	threadStatusStore: ThreadStatusStore;
 	lastObservedAffinityGeneration: number;
 	/**
 	 * Ephemeral per-invocation account pin (0-based) or null. When a number,
@@ -89,6 +91,7 @@ export function createRotationProxyState(
 			lastAccountLabel: null,
 			lastAccountId: null,
 			lastAccountUpdatedAt: null,
+			threadStatuses: {},
 		},
 		threadGoalFallbacks: new Map<string, string | null>(),
 		quotaByAccountIndex: new Map<number, HybridQuotaMetrics>(),

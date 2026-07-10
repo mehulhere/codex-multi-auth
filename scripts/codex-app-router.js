@@ -133,6 +133,57 @@ function writeStatus(statusPath, payload) {
 	}
 }
 
+function sanitizeQuotaWindow(value) {
+	if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+	const result = {};
+	for (const key of ["usedPercent", "windowMinutes", "resetAtMs"]) {
+		const candidate = value[key];
+		if (typeof candidate === "number" && Number.isFinite(candidate)) {
+			result[key] = candidate;
+		}
+	}
+	return result;
+}
+
+function sanitizeThreadStatuses(value) {
+	if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+	const result = {};
+	for (const [sessionKey, entry] of Object.entries(value).slice(0, 512)) {
+		if (!sessionKey || sessionKey.length > 256) continue;
+		if (!entry || typeof entry !== "object" || Array.isArray(entry)) continue;
+		const accountNumber = entry.accountNumber;
+		const accountDisplay = entry.accountDisplay;
+		const maskedEmail = entry.maskedEmail;
+		const updatedAt = entry.updatedAt;
+		if (!Number.isInteger(accountNumber) || accountNumber < 1) continue;
+		if (
+			typeof accountDisplay !== "string" ||
+			accountDisplay.length > 200 ||
+			!accountDisplay.startsWith(`Account ${accountNumber}`)
+		) {
+			continue;
+		}
+		if (
+			maskedEmail !== null &&
+			(typeof maskedEmail !== "string" ||
+				maskedEmail.length > 160 ||
+				!maskedEmail.includes("***@"))
+		) {
+			continue;
+		}
+		if (typeof updatedAt !== "number" || !Number.isFinite(updatedAt)) continue;
+		result[sessionKey] = {
+			accountNumber,
+			accountDisplay,
+			maskedEmail,
+			primary: sanitizeQuotaWindow(entry.primary),
+			secondary: sanitizeQuotaWindow(entry.secondary),
+			updatedAt,
+		};
+	}
+	return result;
+}
+
 function createStatusPayload({ state, proxyServer, error, stateRecord }) {
 	const proxyStatus =
 		typeof proxyServer?.getStatus === "function" ? proxyServer.getStatus() : {};
@@ -159,6 +210,7 @@ function createStatusPayload({ state, proxyServer, error, stateRecord }) {
 		lastAccountLabel,
 		lastAccountId: proxyStatus.lastAccountId ?? null,
 		lastAccountUpdatedAt: proxyStatus.lastAccountUpdatedAt ?? null,
+		threadStatuses: sanitizeThreadStatuses(proxyStatus.threadStatuses),
 		lastError: error ? (error instanceof Error ? error.message : String(error)) : proxyStatus.lastError ?? null,
 	};
 }

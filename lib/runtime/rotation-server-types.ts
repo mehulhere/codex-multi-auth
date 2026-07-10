@@ -1,6 +1,7 @@
 import type { AccountManager } from "../accounts.js";
 import type { ModelFamily } from "../prompts/codex.js";
 import type { QuotaCacheData } from "../quota-cache.js";
+import type { RuntimeThreadStatus } from "./thread-status.js";
 
 export interface RuntimeRotationProxyServer {
 	host: string;
@@ -22,6 +23,7 @@ export interface RuntimeRotationProxyStatus {
 	lastAccountLabel: string | null;
 	lastAccountId: string | null;
 	lastAccountUpdatedAt: number | null;
+	threadStatuses: Record<string, RuntimeThreadStatus>;
 }
 
 export interface RuntimeRotationProxyOptions {

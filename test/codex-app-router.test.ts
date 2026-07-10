@@ -56,6 +56,16 @@ function createRouterFixture(root: string, options: { withProxyModule?: boolean 
 				"      lastAccountLabel: 'Account 2 (hidden@example.com)',",
 				"      lastAccountId: 'acc_2',",
 				"      lastAccountUpdatedAt: 123,",
+				"      threadStatuses: {",
+				"        'thread-a': {",
+				"          accountNumber: 2,",
+				"          accountDisplay: 'Account 2 (hi***@example.com)',",
+				"          maskedEmail: 'hi***@example.com',",
+				"          primary: { usedPercent: 4, windowMinutes: 300, resetAtMs: 456 },",
+				"          secondary: { usedPercent: 1, windowMinutes: 10080, resetAtMs: 789 },",
+				"          updatedAt: 123,",
+				"        },",
+				"      },",
 				"      lastError: null,",
 				"    }),",
 				"  };",
@@ -134,6 +144,16 @@ describe("codex app router daemon", () => {
 			expect(running.kind).toBe("codex-app-runtime-rotation-router");
 			expect(running.baseUrl).toBe("http://127.0.0.1:4567");
 			expect(running.lastAccountLabel).toBe("Account 2");
+			expect(running.threadStatuses).toEqual({
+				"thread-a": {
+					accountNumber: 2,
+					accountDisplay: "Account 2 (hi***@example.com)",
+					maskedEmail: "hi***@example.com",
+					primary: { usedPercent: 4, windowMinutes: 300, resetAtMs: 456 },
+					secondary: { usedPercent: 1, windowMinutes: 10_080, resetAtMs: 789 },
+					updatedAt: 123,
+				},
+			});
 			expect(running).not.toHaveProperty("clientApiKey");
 			if (process.platform !== "win32") {
 				expect(statSync(statusPath).mode & 0o777).toBe(0o600);

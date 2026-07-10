@@ -1810,6 +1810,51 @@ describe("runtime rotation proxy", () => {
 		]);
 	});
 
+	it("publishes redacted quota status for the successfully served thread", async () => {
+		const now = Date.now();
+		const accountManager = new AccountManager(undefined, createStorage(now, 2));
+		const { fetchImpl } = createRecordingFetch(() =>
+			textEventStream(
+				'data: {"type":"response.completed","response":{"id":"resp_status","status":"completed"}}\n\n',
+				{
+					"x-codex-primary-used-percent": "4",
+					"x-codex-primary-window-minutes": "300",
+					"x-codex-primary-reset-after-seconds": "60",
+					"x-codex-secondary-used-percent": "1",
+					"x-codex-secondary-window-minutes": "10080",
+					"x-codex-secondary-reset-after-seconds": "120",
+				},
+			),
+		);
+		const proxy = await startProxy({ accountManager, fetchImpl });
+
+		await (
+			await postResponses(proxy, {
+				model: "gpt-5-codex",
+				stream: true,
+				metadata: { session_id: "thread-status" },
+			})
+		).text();
+
+		const status = proxy.getStatus() as ReturnType<typeof proxy.getStatus> & {
+			threadStatuses?: Record<
+				string,
+				{
+					accountDisplay: string;
+					primary: { usedPercent?: number };
+					secondary: { usedPercent?: number };
+				}
+			>;
+		};
+		expect(status.threadStatuses?.["thread-status"]).toMatchObject({
+			accountDisplay: "Account 1 (ac***@example.com)",
+			primary: { usedPercent: 4 },
+			secondary: { usedPercent: 1 },
+		});
+		expect(JSON.stringify(status.threadStatuses)).not.toContain("account-1@example.com");
+		expect(JSON.stringify(status.threadStatuses)).not.toContain("refresh-1");
+	});
+
 	it("keeps a fork with a new prompt cache key on its parent response account", async () => {
 		const now = Date.now();
 		const accountManager = new AccountManager(undefined, createStorage(now, 3));

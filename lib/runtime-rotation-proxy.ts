@@ -94,6 +94,7 @@ import {
 	ensureFreshAccessToken,
 } from "./runtime/rotation-token-refresh.js";
 import { SessionAffinityStore } from "./session-affinity.js";
+import { ThreadStatusStore } from "./runtime/thread-status.js";
 import type { RequestBody } from "./types.js";
 import { isRecord } from "./utils.js";
 
@@ -780,6 +781,10 @@ export async function startRuntimeRotationProxy(
 				maxEntries: getSessionAffinityMaxEntries(pluginConfig),
 			})
 		: null;
+	const threadStatusStore = new ThreadStatusStore({
+		ttlMs: getSessionAffinityTtlMs(pluginConfig),
+		maxEntries: getSessionAffinityMaxEntries(pluginConfig),
+	});
 	// Initialize from disk so the proxy starts in sync with whatever generation
 	// the storage file already shows. Subsequent disk bumps (from CLI commands)
 	// are detected per-request via `maybeInvalidateAffinityFromDisk`.
@@ -806,6 +811,7 @@ export async function startRuntimeRotationProxy(
 		quotaRemainingPercentThreshold,
 		quotaCache,
 		sessionAffinityStore,
+		threadStatusStore,
 		lastObservedAffinityGeneration,
 		forcedAccountIndex,
 	});
@@ -882,6 +888,10 @@ export async function startRuntimeRotationProxy(
 		},
 		getStatus: () => ({
 			...state.status,
+			threadStatuses: state.threadStatusStore.snapshot(
+				state.activeAccountManager.getAccountsSnapshot(),
+				state.now(),
+			),
 			// Redact any email/token material that leaked into a raw upstream or
 			// refresh error string before exposing it to status/report consumers
 			// (errors-logging-08). maskString is a no-op for clean diagnostic text.
@@ -1545,6 +1555,10 @@ async function handleRequestInner(
 
 			let streamTerminalEvent: string | null = null;
 			let observedResponseId: string | null = null;
+			const threadQuotaSnapshot = parseCodexQuotaSnapshot(
+				upstream.headers,
+				upstream.status,
+			);
 			const forwarded = await forwardStreamingResponse(
 				upstream,
 				res,
@@ -1577,6 +1591,14 @@ async function handleRequestInner(
 				forwarded &&
 				streamTerminalEvent !== "response.failed" &&
 				streamTerminalEvent !== "error";
+			if (streamSucceeded) {
+				state.threadStatusStore.remember(
+					context.sessionKey,
+					refreshed.account,
+					threadQuotaSnapshot,
+					state.now(),
+				);
+			}
 			if (
 				streamSucceeded &&
 				observedResponseId !== null &&
