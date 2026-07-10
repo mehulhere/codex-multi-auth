@@ -55,6 +55,28 @@ Use it when you need a local Codex CLI multi-account workflow with visible accou
 
 The package does not publish a global `codex` binary. Keep `codex` owned by the official OpenAI install path and use `codex-multi-auth-codex ...` only when you intentionally want this package's forwarding wrapper.
 
+### Quota-aware Desktop routing
+
+Desktop routing keeps one official `CODEX_HOME` and one history tree under `~/.codex`; it does not create per-account homes or copy workspaces. For a new thread, accounts with known quota are eligible while both the 5-hour and 7-day windows remain above 0%, and the earliest future 7-day reset is preferred. Accounts without a complete quota snapshot remain a fallback.
+
+Current threads keep their account while both known windows retain at least 5%. Forks inherit the parent response's account at the same floor; below 5%, the continuation or fork moves through normal new-thread selection. A successful terminal event retains affinity and records its response ID for later continuations and forks, unless the returned quota is already below the floor. Failed terminal events do not create that response mapping.
+
+A pre-body HTTP 429 marks the attempted account rate-limited and automatically retries another eligible account before any response bytes reach Desktop. A completed turn does not rotate merely because it completed.
+
+Enable and inspect automatic routing with:
+
+```bash
+codex-multi-auth unpin
+codex-multi-auth forecast --live --json
+codex-multi-auth rotation enable
+codex-multi-auth rotation bind-app
+codex-multi-auth status
+codex-multi-auth rotation status
+codex-multi-auth history list --json
+```
+
+`rotation unbind-app` reverses the app bind and restores the backed-up Codex config. The ilysenko Linux Desktop build uses the same router through shared `~/.codex/config.toml`; no Desktop fork is required. On Linux, `rotation bind-app` also installs an XDG autostart entry under `~/.config/autostart` so the router returns at the next desktop login. Confirm the live process at any time with `rotation status`.
+
 ---
 
 <details open>

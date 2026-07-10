@@ -20,6 +20,7 @@ const APP_BIND_STATE_FILE = "runtime-rotation-app-bind.json";
 const APP_BIND_BACKUP_FILE = "codex-config-backup.json";
 const APP_BIND_STATUS_FILE = "runtime-rotation-app-bind-status.json";
 const WINDOWS_STARTUP_FILE = "Codex Multi Auth Runtime Router.cmd";
+const LINUX_AUTOSTART_FILE = "codex-multi-auth-runtime-router.desktop";
 const MACOS_LAUNCH_AGENT_ID = "com.ndycode.codex-multi-auth.runtime-router";
 const DEFAULT_ROUTER_READY_TIMEOUT_MS = 15_000;
 const ROUTER_STATUS_POLL_INTERVAL_MS = 100;
@@ -381,6 +382,11 @@ function resolveMacLaunchAgentPath(home: string): string {
 	return join(home, "Library", "LaunchAgents", `${MACOS_LAUNCH_AGENT_ID}.plist`);
 }
 
+function resolveLinuxAutostartPath(env: NodeJS.ProcessEnv, home: string): string {
+	const configHome = (env.XDG_CONFIG_HOME ?? "").trim() || join(home, ".config");
+	return join(configHome, "autostart", LINUX_AUTOSTART_FILE);
+}
+
 function resolveRouterScriptPath(
 	override?: string,
 	candidateOverride?: string[],
@@ -420,7 +426,11 @@ export function resolveAppBindPaths(options: AppBindOptions = {}): AppBindPaths 
 			options.routerScriptCandidates,
 		),
 		startupPath:
-			platform === "win32" ? resolveWindowsStartupPath(env, home) : null,
+			platform === "win32"
+				? resolveWindowsStartupPath(env, home)
+				: platform === "linux"
+					? resolveLinuxAutostartPath(env, home)
+					: null,
 		launchAgentPath: platform === "darwin" ? resolveMacLaunchAgentPath(home) : null,
 	};
 }
@@ -505,10 +515,51 @@ function createMacLaunchAgentPlist(state: AppBindState): string {
 	].join("\n");
 }
 
+function escapeDesktopExecArg(value: string): string {
+	return `"${value
+		.replace(/\\/g, "\\\\")
+		.replace(/"/g, '\\"')
+		.replace(/`/g, "\\`")
+		.replace(/\$/g, "\\$")
+		.replace(/%/g, "%%")}"`;
+}
+
+function createLinuxAutostartDesktop(state: AppBindState): string {
+	const args = [
+		state.nodePath,
+		state.routerScriptPath,
+		"--port",
+		String(state.port),
+		"--status",
+		state.statusPath,
+		"--state",
+		state.statePath,
+		"--log",
+		state.logPath,
+		"--max-log-bytes",
+		String(APP_ROUTER_MAX_LOG_BYTES),
+	];
+	return [
+		"[Desktop Entry]",
+		"Type=Application",
+		"Name=Codex Multi Auth Runtime Router",
+		`Exec=${args.map(escapeDesktopExecArg).join(" ")}`,
+		"Terminal=false",
+		"NoDisplay=true",
+		"X-GNOME-Autostart-enabled=true",
+		"",
+	].join("\n");
+}
+
 async function writeAppBindStartup(state: AppBindState): Promise<void> {
 	if (state.platform === "win32" && state.startupPath) {
 		await mkdir(dirname(state.startupPath), { recursive: true });
 		await atomicWriteFile(state.startupPath, createWindowsStartupCommand(state));
+		return;
+	}
+	if (state.platform === "linux" && state.startupPath) {
+		await mkdir(dirname(state.startupPath), { recursive: true });
+		await atomicWriteFile(state.startupPath, createLinuxAutostartDesktop(state));
 		return;
 	}
 	if (state.platform === "darwin" && state.launchAgentPath) {

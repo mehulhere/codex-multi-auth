@@ -247,6 +247,70 @@ describe("Codex app runtime rotation bind", () => {
 		expect(paths.launchAgentPath).toBeNull();
 	});
 
+	it("resolves the Linux XDG autostart path", async () => {
+		const root = await createTempRoot("codex-app-bind-linux-paths-");
+		const paths = resolveAppBindPaths({
+			platform: "linux",
+			home: root,
+			env: {},
+		});
+
+		expect(paths.startupPath).toBe(
+			join(root, ".config", "autostart", "codex-multi-auth-runtime-router.desktop"),
+		);
+		expect(paths.launchAgentPath).toBeNull();
+	});
+
+	it("writes and removes Linux XDG autostart without exposing the client token", async () => {
+		const root = await createTempRoot("codex-app-bind-linux-autostart-");
+		const multiAuthDir = join(root, "multi auth");
+		const codexHome = join(root, "codex home");
+		const nodePath = join(root, "Node Runtime", "node");
+		const routerScriptPath = join(root, "router dir", "codex-app-router.js");
+		const env = {
+			CODEX_MULTI_AUTH_DIR: multiAuthDir,
+			CODEX_MULTI_AUTH_APP_BIND_CODEX_HOME: codexHome,
+		};
+		await mkdir(codexHome, { recursive: true });
+		await writeFile(join(codexHome, "config.toml"), 'model_provider = "openai"\n', "utf8");
+		await seedExistingAppBindState({
+			platform: "linux",
+			home: root,
+			env,
+			port: 4567,
+			baseUrl: "http://127.0.0.1:4567",
+			nodePath,
+			routerScriptPath,
+		});
+
+		const result = await bindCodexAppRuntimeRotation({
+			platform: "linux",
+			home: root,
+			env,
+			nodePath,
+			routerScriptPath,
+			spawnDetached: false,
+		});
+		const startupPath = result.status.paths.startupPath ?? "";
+		const desktopEntry = await readFile(startupPath, "utf8");
+		expect(desktopEntry).toContain("[Desktop Entry]");
+		expect(desktopEntry).toContain("X-GNOME-Autostart-enabled=true");
+		expect(desktopEntry).toContain('Exec="');
+		expect(desktopEntry).toContain("--state");
+		expect(desktopEntry).toContain("--log");
+		expect(desktopEntry).toContain("--max-log-bytes");
+		expect(desktopEntry).toContain("runtime-rotation-app-bind.json");
+		expect(desktopEntry).not.toContain(result.status.state?.clientApiKey ?? "");
+
+		await unbindCodexAppRuntimeRotation({
+			platform: "linux",
+			home: root,
+			env,
+			spawnDetached: false,
+		});
+		expect(existsSync(startupPath)).toBe(false);
+	});
+
 	it("binds and unbinds the Windows app config without spawning during tests", async () => {
 		const root = await createTempRoot("codex-app-bind-win-");
 		const multiAuthDir = join(root, "multi%auth");
