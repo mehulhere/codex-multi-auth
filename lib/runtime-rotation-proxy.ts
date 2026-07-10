@@ -313,7 +313,29 @@ function observeUpstreamQuota(
 	// identity against the current active manager instead.
 	rebuildQuotaByAccountIndex(state);
 	if (cacheChanged) {
-		void saveQuotaCache(state.quotaCache);
+		const previousSave = state.pendingQuotaCacheSave;
+		const queuedSave = (previousSave ?? Promise.resolve())
+			.catch(() => undefined)
+			.then(() => saveQuotaCache(state.quotaCache))
+			.catch((error) => {
+				state.status.lastError = error instanceof Error ? error.message : String(error);
+			});
+		state.pendingQuotaCacheSave = queuedSave;
+		void queuedSave.finally(() => {
+			if (state.pendingQuotaCacheSave === queuedSave) {
+				state.pendingQuotaCacheSave = null;
+			}
+		});
+	}
+}
+
+async function flushPendingQuotaCacheSave(state: RotationProxyState): Promise<void> {
+	while (state.pendingQuotaCacheSave) {
+		const pending = state.pendingQuotaCacheSave;
+		await pending;
+		if (state.pendingQuotaCacheSave === pending) {
+			state.pendingQuotaCacheSave = null;
+		}
 	}
 }
 
@@ -828,6 +850,7 @@ export async function startRuntimeRotationProxy(
 		close: async () => {
 			await closeServer(server, sockets);
 			await state.activeAccountManager.flushPendingSave();
+			await flushPendingQuotaCacheSave(state);
 		},
 		getStatus: () => ({
 			...state.status,
@@ -1492,6 +1515,7 @@ async function handleRequestInner(
 			);
 
 			let streamTerminalEvent: string | null = null;
+			let observedResponseId: string | null = null;
 			const forwarded = await forwardStreamingResponse(
 				upstream,
 				res,
@@ -1513,18 +1537,7 @@ async function handleRequestInner(
 				state.streamStallTimeoutMs,
 				{
 					onResponseId: (responseId) => {
-						state.sessionAffinityStore?.updateLastResponseId(
-							context.sessionKey,
-							responseId,
-							state.now(),
-							affinityWriteVersion,
-						);
-						state.sessionAffinityStore?.bindResponseToAccount(
-							responseId,
-							refreshed.account.index,
-							state.now(),
-							affinityWriteVersion,
-						);
+						observedResponseId = responseId;
 					},
 					onTerminalEvent: (type) => {
 						streamTerminalEvent = type;
@@ -1535,6 +1548,27 @@ async function handleRequestInner(
 				forwarded &&
 				streamTerminalEvent !== "response.failed" &&
 				streamTerminalEvent !== "error";
+			if (
+				streamSucceeded &&
+				observedResponseId !== null &&
+				(streamTerminalEvent === "response.completed" ||
+					streamTerminalEvent === "response.done" ||
+					streamTerminalEvent === "response.incomplete")
+			) {
+				const affinityUpdatedAt = state.now();
+				state.sessionAffinityStore?.updateLastResponseId(
+					context.sessionKey,
+					observedResponseId,
+					affinityUpdatedAt,
+					affinityWriteVersion,
+				);
+				state.sessionAffinityStore?.bindResponseToAccount(
+					observedResponseId,
+					refreshed.account.index,
+					affinityUpdatedAt,
+					affinityWriteVersion,
+				);
+			}
 			if (
 				!streamSucceeded &&
 				globalAffinityUpdatedAt !== null &&

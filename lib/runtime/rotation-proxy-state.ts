@@ -65,6 +65,7 @@ export interface RotationProxyState extends RotationProxyStateInit {
 	lastGlobalSwitchAt: number;
 	staleRuntimeReloadPromise: Promise<AccountManager | null> | null;
 	lastStaleRuntimeReloadAt: number;
+	pendingQuotaCacheSave: Promise<void> | null;
 }
 
 const STALE_RUNTIME_RELOAD_DEDUPE_MS = 1_000;
@@ -95,6 +96,7 @@ export function createRotationProxyState(
 		lastGlobalSwitchAt: 0,
 		staleRuntimeReloadPromise: null,
 		lastStaleRuntimeReloadAt: 0,
+		pendingQuotaCacheSave: null,
 	};
 	rebuildQuotaByAccountIndex(state);
 	return state;

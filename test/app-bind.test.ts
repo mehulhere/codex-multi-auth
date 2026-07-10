@@ -940,6 +940,42 @@ describe("orphaned app-bind recovery (#614)", () => {
 		expect(unbound.status.unmanagedBind).toBe(false);
 	});
 
+	it("removes an orphaned Linux autostart entry when bind state is missing", async () => {
+		const { root, env } = await seedOrphanedBind();
+		const paths = resolveAppBindPaths({ platform: "linux", home: root, env });
+		if (!paths.startupPath) throw new Error("Linux startup path was not resolved");
+		await mkdir(dirname(paths.startupPath), { recursive: true });
+		await writeFile(paths.startupPath, "[Desktop Entry]\n", "utf8");
+
+		await unbindCodexAppRuntimeRotation({
+			platform: "linux",
+			home: root,
+			env,
+			spawnDetached: false,
+		});
+
+		expect(existsSync(paths.startupPath)).toBe(false);
+	});
+
+	it("reports orphaned startup cleanup failures instead of claiming success", async () => {
+		const { root, env } = await seedOrphanedBind();
+		const paths = resolveAppBindPaths({ platform: "linux", home: root, env });
+		if (!paths.startupPath) throw new Error("Linux startup path was not resolved");
+		await mkdir(paths.startupPath, { recursive: true });
+
+		await expect(
+			unbindCodexAppRuntimeRotation({
+				platform: "linux",
+				home: root,
+				env,
+				spawnDetached: false,
+			}),
+		).rejects.toThrow(paths.startupPath);
+		const restored = await readFile(paths.configPath, "utf8");
+		expect(restored).toContain('model_provider = "openai"');
+		expect(restored).not.toContain("codex-multi-auth-runtime-proxy");
+	});
+
 	it("self-heals a half-orphan (proxy block present, model_provider already native) without duplicating keys", async () => {
 		const root = await createTempRoot("codex-app-bind-half-orphan-");
 		const codexHome = join(root, "codex-home");

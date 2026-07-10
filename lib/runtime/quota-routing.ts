@@ -4,7 +4,10 @@ import type { HybridQuotaMetrics } from "../rotation.js";
 const FIVE_HOUR_WINDOW_MINUTES = 300;
 const SEVEN_DAY_WINDOW_MINUTES = 10_080;
 
-type RuntimeQuotaEntry = Pick<QuotaCacheEntry, "primary" | "secondary">;
+type RuntimeQuotaEntry = Pick<
+	QuotaCacheEntry,
+	"updatedAt" | "primary" | "secondary"
+>;
 
 function findWindow(
 	entry: RuntimeQuotaEntry,
@@ -27,12 +30,26 @@ function remainingPercent(window: QuotaCacheWindow): number | null {
 	return Math.max(0, Math.min(100, 100 - window.usedPercent));
 }
 
-function resetHasPassed(window: QuotaCacheWindow, now: number): boolean {
-	return (
+function windowExpiresAt(
+	entry: RuntimeQuotaEntry,
+	window: QuotaCacheWindow,
+): number | null {
+	if (
 		typeof window.resetAtMs === "number" &&
-		Number.isFinite(window.resetAtMs) &&
-		window.resetAtMs <= now
-	);
+		Number.isFinite(window.resetAtMs)
+	) {
+		return window.resetAtMs;
+	}
+	const windowMinutes = window.windowMinutes;
+	if (
+		!Number.isFinite(entry.updatedAt) ||
+		typeof windowMinutes !== "number" ||
+		!Number.isFinite(windowMinutes) ||
+		windowMinutes <= 0
+	) {
+		return null;
+	}
+	return entry.updatedAt + windowMinutes * 60_000;
 }
 
 /** Normalize a persisted quota snapshot for quota-aware runtime selection. */
@@ -43,22 +60,24 @@ export function buildRuntimeQuotaMetrics(
 	const fiveHourWindow = findWindow(entry, FIVE_HOUR_WINDOW_MINUTES);
 	const sevenDayWindow = findWindow(entry, SEVEN_DAY_WINDOW_MINUTES);
 	if (!fiveHourWindow || !sevenDayWindow) return null;
+	const fiveHourExpiresAtMs = windowExpiresAt(entry, fiveHourWindow);
+	const sevenDayExpiresAtMs = windowExpiresAt(entry, sevenDayWindow);
 	if (
-		resetHasPassed(fiveHourWindow, now) ||
-		resetHasPassed(sevenDayWindow, now)
+		fiveHourExpiresAtMs === null ||
+		sevenDayExpiresAtMs === null ||
+		fiveHourExpiresAtMs <= now ||
+		sevenDayExpiresAtMs <= now
 	) {
 		return null;
 	}
 
 	const left5h = remainingPercent(fiveHourWindow);
 	const left7d = remainingPercent(sevenDayWindow);
-	const reset7dAtMs = sevenDayWindow.resetAtMs;
+	const reset7dAtMs = sevenDayExpiresAtMs;
 	if (
 		left5h === null ||
 		left7d === null ||
-		typeof reset7dAtMs !== "number" ||
-		!Number.isFinite(reset7dAtMs) ||
-		reset7dAtMs <= now
+		!Number.isFinite(reset7dAtMs)
 	) {
 		return null;
 	}

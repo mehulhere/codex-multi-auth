@@ -139,6 +139,44 @@ describe("runtime quota normalization", () => {
 			expect(hasAffinityQuota(entry, NOW, 5)).toBe(false);
 		},
 	);
+
+	it("expires a window without resetAtMs from its observation time and duration", () => {
+		const entry = entryWith({
+			updatedAt: NOW - 299 * 60_000,
+			primary: {
+				usedPercent: 100,
+				windowMinutes: 300,
+				resetAtMs: null,
+			},
+			secondary: {
+				usedPercent: 20,
+				windowMinutes: 10_080,
+				resetAtMs: NOW + 120_000,
+			},
+		});
+
+		expect(buildRuntimeQuotaMetrics(entry, NOW)).toEqual({
+			left5h: 0,
+			left7d: 80,
+			reset7dAtMs: NOW + 120_000,
+		});
+		expect(buildRuntimeQuotaMetrics(entry, NOW + 60_000)).toBeNull();
+	});
+
+	it("uses the observation time plus window duration as a missing 7-day reset", () => {
+		const entry = entryWith({
+			updatedAt: NOW - 1_000,
+			secondary: {
+				usedPercent: 20,
+				windowMinutes: 10_080,
+				resetAtMs: null,
+			},
+		});
+
+		expect(buildRuntimeQuotaMetrics(entry, NOW)?.reset7dAtMs).toBe(
+			entry.updatedAt + 10_080 * 60_000,
+		);
+	});
 });
 
 describe("upsertQuotaCacheEntryForAccount", () => {

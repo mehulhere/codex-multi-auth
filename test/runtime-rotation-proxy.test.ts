@@ -1586,6 +1586,38 @@ describe("runtime rotation proxy", () => {
 		expect(saveQuotaCacheMock).not.toHaveBeenCalled();
 	});
 
+	it("waits for the last queued quota-cache write when closing", async () => {
+		const now = Date.now();
+		const accountManager = new AccountManager(undefined, createStorage(now));
+		let releaseSave: (() => void) | undefined;
+		const delayedSave = new Promise<void>((resolve) => {
+			releaseSave = resolve;
+		});
+		saveQuotaCacheMock
+			.mockResolvedValueOnce(undefined)
+			.mockReturnValueOnce(delayedSave);
+		const { fetchImpl } = createRecordingFetch(() =>
+			textEventStream("data: {}\n\n", {
+				"x-codex-primary-used-percent": "10",
+				"x-codex-primary-window-minutes": "300",
+				"x-codex-primary-reset-after-seconds": "60",
+				"x-codex-secondary-used-percent": "20",
+				"x-codex-secondary-window-minutes": "10080",
+				"x-codex-secondary-reset-after-seconds": "120",
+			}),
+		);
+		const proxy = await startProxy({ accountManager, fetchImpl });
+
+		await (await postResponses(proxy, { model: "gpt-5-codex", stream: true })).text();
+		await (await postResponses(proxy, { model: "gpt-5-codex", stream: true })).text();
+		expect(saveQuotaCacheMock).toHaveBeenCalledTimes(2);
+
+		const closing = proxy.close().then(() => "closed" as const);
+		expect(await Promise.race([closing, timeoutResult(25)])).toBe("timeout");
+		releaseSave?.();
+		await expect(closing).resolves.toBe("closed");
+	});
+
 	it("remaps a delayed old-manager quota response by stable identity after reload reorder", async () => {
 		const now = Date.now();
 		const staleManager = new AccountManager(undefined, createStorage(now));
@@ -1931,6 +1963,44 @@ describe("runtime rotation proxy", () => {
 			]);
 		},
 	);
+
+	it("does not bind a response id when a completed event is followed by an error", async () => {
+		const now = Date.now();
+		const accountManager = new AccountManager(undefined, createStorage(now, 3));
+		const { calls, fetchImpl } = createRecordingFetch((_call, attempt) =>
+			textEventStream(
+				attempt === 1
+					? [
+							'data: {"type":"response.completed","response":{"id":"resp_not_final"}}',
+							'data: {"type":"error","error":{"message":"late failure"}}',
+							"",
+						].join("\n\n")
+					: `data: {"type":"response.completed","response":{"id":"resp_${attempt}"}}\n\n`,
+			),
+		);
+		const proxy = await startProxy({ accountManager, fetchImpl });
+
+		await (
+			await postResponses(proxy, {
+				model: "gpt-5-codex",
+				stream: true,
+				metadata: { session_id: "late-failed-parent" },
+			})
+		).text();
+		await (
+			await postResponses(proxy, {
+				model: "gpt-5-codex",
+				stream: true,
+				prompt_cache_key: "late-failed-child",
+				previous_response_id: "resp_not_final",
+			})
+		).text();
+
+		expect(calls.map((call) => call.headers.get(OPENAI_HEADERS.ACCOUNT_ID))).toEqual([
+			"acc_1",
+			"acc_2",
+		]);
+	});
 
 	it("keeps newer affinity state when an older overlapping stream completes last", async () => {
 		const now = Date.now();

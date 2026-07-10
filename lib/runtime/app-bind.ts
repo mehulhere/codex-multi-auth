@@ -568,16 +568,24 @@ async function writeAppBindStartup(state: AppBindState): Promise<void> {
 	}
 }
 
-async function removeAppBindStartup(state: AppBindState): Promise<void> {
-	const candidates = [state.startupPath, state.launchAgentPath].filter(
+async function removeAppBindStartup(
+	candidatePaths: Array<string | null>,
+): Promise<void> {
+	const candidates = [...new Set(candidatePaths)].filter(
 		(path): path is string => typeof path === "string" && path.length > 0,
 	);
+	const failures: string[] = [];
 	for (const candidate of candidates) {
 		try {
 			await unlinkIfExists(candidate);
-		} catch {
-			// Best-effort cleanup.
+		} catch (error) {
+			failures.push(
+				`${candidate}: ${error instanceof Error ? error.message : String(error)}`,
+			);
 		}
+	}
+	if (failures.length > 0) {
+		throw new Error(`Failed to remove app bind startup file(s): ${failures.join("; ")}`);
 	}
 }
 
@@ -824,6 +832,7 @@ async function unbindCodexAppRuntimeRotationLocked(
 ): Promise<AppBindResult> {
 	const state = await readAppBindState(paths.statePath);
 	const router = await readRouterStatus(paths.statusPath);
+	let startupCleanupError: Error | null = null;
 	if (state) {
 		await stopRouter(router);
 		if (router?.pid && isProcessAlive(router.pid)) {
@@ -831,7 +840,16 @@ async function unbindCodexAppRuntimeRotationLocked(
 				`Warning: runtime router (pid ${router.pid}) did not stop; continuing cleanup`,
 			);
 		}
-		await removeAppBindStartup(state);
+	}
+	try {
+		await removeAppBindStartup([
+			paths.startupPath,
+			paths.launchAgentPath,
+			state?.startupPath ?? null,
+			state?.launchAgentPath ?? null,
+		]);
+	} catch (error) {
+		startupCleanupError = error instanceof Error ? error : new Error(String(error));
 	}
 
 	const backup = await readAppBindBackup(paths.backupPath);
@@ -888,6 +906,9 @@ async function unbindCodexAppRuntimeRotationLocked(
 	}
 
 	const status = await getAppBindStatus(options);
+	if (startupCleanupError) {
+		throw startupCleanupError;
+	}
 	let message: string;
 	if (backup) {
 		message = `Unbound Codex app config ${backup.configPath}`;
