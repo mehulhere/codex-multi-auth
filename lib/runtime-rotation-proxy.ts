@@ -810,8 +810,26 @@ export async function startRuntimeRotationProxy(
 		forcedAccountIndex,
 	});
 
+	let closing = false;
+	let closingPromise: Promise<void> | null = null;
+	const activeHandlers = new Set<Promise<void>>();
 	const server = createServer((req, res) => {
-		void handleRequest(state, req, res);
+		if (closing) {
+			res.destroy();
+			return;
+		}
+		const trackedHandler = handleRequest(state, req, res)
+			.catch((error) => {
+				state.status.lastError =
+					error instanceof Error ? error.message : String(error);
+				if (!res.destroyed) {
+					res.destroy(error instanceof Error ? error : undefined);
+				}
+			})
+			.finally(() => {
+				activeHandlers.delete(trackedHandler);
+			});
+		activeHandlers.add(trackedHandler);
 	});
 	const sockets = new Set<Socket>();
 	server.on("connection", (socket) => {
@@ -847,10 +865,20 @@ export async function startRuntimeRotationProxy(
 		host: bindHost,
 		port: resolvedPort,
 		baseUrl: `http://${urlHost}:${resolvedPort}`,
-		close: async () => {
-			await closeServer(server, sockets);
-			await state.activeAccountManager.flushPendingSave();
-			await flushPendingQuotaCacheSave(state);
+		close: () => {
+			if (closingPromise) return closingPromise;
+			closing = true;
+			closingPromise = (async () => {
+				await closeServer(server, sockets);
+				await Promise.all([...activeHandlers]);
+				await flushPendingQuotaCacheSave(state);
+				await Promise.all(
+					[...state.knownAccountManagers].map((manager) =>
+						manager.flushPendingSave(),
+					),
+				);
+			})();
+			return closingPromise;
 		},
 		getStatus: () => ({
 			...state.status,

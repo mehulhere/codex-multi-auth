@@ -1618,6 +1618,70 @@ describe("runtime rotation proxy", () => {
 		await expect(closing).resolves.toBe("closed");
 	});
 
+	it("waits for an active handler and quota save enqueued after close begins", async () => {
+		const now = Date.now();
+		const accountManager = new AccountManager(undefined, createStorage(now));
+		let releaseUpstream: ((response: Response) => void) | undefined;
+		let markRequestStarted: (() => void) | undefined;
+		const requestStarted = new Promise<void>((resolve) => {
+			markRequestStarted = resolve;
+		});
+		const delayedUpstream = new Promise<Response>((resolve) => {
+			releaseUpstream = resolve;
+		});
+		let releaseSave: (() => void) | undefined;
+		let markSaveStarted: (() => void) | undefined;
+		const saveStarted = new Promise<void>((resolve) => {
+			markSaveStarted = resolve;
+		});
+		const delayedSave = new Promise<void>((resolve) => {
+			releaseSave = resolve;
+		});
+		saveQuotaCacheMock.mockImplementationOnce(() => {
+			markSaveStarted?.();
+			return delayedSave;
+		});
+		const { fetchImpl } = createRecordingFetch(() => {
+			markRequestStarted?.();
+			return delayedUpstream;
+		});
+		const proxy = await startProxy({ accountManager, fetchImpl });
+		const requestSettled = postResponses(proxy, {
+			model: "gpt-5-codex",
+			stream: true,
+		})
+			.then((response) => response.text())
+			.catch(() => undefined);
+		await requestStarted;
+
+		const closing = proxy.close().then(() => "closed" as const);
+		const beforeUpstreamCompletes = await Promise.race([
+			closing,
+			timeoutResult(25),
+		]);
+		releaseUpstream?.(
+			textEventStream("data: {}\n\n", {
+				"x-codex-primary-used-percent": "10",
+				"x-codex-primary-window-minutes": "300",
+				"x-codex-primary-reset-after-seconds": "60",
+				"x-codex-secondary-used-percent": "20",
+				"x-codex-secondary-window-minutes": "10080",
+				"x-codex-secondary-reset-after-seconds": "120",
+			}),
+		);
+		await saveStarted;
+		const whileFinalSaveIsPending = await Promise.race([
+			closing,
+			timeoutResult(25),
+		]);
+		releaseSave?.();
+		await requestSettled;
+		await expect(closing).resolves.toBe("closed");
+
+		expect(beforeUpstreamCompletes).toBe("timeout");
+		expect(whileFinalSaveIsPending).toBe("timeout");
+	});
+
 	it("remaps a delayed old-manager quota response by stable identity after reload reorder", async () => {
 		const now = Date.now();
 		const staleManager = new AccountManager(undefined, createStorage(now));
