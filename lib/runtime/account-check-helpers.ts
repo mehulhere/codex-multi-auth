@@ -1,6 +1,7 @@
 import type { ModelFamily } from "../prompts/codex.js";
 import type { AccountStorageV3 } from "../storage.js";
 import type { TokenResult } from "../types.js";
+import { isPermanentAuthFailure } from "../auth/permanent-failure.js";
 
 export function clampActiveIndices(
 	storage: AccountStorageV3,
@@ -30,13 +31,5 @@ export function clampActiveIndices(
 export function isFlaggableFailure(
 	failure: Extract<TokenResult, { type: "failed" }>,
 ): boolean {
-	if (failure.reason === "missing_refresh") return true;
-	if (failure.statusCode === 401) return true;
-	if (failure.statusCode !== 400) return false;
-	const message = (failure.message ?? "").toLowerCase();
-	return (
-		message.includes("invalid_grant") ||
-		message.includes("invalid refresh") ||
-		message.includes("token has been revoked")
-	);
+	return isPermanentAuthFailure(failure);
 }
