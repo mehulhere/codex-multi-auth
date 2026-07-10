@@ -676,11 +676,13 @@ const PROBE_REASONING_EFFORT_PREFERENCE = [
  * Resolve the cheapest reasoning effort a probe model actually supports.
  *
  * A quota probe only needs the response's quota headers, so it wants the
- * lowest-cost effort. The probe body cannot simply hardcode `none`: no GPT-5.6
- * tier accepts `none`/`minimal`, so probing GPT-5.6 with `none` is rejected
- * upstream (issue #627). This returns `none` for the pre-5.6 general models,
- * `low` for GPT-5.6, and each model's cheapest supported effort otherwise.
- * Never returns `ultra`.
+ * lowest-cost effort. Rather than hardcoding `none`, it sends the cheapest
+ * effort the probe model actually declares support for, mirroring how
+ * `getReasoningConfig` coerces a real request: the GPT-5.6 tiers and the codex
+ * models do not list `none`/`minimal` in the upstream catalog, so the probe
+ * sends `low` for them and `none` for the pre-5.6 general models that do
+ * (issue #627). Keeps the probe's effort consistent with normal routing and
+ * within each model's declared range. Never returns `ultra`.
  */
 export function resolveProbeReasoningEffort(
 	model: string | undefined,

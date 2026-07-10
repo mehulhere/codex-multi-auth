@@ -47,8 +47,9 @@ export async function fetchRuntimeCodexQuotaSnapshot(params: {
 						content: [{ type: "input_text", text: "quota ping" }],
 					},
 				],
-				// GPT-5.6 rejects `none`/`minimal`, so resolve the cheapest effort
-				// the probe model actually supports (issue #627).
+				// Send the cheapest effort each probe model actually declares (the
+				// GPT-5.6 tiers and codex models do not list `none`), keeping the
+				// probe consistent with normal request routing (issue #627).
 				reasoning: { effort: resolveProbeReasoningEffort(model), summary: "auto" },
 				text: { verbosity: "low" },
 			};
