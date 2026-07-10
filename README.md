@@ -75,7 +75,9 @@ codex-multi-auth rotation status
 codex-multi-auth history list --json
 ```
 
-`rotation unbind-app` reverses the app bind and restores the backed-up Codex config. The ilysenko Linux Desktop build uses the same router through shared `~/.codex/config.toml`; no Desktop fork is required. On Linux, `rotation bind-app` also installs an XDG autostart entry under `~/.config/autostart` so the router returns at the next desktop login. Confirm the live process at any time with `rotation status`.
+`rotation unbind-app` reverses the app bind and restores the backed-up Codex config. The ilysenko Linux Desktop build uses the same router through shared `~/.codex/config.toml`; its optional `multi-auth-thread-status` Linux feature also shows `Account N (masked email)` in each thread's `/status` dialog. On Linux, `rotation bind-app` installs an XDG autostart entry under `~/.config/autostart` so the router returns at the next desktop login. Confirm the live process at any time with `rotation status`.
+
+An account whose OAuth refresh token was permanently rejected is disabled and excluded from best-account selection. `codex-multi-auth check` reports `refresh token reused` with a re-login instruction; a successful `codex-multi-auth login` makes that account eligible again.
 
 ---
 
