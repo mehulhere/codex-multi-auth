@@ -1586,6 +1586,82 @@ describe("runtime rotation proxy", () => {
 		expect(saveQuotaCacheMock).not.toHaveBeenCalled();
 	});
 
+	it("remaps a delayed old-manager quota response by stable identity after reload reorder", async () => {
+		const now = Date.now();
+		const staleManager = new AccountManager(undefined, createStorage(now));
+		const reorderedStorage = createStorage(now);
+		reorderedStorage.accounts.reverse();
+		const freshManager = new AccountManager(undefined, reorderedStorage);
+		let releaseOldResponse: ((response: Response) => void) | undefined;
+		const oldResponse = new Promise<Response>((resolve) => {
+			releaseOldResponse = resolve;
+		});
+		const { calls, fetchImpl } = createRecordingFetch((_call, attempt) => {
+			if (attempt === 1) return oldResponse;
+			return textEventStream(`data: fresh-${attempt}\n\n`);
+		});
+		const loadSpy = vi
+			.spyOn(AccountManager, "loadFromDisk")
+			.mockResolvedValueOnce(freshManager);
+		const originalSkipReason = staleManager.getAccountRuntimeSkipReason;
+		let stalePoolUnavailable = false;
+		const skipReasonSpy = vi
+			.spyOn(AccountManager.prototype, "getAccountRuntimeSkipReason")
+			.mockImplementation(function mockedSkipReason(index, family, model) {
+				if (this === staleManager && stalePoolUnavailable) return "circuit-open";
+				return originalSkipReason.call(this, index, family, model);
+			});
+
+		try {
+			const proxy = await startProxy({
+				accountManager: staleManager,
+				fetchImpl,
+				options: {
+					quotaCache: { byAccountId: {}, byEmail: {} },
+					quotaRemainingPercentThreshold: 0,
+				},
+			});
+			const delayed = postResponses(proxy, { model: "gpt-5-codex", stream: true });
+			await vi.waitFor(() => expect(calls).toHaveLength(1));
+
+			stalePoolUnavailable = true;
+			const reloadResponse = await postResponses(proxy, {
+				model: "gpt-5-codex",
+				stream: true,
+			});
+			await reloadResponse.text();
+			expect(loadSpy).toHaveBeenCalledTimes(1);
+			expect(calls[1]?.headers.get(OPENAI_HEADERS.ACCOUNT_ID)).toBe("acc_1");
+
+			releaseOldResponse?.(
+				textEventStream("data: delayed\n\n", {
+					"x-codex-primary-used-percent": "100",
+					"x-codex-primary-window-minutes": "300",
+					"x-codex-primary-reset-after-seconds": "60",
+					"x-codex-secondary-used-percent": "100",
+					"x-codex-secondary-window-minutes": "10080",
+					"x-codex-secondary-reset-after-seconds": "120",
+				}),
+			);
+			await (await delayed).text();
+
+			const next = await postResponses(proxy, {
+				model: "gpt-5-codex",
+				stream: true,
+			});
+			await next.text();
+
+			expect(calls.map((call) => call.headers.get(OPENAI_HEADERS.ACCOUNT_ID))).toEqual([
+				"acc_1",
+				"acc_1",
+				"acc_2",
+			]);
+		} finally {
+			skipReasonSpy.mockRestore();
+			loadSpy.mockRestore();
+		}
+	});
+
 	it("does not globally bench low positive quota by default", async () => {
 		const now = Date.now();
 		const accountManager = new AccountManager(undefined, createStorage(now, 1));

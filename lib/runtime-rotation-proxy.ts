@@ -73,6 +73,7 @@ import {
 import { chooseAccount } from "./runtime/rotation-account-selection.js";
 import {
 	createRotationProxyState,
+	rebuildQuotaByAccountIndex,
 	recoverStaleRuntimeState,
 	type RotationProxyState,
 } from "./runtime/rotation-proxy-state.js";
@@ -87,7 +88,6 @@ import type {
 } from "./runtime/rotation-server-types.js";
 import { readStorageMetaFromDisk } from "./runtime/rotation-storage-meta.js";
 import { parseCodexQuotaSnapshot } from "./runtime/quota-headers.js";
-import { buildRuntimeQuotaMetrics } from "./runtime/quota-routing.js";
 import {
 	applyMonotonicAuthCooldown,
 	DEFAULT_AUTH_FAILURE_COOLDOWN_MS,
@@ -299,22 +299,20 @@ function observeUpstreamQuota(
 		primary: snapshot.primary,
 		secondary: snapshot.secondary,
 	};
-	const metrics = buildRuntimeQuotaMetrics(entry, state.now());
-	if (metrics) {
-		state.quotaByAccountIndex.set(account.index, metrics);
-	} else {
-		state.quotaByAccountIndex.delete(account.index);
-	}
-
 	const accounts = accountManager.getAccountsSnapshot();
-	if (
+	const cacheChanged =
 		upsertQuotaCacheEntryForAccount(
 			state.quotaCache,
 			account,
 			accounts,
 			entry,
-		)
-	) {
+		);
+	// The response may belong to a request that captured an older manager before
+	// a concurrent stale-state reload reordered the active pool. Never carry the
+	// old manager's numeric index across that boundary: resolve the stable cache
+	// identity against the current active manager instead.
+	rebuildQuotaByAccountIndex(state);
+	if (cacheChanged) {
 		void saveQuotaCache(state.quotaCache);
 	}
 }

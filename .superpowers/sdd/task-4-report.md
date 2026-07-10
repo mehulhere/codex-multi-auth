@@ -43,3 +43,23 @@ Commit subject: `feat: integrate runtime quota state`
 
 - The full repository test suite was not run; verification used the requested focused suites plus the directly related Task 1-3 suites, typecheck, and full lint.
 - The one pre-change timeout did not recur in either post-change runtime-proxy run (102 and then 216 focused tests were green).
+
+## Follow-up: Delayed response after account reorder
+
+### RED evidence
+
+- Added a concurrent proxy regression that holds an `acc_1` response from the old manager, forces stale-state recovery into a pool whose account order is reversed, then completes the old response with exhausted quota headers.
+- `npm test -- --run test/runtime-rotation-proxy.test.ts -t "remaps a delayed old-manager quota response by stable identity after reload reorder"` exited 1 before the fix: the third request incorrectly used `acc_1` because the delayed observation exhausted raw index 0, which belonged to `acc_2` in the reloaded pool.
+
+### GREEN evidence
+
+- The isolated race regression passed after the fix.
+- The combined Task 1-4 related matrix passed: 8 files, 217/217 tests.
+- `npm run typecheck`: passed.
+- `npm run lint`: passed.
+
+### Implementation and safety
+
+- Upstream quota observations still synchronously upsert the stable cache identity associated with the responding account.
+- The live index map is now rebuilt from that stable cache against `state.activeAccountManager`; it never writes using the responding request's possibly stale numeric index.
+- Ambiguous identities remain safely unmapped through the existing cache upsert and lookup rules.
