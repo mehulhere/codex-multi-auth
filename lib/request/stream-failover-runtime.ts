@@ -24,6 +24,10 @@ const DECODED_UPSTREAM_RESPONSE_HEADERS = new Set([
 	// Node fetch returns decoded bytes while preserving the upstream encoding header.
 	"content-encoding",
 ]);
+// Match the Responses SSE parser's accepted size while keeping this optional
+// affinity observer bounded. Lines beyond the cap are ignored until their
+// newline; the original upstream bytes are still forwarded unchanged.
+const MAX_OBSERVED_SSE_LINE_BYTES = 10 * 1024 * 1024;
 
 export function responseHeadersForClient(upstreamHeaders: Headers): Record<string, string> {
 	const headers: Record<string, string> = {};
@@ -184,24 +188,56 @@ function observeSseLine(line: string, observer: RuntimeStreamObserver): void {
 	}
 }
 
+interface SseObserverBuffer {
+	chunks: Uint8Array[];
+	byteLength: number;
+	overflowed: boolean;
+}
+
+function appendObservedSseBytes(
+	buffer: SseObserverBuffer,
+	bytes: Uint8Array,
+): void {
+	if (buffer.overflowed || bytes.byteLength === 0) return;
+	if (buffer.byteLength + bytes.byteLength > MAX_OBSERVED_SSE_LINE_BYTES) {
+		buffer.chunks = [];
+		buffer.byteLength = 0;
+		buffer.overflowed = true;
+		return;
+	}
+	buffer.chunks.push(bytes.slice());
+	buffer.byteLength += bytes.byteLength;
+}
+
+function flushObservedSseLine(
+	decoder: TextDecoder,
+	buffer: SseObserverBuffer,
+	observer: RuntimeStreamObserver,
+): void {
+	if (!buffer.overflowed && buffer.byteLength > 0) {
+		const line = decoder.decode(Buffer.concat(buffer.chunks, buffer.byteLength));
+		observeSseLine(line, observer);
+	}
+	buffer.chunks = [];
+	buffer.byteLength = 0;
+	buffer.overflowed = false;
+}
+
 function observeSseChunk(
 	decoder: TextDecoder,
-	buffer: { value: string },
+	buffer: SseObserverBuffer,
 	chunk: Uint8Array,
 	observer: RuntimeStreamObserver | undefined,
 ): void {
 	if (!observer) return;
-	buffer.value += decoder.decode(chunk, { stream: true });
-	let newlineIndex = buffer.value.indexOf("\n");
-	while (newlineIndex >= 0) {
-		const line = buffer.value.slice(0, newlineIndex);
-		buffer.value = buffer.value.slice(newlineIndex + 1);
-		observeSseLine(line, observer);
-		newlineIndex = buffer.value.indexOf("\n");
+	let lineStart = 0;
+	for (let index = 0; index < chunk.byteLength; index += 1) {
+		if (chunk[index] !== 0x0a) continue;
+		appendObservedSseBytes(buffer, chunk.subarray(lineStart, index));
+		flushObservedSseLine(decoder, buffer, observer);
+		lineStart = index + 1;
 	}
-	if (buffer.value.length > 64 * 1024) {
-		buffer.value = buffer.value.slice(-1024);
-	}
+	appendObservedSseBytes(buffer, chunk.subarray(lineStart));
 }
 
 export async function forwardStreamingResponse(
@@ -224,7 +260,7 @@ export async function forwardStreamingResponse(
 
 	const reader = upstream.body.getReader();
 	const decoder = observer ? new TextDecoder() : null;
-	const observerBuffer = { value: "" };
+	const observerBuffer = { chunks: [] as Uint8Array[], byteLength: 0, overflowed: false };
 	res.on("close", () => {
 		if (!res.writableEnded) {
 			void reader.cancel().catch(() => undefined);
@@ -259,8 +295,8 @@ export async function forwardStreamingResponse(
 				}
 			}
 		}
-		if (observer && observerBuffer.value.trim()) {
-			observeSseLine(observerBuffer.value, observer);
+		if (observer && decoder) {
+			flushObservedSseLine(decoder, observerBuffer, observer);
 		}
 		res.end();
 		return true;

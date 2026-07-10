@@ -293,6 +293,28 @@ function textEventStream(body = "data: {}\n\n", headers?: HeadersInit): Response
 	});
 }
 
+function chunkedTextEventStream(body: string, chunkSize: number): Response {
+	const bytes = new TextEncoder().encode(body);
+	let offset = 0;
+	return new Response(
+		new ReadableStream<Uint8Array>({
+			pull(controller) {
+				if (offset >= bytes.byteLength) {
+					controller.close();
+					return;
+				}
+				const end = Math.min(offset + chunkSize, bytes.byteLength);
+				controller.enqueue(bytes.slice(offset, end));
+				offset = end;
+			},
+		}),
+		{
+			status: HTTP_STATUS.OK,
+			headers: { "content-type": "text/event-stream" },
+		},
+	);
+}
+
 beforeEach(() => {
 	resetTrackers();
 	clearCircuitBreakers();
@@ -1462,6 +1484,78 @@ describe("runtime rotation proxy", () => {
 			"acc_1",
 			"acc_1",
 		]);
+	});
+
+	it("binds a response id from a chunked 9 MiB terminal event without changing forwarded bytes", async () => {
+		const now = Date.now();
+		const accountManager = new AccountManager(undefined, createStorage(now, 3));
+		const filler = "x".repeat(9 * 1024 * 1024);
+		const largeTerminalEvent = `data: {"type":"response.completed","response":{"id":"resp_large","output":${JSON.stringify(filler)}}}\n\n`;
+		const { calls, fetchImpl } = createRecordingFetch((_call, attempt) =>
+			attempt === 1
+				? chunkedTextEventStream(largeTerminalEvent, 128 * 1024)
+				: textEventStream(
+						'data: {"type":"response.completed","response":{"id":"resp_child"}}\n\n',
+					),
+		);
+		const proxy = await startProxy({ accountManager, fetchImpl });
+
+		const parent = await postResponses(proxy, {
+			model: "gpt-5-codex",
+			stream: true,
+			metadata: { session_id: "large-parent" },
+		});
+		expect(await parent.text()).toBe(largeTerminalEvent);
+		const parentAccount = accountManager.getAccountByIndex(0);
+		if (!parentAccount) throw new Error("parent account was not selected");
+		accountManager.markRateLimitedWithReason(
+			parentAccount,
+			60_000,
+			"gpt-5-codex",
+			"quota",
+			"gpt-5-codex",
+		);
+		await (
+			await postResponses(proxy, {
+				model: "gpt-5-codex",
+				stream: true,
+				metadata: { session_id: "unrelated-thread" },
+			})
+		).text();
+		accountManager.clearAccountTransientState();
+
+		await (
+			await postResponses(proxy, {
+				model: "gpt-5-codex",
+				stream: true,
+				prompt_cache_key: "large-child",
+				previous_response_id: "resp_large",
+			})
+		).text();
+
+		expect(calls.map((call) => call.headers.get(OPENAI_HEADERS.ACCOUNT_ID))).toEqual([
+			"acc_1",
+			"acc_2",
+			"acc_1",
+		]);
+	});
+
+	it("forwards an oversized malformed SSE line without changing its bytes", async () => {
+		const now = Date.now();
+		const accountManager = new AccountManager(undefined, createStorage(now, 3));
+		const oversizedMalformedEvent = `data: ${"x".repeat(10 * 1024 * 1024 + 1)}\n\n`;
+		const { fetchImpl } = createRecordingFetch(() =>
+			chunkedTextEventStream(oversizedMalformedEvent, 128 * 1024),
+		);
+		const proxy = await startProxy({ accountManager, fetchImpl });
+
+		const response = await postResponses(proxy, {
+			model: "gpt-5-codex",
+			stream: true,
+			metadata: { session_id: "oversized-malformed" },
+		});
+
+		expect(await response.text()).toBe(oversizedMalformedEvent);
 	});
 
 	it("moves a fork with a new session header off an exhausted parent account", async () => {
