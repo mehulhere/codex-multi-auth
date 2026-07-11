@@ -8,6 +8,7 @@ import {
 	buildTokenInvalidationBody,
 	chooseAccount,
 	normalizeForcedAccountIndex,
+	resolveRuntimePinnedIndex,
 	type RuntimeRotationProxyServer,
 } from "../lib/runtime-rotation-proxy.js";
 import { SessionAffinityStore } from "../lib/session-affinity.js";
@@ -155,6 +156,14 @@ function timeoutResult(ms: number): Promise<"timeout"> {
 		setTimeout(() => resolve("timeout"), ms);
 	});
 }
+
+describe("runtime pin resolution", () => {
+	it("ignores persisted switch pins in automatic mode while preserving forced pins", () => {
+		expect(resolveRuntimePinnedIndex(null, 0, false)).toBeNull();
+		expect(resolveRuntimePinnedIndex(2, 0, false)).toBe(2);
+		expect(resolveRuntimePinnedIndex(null, 0, true)).toBe(0);
+	});
+});
 
 async function startProxy(params: {
 	accountManager: AccountManager;

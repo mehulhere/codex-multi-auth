@@ -46,6 +46,7 @@ function createRouterFixture(root: string, options: { withProxyModule?: boolean 
 				"  marker(`start:${options.host}:${options.port}:${options.clientApiKey}`);",
 				"  marker(`thread-status-path:${options.threadStatusPath ?? ''}`);",
 				"  marker(`initial-thread-statuses:${Object.keys(options.initialThreadStatuses ?? {}).length}`);",
+				"  marker(`honor-stored-pin:${options.honorStoredPin}`);",
 				"  return {",
 				"    baseUrl: `http://${options.host}:${options.port || 4567}`,",
 				"    close: async () => marker('close'),",
@@ -184,6 +185,7 @@ describe("codex app router daemon", () => {
 				`thread-status-path:${join(root, "runtime-rotation-thread-assignments.json")}\n`,
 			);
 			expect(readFileSync(markerPath, "utf8")).toContain("initial-thread-statuses:1\n");
+			expect(readFileSync(markerPath, "utf8")).toContain("honor-stored-pin:false\n");
 			expect(existsSync(migrationPath)).toBe(false);
 			child.kill("SIGTERM");
 			if (process.platform !== "win32") {

@@ -63,6 +63,12 @@ Current threads keep their account while both known windows retain at least 5%. 
 
 A pre-body HTTP 429 marks the attempted account rate-limited and automatically retries another eligible account before any response bytes reach Desktop. A completed turn does not rotate merely because it completed.
 
+The persistent Desktop app router ignores the global manual pin written by
+`codex-multi-auth switch`, so an unavailable switched account cannot strand a
+Desktop thread. Desktop continues to use per-thread affinity and automatic
+best-account failover. Explicit per-invocation `--account` pins and non-Desktop
+proxy instances retain strict pin behavior.
+
 Enable and inspect automatic routing with:
 
 ```bash

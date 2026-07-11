@@ -343,6 +343,7 @@ async function main() {
 			host,
 			port,
 			clientApiKey,
+			honorStoredPin: false,
 			threadStatusPath: join(
 				dirname(args.statusPath || stateRecord?.statusPath || args.statePath),
 				"runtime-rotation-thread-assignments.json",

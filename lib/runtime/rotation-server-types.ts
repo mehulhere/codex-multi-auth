@@ -49,6 +49,13 @@ export interface RuntimeRotationProxyOptions {
 	threadStatusTtlMs?: number;
 	initialThreadStatuses?: Record<string, RuntimeThreadStatus>;
 	/**
+	 * Whether this proxy honors the persisted manual pin written by `switch`.
+	 * Defaults to true. Desktop app-bind disables it because that surface uses
+	 * automatic per-thread best-account routing; explicit forced pins remain
+	 * strict regardless of this setting.
+	 */
+	honorStoredPin?: boolean;
+	/**
 	 * Ephemeral, per-instance account pin (0-based) for a single invocation
 	 * (issue #623: `codex-multi-auth-codex --account`). When set, this proxy
 	 * routes every request to exactly this account and never rotates, without

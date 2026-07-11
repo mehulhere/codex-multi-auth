@@ -720,6 +720,22 @@ export function normalizeForcedAccountIndex(
 	return parsed;
 }
 
+/**
+ * Resolve the effective strict pin for one runtime request. Explicit
+ * per-invocation pins always win. Callers using automatic account routing can
+ * ignore the persisted `switch` pin without weakening explicit `--account`
+ * behavior or changing the default semantics for other proxy surfaces.
+ *
+ * @internal
+ */
+export function resolveRuntimePinnedIndex(
+	forcedAccountIndex: number | null,
+	storedPinnedIndex: number | null,
+	honorStoredPin: boolean,
+): number | null {
+	return forcedAccountIndex ?? (honorStoredPin ? storedPinnedIndex : null);
+}
+
 export async function startRuntimeRotationProxy(
 	options: RuntimeRotationProxyOptions,
 ): Promise<RuntimeRotationProxyServer> {
@@ -777,6 +793,7 @@ export async function startRuntimeRotationProxy(
 		options.forcedAccountIndex ??
 			process.env.CODEX_MULTI_AUTH_FORCE_ACCOUNT_INDEX,
 	);
+	const honorStoredPin = options.honorStoredPin !== false;
 	const tokenRefreshSkewMs = getTokenRefreshSkewMs(pluginConfig);
 	const networkErrorCooldownMs = getNetworkErrorCooldownMs(pluginConfig);
 	const serverErrorCooldownMs = getServerErrorCooldownMs(pluginConfig);
@@ -840,6 +857,7 @@ export async function startRuntimeRotationProxy(
 		sessionAffinityStore,
 		threadStatusStore,
 		lastObservedAffinityGeneration,
+		honorStoredPin,
 		forcedAccountIndex,
 	});
 
@@ -1092,7 +1110,11 @@ async function handleRequestInner(
 		// everything downstream — deterministic pick, no cursor advance, no
 		// stale-state recovery, the `codex_pinned_account_unavailable` failure —
 		// applies unchanged because it all keys off `pinnedIndex` / `isPinned`.
-		const pinnedIndex = state.forcedAccountIndex ?? storageMeta.pinnedAccountIndex;
+		const pinnedIndex = resolveRuntimePinnedIndex(
+			state.forcedAccountIndex,
+			storageMeta.pinnedAccountIndex,
+			state.honorStoredPin,
+		);
 		const isPinned = typeof pinnedIndex === "number";
 		if (storageMeta.affinityGeneration > state.lastObservedAffinityGeneration) {
 			state.sessionAffinityStore?.clearAll();

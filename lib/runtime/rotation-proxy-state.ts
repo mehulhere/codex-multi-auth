@@ -41,6 +41,8 @@ export interface RotationProxyStateInit {
 	sessionAffinityStore: SessionAffinityStore | null;
 	threadStatusStore: ThreadStatusStore;
 	lastObservedAffinityGeneration: number;
+	/** Whether persisted `switch` pins participate in request routing. */
+	honorStoredPin: boolean;
 	/**
 	 * Ephemeral per-invocation account pin (0-based) or null. When a number,
 	 * the request handler treats it exactly like a manual `switch` pin — a
