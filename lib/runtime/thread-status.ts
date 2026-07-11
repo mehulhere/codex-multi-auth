@@ -1,12 +1,22 @@
 import { createHash } from "node:crypto";
+import {
+	chmodSync,
+	mkdirSync,
+	readFileSync,
+	renameSync,
+	rmSync,
+	writeFileSync,
+} from "node:fs";
+import { dirname } from "node:path";
 import type { ManagedAccount } from "../accounts.js";
 import type { CodexQuotaWindow } from "../quota-probe.js";
 import { getAccountIdentityKey } from "../storage/identity.js";
 import type { ParsedCodexQuotaSnapshot } from "./quota-headers.js";
 
-const DEFAULT_TTL_MS = 20 * 60 * 1000;
+export const DEFAULT_THREAD_STATUS_TTL_MS = 90 * 24 * 60 * 60 * 1000;
 const DEFAULT_MAX_ENTRIES = 512;
 const MAX_SESSION_KEY_LENGTH = 256;
+const ACCOUNT_KEY_PATTERN = /^[a-f0-9]{64}$/;
 
 interface StoredThreadStatus {
 	accountKey: string;
@@ -28,6 +38,7 @@ export interface RuntimeThreadStatus {
 export interface ThreadStatusStoreOptions {
 	ttlMs?: number;
 	maxEntries?: number;
+	storagePath?: string;
 }
 
 function normalizeSessionKey(value: string | null | undefined): string | null {
@@ -73,14 +84,20 @@ export function maskThreadStatusEmail(email: string | undefined): string | null 
 export class ThreadStatusStore {
 	private readonly ttlMs: number;
 	private readonly maxEntries: number;
+	private readonly storagePath: string | null;
 	private readonly entries = new Map<string, StoredThreadStatus>();
 
 	constructor(options: ThreadStatusStoreOptions = {}) {
-		this.ttlMs = Math.max(1, Math.floor(options.ttlMs ?? DEFAULT_TTL_MS));
+		this.ttlMs = Math.max(
+			1,
+			Math.floor(options.ttlMs ?? DEFAULT_THREAD_STATUS_TTL_MS),
+		);
 		this.maxEntries = Math.max(
 			1,
 			Math.floor(options.maxEntries ?? DEFAULT_MAX_ENTRIES),
 		);
+		this.storagePath = options.storagePath?.trim() || null;
+		this.loadFromDisk();
 	}
 
 	remember(
@@ -112,6 +129,7 @@ export class ThreadStatusStore {
 			updatedAt: now,
 			expiresAt: now + this.ttlMs,
 		});
+		this.persistToDisk();
 	}
 
 	get(
@@ -125,6 +143,7 @@ export class ThreadStatusStore {
 		if (!entry) return null;
 		if (entry.expiresAt <= now) {
 			this.entries.delete(key);
+			this.persistToDisk();
 			return null;
 		}
 		const account = accounts.find(
@@ -167,5 +186,69 @@ export class ThreadStatusStore {
 			}
 		}
 		if (oldestKey) this.entries.delete(oldestKey);
+	}
+
+	private loadFromDisk(): void {
+		if (!this.storagePath) return;
+		try {
+			const parsed = JSON.parse(readFileSync(this.storagePath, "utf8")) as {
+				version?: unknown;
+				entries?: unknown;
+			};
+			if (parsed.version !== 1 || !parsed.entries || typeof parsed.entries !== "object") {
+				return;
+			}
+			for (const [sessionKey, candidate] of Object.entries(parsed.entries).slice(
+				0,
+				this.maxEntries,
+			)) {
+				const key = normalizeSessionKey(sessionKey);
+				if (!key || !candidate || typeof candidate !== "object" || Array.isArray(candidate)) {
+					continue;
+				}
+				const value = candidate as Partial<StoredThreadStatus>;
+				if (
+					typeof value.accountKey !== "string" ||
+					!ACCOUNT_KEY_PATTERN.test(value.accountKey) ||
+					typeof value.updatedAt !== "number" ||
+					!Number.isFinite(value.updatedAt) ||
+					typeof value.expiresAt !== "number" ||
+					!Number.isFinite(value.expiresAt)
+				) {
+					continue;
+				}
+				this.entries.set(key, {
+					accountKey: value.accountKey,
+					primary: cloneWindow(value.primary ?? {}),
+					secondary: cloneWindow(value.secondary ?? {}),
+					updatedAt: value.updatedAt,
+					expiresAt: value.expiresAt,
+				});
+			}
+		} catch {
+			// Assignment persistence is best-effort; routing must remain available.
+		}
+	}
+
+	private persistToDisk(): void {
+		if (!this.storagePath) return;
+		const tempPath = `${this.storagePath}.${process.pid}.${Date.now()}.tmp`;
+		try {
+			mkdirSync(dirname(this.storagePath), { recursive: true });
+			writeFileSync(
+				tempPath,
+				`${JSON.stringify({ version: 1, entries: Object.fromEntries(this.entries) }, null, 2)}\n`,
+				{ encoding: "utf8", mode: 0o600 },
+			);
+			chmodSync(tempPath, 0o600);
+			renameSync(tempPath, this.storagePath);
+			chmodSync(this.storagePath, 0o600);
+		} catch {
+			try {
+				rmSync(tempPath, { force: true });
+			} catch {
+				// Preserve the original best-effort write failure.
+			}
+		}
 	}
 }

@@ -334,6 +334,10 @@ async function main() {
 			host,
 			port,
 			clientApiKey,
+			threadStatusPath: join(
+				dirname(args.statusPath || stateRecord?.statusPath || args.statePath),
+				"runtime-rotation-thread-assignments.json",
+			),
 		});
 		writeCurrentStatus("running");
 		const timer = setInterval(() => writeCurrentStatus("running"), 1000);

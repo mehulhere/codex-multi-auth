@@ -1,4 +1,7 @@
 import { describe, expect, it } from "vitest";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { ManagedAccount } from "../lib/accounts.js";
 import {
 	maskThreadStatusEmail,
@@ -97,6 +100,38 @@ describe("ThreadStatusStore", () => {
 		store.remember("thread-a", account, quota, NOW);
 
 		expect(store.get("thread-a", [], NOW + 1)).toBeNull();
+	});
+
+	it("persists redacted account affinity across router restarts", () => {
+		const root = mkdtempSync(join(tmpdir(), "codex-thread-status-"));
+		const storagePath = join(root, "thread-assignments.json");
+		try {
+			const account = managedAccount(0, "alice@example.com");
+			const first = new ThreadStatusStore({
+				ttlMs: 90 * 24 * 60 * 60_000,
+				maxEntries: 10,
+				storagePath,
+			});
+			first.remember("thread-persistent", account, quota, NOW);
+
+			const restored = new ThreadStatusStore({
+				ttlMs: 90 * 24 * 60 * 60_000,
+				maxEntries: 10,
+				storagePath,
+			});
+			expect(restored.get("thread-persistent", [account], NOW + 60 * 60_000)).toMatchObject({
+				accountDisplay: "Account 1 (al***@example.com)",
+				primary: { usedPercent: 4 },
+			});
+
+			const persisted = readFileSync(storagePath, "utf8");
+			expect(persisted).not.toContain("alice@example.com");
+			expect(persisted).not.toContain("refresh-secret");
+			expect(persisted).not.toContain("access-secret");
+			expect(persisted).not.toContain("acc_1");
+		} finally {
+			rmSync(root, { recursive: true, force: true });
+		}
 	});
 
 	it("expires stale records and evicts the oldest record at the size bound", () => {

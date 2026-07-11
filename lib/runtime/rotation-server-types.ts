@@ -40,6 +40,9 @@ export interface RuntimeRotationProxyOptions {
 	maxRequestBodyBytes?: number;
 	fetchTimeoutMs?: number;
 	streamStallTimeoutMs?: number;
+	/** Owner-only durable per-thread account assignment sidecar used by Desktop. */
+	threadStatusPath?: string;
+	threadStatusTtlMs?: number;
 	/**
 	 * Ephemeral, per-instance account pin (0-based) for a single invocation
 	 * (issue #623: `codex-multi-auth-codex --account`). When set, this proxy

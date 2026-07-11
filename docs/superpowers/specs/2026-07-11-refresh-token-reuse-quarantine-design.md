@@ -135,21 +135,23 @@ Account 4 (oc***@icloud.com)
 
 The full email, raw account ID, refresh token, and access token are never stored
 in the renderer-facing record. If an account can no longer be safely resolved,
-the record returns `Account: Not assigned yet` rather than guessing from a stale
+the record returns an explicit unassigned reason rather than guessing from a stale
 array index.
 
-The thread record changes only after the replacement account successfully
-serves the thread. A failed retry does not make `/status` claim that the thread
-has moved. Continuations and forks use their actual affinity result; a fork that
-inherits the parent account shows that account, while a fork moved by the quota
-floor shows the replacement after its first successful response.
+The thread record changes after token refresh confirms the selected account is
+usable and before its upstream request begins. A retry that selects another
+usable account replaces the provisional assignment. Continuations and forks use
+their actual affinity result; a fork that inherits the parent account shows that
+account, while a fork moved by the quota floor shows the replacement selection.
 
 ### Secure sidecar and Desktop IPC
 
 The persistent app router will extend its existing owner-only (`0600`) local
-status state with a bounded per-thread status map. Entries expire with the same
-general lifecycle expectations as affinity data and are capped so abandoned
-threads cannot grow the file without bound. Writes retain the existing atomic
+status state with a bounded per-thread status map. Entries persist in an
+owner-only redacted sidecar across router restarts and expire after 90 days,
+rather than sharing the short session-affinity expiry. Both the durable store
+and renderer-facing status snapshot are capped so abandoned threads cannot grow
+the files without bound. Writes retain the existing atomic
 temporary-file-and-rename pattern.
 
 The ilysenko Desktop main process will read this owner-only state. It will expose
@@ -161,13 +163,14 @@ and returning only the matching redacted record. The handler will:
 - read only the known app-router status path;
 - return a fixed schema containing display alias, masked email, quota windows,
   and update time;
-- return `null` for missing, malformed, stale, or mismatched records.
+- return a fixed unassigned reason for missing or unavailable records and
+  `null` only for invalid session identifiers.
 
 The renderer cannot request the account list, choose an arbitrary file path, or
 receive credentials. The Desktop `/status` component will query this operation
 for the current conversation and prefer its valid per-thread quota over the
 process-global rate-limit object. If no per-thread record exists, it keeps the
-existing quota display and adds `Account: Not assigned yet`.
+existing quota display and adds the reason no routed assignment exists.
 
 The UI patch is implemented through the existing tested
 `codex-desktop-linux` patch pipeline rather than by modifying generated app
@@ -187,19 +190,20 @@ upstream bundle shape is unsupported.
 6. The CLI or runtime reports that explicit re-login is required.
 7. A later successful login replaces the invalid credentials and re-enables the
    account.
-8. After each successful routed response, the router updates the redacted
-   per-thread status sidecar atomically.
+8. As soon as a usable account is selected, the router updates the redacted
+   per-thread assignment sidecar atomically; successful response headers then
+   refresh the quota snapshot.
 9. Opening `/status` asks the trusted Desktop main process for the current
    session's record and renders its account and quota snapshot.
 
 ## Error handling and concurrency
 
-- Persistence uses the existing account-manager save and transaction patterns;
-  no direct ad hoc file writes are introduced.
+- Assignment persistence uses an owner-only atomic temporary-file-and-rename
+  sidecar and never stores raw email, account ID, or credentials.
 - Concurrent requests that observe the same terminal failure perform an
   idempotent disable operation.
-- A failed persistence attempt is reported and does not pretend the account was
-  durably quarantined.
+- A failed assignment-sidecar write does not disrupt routing; `/status` reports
+  that multi-auth status is unavailable instead of inventing an assignment.
 - Transient failures retain existing retry and cooldown behavior.
 - Runtime client-facing errors remain redacted and machine-readable.
 - Sidecar entries are bounded, expire, and never contain tokens or full emails.

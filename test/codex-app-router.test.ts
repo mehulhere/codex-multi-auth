@@ -44,6 +44,7 @@ function createRouterFixture(root: string, options: { withProxyModule?: boolean 
 				"export async function startRuntimeRotationProxy(options) {",
 				"  if (process.env.CODEX_APP_ROUTER_TEST_FAIL_PROXY === '1') throw new Error('proxy boom');",
 				"  marker(`start:${options.host}:${options.port}:${options.clientApiKey}`);",
+				"  marker(`thread-status-path:${options.threadStatusPath ?? ''}`);",
 				"  return {",
 				"    baseUrl: `http://${options.host}:${options.port || 4567}`,",
 				"    close: async () => marker('close'),",
@@ -158,6 +159,9 @@ describe("codex app router daemon", () => {
 			if (process.platform !== "win32") {
 				expect(statSync(statusPath).mode & 0o777).toBe(0o600);
 			}
+			expect(readFileSync(markerPath, "utf8")).toContain(
+				`thread-status-path:${join(root, "runtime-rotation-thread-assignments.json")}\n`,
+			);
 			child.kill("SIGTERM");
 			if (process.platform !== "win32") {
 				await readJsonWhen(statusPath, (status) => status.state === "stopped");

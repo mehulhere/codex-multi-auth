@@ -782,8 +782,9 @@ export async function startRuntimeRotationProxy(
 			})
 		: null;
 	const threadStatusStore = new ThreadStatusStore({
-		ttlMs: getSessionAffinityTtlMs(pluginConfig),
+		ttlMs: options.threadStatusTtlMs,
 		maxEntries: getSessionAffinityMaxEntries(pluginConfig),
+		storagePath: options.threadStatusPath,
 	});
 	// Initialize from disk so the proxy starts in sync with whatever generation
 	// the storage file already shows. Subsequent disk bumps (from CLI commands)
@@ -1240,6 +1241,12 @@ async function handleRequestInner(
 
 			const accountIdentity = accountIdentityFromAccount(refreshed.account, state.now());
 			recordLastRuntimeAccount(state.status, accountIdentity);
+			state.threadStatusStore.remember(
+				context.sessionKey,
+				refreshed.account,
+				null,
+				state.now(),
+			);
 
 			const outboundHeaders = createOutboundHeaders(
 				context.headers,

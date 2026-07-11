@@ -1855,6 +1855,29 @@ describe("runtime rotation proxy", () => {
 		expect(JSON.stringify(status.threadStatuses)).not.toContain("refresh-1");
 	});
 
+	it("publishes the selected account before a new thread stream completes", async () => {
+		const now = Date.now();
+		const accountManager = new AccountManager(undefined, createStorage(now, 2));
+		const { fetchImpl } = createRecordingFetch(() =>
+			textEventStream(
+				'data: {"type":"response.failed","response":{"id":"resp_failed","status":"failed"}}\n\n',
+			),
+		);
+		const proxy = await startProxy({ accountManager, fetchImpl });
+
+		await (
+			await postResponses(proxy, {
+				model: "gpt-5-codex",
+				stream: true,
+				metadata: { session_id: "thread-selected" },
+			})
+		).text();
+
+		expect(proxy.getStatus().threadStatuses["thread-selected"]).toMatchObject({
+			accountDisplay: "Account 1 (ac***@example.com)",
+		});
+	});
+
 	it("keeps a fork with a new prompt cache key on its parent response account", async () => {
 		const now = Date.now();
 		const accountManager = new AccountManager(undefined, createStorage(now, 3));
