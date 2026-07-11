@@ -7,6 +7,26 @@ This repository's current stable release line is `2.x`.
 Current stable release notes live in `docs/releases/`.
 This top-level changelog preserves the foundational `0.x` milestones and points older iteration history to `docs/releases/legacy-pre-0.1-history.md`.
 
+## [2.6.0] - 2026-07-11
+
+Follows up the 2.5.0 GPT-5.6 launch: the diagnostic live/quota probe now leads with GPT-5.6 (`gpt-5.6-sol`), the model pickers can surface the GPT-5.6 tiers (legacy config template + installer merge + the `codex-multi-auth-codex` wrapper), and `pidOffsetEnabled` now defaults on so parallel agents spread across accounts. `DEFAULT_MODEL`, routing, rotation, storage, and auth are unchanged.
+Closes [#626](https://github.com/ndycode/codex-multi-auth/issues/626), [#627](https://github.com/ndycode/codex-multi-auth/issues/627), [#628](https://github.com/ndycode/codex-multi-auth/issues/628). See [docs/releases/v2.6.0.md](docs/releases/v2.6.0.md) for full details.
+
+### Added
+
+- Dedicated `DEFAULT_PROBE_MODEL` (`gpt-5.6-sol`) leading the diagnostic probe and `QUOTA_PROBE_MODEL_CHAIN`, so `check`, `report`, `forecast`, `best`, and `fix` probe GPT-5.6 (falling back to 5.5/5.4/codex for accounts without entitlement) while `DEFAULT_MODEL` stays on `gpt-5.5` ([#627](https://github.com/ndycode/codex-multi-auth/issues/627))
+- GPT-5.6 tiers in `config/codex-legacy.json` (flattened per-effort format) and GPT-5.6 support in the `codex-multi-auth-codex` wrapper's model map, with a wrapper↔library parity test ([#626](https://github.com/ndycode/codex-multi-auth/issues/626))
+
+### Changed
+
+- `pidOffsetEnabled` now defaults to `true`, spreading parallel `codex-multi-auth-codex` processes across accounts to reduce cascading 429s; a no-op for single-account pools, and overridable with `CODEX_AUTH_PID_OFFSET_ENABLED=0` ([#628](https://github.com/ndycode/codex-multi-auth/issues/628))
+- The config installer merges `provider.openai.models` at the model-id level, so upgrades gain newly shipped template models (e.g. GPT-5.6) while preserving user customizations ([#626](https://github.com/ndycode/codex-multi-auth/issues/626))
+
+### Fixed
+
+- The quota probe resolves each model's cheapest declared reasoning effort instead of hardcoding `none`, keeping the probe consistent with normal request routing ([#627](https://github.com/ndycode/codex-multi-auth/issues/627))
+- Corrected two documented defaults (`retryAllAccountsRateLimited` is `false`, `retryAllAccountsMaxRetries` is `0`) and added high-parallelism tuning/troubleshooting guidance ([#628](https://github.com/ndycode/codex-multi-auth/issues/628))
+
 ## [2.5.0] - 2026-07-10
 
 Adds the GPT-5.6 model family (Sol, Terra, Luna) and the `max`/`ultra` reasoning tiers it introduces. GPT-5.6 is opt-in: the legacy `gpt-5` alias, the default model, and the quota-probe chain are unchanged.
