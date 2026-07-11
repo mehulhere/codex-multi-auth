@@ -29,7 +29,9 @@ export function styleQuotaSummary(summary: string): string {
 		if (/rate-limited/i.test(segment)) {
 			return stylePromptText(segment, "danger");
 		}
-		const match = segment.match(/^([0-9a-zA-Z]+)\s+(\d{1,3})%$/);
+		const match = segment.match(
+			/^([0-9a-zA-Z]+)\s+(\d{1,3})%(\s+\(resets .+\))?$/,
+		);
 		if (!match) {
 			return stylePromptText(segment, "muted");
 		}
@@ -42,7 +44,8 @@ export function styleQuotaSummary(summary: string): string {
 			return stylePromptText(segment, "muted");
 		}
 		const tone = quotaToneFromLeftPercent(leftPercent);
-		return `${stylePromptText(windowLabel, "muted")} ${stylePromptText(`${leftPercent}%`, tone)}`;
+		const resetSuffix = match[3] ?? "";
+		return `${stylePromptText(windowLabel, "muted")} ${stylePromptText(`${leftPercent}%`, tone)}${resetSuffix ? stylePromptText(resetSuffix, "muted") : ""}`;
 	});
 
 	return joinStyledSegments(rendered);
@@ -90,13 +93,45 @@ function formatCompactQuotaWindowLabel(
 function formatCompactQuotaPart(
 	windowMinutes: number | undefined,
 	usedPercent: number | undefined,
+	resetAtMs: number | undefined,
+	now: number,
 ): string | null {
 	const label = formatCompactQuotaWindowLabel(windowMinutes);
 	if (typeof usedPercent !== "number" || !Number.isFinite(usedPercent)) {
 		return null;
 	}
 	const left = quotaLeftPercentFromUsed(usedPercent);
-	return `${label} ${left}%`;
+	const reset = formatCompactResetAt(resetAtMs, now);
+	return `${label} ${left}%${reset ? ` (resets ${reset})` : ""}`;
+}
+
+function formatCompactResetAt(
+	resetAtMs: number | undefined,
+	now: number,
+): string | null {
+	if (typeof resetAtMs !== "number" || !Number.isFinite(resetAtMs) || resetAtMs <= 0) {
+		return null;
+	}
+	const reset = new Date(resetAtMs);
+	const current = new Date(now);
+	if (!Number.isFinite(reset.getTime()) || !Number.isFinite(current.getTime())) {
+		return null;
+	}
+	const time = reset.toLocaleTimeString(undefined, {
+		hour: "2-digit",
+		minute: "2-digit",
+		hour12: false,
+	});
+	const sameDay =
+		reset.getFullYear() === current.getFullYear() &&
+		reset.getMonth() === current.getMonth() &&
+		reset.getDate() === current.getDate();
+	if (sameDay) return time;
+	const date = reset.toLocaleDateString(undefined, {
+		day: "2-digit",
+		month: "short",
+	});
+	return `${date} ${time}`;
 }
 
 export function formatCompactQuotaSnapshot(
@@ -107,10 +142,14 @@ export function formatCompactQuotaSnapshot(
 		formatCompactQuotaPart(
 			snapshot.primary.windowMinutes,
 			snapshot.primary.usedPercent,
+			snapshot.primary.resetAtMs,
+			now,
 		),
 		formatCompactQuotaPart(
 			snapshot.secondary.windowMinutes,
 			snapshot.secondary.usedPercent,
+			snapshot.secondary.resetAtMs,
+			now,
 		),
 	].filter(
 		(value): value is string => typeof value === "string" && value.length > 0,
@@ -135,10 +174,14 @@ export function formatAccountQuotaSummary(
 		formatCompactQuotaPart(
 			entry.primary.windowMinutes,
 			entry.primary.usedPercent,
+			entry.primary.resetAtMs,
+			now,
 		),
 		formatCompactQuotaPart(
 			entry.secondary.windowMinutes,
 			entry.secondary.usedPercent,
+			entry.secondary.resetAtMs,
+			now,
 		),
 	].filter(
 		(value): value is string => typeof value === "string" && value.length > 0,

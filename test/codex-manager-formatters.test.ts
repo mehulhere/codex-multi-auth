@@ -10,6 +10,7 @@ import {
 	stringifyLogArgs,
 } from "../lib/codex-manager/formatters/text-style.js";
 import {
+	formatCompactQuotaSnapshot,
 	quotaCacheEntryToSnapshot,
 	styleQuotaSummary,
 } from "../lib/codex-manager/formatters/quota-formatters.js";
@@ -119,6 +120,29 @@ describe("text-style formatters", () => {
 });
 
 describe("quota formatters", () => {
+	it("includes reset timing for both compact quota windows", () => {
+		const now = new Date(2026, 6, 11, 12, 0, 0).getTime();
+		const summary = formatCompactQuotaSnapshot(
+			{
+				status: 200,
+				model: "gpt-5.5",
+				primary: {
+					usedPercent: 6,
+					windowMinutes: 300,
+					resetAtMs: new Date(2026, 6, 11, 18, 21, 0).getTime(),
+				},
+				secondary: {
+					usedPercent: 17,
+					windowMinutes: 10_080,
+					resetAtMs: new Date(2026, 6, 18, 18, 21, 0).getTime(),
+				},
+			},
+			now,
+		);
+
+		expect(summary).toMatch(/^5h 94% \(resets .+\) \| 7d 83% \(resets .+\)$/);
+	});
+
 	it("styleQuotaSummary keeps rate-limited and percent segments, clamps to 100", () => {
 		expect(styleQuotaSummary("5h 80% | weekly 15%")).toBe(
 			"5h 80% | weekly 15%",
