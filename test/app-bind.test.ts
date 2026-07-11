@@ -304,6 +304,24 @@ describe("Codex app runtime rotation bind", () => {
 		expect(desktopEntry).toContain("--max-log-bytes");
 		expect(desktopEntry).toContain("runtime-rotation-app-bind.json");
 		expect(desktopEntry).not.toContain(result.status.state?.clientApiKey ?? "");
+		await writeFile(
+			result.status.paths.statusPath,
+			JSON.stringify({
+				state: "running",
+				pid: 999_999_999,
+				threadStatuses: {
+					"thread-before-upgrade": {
+						accountNumber: 2,
+						accountDisplay: "Account 2 (hi***@example.com)",
+						maskedEmail: "hi***@example.com",
+						primary: {},
+						secondary: {},
+						updatedAt: 123,
+						accessToken: "must-not-migrate",
+					},
+				},
+			}),
+		);
 
 		await unbindCodexAppRuntimeRotation({
 			platform: "linux",
@@ -312,6 +330,14 @@ describe("Codex app runtime rotation bind", () => {
 			spawnDetached: false,
 		});
 		expect(existsSync(startupPath)).toBe(false);
+		const migrationPath = join(
+			result.status.paths.bindDir,
+			"runtime-rotation-thread-status-migration.json",
+		);
+		const migration = await readFile(migrationPath, "utf8");
+		expect(migration).toContain("thread-before-upgrade");
+		expect(migration).toContain("hi***@example.com");
+		expect(migration).not.toContain("must-not-migrate");
 	});
 
 	it("binds and unbinds the Windows app config without spawning during tests", async () => {

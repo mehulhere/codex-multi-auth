@@ -168,6 +168,7 @@ function toUrlHost(host: string): string {
 const proxyLog = createLogger("runtime-proxy");
 const DEFAULT_QUOTA_REMAINING_THRESHOLD = 0;
 const DEFAULT_AFFINITY_QUOTA_FLOOR_PERCENT = 5;
+const STREAM_USAGE_LIMIT_COOLDOWN_MS = 5 * 60 * 60 * 1000;
 
 const DEFAULT_MAX_RUNTIME_ACCOUNT_ATTEMPTS = 4;
 
@@ -204,6 +205,26 @@ function isThreadGoalPath(pathname: string): boolean {
 
 function normalizeThreadGoalUpstreamPath(pathname: string): string {
 	return pathname.startsWith("/codex/") ? pathname : `/codex${pathname}`;
+}
+
+function isStreamUsageLimitFailure(
+	code: string | null,
+	message: string | null,
+): boolean {
+	const normalizedCode = code?.trim().toLowerCase() ?? "";
+	if (
+		normalizedCode.includes("usage_limit") ||
+		normalizedCode.includes("quota_exhaust") ||
+		normalizedCode === "rate_limit_exceeded"
+	) {
+		return true;
+	}
+	const normalizedMessage = message?.trim().toLowerCase() ?? "";
+	return (
+		normalizedMessage.includes("usage limit") ||
+		normalizedMessage.includes("quota exhausted") ||
+		normalizedMessage.includes("out of codex")
+	);
 }
 
 function headersFromIncoming(req: IncomingMessage): Headers {
@@ -786,6 +807,11 @@ export async function startRuntimeRotationProxy(
 		maxEntries: getSessionAffinityMaxEntries(pluginConfig),
 		storagePath: options.threadStatusPath,
 	});
+	threadStatusStore.importRuntimeStatuses(
+		options.initialThreadStatuses,
+		activeAccountManager.getAccountsSnapshot(),
+		now(),
+	);
 	// Initialize from disk so the proxy starts in sync with whatever generation
 	// the storage file already shows. Subsequent disk bumps (from CLI commands)
 	// are detected per-request via `maybeInvalidateAffinityFromDisk`.
@@ -887,17 +913,25 @@ export async function startRuntimeRotationProxy(
 			})();
 			return closingPromise;
 		},
-		getStatus: () => ({
-			...state.status,
-			threadStatuses: state.threadStatusStore.snapshot(
-				state.activeAccountManager.getAccountsSnapshot(),
-				state.now(),
-			),
+		getStatus: () => {
+			const threadStatusPersistence = state.threadStatusStore.getPersistenceState();
+			return {
+				...state.status,
+				threadStatusPersistence,
+				threadStatuses:
+					threadStatusPersistence === "error"
+						? {}
+						: state.threadStatusStore.snapshot(
+								state.activeAccountManager.getAccountsSnapshot(),
+								state.now(),
+							),
 			// Redact any email/token material that leaked into a raw upstream or
 			// refresh error string before exposing it to status/report consumers
 			// (errors-logging-08). maskString is a no-op for clean diagnostic text.
-			lastError: state.status.lastError === null ? null : maskString(state.status.lastError),
-		}),
+				lastError:
+					state.status.lastError === null ? null : maskString(state.status.lastError),
+			};
+		},
 	};
 }
 
@@ -1561,6 +1595,7 @@ async function handleRequestInner(
 			);
 
 			let streamTerminalEvent: string | null = null;
+			let streamUsageLimitReached = false;
 			let observedResponseId: string | null = null;
 			const threadQuotaSnapshot = parseCodexQuotaSnapshot(
 				upstream.headers,
@@ -1592,8 +1627,22 @@ async function handleRequestInner(
 					onTerminalEvent: (type) => {
 						streamTerminalEvent = type;
 					},
+					onTerminalFailure: ({ code, message }) => {
+						streamUsageLimitReached = isStreamUsageLimitFailure(code, message);
+					},
 				},
 			);
+			if (streamUsageLimitReached) {
+				accountManager.markRateLimitedWithReason(
+					refreshed.account,
+					STREAM_USAGE_LIMIT_COOLDOWN_MS,
+					context.family,
+					"quota",
+					context.model,
+				);
+				state.sessionAffinityStore?.forgetSession(context.sessionKey);
+				accountManager.saveToDiskDebounced();
+			}
 			const streamSucceeded =
 				forwarded &&
 				streamTerminalEvent !== "response.failed" &&

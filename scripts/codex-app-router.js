@@ -20,6 +20,7 @@ import process from "node:process";
 
 const DEFAULT_MAX_LOG_BYTES = 1024 * 1024;
 const LOG_SIZE_CHECK_INTERVAL_MS = 60_000;
+const THREAD_STATUS_MIGRATION_FILE = "runtime-rotation-thread-status-migration.json";
 
 function parsePort(value) {
 	if (typeof value !== "string" && typeof value !== "number") return Number.NaN;
@@ -211,6 +212,11 @@ function createStatusPayload({ state, proxyServer, error, stateRecord }) {
 		lastAccountId: proxyStatus.lastAccountId ?? null,
 		lastAccountUpdatedAt: proxyStatus.lastAccountUpdatedAt ?? null,
 		threadStatuses: sanitizeThreadStatuses(proxyStatus.threadStatuses),
+		threadStatusPersistence: ["durable", "memory-only", "error"].includes(
+			proxyStatus.threadStatusPersistence,
+		)
+			? proxyStatus.threadStatusPersistence
+			: "memory-only",
 		lastError: error ? (error instanceof Error ? error.message : String(error)) : proxyStatus.lastError ?? null,
 	};
 }
@@ -329,6 +335,9 @@ async function main() {
 	};
 
 	try {
+		const resolvedStatusPath = args.statusPath || stateRecord?.statusPath || "";
+		const migrationPath = join(dirname(resolvedStatusPath || args.statePath), THREAD_STATUS_MIGRATION_FILE);
+		const previousStatus = readState(resolvedStatusPath) ?? readState(migrationPath);
 		const proxyModule = await import("../dist/lib/runtime-rotation-proxy.js");
 		proxyServer = await proxyModule.startRuntimeRotationProxy({
 			host,
@@ -338,7 +347,11 @@ async function main() {
 				dirname(args.statusPath || stateRecord?.statusPath || args.statePath),
 				"runtime-rotation-thread-assignments.json",
 			),
+			initialThreadStatuses: sanitizeThreadStatuses(previousStatus?.threadStatuses),
 		});
+		if (proxyServer.getStatus?.().threadStatusPersistence === "durable") {
+			rmSync(migrationPath, { force: true });
+		}
 		writeCurrentStatus("running");
 		const timer = setInterval(() => writeCurrentStatus("running"), 1000);
 		let cleanupPromise = null;

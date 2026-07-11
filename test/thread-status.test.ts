@@ -134,6 +134,54 @@ describe("ThreadStatusStore", () => {
 		}
 	});
 
+	it("reports persistence failure instead of claiming durability", () => {
+		const root = mkdtempSync(join(tmpdir(), "codex-thread-status-"));
+		try {
+			const account = managedAccount(0, "alice@example.com");
+			const store = new ThreadStatusStore({
+				storagePath: root,
+			});
+			store.remember("thread-memory-only", account, quota, NOW);
+			expect(store.getPersistenceState()).toBe("error");
+		} finally {
+			rmSync(root, { recursive: true, force: true });
+		}
+	});
+
+	it("migrates validated redacted router status into the durable store", () => {
+		const root = mkdtempSync(join(tmpdir(), "codex-thread-status-"));
+		const storagePath = join(root, "thread-assignments.json");
+		try {
+			const accounts = [
+				managedAccount(0, "alice@example.com"),
+				managedAccount(1, "bob@example.net"),
+			];
+			const store = new ThreadStatusStore({ storagePath });
+			store.importRuntimeStatuses(
+				{
+					"thread-old": {
+						accountNumber: 2,
+						accountDisplay: "Account 2 (bo***@example.net)",
+						maskedEmail: "bo***@example.net",
+						primary: { usedPercent: 12 },
+						secondary: { usedPercent: 3 },
+						updatedAt: NOW - 1_000,
+					},
+				},
+				accounts,
+				NOW,
+			);
+
+			const restored = new ThreadStatusStore({ storagePath });
+			expect(restored.get("thread-old", accounts, NOW + 1)).toMatchObject({
+				accountDisplay: "Account 2 (bo***@example.net)",
+				primary: { usedPercent: 12 },
+			});
+		} finally {
+			rmSync(root, { recursive: true, force: true });
+		}
+	});
+
 	it("expires stale records and evicts the oldest record at the size bound", () => {
 		const account = managedAccount(0, "alice@example.com");
 		const store = new ThreadStatusStore({ ttlMs: 1_000, maxEntries: 2 });

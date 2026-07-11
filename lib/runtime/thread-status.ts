@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import {
 	chmodSync,
 	mkdirSync,
@@ -9,6 +9,7 @@ import {
 } from "node:fs";
 import { dirname } from "node:path";
 import type { ManagedAccount } from "../accounts.js";
+import { withRetrySync } from "../fs-retry.js";
 import type { CodexQuotaWindow } from "../quota-probe.js";
 import { getAccountIdentityKey } from "../storage/identity.js";
 import type { ParsedCodexQuotaSnapshot } from "./quota-headers.js";
@@ -40,6 +41,8 @@ export interface ThreadStatusStoreOptions {
 	maxEntries?: number;
 	storagePath?: string;
 }
+
+export type ThreadStatusPersistenceState = "durable" | "memory-only" | "error";
 
 function normalizeSessionKey(value: string | null | undefined): string | null {
 	if (!value) return null;
@@ -86,6 +89,7 @@ export class ThreadStatusStore {
 	private readonly maxEntries: number;
 	private readonly storagePath: string | null;
 	private readonly entries = new Map<string, StoredThreadStatus>();
+	private persistenceState: ThreadStatusPersistenceState;
 
 	constructor(options: ThreadStatusStoreOptions = {}) {
 		this.ttlMs = Math.max(
@@ -97,7 +101,48 @@ export class ThreadStatusStore {
 			Math.floor(options.maxEntries ?? DEFAULT_MAX_ENTRIES),
 		);
 		this.storagePath = options.storagePath?.trim() || null;
+		this.persistenceState = this.storagePath ? "durable" : "memory-only";
 		this.loadFromDisk();
+	}
+
+	getPersistenceState(): ThreadStatusPersistenceState {
+		return this.persistenceState;
+	}
+
+	importRuntimeStatuses(
+		statuses: Record<string, RuntimeThreadStatus> | null | undefined,
+		accounts: readonly ManagedAccount[],
+		now = Date.now(),
+	): void {
+		if (!statuses || typeof statuses !== "object" || Array.isArray(statuses)) return;
+		for (const [sessionKey, status] of Object.entries(statuses).slice(0, this.maxEntries)) {
+			const key = normalizeSessionKey(sessionKey);
+			if (!key || this.entries.has(key) || !status || typeof status !== "object") continue;
+			if (
+				!Number.isInteger(status.accountNumber) ||
+				status.accountNumber < 1 ||
+				typeof status.accountDisplay !== "string" ||
+				!status.accountDisplay.startsWith(`Account ${status.accountNumber}`)
+			) {
+				continue;
+			}
+			const account = status.maskedEmail
+				? accounts.find(
+						(candidate) => maskThreadStatusEmail(candidate.email) === status.maskedEmail,
+					)
+				: accounts.find((candidate) => candidate.index + 1 === status.accountNumber);
+			if (!account) continue;
+			this.remember(
+				key,
+				account,
+				{
+					status: 200,
+					primary: cloneWindow(status.primary),
+					secondary: cloneWindow(status.secondary),
+				},
+				now,
+			);
+		}
 	}
 
 	remember(
@@ -231,24 +276,36 @@ export class ThreadStatusStore {
 	}
 
 	private persistToDisk(): void {
-		if (!this.storagePath) return;
-		const tempPath = `${this.storagePath}.${process.pid}.${Date.now()}.tmp`;
+		const storagePath = this.storagePath;
+		if (!storagePath) return;
 		try {
-			mkdirSync(dirname(this.storagePath), { recursive: true });
-			writeFileSync(
-				tempPath,
-				`${JSON.stringify({ version: 1, entries: Object.fromEntries(this.entries) }, null, 2)}\n`,
-				{ encoding: "utf8", mode: 0o600 },
+			withRetrySync(
+				() => {
+					const tempPath = `${storagePath}.${process.pid}.${randomUUID()}.tmp`;
+					try {
+						mkdirSync(dirname(storagePath), { recursive: true });
+						writeFileSync(
+							tempPath,
+							`${JSON.stringify({ version: 1, entries: Object.fromEntries(this.entries) }, null, 2)}\n`,
+							{ encoding: "utf8", mode: 0o600 },
+						);
+						chmodSync(tempPath, 0o600);
+						renameSync(tempPath, storagePath);
+						chmodSync(storagePath, 0o600);
+					} catch (error) {
+						try {
+							rmSync(tempPath, { force: true });
+						} catch {
+							// Preserve the original write failure for retry classification.
+						}
+						throw error;
+					}
+				},
+				{ maxAttempts: 3, backoffMs: 10 },
 			);
-			chmodSync(tempPath, 0o600);
-			renameSync(tempPath, this.storagePath);
-			chmodSync(this.storagePath, 0o600);
+			this.persistenceState = "durable";
 		} catch {
-			try {
-				rmSync(tempPath, { force: true });
-			} catch {
-				// Preserve the original best-effort write failure.
-			}
+			this.persistenceState = "error";
 		}
 	}
 }

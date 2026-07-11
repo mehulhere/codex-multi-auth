@@ -149,6 +149,33 @@ function waitForDrain(res: ServerResponse): Promise<void> {
 export interface RuntimeStreamObserver {
 	onResponseId?: (responseId: string) => void;
 	onTerminalEvent?: (type: string) => void;
+	onTerminalFailure?: (failure: {
+		type: string;
+		code: string | null;
+		message: string | null;
+	}) => void;
+}
+
+function readOptionalString(record: Record<string, unknown>, key: string): string | null {
+	const value = record[key];
+	return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
+function extractTerminalFailure(
+	data: Record<string, unknown>,
+	type: string,
+): { type: string; code: string | null; message: string | null } {
+	const response = isRecord(data.response) ? data.response : null;
+	const error = isRecord(response?.error)
+		? response.error
+		: isRecord(data.error)
+			? data.error
+			: data;
+	return {
+		type,
+		code: readOptionalString(error, "code"),
+		message: readOptionalString(error, "message"),
+	};
 }
 
 function extractResponseId(value: unknown): string | null {
@@ -174,6 +201,9 @@ function observeSseLine(line: string, observer: RuntimeStreamObserver): void {
 			type === "error"
 		) {
 			observer.onTerminalEvent?.(type);
+			if (type === "response.failed" || type === "error") {
+				observer.onTerminalFailure?.(extractTerminalFailure(data, type));
+			}
 		}
 		if (
 			type === "response.completed" ||

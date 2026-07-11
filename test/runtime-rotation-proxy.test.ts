@@ -1878,6 +1878,37 @@ describe("runtime rotation proxy", () => {
 		});
 	});
 
+	it("releases thread affinity after a streamed usage-limit failure", async () => {
+		const now = Date.now();
+		const accountManager = new AccountManager(undefined, createStorage(now, 3));
+		const { calls, fetchImpl } = createRecordingFetch((_call, attempt) =>
+			attempt === 1
+				? textEventStream(
+						'data: {"type":"response.failed","response":{"id":"resp_limit","status":"failed","error":{"code":"usage_limit_reached","message":"You have hit your usage limit"}}}\n\n',
+					)
+				: textEventStream(
+						'data: {"type":"response.completed","response":{"id":"resp_ok","status":"completed"}}\n\n',
+					),
+		);
+		const proxy = await startProxy({ accountManager, fetchImpl });
+		const body = {
+			model: "gpt-5-codex",
+			stream: true,
+			metadata: { session_id: "thread-stream-limit" },
+		};
+
+		await (await postResponses(proxy, body)).text();
+		await (await postResponses(proxy, body)).text();
+
+		expect(calls.map((call) => call.headers.get(OPENAI_HEADERS.ACCOUNT_ID))).toEqual([
+			"acc_1",
+			"acc_2",
+		]);
+		expect(
+			accountManager.getAccountByIndex(0)?.rateLimitResetTimes["gpt-5-codex"],
+		).toBeGreaterThan(now);
+	});
+
 	it("keeps a fork with a new prompt cache key on its parent response account", async () => {
 		const now = Date.now();
 		const accountManager = new AccountManager(undefined, createStorage(now, 3));

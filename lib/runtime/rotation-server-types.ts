@@ -1,7 +1,10 @@
 import type { AccountManager } from "../accounts.js";
 import type { ModelFamily } from "../prompts/codex.js";
 import type { QuotaCacheData } from "../quota-cache.js";
-import type { RuntimeThreadStatus } from "./thread-status.js";
+import type {
+	RuntimeThreadStatus,
+	ThreadStatusPersistenceState,
+} from "./thread-status.js";
 
 export interface RuntimeRotationProxyServer {
 	host: string;
@@ -24,6 +27,7 @@ export interface RuntimeRotationProxyStatus {
 	lastAccountId: string | null;
 	lastAccountUpdatedAt: number | null;
 	threadStatuses: Record<string, RuntimeThreadStatus>;
+	threadStatusPersistence: ThreadStatusPersistenceState;
 }
 
 export interface RuntimeRotationProxyOptions {
@@ -43,6 +47,7 @@ export interface RuntimeRotationProxyOptions {
 	/** Owner-only durable per-thread account assignment sidecar used by Desktop. */
 	threadStatusPath?: string;
 	threadStatusTtlMs?: number;
+	initialThreadStatuses?: Record<string, RuntimeThreadStatus>;
 	/**
 	 * Ephemeral, per-instance account pin (0-based) for a single invocation
 	 * (issue #623: `codex-multi-auth-codex --account`). When set, this proxy

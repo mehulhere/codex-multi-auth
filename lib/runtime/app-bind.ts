@@ -19,6 +19,8 @@ const APP_BIND_DIR_NAME = "app-bind";
 const APP_BIND_STATE_FILE = "runtime-rotation-app-bind.json";
 const APP_BIND_BACKUP_FILE = "codex-config-backup.json";
 const APP_BIND_STATUS_FILE = "runtime-rotation-app-bind-status.json";
+const APP_BIND_THREAD_STATUS_MIGRATION_FILE =
+	"runtime-rotation-thread-status-migration.json";
 const WINDOWS_STARTUP_FILE = "Codex Multi Auth Runtime Router.cmd";
 const LINUX_AUTOSTART_FILE = "codex-multi-auth-runtime-router.desktop";
 const MACOS_LAUNCH_AGENT_ID = "com.ndycode.codex-multi-auth.runtime-router";
@@ -351,6 +353,54 @@ async function readRouterStatus(path: string): Promise<AppBindRouterStatus | nul
 		updatedAt: readNumber(record, "updatedAt"),
 		lastError: readString(record, "lastError"),
 	};
+}
+
+function sanitizeMigrationWindow(value: unknown): Record<string, number> {
+	if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+	const record = value as Record<string, unknown>;
+	const result: Record<string, number> = {};
+	for (const key of ["usedPercent", "windowMinutes", "resetAtMs"]) {
+		const candidate = record[key];
+		if (typeof candidate === "number" && Number.isFinite(candidate)) {
+			result[key] = candidate;
+		}
+	}
+	return result;
+}
+
+function sanitizeMigrationThreadStatuses(value: unknown): Record<string, unknown> {
+	if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+	const result: Record<string, unknown> = {};
+	for (const [sessionKey, candidate] of Object.entries(value).slice(0, 512)) {
+		if (!/^[A-Za-z0-9._:-]{1,256}$/.test(sessionKey)) continue;
+		if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) continue;
+		const record = candidate as Record<string, unknown>;
+		const accountNumber = record.accountNumber;
+		const accountDisplay = record.accountDisplay;
+		const maskedEmail = record.maskedEmail;
+		const updatedAt = record.updatedAt;
+		if (
+			!Number.isInteger(accountNumber) ||
+			(accountNumber as number) < 1 ||
+			typeof accountDisplay !== "string" ||
+			!accountDisplay.startsWith(`Account ${accountNumber}`) ||
+			(maskedEmail !== null &&
+				(typeof maskedEmail !== "string" || !maskedEmail.includes("***@"))) ||
+			typeof updatedAt !== "number" ||
+			!Number.isFinite(updatedAt)
+		) {
+			continue;
+		}
+		result[sessionKey] = {
+			accountNumber,
+			accountDisplay,
+			maskedEmail,
+			primary: sanitizeMigrationWindow(record.primary),
+			secondary: sanitizeMigrationWindow(record.secondary),
+			updatedAt,
+		};
+	}
+	return result;
 }
 
 function isProcessAlive(pid: number | null): boolean {
@@ -832,6 +882,16 @@ async function unbindCodexAppRuntimeRotationLocked(
 ): Promise<AppBindResult> {
 	const state = await readAppBindState(paths.statePath);
 	const router = await readRouterStatus(paths.statusPath);
+	const rawRouterStatus = await readJsonFile(paths.statusPath);
+	const migrationThreadStatuses = sanitizeMigrationThreadStatuses(
+		rawRouterStatus?.threadStatuses,
+	);
+	if (Object.keys(migrationThreadStatuses).length > 0) {
+		await atomicWriteFile(
+			join(paths.bindDir, APP_BIND_THREAD_STATUS_MIGRATION_FILE),
+			`${JSON.stringify({ version: 1, threadStatuses: migrationThreadStatuses }, null, 2)}\n`,
+		);
+	}
 	let startupCleanupError: Error | null = null;
 	if (state) {
 		await stopRouter(router);

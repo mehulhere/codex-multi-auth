@@ -119,6 +119,8 @@ describe("createRotationProxyState", () => {
 			lastAccountLabel: null,
 			lastAccountId: null,
 			lastAccountUpdatedAt: null,
+			threadStatuses: {},
+			threadStatusPersistence: "memory-only",
 		});
 		expect(state.lastGlobalAccountIndex).toBeNull();
 		expect(state.lastStaleRuntimeReloadAt).toBe(0);

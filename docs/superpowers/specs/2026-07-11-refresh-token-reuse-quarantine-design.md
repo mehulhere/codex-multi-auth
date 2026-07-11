@@ -152,7 +152,9 @@ owner-only redacted sidecar across router restarts and expire after 90 days,
 rather than sharing the short session-affinity expiry. Both the durable store
 and renderer-facing status snapshot are capped so abandoned threads cannot grow
 the files without bound. Writes retain the existing atomic
-temporary-file-and-rename pattern.
+temporary-file-and-rename pattern with bounded retries for transient file locks.
+On the first restart after upgrading, the router validates and imports the
+existing redacted status snapshot before publishing its new status file.
 
 The ilysenko Desktop main process will read this owner-only state. It will expose
 one narrow IPC operation accepting the current local conversation/session ID
@@ -200,11 +202,17 @@ upstream bundle shape is unsupported.
 
 - Assignment persistence uses an owner-only atomic temporary-file-and-rename
   sidecar and never stores raw email, account ID, or credentials.
+- A persistence failure suppresses the in-memory assignment from renderer
+  status and exposes a fixed storage-unavailable state until a later write
+  succeeds.
 - Concurrent requests that observe the same terminal failure perform an
   idempotent disable operation.
 - A failed assignment-sidecar write does not disrupt routing; `/status` reports
   that multi-auth status is unavailable instead of inventing an assignment.
 - Transient failures retain existing retry and cooldown behavior.
+- A streamed `usage_limit` failure cannot safely replay a turn that may already
+  have executed tools. It marks the served account quota-limited and releases
+  thread affinity so the next Continue request selects another eligible account.
 - Runtime client-facing errors remain redacted and machine-readable.
 - Sidecar entries are bounded, expire, and never contain tokens or full emails.
 - Desktop IPC rejects untrusted senders, malformed identifiers, and arbitrary
