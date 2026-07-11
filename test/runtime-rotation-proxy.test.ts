@@ -1872,7 +1872,20 @@ describe("runtime rotation proxy", () => {
 				'data: {"type":"response.failed","response":{"id":"resp_failed","status":"failed"}}\n\n',
 			),
 		);
-		const proxy = await startProxy({ accountManager, fetchImpl });
+		const proxy = await startProxy({
+			accountManager,
+			fetchImpl,
+			options: {
+				quotaCache: quotaCacheFor(now, [
+					{
+						accountId: "acc_1",
+						left5h: 36,
+						left7d: 90,
+						reset7dAtMs: now + 7 * 24 * 60 * 60_000,
+					},
+				]),
+			},
+		});
 
 		await (
 			await postResponses(proxy, {
@@ -1884,6 +1897,8 @@ describe("runtime rotation proxy", () => {
 
 		expect(proxy.getStatus().threadStatuses["thread-selected"]).toMatchObject({
 			accountDisplay: "Account 1 (ac***@example.com)",
+			primary: { usedPercent: 64, windowMinutes: 300 },
+			secondary: { usedPercent: 10, windowMinutes: 10_080 },
 		});
 	});
 

@@ -51,6 +51,7 @@ import {
 	upsertQuotaCacheEntryForAccount,
 	type QuotaCacheEntry,
 } from "./quota-cache.js";
+import { findQuotaCacheEntryForAccount } from "./quota-readiness.js";
 import { createLogger, maskString, runWithCorrelationId } from "./logger.js";
 import { CodexValidationError } from "./errors.js";
 import {
@@ -1297,10 +1298,22 @@ async function handleRequestInner(
 
 			const accountIdentity = accountIdentityFromAccount(refreshed.account, state.now());
 			recordLastRuntimeAccount(state.status, accountIdentity);
+			const cachedThreadQuota = findQuotaCacheEntryForAccount(
+				state.quotaCache,
+				refreshed.account,
+				accountManager.getAccountsSnapshot(),
+			);
 			state.threadStatusStore.remember(
 				context.sessionKey,
 				refreshed.account,
-				null,
+				cachedThreadQuota
+					? {
+							status: cachedThreadQuota.status,
+							planType: cachedThreadQuota.planType,
+							primary: cachedThreadQuota.primary,
+							secondary: cachedThreadQuota.secondary,
+						}
+					: null,
 				state.now(),
 			);
 
