@@ -1902,6 +1902,42 @@ describe("runtime rotation proxy", () => {
 		});
 	});
 
+	it("backfills restored thread quota from cache before the first request", async () => {
+		const now = Date.now();
+		const accountManager = new AccountManager(undefined, createStorage(now, 1));
+		const { fetchImpl } = createRecordingFetch(() => textEventStream());
+		const proxy = await startProxy({
+			accountManager,
+			fetchImpl,
+			options: {
+				quotaCache: quotaCacheFor(now, [
+					{
+						accountId: "acc_1",
+						left5h: 36,
+						left7d: 90,
+						reset7dAtMs: now + 7 * 24 * 60 * 60_000,
+					},
+				]),
+				initialThreadStatuses: {
+					"thread-restored": {
+						accountNumber: 1,
+						accountDisplay: "Account 1 (ac***@example.com)",
+						maskedEmail: "ac***@example.com",
+						primary: {},
+						secondary: {},
+						updatedAt: now,
+					},
+				},
+			},
+		});
+
+		expect(proxy.getStatus().threadStatuses["thread-restored"]).toMatchObject({
+			accountDisplay: "Account 1 (ac***@example.com)",
+			primary: { usedPercent: 64, windowMinutes: 300 },
+			secondary: { usedPercent: 10, windowMinutes: 10_080 },
+		});
+	});
+
 	it("releases thread affinity after a streamed usage-limit failure", async () => {
 		const now = Date.now();
 		const accountManager = new AccountManager(undefined, createStorage(now, 3));

@@ -88,7 +88,10 @@ import type {
 	RuntimeRotationProxyStatus,
 } from "./runtime/rotation-server-types.js";
 import { readStorageMetaFromDisk } from "./runtime/rotation-storage-meta.js";
-import { parseCodexQuotaSnapshot } from "./runtime/quota-headers.js";
+import {
+	parseCodexQuotaSnapshot,
+	type ParsedCodexQuotaSnapshot,
+} from "./runtime/quota-headers.js";
 import {
 	applyMonotonicAuthCooldown,
 	DEFAULT_AUTH_FAILURE_COOLDOWN_MS,
@@ -226,6 +229,18 @@ function isStreamUsageLimitFailure(
 		normalizedMessage.includes("quota exhausted") ||
 		normalizedMessage.includes("out of codex")
 	);
+}
+
+function threadQuotaFromCacheEntry(
+	entry: QuotaCacheEntry | null,
+): ParsedCodexQuotaSnapshot | null {
+	if (!entry) return null;
+	return {
+		status: entry.status,
+		planType: entry.planType,
+		primary: entry.primary,
+		secondary: entry.secondary,
+	};
 }
 
 function headersFromIncoming(req: IncomingMessage): Headers {
@@ -830,6 +845,22 @@ export async function startRuntimeRotationProxy(
 		activeAccountManager.getAccountsSnapshot(),
 		now(),
 	);
+	const startupAccounts = activeAccountManager.getAccountsSnapshot();
+	for (const [sessionKey, status] of Object.entries(
+		threadStatusStore.snapshot(startupAccounts, now()),
+	)) {
+		if (status.primary.windowMinutes && status.secondary.windowMinutes) continue;
+		const account = startupAccounts.find(
+			(candidate) => candidate.index + 1 === status.accountNumber,
+		);
+		if (!account) continue;
+		const cachedQuota = threadQuotaFromCacheEntry(
+			findQuotaCacheEntryForAccount(options.quotaCache ?? quotaCache, account, startupAccounts),
+		);
+		if (cachedQuota) {
+			threadStatusStore.remember(sessionKey, account, cachedQuota, now());
+		}
+	}
 	// Initialize from disk so the proxy starts in sync with whatever generation
 	// the storage file already shows. Subsequent disk bumps (from CLI commands)
 	// are detected per-request via `maybeInvalidateAffinityFromDisk`.
@@ -1298,22 +1329,17 @@ async function handleRequestInner(
 
 			const accountIdentity = accountIdentityFromAccount(refreshed.account, state.now());
 			recordLastRuntimeAccount(state.status, accountIdentity);
-			const cachedThreadQuota = findQuotaCacheEntryForAccount(
-				state.quotaCache,
-				refreshed.account,
-				accountManager.getAccountsSnapshot(),
+			const cachedThreadQuota = threadQuotaFromCacheEntry(
+				findQuotaCacheEntryForAccount(
+					state.quotaCache,
+					refreshed.account,
+					accountManager.getAccountsSnapshot(),
+				),
 			);
 			state.threadStatusStore.remember(
 				context.sessionKey,
 				refreshed.account,
-				cachedThreadQuota
-					? {
-							status: cachedThreadQuota.status,
-							planType: cachedThreadQuota.planType,
-							primary: cachedThreadQuota.primary,
-							secondary: cachedThreadQuota.secondary,
-						}
-					: null,
+				cachedThreadQuota,
 				state.now(),
 			);
 
