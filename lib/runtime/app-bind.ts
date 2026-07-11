@@ -948,10 +948,12 @@ export function formatAppBindStatus(status: AppBindStatus): string {
 	return [
 		`Codex app bind: ${parts.join(", ")}`,
 		[
-			"Note: Codex Desktop may hide history while the app bind selects the",
-			"codex-multi-auth-runtime-proxy provider; use `codex-multi-auth rotation",
-			"unbind-app` or `codex-multi-auth rotation disable` to restore the original",
-			"Codex provider/config.",
+			"Note: provider-filtered Codex Desktop builds may hide threads recorded",
+			"under a different model provider. The ilysenko Linux",
+			"`unified-provider-history` feature keeps native and routed threads visible",
+			"without disabling rotation. Verify all stored sessions with",
+			"`codex-multi-auth history list --json`; use `rotation unbind-app` only",
+			"when intentionally removing Desktop routing.",
 		].join(" "),
 		[
 			"Model speed/reasoning controls stay in Codex config/CLI flags; set",

@@ -121,6 +121,9 @@ it("prints the resolved app-bind config path in reasoning guidance", () => {
 
 	expect(message).toContain(configPath);
 	expect(message).not.toContain("~/.codex/config.toml");
+	expect(message).toContain("unified-provider-history");
+	expect(message).toContain("history list --json");
+	expect(message).not.toContain("rotation disable");
 });
 
 describe("Codex app runtime rotation bind", () => {
