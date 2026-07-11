@@ -219,7 +219,7 @@ For remote or headless shells, prefer `codex-multi-auth login --device-auth`.
 | `codex-multi-auth verify-flagged` | Can any previously flagged account be restored? |
 | `codex-multi-auth verify --paths` | Do my storage path chain and sandbox probes still pass self-test? |
 | `codex-multi-auth fix --dry-run` | What safe storage or account repairs are available? |
-| `codex-multi-auth doctor --fix` | Can the CLI diagnose and apply the safest fixes now? |
+| `codex-multi-auth doctor --fix` | Can the CLI repair account state and an unreachable Codex Desktop router without changing its saved endpoint? |
 | `codex-multi-auth uninstall` | Remove residual artifacts (run BEFORE `npm uninstall`; npm@7+ no longer fires `preuninstall`) |
 
 ### Advanced

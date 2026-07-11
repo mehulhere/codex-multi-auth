@@ -5,11 +5,14 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import { createServer } from "node:net";
+import { once } from "node:events";
 import { afterEach, describe, expect, it } from "vitest";
 import {
 	bindCodexAppRuntimeRotation,
 	formatAppBindStatus,
 	getAppBindStatus,
+	probeCodexAppRuntimeRotation,
 	resolveAppBindPaths,
 	restoreConfigTomlFromAppBind,
 	rewriteConfigTomlForAppBind,
@@ -127,6 +130,43 @@ it("prints the resolved app-bind config path in reasoning guidance", () => {
 });
 
 describe("Codex app runtime rotation bind", () => {
+	it("probes the configured Desktop router endpoint without an upstream request", async () => {
+		const server = createServer();
+		server.listen(0, "127.0.0.1");
+		await once(server, "listening");
+		const address = server.address();
+		if (!address || typeof address === "string") throw new Error("missing TCP port");
+		const status = {
+			bound: true,
+			running: true,
+			unmanagedBind: false,
+			state: null,
+			router: {
+				state: "running",
+				pid: process.pid,
+				baseUrl: `http://127.0.0.1:${address.port}`,
+				totalRequests: null,
+				lastAccountIndex: null,
+				lastAccountLabel: null,
+				lastAccountEmail: null,
+				lastAccountId: null,
+				updatedAt: Date.now(),
+				lastError: null,
+			},
+			paths: resolveAppBindPaths(),
+		};
+
+		await expect(probeCodexAppRuntimeRotation(status)).resolves.toEqual({
+			reachable: true,
+			baseUrl: `http://127.0.0.1:${address.port}`,
+		});
+		await new Promise<void>((resolve, reject) =>
+			server.close((error) => (error ? reject(error) : resolve())),
+		);
+		await expect(probeCodexAppRuntimeRotation(status, 250)).resolves.toEqual(
+			expect.objectContaining({ reachable: false, baseUrl: status.router.baseUrl }),
+		);
+	});
 	it("rewrites and restores Codex config TOML without disturbing other sections", () => {
 		const original = [
 			'model_provider = "openai"',

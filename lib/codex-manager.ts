@@ -105,6 +105,7 @@ import {
 import {
 	bindCodexAppRuntimeRotation,
 	getAppBindStatus,
+	probeCodexAppRuntimeRotation,
 	restartCodexAppRuntimeRotation,
 	unbindCodexAppRuntimeRotation,
 } from "./runtime/app-bind.js";
@@ -162,6 +163,10 @@ function createRepairCommandDeps(): RepairCommandDeps {
 		formatCompactQuotaSnapshot,
 		resolveStoredAccountIdentity,
 		applyTokenAccountIdentity,
+		getCodexAppBindStatus: getAppBindStatus,
+		probeCodexAppRuntimeRotation,
+		bindCodexAppRuntimeRotation,
+		restartCodexAppRuntimeRotation,
 	};
 }
 

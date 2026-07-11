@@ -725,6 +725,7 @@ describe("codex manager cli commands", () => {
 		runtimeObservabilityMocks.loadPersistedRuntimeObservabilitySnapshot.mockReset();
 		appBindMocks.bindCodexAppRuntimeRotation.mockReset();
 		appBindMocks.getAppBindStatus.mockReset();
+		appBindMocks.probeCodexAppRuntimeRotation.mockReset();
 		appBindMocks.restartCodexAppRuntimeRotation.mockReset();
 		appBindMocks.unbindCodexAppRuntimeRotation.mockReset();
 		uiMocks.confirm.mockReset();
@@ -869,7 +870,18 @@ describe("codex manager cli commands", () => {
 			message: "Codex app bind unavailable in tests",
 			status: { router: null },
 		});
-		appBindMocks.getAppBindStatus.mockResolvedValue({ router: null });
+		appBindMocks.getAppBindStatus.mockResolvedValue({
+			bound: false,
+			running: false,
+			unmanagedBind: false,
+			state: null,
+			router: null,
+			paths: { configPath: "/mock/config.toml", startupPath: null },
+		});
+		appBindMocks.probeCodexAppRuntimeRotation.mockResolvedValue({
+			reachable: false,
+			baseUrl: null,
+		});
 		appBindMocks.restartCodexAppRuntimeRotation.mockResolvedValue({
 			message: "Codex app restart unavailable in tests",
 			status: { router: null },

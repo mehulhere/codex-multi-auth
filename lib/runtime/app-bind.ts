@@ -5,6 +5,7 @@ import { mkdir, open, readFile, rename, unlink } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import process from "node:process";
+import { createConnection } from "node:net";
 import { fileURLToPath } from "node:url";
 import { withFileOperationRetry } from "../fs-retry.js";
 import { getCodexMultiAuthDir } from "../runtime-paths.js";
@@ -101,6 +102,12 @@ export interface AppBindStatus {
 export interface AppBindResult {
 	status: AppBindStatus;
 	message: string;
+}
+
+export interface AppBindEndpointProbe {
+	reachable: boolean;
+	baseUrl: string | null;
+	error?: string;
 }
 
 export interface AppBindOptions {
@@ -747,6 +754,40 @@ export async function getAppBindStatus(options: AppBindOptions = {}): Promise<Ap
 		router,
 		paths,
 	};
+}
+
+export async function probeCodexAppRuntimeRotation(
+	status: AppBindStatus,
+	timeoutMs = 1_000,
+): Promise<AppBindEndpointProbe> {
+	const baseUrl = status.state?.baseUrl ?? status.router?.baseUrl ?? null;
+	if (!baseUrl) return { reachable: false, baseUrl, error: "endpoint unavailable" };
+	let url: URL;
+	try {
+		url = new URL(baseUrl);
+	} catch {
+		return { reachable: false, baseUrl, error: "invalid endpoint URL" };
+	}
+	const port = Number.parseInt(url.port, 10);
+	if (!Number.isInteger(port) || port <= 0 || port > 65_535) {
+		return { reachable: false, baseUrl, error: "invalid endpoint port" };
+	}
+	return new Promise((resolve) => {
+		const socket = createConnection({ host: url.hostname, port });
+		let settled = false;
+		const finish = (reachable: boolean, error?: string): void => {
+			if (settled) return;
+			settled = true;
+			socket.destroy();
+			resolve({ reachable, baseUrl, ...(error ? { error } : {}) });
+		};
+		socket.setTimeout(Math.max(100, timeoutMs));
+		socket.once("connect", () => finish(true));
+		socket.once("timeout", () => finish(false, "connection timed out"));
+		socket.once("error", (error: NodeJS.ErrnoException) =>
+			finish(false, error.code ?? error.message),
+		);
+	});
 }
 
 export async function bindCodexAppRuntimeRotation(

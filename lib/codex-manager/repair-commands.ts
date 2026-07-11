@@ -42,6 +42,11 @@ import { setCodexCliActiveSelection } from "../codex-cli/writer.js";
 import { MODEL_FAMILIES, type ModelFamily } from "../prompts/codex.js";
 import { DEFAULT_MODEL, resolveNormalizedModel } from "../request/helpers/model-map.js";
 import { loadPersistedRuntimeObservabilitySnapshot } from "../runtime/runtime-observability.js";
+import type {
+	AppBindEndpointProbe,
+	AppBindResult,
+	AppBindStatus,
+} from "../runtime/app-bind.js";
 import type { AccountIdSource, TokenFailure, TokenResult } from "../types.js";
 
 type TokenSuccess = Extract<TokenResult, { type: "success" }>;
@@ -130,6 +135,12 @@ export interface RepairCommandDeps {
 		account: AccountMetadataV3,
 		refreshedAccountId: string | undefined,
 	) => boolean;
+	getCodexAppBindStatus?: () => Promise<AppBindStatus>;
+	probeCodexAppRuntimeRotation?: (
+		status: AppBindStatus,
+	) => Promise<AppBindEndpointProbe>;
+	bindCodexAppRuntimeRotation?: () => Promise<AppBindResult>;
+	restartCodexAppRuntimeRotation?: () => Promise<AppBindResult>;
 }
 
 function printFixUsage(): void {
@@ -185,6 +196,8 @@ function printDoctorUsage(): void {
 			"  - Validates account storage readability",
 			"  - Checks active index consistency and account duplication",
 			"  - Flags placeholder/demo accounts and disabled-all scenarios",
+			"  - Checks the Codex Desktop app bind, startup entry, and localhost router",
+			"  - --fix restarts an unavailable Desktop router without changing its endpoint",
 		].join("\n"),
 	);
 }
@@ -1834,6 +1847,91 @@ export async function runDoctor(
 		expiresAt: number | undefined;
 		idToken?: string;
 	} | null = null;
+	if (deps.getCodexAppBindStatus) {
+		try {
+			let appBind = await deps.getCodexAppBindStatus();
+			if (!appBind.bound) {
+				addCheck({
+					key: "desktop-app-bind",
+					severity: "ok",
+					message: "Codex Desktop app bind is not configured (optional)",
+				});
+			} else {
+				let endpoint = deps.probeCodexAppRuntimeRotation
+					? await deps.probeCodexAppRuntimeRotation(appBind)
+					: { reachable: appBind.running, baseUrl: appBind.state?.baseUrl ?? null };
+				let startupPath = appBind.state?.startupPath ?? appBind.paths.startupPath;
+				let startupMissing = !!startupPath && !existsSync(startupPath);
+				const endpointNeedsRepair = !appBind.unmanagedBind && (!appBind.running || !endpoint.reachable);
+				if ((endpointNeedsRepair || startupMissing) && options.fix) {
+					if (options.dryRun) {
+						supplementalFixActions.push({
+							key: endpointNeedsRepair ? "desktop-router-restart" : "desktop-router-startup",
+							message: endpointNeedsRepair
+								? "Prepared in-place Codex Desktop router restart (dry-run)"
+								: "Prepared Codex Desktop router startup-entry repair (dry-run)",
+						});
+					} else if (endpointNeedsRepair && deps.restartCodexAppRuntimeRotation) {
+						const repaired = await deps.restartCodexAppRuntimeRotation();
+						appBind = repaired.status;
+						endpoint = deps.probeCodexAppRuntimeRotation
+							? await deps.probeCodexAppRuntimeRotation(appBind)
+							: { reachable: appBind.running, baseUrl: appBind.state?.baseUrl ?? null };
+						supplementalFixActions.push({
+							key: "desktop-router-restart",
+							message: `Restarted Codex Desktop router in place on ${appBind.state?.baseUrl ?? "its configured endpoint"}`,
+						});
+					} else if (startupMissing && deps.bindCodexAppRuntimeRotation) {
+						const repaired = await deps.bindCodexAppRuntimeRotation();
+						appBind = repaired.status;
+						endpoint = deps.probeCodexAppRuntimeRotation
+							? await deps.probeCodexAppRuntimeRotation(appBind)
+							: { reachable: appBind.running, baseUrl: appBind.state?.baseUrl ?? null };
+						supplementalFixActions.push({
+							key: "desktop-router-startup",
+							message: "Restored Codex Desktop router startup entry",
+						});
+					}
+				}
+				const healthy = !appBind.unmanagedBind && appBind.running && endpoint.reachable;
+				addCheck({
+					key: "desktop-app-bind",
+					severity: appBind.unmanagedBind ? "warn" : "ok",
+					message: appBind.unmanagedBind
+						? "Codex Desktop is bound but app-bind state is missing"
+						: "Codex Desktop app bind state is managed",
+					details: appBind.state?.configPath ?? appBind.paths.configPath,
+				});
+				addCheck({
+					key: "desktop-router-endpoint",
+					severity: healthy ? "ok" : "warn",
+					message: healthy
+						? "Codex Desktop localhost router is reachable"
+						: "Codex Desktop localhost router is unavailable",
+					details: [endpoint.baseUrl, endpoint.error].filter(Boolean).join(" | ") || undefined,
+				});
+				startupPath = appBind.state?.startupPath ?? appBind.paths.startupPath;
+				startupMissing = !!startupPath && !existsSync(startupPath);
+				if (startupPath) {
+					addCheck({
+						key: "desktop-router-startup",
+						severity: startupMissing ? "warn" : "ok",
+						message: !startupMissing
+							? "Codex Desktop router startup entry is installed"
+							: "Codex Desktop router startup entry is missing",
+						details: startupPath,
+					});
+				}
+			}
+		} catch (error) {
+			addCheck({
+				key: "desktop-app-bind",
+				severity: "error",
+				message: "Unable to inspect or repair Codex Desktop app bind",
+				details: error instanceof Error ? error.message : String(error),
+			});
+		}
+	}
 	if (options.fix && storageForChecks && storageForChecks.accounts.length > 0) {
 		const fixed = applyDoctorFixes(storageForChecks, deps);
 		storageFixChanged = fixed.changed;
@@ -2203,8 +2301,8 @@ export async function runDoctor(
 
 	const fixActions = [...structuralFixActions, ...supplementalFixActions];
 
-	if (options.fix && storageForChecks && storageForChecks.accounts.length > 0) {
-		fixChanged = storageFixChanged || fixActions.length > 0;
+	fixChanged = storageFixChanged || fixActions.length > 0;
+	if (options.fix) {
 		addCheck({
 			key: "auto-fix",
 			severity: fixChanged ? "warn" : "ok",

@@ -129,6 +129,8 @@ vi.mock("../lib/runtime/runtime-observability.js", async (importOriginal) => ({
 vi.mock("../lib/runtime/app-bind.js", () => ({
 	bindCodexAppRuntimeRotation: bindCodexAppRuntimeRotationMock,
 	getAppBindStatus: getAppBindStatusMock,
+	probeCodexAppRuntimeRotation: vi.fn(async () => ({ reachable: true, baseUrl: null })),
+	restartCodexAppRuntimeRotation: vi.fn(),
 	unbindCodexAppRuntimeRotation: unbindCodexAppRuntimeRotationMock,
 }));
 

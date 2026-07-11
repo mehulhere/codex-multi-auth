@@ -546,6 +546,12 @@ codex-multi-auth fix --live --model gpt-5.3-codex
 codex-multi-auth doctor --fix
 ```
 
+`doctor` also inspects the persistent Codex Desktop app bind, verifies its
+startup entry, and opens a TCP connection to the exact localhost endpoint saved
+in Desktop tasks. `doctor --fix` restarts an unavailable router in place and
+then probes it again. It preserves the configured port and client token, so
+existing tasks do not become bound to a retired endpoint.
+
 ---
 
 ## Related
