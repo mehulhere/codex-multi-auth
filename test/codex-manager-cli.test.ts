@@ -725,6 +725,7 @@ describe("codex manager cli commands", () => {
 		runtimeObservabilityMocks.loadPersistedRuntimeObservabilitySnapshot.mockReset();
 		appBindMocks.bindCodexAppRuntimeRotation.mockReset();
 		appBindMocks.getAppBindStatus.mockReset();
+		appBindMocks.restartCodexAppRuntimeRotation.mockReset();
 		appBindMocks.unbindCodexAppRuntimeRotation.mockReset();
 		uiMocks.confirm.mockReset();
 		planOcChatgptSyncMock.mockReset();
@@ -869,6 +870,10 @@ describe("codex manager cli commands", () => {
 			status: { router: null },
 		});
 		appBindMocks.getAppBindStatus.mockResolvedValue({ router: null });
+		appBindMocks.restartCodexAppRuntimeRotation.mockResolvedValue({
+			message: "Codex app restart unavailable in tests",
+			status: { router: null },
+		});
 		appBindMocks.unbindCodexAppRuntimeRotation.mockResolvedValue({
 			message: "Codex app unbind unavailable in tests",
 			status: { router: null },

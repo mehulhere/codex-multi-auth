@@ -179,6 +179,7 @@ export function createAppBindMocks() {
 	return {
 		bindCodexAppRuntimeRotation: vi.fn(),
 		getAppBindStatus: vi.fn(),
+		restartCodexAppRuntimeRotation: vi.fn(),
 		unbindCodexAppRuntimeRotation: vi.fn(),
 	};
 }
@@ -191,6 +192,7 @@ export function appBindModuleMock(
 	return {
 		bindCodexAppRuntimeRotation: mocks.bindCodexAppRuntimeRotation,
 		getAppBindStatus: mocks.getAppBindStatus,
+		restartCodexAppRuntimeRotation: mocks.restartCodexAppRuntimeRotation,
 		unbindCodexAppRuntimeRotation: mocks.unbindCodexAppRuntimeRotation,
 	};
 }

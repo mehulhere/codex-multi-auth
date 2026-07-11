@@ -133,6 +133,7 @@ function createDeps(params: {
 	savePluginConfigMock: ReturnType<typeof vi.fn>;
 	setStoragePathMock: ReturnType<typeof vi.fn>;
 	bindCodexAppMock: ReturnType<typeof vi.fn>;
+	restartCodexAppMock: ReturnType<typeof vi.fn>;
 	unbindCodexAppMock: ReturnType<typeof vi.fn>;
 	saveAccountsMock: ReturnType<typeof vi.fn>;
 } {
@@ -174,6 +175,9 @@ function createDeps(params: {
 	const unbindCodexAppMock = vi.fn(async () =>
 		createAppBindResult("Unbound Codex app config /mock/.codex/config.toml"),
 	);
+	const restartCodexAppMock = vi.fn(async () =>
+		createAppBindResult("Restarted Codex app runtime router on http://127.0.0.1:4567"),
+	);
 	const saveAccountsMock = vi.fn(async (_storage: AccountStorageV3) => undefined);
 	return {
 		infos,
@@ -181,6 +185,7 @@ function createDeps(params: {
 		savePluginConfigMock,
 		setStoragePathMock,
 		bindCodexAppMock,
+		restartCodexAppMock,
 		unbindCodexAppMock,
 		saveAccountsMock,
 		deps: {
@@ -198,6 +203,7 @@ function createDeps(params: {
 			getStoragePath: () => "/mock/openai-codex-accounts.json",
 			setStoragePath: setStoragePathMock,
 			bindCodexApp: bindCodexAppMock,
+			restartCodexApp: restartCodexAppMock,
 			unbindCodexApp: unbindCodexAppMock,
 			getCodexAppBindStatus: async () =>
 				params.appBindStatus ?? createAppBindStatus(),
@@ -213,8 +219,8 @@ beforeEach(() => {
 });
 
 describe("rotation reset-runtime", () => {
-	it("returns deterministic json and restarts app bind when helpers exist", async () => {
-		const { deps, infos, bindCodexAppMock, unbindCodexAppMock } = createDeps();
+	it("returns deterministic json and restarts app bind in place when the helper exists", async () => {
+		const { deps, infos, bindCodexAppMock, restartCodexAppMock, unbindCodexAppMock } = createDeps();
 		const resetSpy = vi.spyOn(AccountManager, "resetVolatileRuntimeState");
 
 		try {
@@ -222,8 +228,9 @@ describe("rotation reset-runtime", () => {
 
 			expect(exitCode).toBe(0);
 			expect(resetSpy).toHaveBeenCalledTimes(1);
-			expect(unbindCodexAppMock).toHaveBeenCalledTimes(1);
-			expect(bindCodexAppMock).toHaveBeenCalledTimes(1);
+			expect(restartCodexAppMock).toHaveBeenCalledTimes(1);
+			expect(unbindCodexAppMock).not.toHaveBeenCalled();
+			expect(bindCodexAppMock).not.toHaveBeenCalled();
 			expect(JSON.parse(infos.at(-1) ?? "{}")).toMatchObject({
 				ok: true,
 				command: "rotation reset-runtime",
@@ -236,17 +243,18 @@ describe("rotation reset-runtime", () => {
 	});
 
 	it("returns failure json without clearing runtime diagnostics when app bind restart throws", async () => {
-		const { deps, infos, errors, bindCodexAppMock, unbindCodexAppMock } =
+		const { deps, infos, errors, bindCodexAppMock, restartCodexAppMock, unbindCodexAppMock } =
 			createDeps();
 		const resetSpy = vi.spyOn(AccountManager, "resetVolatileRuntimeState");
-		unbindCodexAppMock.mockRejectedValueOnce(new Error("unbind busy"));
+		restartCodexAppMock.mockRejectedValueOnce(new Error("restart busy"));
 
 		try {
 			const exitCode = await runRotationCommand(["reset-runtime", "--json"], deps);
 
 			expect(exitCode).toBe(1);
 			expect(resetSpy).not.toHaveBeenCalled();
-			expect(unbindCodexAppMock).toHaveBeenCalledTimes(1);
+			expect(restartCodexAppMock).toHaveBeenCalledTimes(1);
+			expect(unbindCodexAppMock).not.toHaveBeenCalled();
 			expect(bindCodexAppMock).not.toHaveBeenCalled();
 			expect(errors).toEqual([]);
 			expect(JSON.parse(infos.at(-1) ?? "{}")).toMatchObject({
@@ -254,7 +262,7 @@ describe("rotation reset-runtime", () => {
 				command: "rotation reset-runtime",
 				resetVolatileRuntimeState: false,
 				appBindRestarted: false,
-				error: "unbind busy",
+				error: "restart busy",
 			});
 		} finally {
 			resetSpy.mockRestore();
@@ -265,6 +273,7 @@ describe("rotation reset-runtime", () => {
 		const { deps, infos } = createDeps();
 		const resetSpy = vi.spyOn(AccountManager, "resetVolatileRuntimeState");
 		delete deps.bindCodexApp;
+		delete deps.restartCodexApp;
 		delete deps.unbindCodexApp;
 
 		try {

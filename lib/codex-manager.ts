@@ -105,6 +105,7 @@ import {
 import {
 	bindCodexAppRuntimeRotation,
 	getAppBindStatus,
+	restartCodexAppRuntimeRotation,
 	unbindCodexAppRuntimeRotation,
 } from "./runtime/app-bind.js";
 import {
@@ -560,6 +561,7 @@ const CLI_COMMAND_HANDLERS: ReadonlyMap<string, CliCommandHandler> = new Map<
 				saveAccounts,
 				resolveActiveIndex,
 				bindCodexApp: bindCodexAppRuntimeRotation,
+				restartCodexApp: restartCodexAppRuntimeRotation,
 				unbindCodexApp: unbindCodexAppRuntimeRotation,
 				getCodexAppBindStatus: getAppBindStatus,
 				loadRuntimeObservabilitySnapshot:

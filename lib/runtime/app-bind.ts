@@ -758,6 +758,40 @@ export async function bindCodexAppRuntimeRotation(
 	);
 }
 
+/**
+ * Restart the persistent app router without changing its endpoint identity.
+ * Existing Desktop tasks persist the provider base URL and bearer token, so
+ * reset/repair operations must retain both values or those tasks reconnect to
+ * a retired endpoint while newly created tasks continue working.
+ */
+export async function restartCodexAppRuntimeRotation(
+	options: AppBindOptions = {},
+): Promise<AppBindResult> {
+	const paths = resolveAppBindPaths(options);
+	return withAppBindLock(paths.bindDir, async () => {
+		const existingState = await readAppBindState(paths.statePath);
+		if (!existingState) {
+			return bindCodexAppRuntimeRotationLocked(options, paths);
+		}
+		const router = await readRouterStatus(paths.statusPath);
+		await stopRouter(router);
+		if (router?.pid && isProcessAlive(router.pid)) {
+			throw new Error(`Codex app runtime router (pid ${router.pid}) did not stop`);
+		}
+		const result = await bindCodexAppRuntimeRotationLocked(options, paths);
+		if (
+			result.status.state?.port !== existingState.port ||
+			result.status.state?.clientApiKey !== existingState.clientApiKey
+		) {
+			throw new Error("Codex app runtime router restart changed its endpoint identity");
+		}
+		return {
+			...result,
+			message: `Restarted Codex app runtime router on ${existingState.baseUrl}`,
+		};
+	});
+}
+
 async function bindCodexAppRuntimeRotationLocked(
 	options: AppBindOptions,
 	paths: AppBindPaths,

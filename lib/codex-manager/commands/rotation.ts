@@ -78,6 +78,7 @@ export interface RotationCommandDeps {
 	getStoragePath: () => string | null;
 	setStoragePath: (path: string | null) => void;
 	bindCodexApp?: () => Promise<AppBindResult>;
+	restartCodexApp?: () => Promise<AppBindResult>;
 	unbindCodexApp?: () => Promise<AppBindResult>;
 	getCodexAppBindStatus?: () => Promise<AppBindStatus>;
 	loadRuntimeObservabilitySnapshot?: () => Promise<RuntimeObservabilitySnapshot | null>;
@@ -104,7 +105,7 @@ function printRotationUsage(logInfo: (message: string) => void): void {
 			"  - Binds the packaged Codex desktop app to the same localhost router when enabled or repaired",
 			"  - Use CODEX_MULTI_AUTH_RUNTIME_ROTATION_PROXY=0 to disable the proxy for the current process without changing persistent settings",
 			"  - reset-rate-limits clears stored rateLimitResetTimes and active coolingDownUntil entries; use when `fix --live` confirms quota is available but the proxy still returns 503 pool-exhausted",
-			"  - reset-runtime clears process-local runtime trackers and re-applies the Codex app bind when available",
+			"  - reset-runtime clears process-local runtime trackers and restarts the Codex app router in place without changing its port or token",
 		].join("\n"),
 	);
 }
@@ -129,13 +130,11 @@ async function runResetRuntime(
 		return 1;
 	}
 
-	let unbind: AppBindResult | null = null;
 	let bind: AppBindResult | null = null;
 	let appBindRestarted = false;
-	if (deps.unbindCodexApp && deps.bindCodexApp) {
+	if (deps.restartCodexApp) {
 		try {
-			unbind = await deps.unbindCodexApp();
-			bind = await deps.bindCodexApp();
+			bind = await deps.restartCodexApp();
 			appBindRestarted = true;
 		} catch (error) {
 			const message = error instanceof Error ? error.message : String(error);
@@ -162,7 +161,7 @@ async function runResetRuntime(
 		command: "rotation reset-runtime",
 		resetVolatileRuntimeState: true,
 		appBindRestarted,
-		unbindStatus: unbind?.status.state ?? null,
+		unbindStatus: null,
 		bindStatus: bind?.status.state ?? null,
 	};
 	if (json) {
