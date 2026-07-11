@@ -4,6 +4,8 @@ import type { RuntimePolicyDecision } from "../policy/runtime-policy.js";
 import type { HybridQuotaMetrics } from "../rotation.js";
 import type { SessionAffinityStore } from "../session-affinity.js";
 
+const NEW_SESSION_FIVE_HOUR_RESERVE_PERCENT = 50;
+
 /**
  * `chooseAccount` is a SYNC selector that internally advances the rotation
  * cursor (the session-affinity-preferred branch and the round-robin fallback
@@ -211,6 +213,10 @@ export function chooseAccount(params: {
 	}
 
 	const selected = accountManager.getCurrentOrNextForFamilyHybrid(family, model, {
+		deferLowFiveHourLeaderBelowPercent:
+			typeof preferredIndex === "number"
+				? undefined
+				: NEW_SESSION_FIVE_HOUR_RESERVE_PERCENT,
 		scoreBoostByAccount: {
 			...(policy?.scoreBoostByAccount ?? {}),
 			...(stickyBoostByAccount ?? {}),

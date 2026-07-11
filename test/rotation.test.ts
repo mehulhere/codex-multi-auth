@@ -476,6 +476,74 @@ describe("selectHybridAccount", () => {
 		expect(selected?.index).toBe(0);
 	});
 
+	it("uses the second-best weekly reset for a new task when the leader is below 50% 5h", () => {
+		const now = Date.now();
+		const accounts: AccountWithMetrics[] = [
+			{ index: 0, isAvailable: true, lastUsed: now },
+			{ index: 1, isAvailable: true, lastUsed: now },
+		];
+		const selected = selectHybridAccount({
+			accounts,
+			healthTracker,
+			tokenTracker,
+			options: {
+				now,
+				deferLowFiveHourLeaderBelowPercent: 50,
+				quotaByAccountIndex: new Map([
+					[0, { left5h: 49, left7d: 70, reset7dAtMs: now + 1_000 }],
+					[1, { left5h: 80, left7d: 90, reset7dAtMs: now + 2_000 }],
+				]),
+			},
+		});
+
+		expect(selected?.index).toBe(1);
+	});
+
+	it("keeps the best weekly reset when its 5h quota is exactly 50%", () => {
+		const now = Date.now();
+		const accounts: AccountWithMetrics[] = [
+			{ index: 0, isAvailable: true, lastUsed: now },
+			{ index: 1, isAvailable: true, lastUsed: now },
+		];
+		const selected = selectHybridAccount({
+			accounts,
+			healthTracker,
+			tokenTracker,
+			options: {
+				now,
+				deferLowFiveHourLeaderBelowPercent: 50,
+				quotaByAccountIndex: new Map([
+					[0, { left5h: 50, left7d: 70, reset7dAtMs: now + 1_000 }],
+					[1, { left5h: 80, left7d: 90, reset7dAtMs: now + 2_000 }],
+				]),
+			},
+		});
+
+		expect(selected?.index).toBe(0);
+	});
+
+	it("falls back to the low-5h leader when no second-best account is eligible", () => {
+		const now = Date.now();
+		const accounts: AccountWithMetrics[] = [
+			{ index: 0, isAvailable: true, lastUsed: now },
+			{ index: 1, isAvailable: false, lastUsed: now },
+		];
+		const selected = selectHybridAccount({
+			accounts,
+			healthTracker,
+			tokenTracker,
+			options: {
+				now,
+				deferLowFiveHourLeaderBelowPercent: 50,
+				quotaByAccountIndex: new Map([
+					[0, { left5h: 20, left7d: 70, reset7dAtMs: now + 1_000 }],
+				]),
+			},
+		});
+
+		expect(selected?.index).toBe(0);
+	});
+
 	it.each([
 		{ left5h: 0, left7d: 80 },
 		{ left5h: 80, left7d: 0 },

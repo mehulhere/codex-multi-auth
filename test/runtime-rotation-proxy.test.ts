@@ -1510,6 +1510,31 @@ describe("runtime rotation proxy", () => {
 		expect(calls[0]?.headers.get(OPENAI_HEADERS.ACCOUNT_ID)).toBe("acc_2");
 	});
 
+	it("uses the second-best weekly-reset account for a new task when the leader has under 50% 5h", async () => {
+		const now = Date.now();
+		const accountManager = new AccountManager(undefined, createStorage(now));
+		const cache = quotaCacheFor(now, [
+			{ accountId: "acc_1", left5h: 40, left7d: 60, reset7dAtMs: now + 30_000 },
+			{ accountId: "acc_2", left5h: 80, left7d: 60, reset7dAtMs: now + 90_000 },
+		]);
+		const { calls, fetchImpl } = createRecordingFetch(() => textEventStream());
+		const proxy = await startProxy({
+			accountManager,
+			fetchImpl,
+			options: { quotaCache: cache },
+		});
+
+		await (
+			await postResponses(proxy, {
+				model: "gpt-5-codex",
+				stream: true,
+				metadata: { session_id: "new-thread-low-leader" },
+			})
+		).text();
+
+		expect(calls[0]?.headers.get(OPENAI_HEADERS.ACCOUNT_ID)).toBe("acc_2");
+	});
+
 	it("refreshes runtime quota from successful response headers, persists it, and releases below-floor affinity", async () => {
 		const now = Date.now();
 		const accountManager = new AccountManager(undefined, createStorage(now));

@@ -391,6 +391,8 @@ const DEFAULT_HYBRID_SELECTION_CONFIG: HybridSelectionConfig = {
  * - freshness: Hours since last used (higher = more fresh for rotation)
  */
 export interface HybridSelectionOptions {
+	/** For new tasks, use quota rank #2 when rank #1 is below this 5h percentage. */
+	deferLowFiveHourLeaderBelowPercent?: number;
 	pidOffsetEnabled?: boolean;
 	scoreBoostByAccount?: Record<number, number>;
 	quotaByAccountIndex?: Map<number, HybridQuotaMetrics>;
@@ -567,7 +569,23 @@ export function selectHybridAccount(
 			: 0;
 	});
 
-	const bestCandidate = eligibleCandidates[0];
+	const lowFiveHourThreshold =
+		typeof resolvedOptions.deferLowFiveHourLeaderBelowPercent === "number" &&
+		Number.isFinite(resolvedOptions.deferLowFiveHourLeaderBelowPercent)
+			? Math.max(
+					0,
+					Math.min(100, resolvedOptions.deferLowFiveHourLeaderBelowPercent),
+				)
+			: null;
+	let bestCandidate = eligibleCandidates[0];
+	if (
+		lowFiveHourThreshold !== null &&
+		knownPositiveQuotaCandidates.length > 1 &&
+		bestCandidate?.quota !== undefined &&
+		bestCandidate.quota.left5h < lowFiveHourThreshold
+	) {
+		bestCandidate = eligibleCandidates[1] ?? bestCandidate;
+	}
 	const bestAccount = bestCandidate?.account ?? null;
 	const bestScore = bestCandidate?.score ?? -Infinity;
 

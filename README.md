@@ -57,7 +57,7 @@ The package does not publish a global `codex` binary. Keep `codex` owned by the 
 
 ### Quota-aware Desktop routing
 
-Desktop routing keeps one official `CODEX_HOME` and one history tree under `~/.codex`; it does not create per-account homes or copy workspaces. For a new thread, accounts with known quota are eligible while both the 5-hour and 7-day windows remain above 0%, and the earliest future 7-day reset is preferred. Accounts without a complete quota snapshot remain a fallback.
+Desktop routing keeps one official `CODEX_HOME` and one history tree under `~/.codex`; it does not create per-account homes or copy workspaces. For a new thread, accounts with known quota are eligible while both the 5-hour and 7-day windows remain above 0%, and the earliest future 7-day reset is preferred. If that best account has less than 50% of its 5-hour quota remaining, the new thread uses the second-best eligible account to reserve the leader for active threads. Exactly 50% keeps the best account, and if no second-best account is eligible, the best account is used. Accounts without a complete quota snapshot remain a fallback.
 
 Current threads keep their account while both known windows retain at least 5%. Forks inherit the parent response's account at the same floor; below 5%, the continuation or fork moves through normal new-thread selection. A successful terminal event retains affinity and records its response ID for later continuations and forks, unless the returned quota is already below the floor. Failed terminal events do not create that response mapping.
 
