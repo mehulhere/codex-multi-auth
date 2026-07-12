@@ -53,6 +53,7 @@ export const OPENAI_HEADER_VALUES = {
 /** URL path segments */
 export const URL_PATHS = {
 	MODELS: "/models",
+	CODEX_MODELS: "/codex/models",
 	RESPONSES: "/responses",
 	CODEX_RESPONSES: "/codex/responses",
 } as const;

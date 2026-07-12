@@ -953,7 +953,7 @@ describe("runtime rotation proxy", () => {
 		expect(await response.text()).toBe('{"data":[]}\n');
 		expect(calls).toHaveLength(1);
 		expect(calls[0]?.url).toBe(
-			"https://example.test/backend-api/models?client_version=0.125.0",
+			"https://example.test/backend-api/codex/models?client_version=0.125.0",
 		);
 		expect(calls[0]?.headers.get("authorization")).toBe("Bearer access-1");
 		expect(calls[0]?.headers.get("x-api-key")).toBeNull();

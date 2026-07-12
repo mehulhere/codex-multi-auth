@@ -598,7 +598,7 @@ function buildModelsRequestContext(req: IncomingMessage): RequestContext {
 		body: Buffer.alloc(0),
 		headers: headersFromIncoming(req),
 		method: "GET",
-		upstreamPath: URL_PATHS.MODELS,
+		upstreamPath: URL_PATHS.CODEX_MODELS,
 		model: null,
 		family: "codex",
 		stream: false,
