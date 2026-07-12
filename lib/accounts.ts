@@ -271,6 +271,14 @@ export interface ManagedAccount {
 
 export class AccountManager {
 	private accounts: ManagedAccount[] = [];
+	/**
+	 * Membership this manager last loaded or intentionally persisted. Runtime
+	 * helpers are long-lived, so the live disk pool may gain or lose accounts in
+	 * another process. Comparing against this baseline lets routine state saves
+	 * apply only this manager's deliberate membership changes instead of treating
+	 * its stale full array as authoritative.
+	 */
+	private membershipBaseline: AccountStorageV3["accounts"] = [];
 	private cursorByFamily: Record<ModelFamily, number> = initFamilyState(0);
 	private currentAccountIndexByFamily: Record<ModelFamily, number> =
 		initFamilyState(-1);
@@ -402,6 +410,13 @@ export class AccountManager {
 		stored?: AccountStorageV3 | null,
 	) {
 		this.storagePathState = { ...getStoragePathState() };
+		this.membershipBaseline = (stored?.accounts ?? [])
+			.filter(
+				(account) =>
+					typeof account.refreshToken === "string" &&
+					account.refreshToken.trim().length > 0,
+			)
+			.map((account) => structuredClone(account));
 		const fallbackAccountId =
 			extractAccountId(authFallback?.access)?.trim() || undefined;
 		const fallbackAccountEmail = sanitizeEmail(
@@ -1270,53 +1285,113 @@ export class AccountManager {
 	}
 
 	/**
-	 * Reconcile token material from the on-disk store into a freshly-built
-	 * snapshot before persisting. A long-lived proxy serializes its whole
-	 * in-memory pool on every routine save (rate-limit, cooldown, refund). If a
-	 * SECOND process refreshed an account and wrote a rotated (single-use)
-	 * refresh token to disk in the meantime, a blind write would revert it,
-	 * permanently breaking that account's next refresh (stress audit H3).
+	 * Reconcile a long-lived manager's snapshot with the latest on-disk store.
+	 * Runtime helpers serialize their whole in-memory pool for routine state
+	 * changes (rate-limit, cooldown, refund), but another process may have added
+	 * or removed accounts or rotated a single-use refresh token since startup.
+	 * Only membership deltas relative to this manager's baseline are intentional;
+	 * unrelated disk membership remains authoritative (stress audit H3).
 	 *
 	 * For each account, if the on-disk copy of the same identity carries a
 	 * strictly newer token (later expiresAt), adopt the disk's token material.
 	 * Our own freshly-refreshed tokens always have the newest expiry, so this
 	 * never undoes a refresh we just performed.
 	 */
-	private reconcileTokensFromDisk(
+	private reconcileStorageFromDisk(
 		snapshot: AccountStorageV3,
 		current: AccountStorageV3 | null,
 	): AccountStorageV3 {
 		if (!current || !Array.isArray(current.accounts)) return snapshot;
-		const diskByIdentity = new Map<string, (typeof current.accounts)[number]>();
-		for (const diskAccount of current.accounts) {
-			const key = getAccountIdentityKey({
-				accountId: diskAccount.accountId,
-				email: diskAccount.email,
-				refreshToken: diskAccount.refreshToken,
+
+		const localAccounts = snapshot.accounts;
+		const localAdditions = localAccounts.filter(
+			(account) =>
+				findMatchingAccountIndex(this.membershipBaseline, account, {
+					allowUniqueAccountIdFallbackWithoutEmail: true,
+				}) === undefined,
+		);
+		const localRemovals = this.membershipBaseline.filter(
+			(account) =>
+				findMatchingAccountIndex(localAccounts, account, {
+					allowUniqueAccountIdFallbackWithoutEmail: true,
+				}) === undefined,
+		);
+		const reconciledAccounts = current.accounts
+			.filter(
+				(diskAccount) =>
+					findMatchingAccountIndex(localRemovals, diskAccount, {
+						allowUniqueAccountIdFallbackWithoutEmail: true,
+					}) === undefined,
+			)
+			.map((account) => structuredClone(account));
+
+		for (const account of localAccounts) {
+			const diskIndex = findMatchingAccountIndex(reconciledAccounts, account, {
+				allowUniqueAccountIdFallbackWithoutEmail: true,
 			});
-			if (key) diskByIdentity.set(key, diskAccount);
-		}
-		for (const account of snapshot.accounts) {
-			const key = getAccountIdentityKey({
-				accountId: account.accountId,
-				email: account.email,
-				refreshToken: account.refreshToken,
-			});
-			if (!key) continue;
-			const disk = diskByIdentity.get(key);
+			if (diskIndex === undefined) {
+				const isLocalAddition =
+					findMatchingAccountIndex(localAdditions, account, {
+						allowUniqueAccountIdFallbackWithoutEmail: true,
+					}) !== undefined;
+				if (isLocalAddition) {
+					reconciledAccounts.push(structuredClone(account));
+				}
+				continue;
+			}
+
+			const disk = reconciledAccounts[diskIndex];
 			if (!disk) continue;
 			const diskExpires = disk.expiresAt ?? 0;
 			const memExpires = account.expiresAt ?? 0;
+			const merged = { ...disk, ...account };
 			// Disk holds a strictly-newer token than our in-memory copy: adopt it
 			// so we don't clobber another process's rotation. Equal expiries keep
 			// our copy (no-op); newer in-memory copy wins (our own refresh).
 			if (diskExpires > memExpires && disk.refreshToken) {
-				account.refreshToken = disk.refreshToken;
-				account.accessToken = disk.accessToken;
-				account.expiresAt = disk.expiresAt;
+				merged.refreshToken = disk.refreshToken;
+				merged.accessToken = disk.accessToken;
+				merged.expiresAt = disk.expiresAt;
 			}
+			reconciledAccounts[diskIndex] = merged;
 		}
-		return snapshot;
+
+		const remapIndex = (rawIndex: number | undefined, fallback: number): number => {
+			const localIndex = clampNonNegativeInt(rawIndex, fallback);
+			const localAccount = localAccounts[localIndex];
+			if (localAccount) {
+				const reconciledIndex = findMatchingAccountIndex(
+					reconciledAccounts,
+					localAccount,
+					{ allowUniqueAccountIdFallbackWithoutEmail: true },
+				);
+				if (reconciledIndex !== undefined) return reconciledIndex;
+			}
+			if (reconciledAccounts.length === 0) return 0;
+			return Math.min(Math.max(0, fallback), reconciledAccounts.length - 1);
+		};
+		const activeIndex = remapIndex(snapshot.activeIndex, current.activeIndex ?? 0);
+		const activeIndexByFamily: Partial<Record<ModelFamily, number>> = {};
+		for (const family of MODEL_FAMILIES) {
+			activeIndexByFamily[family] = remapIndex(
+				snapshot.activeIndexByFamily?.[family],
+				current.activeIndexByFamily?.[family] ?? activeIndex,
+			);
+		}
+
+		const reconciled: AccountStorageV3 = {
+			...snapshot,
+			accounts: reconciledAccounts,
+			activeIndex,
+			activeIndexByFamily,
+		};
+		if (snapshot.pinnedAccountIndex !== undefined) {
+			reconciled.pinnedAccountIndex = remapIndex(
+				snapshot.pinnedAccountIndex,
+				current.pinnedAccountIndex ?? activeIndex,
+			);
+		}
+		return reconciled;
 	}
 
 	private buildStorageSnapshot(): AccountStorageV3 {
@@ -1407,7 +1482,7 @@ export class AccountManager {
 		const nextAccountId = extractAccountId(auth.access)?.trim() || undefined;
 		const nextEmail = sanitizeEmail(extractAccountEmail(auth.access));
 		try {
-			return await withAccountStorageTransaction(async (_current, persist) => {
+			return await withAccountStorageTransaction(async (current, persist) => {
 				// Snapshot the live in-memory pool under the storage lock so refresh
 				// persistence merges against the latest account state.
 				const nextStorage = structuredClone(
@@ -1471,7 +1546,14 @@ export class AccountManager {
 					this.clearAuthFailures(liveAccount);
 
 					try {
-						await persist(nextStorage);
+						const reconciledStorage = this.reconcileStorageFromDisk(
+							nextStorage,
+							current,
+						);
+						await persist(reconciledStorage);
+						this.membershipBaseline = nextStorage.accounts.map((account) =>
+							structuredClone(account),
+						);
 					} catch (error) {
 						liveAccount.access = previousLiveAccountState.access;
 						liveAccount.refreshToken = previousLiveAccountState.refreshToken;
@@ -1501,7 +1583,14 @@ export class AccountManager {
 					return liveAccount;
 				}
 
-				await persist(nextStorage);
+				const reconciledStorage = this.reconcileStorageFromDisk(
+					nextStorage,
+					current,
+				);
+				await persist(reconciledStorage);
+				this.membershipBaseline = nextStorage.accounts.map((account) =>
+					structuredClone(account),
+				);
 				log.warn("Unable to resolve refreshed live account after persistence", {
 					sourceIndex: source.index,
 				});
@@ -1806,8 +1895,10 @@ export class AccountManager {
 				// Reconcile against the disk state loaded under the storage lock so a
 				// routine save does not clobber a token another process just rotated
 				// (stress audit H3).
-				await persist(
-					this.reconcileTokensFromDisk(this.buildStorageSnapshot(), current),
+				const snapshot = this.buildStorageSnapshot();
+				await persist(this.reconcileStorageFromDisk(snapshot, current));
+				this.membershipBaseline = snapshot.accounts.map((account) =>
+					structuredClone(account),
 				);
 			});
 		});
