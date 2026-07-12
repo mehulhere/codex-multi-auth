@@ -8634,7 +8634,9 @@ describe("codex manager cli commands", () => {
 		expect(
 			firstCallAccounts.map((account) => account.quota7dLeftPercent),
 		).toEqual([80, undefined]);
-		expect(firstCallAccounts[1]?.quotaSummary).toBe("5h 90%");
+		expect(firstCallAccounts[1]?.quotaSummary).toMatch(
+			/^5h 90% \(resets .+\)$/,
+		);
 	});
 
 	it("surfaces persisted account rate limits when quota cache is empty", async () => {

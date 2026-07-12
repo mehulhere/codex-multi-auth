@@ -140,7 +140,9 @@ describe("quota formatters", () => {
 			now,
 		);
 
-		expect(summary).toMatch(/^5h 94% \(resets .+\) \| 7d 83% \(resets .+\)$/);
+		expect(summary).toMatch(
+			/^5h 94% \(resets .+11.+2026.+18:21\) \| 7d 83% \(resets .+18.+2026.+18:21\)$/,
+		);
 	});
 
 	it("styleQuotaSummary keeps rate-limited and percent segments, clamps to 100", () => {

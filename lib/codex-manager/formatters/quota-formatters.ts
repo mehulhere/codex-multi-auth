@@ -122,14 +122,10 @@ function formatCompactResetAt(
 		minute: "2-digit",
 		hour12: false,
 	});
-	const sameDay =
-		reset.getFullYear() === current.getFullYear() &&
-		reset.getMonth() === current.getMonth() &&
-		reset.getDate() === current.getDate();
-	if (sameDay) return time;
 	const date = reset.toLocaleDateString(undefined, {
 		day: "2-digit",
 		month: "short",
+		year: "numeric",
 	});
 	return `${date} ${time}`;
 }
