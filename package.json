@@ -175,12 +175,13 @@
 		"@codex-ai/plugin": "file:vendor/codex-ai-plugin",
 		"@codex-ai/sdk": "file:vendor/codex-ai-sdk",
 		"@openauthjs/openauth": "^0.4.3",
-		"hono": "4.12.21",
-		"undici": "6.25.0",
+		"hono": "4.12.29",
+		"undici": "6.27.0",
 		"zod": "4.4.3"
 	},
 	"overrides": {
-		"hono": "4.12.21",
+		"esbuild": "0.28.1",
+		"hono": "4.12.29",
 		"flatted": "3.4.2",
 		"minimatch": "10.2.4",
 		"picomatch": "4.0.4",
