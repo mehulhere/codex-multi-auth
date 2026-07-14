@@ -342,6 +342,7 @@ codex-multi-auth login
 - Requests fail fast after repeated upstream 5xx errors: inspect `codex-multi-auth report --json` for runtime traffic and cooldown details
 - Storage cleanup fails with `EBUSY` / `EPERM` (Windows): run `codex-multi-auth doctor --fix` to retry, or manually remove `~/.codex/multi-auth/<project-key>/` and re-login
 - OAuth callback on port `1455` fails: free the port and re-run `codex-multi-auth login`
+- Login hangs in WSL, or installing in WSL breaks a working Windows install: Windows and WSL contend for callback port `1455`, and the browser opens on the Windows host either way — see [Windows and WSL side by side](docs/troubleshooting.md#windows-and-wsl-side-by-side), or use `codex-multi-auth login --device-auth`, which needs no callback port
 - Browser launch is blocked or you are in a headless shell: prefer `codex-multi-auth login --device-auth`; use `codex-multi-auth login --manual` or `CODEX_AUTH_NO_BROWSER=1` only when you need the callback-paste fallback
 - `missing field id_token` / `token_expired` / `refresh_token_reused`: re-login affected account
 
