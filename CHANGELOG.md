@@ -7,6 +7,22 @@ This repository's current stable release line is `2.x`.
 Current stable release notes live in `docs/releases/`.
 This top-level changelog preserves the foundational `0.x` milestones and points older iteration history to `docs/releases/legacy-pre-0.1-history.md`.
 
+## [2.6.1] - 2026-07-14
+
+Fixes OAuth login on WSL. Installing `codex-multi-auth` on a Windows host and inside WSL at the same time broke sign-in in both environments, and removing the Windows install was the only thing that made WSL work. WSL logins now open the Windows browser, and a contended callback port is explained instead of presenting as a silent hang. Routing, rotation, storage, and the token flow are unchanged; every behavior change is gated behind a new WSL check that is `false` on all other hosts.
+Closes [#630](https://github.com/ndycode/codex-multi-auth/issues/630). See [docs/releases/v2.6.1.md](docs/releases/v2.6.1.md) for full details.
+
+### Fixed
+
+- **WSL logins now open a browser.** WSL reports `process.platform === "linux"`, so the launcher fell through to `xdg-open`, which is not installed on a stock WSL Debian — no browser opened and sign-in looked like a hang. Under WSL the Windows browser is now opened via `wslview`, falling back to `powershell.exe` interop, and only then to the Linux opener ([#630](https://github.com/ndycode/codex-multi-auth/issues/630))
+- **The manual-paste clipboard now targets Windows under WSL**, routing through `clip.exe` and then PowerShell `Set-Clipboard` before the Linux clipboard tools ([#630](https://github.com/ndycode/codex-multi-auth/issues/630))
+- **A contended OAuth callback port is now explained rather than silently degraded.** The redirect URI is registered with the provider, so port `1455` is fixed and cannot be renegotiated; a Windows-side listener can therefore swallow the redirect a WSL listener is waiting for. `login` now names the conflict, shows how to find the listener on each side, and points at `login --device-auth`, which needs no callback port. Contention is only asserted when observed (`EADDRINUSE`); a callback that never arrives leads with the far likelier cancelled-sign-in explanation ([#630](https://github.com/ndycode/codex-multi-auth/issues/630))
+- Clipboard spawns now handle `error` on `child.stdin`: a child that dies before draining stdin emits `EPIPE` on the stream, which the surrounding `try/catch` cannot catch. Also hardens the pre-existing `pbcopy` / `xclip` / `xsel` paths ([#630](https://github.com/ndycode/codex-multi-auth/issues/630))
+
+### Added
+
+- Windows and WSL side-by-side troubleshooting guidance, including that the two environments keep separate state directories and must each be signed in independently ([#630](https://github.com/ndycode/codex-multi-auth/issues/630))
+
 ## [2.6.0] - 2026-07-11
 
 Follows up the 2.5.0 GPT-5.6 launch: the diagnostic live/quota probe now leads with GPT-5.6 (`gpt-5.6-sol`), the model pickers can surface the GPT-5.6 tiers (legacy config template + installer merge + the `codex-multi-auth-codex` wrapper), and `pidOffsetEnabled` now defaults on so parallel agents spread across accounts. `DEFAULT_MODEL`, routing, rotation, storage, and auth are unchanged.
