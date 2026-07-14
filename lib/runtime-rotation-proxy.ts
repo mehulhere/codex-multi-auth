@@ -291,6 +291,26 @@ function isAuthorizedClient(headers: Headers, clientApiKey: string): boolean {
 	return typeof apiKey === "string" && safeEqual(apiKey, clientApiKey);
 }
 
+function resolveAuthorizedRequestPath(
+	pathname: string,
+	headers: Headers,
+	clientApiKey: string,
+): string | null {
+	const nativeRoutePrefix = "/v1/";
+	if (pathname.startsWith(nativeRoutePrefix)) {
+		const remainder = pathname.slice(nativeRoutePrefix.length);
+		const separatorIndex = remainder.indexOf("/");
+		if (separatorIndex > 0) {
+			const routeSecret = remainder.slice(0, separatorIndex);
+			const expectedRouteSecret = encodeURIComponent(clientApiKey);
+			if (safeEqual(routeSecret, expectedRouteSecret)) {
+				return `/v1${remainder.slice(separatorIndex)}`;
+			}
+		}
+	}
+	return isAuthorizedClient(headers, clientApiKey) ? pathname : null;
+}
+
 function safeEqual(left: string, right: string): boolean {
 	const leftBuffer = Buffer.from(left, "utf8");
 	const rightBuffer = Buffer.from(right, "utf8");
@@ -1027,18 +1047,23 @@ async function handleRequestInner(
 		// unauthorized). Authorized callers still fall through to the 404 below
 		// when they hit an unsupported path/method.
 		const incomingHeaders = headersFromIncoming(req);
-		if (!isAuthorizedClient(incomingHeaders, state.clientApiKey)) {
+		const authorizedPathname = resolveAuthorizedRequestPath(
+			incomingUrl.pathname,
+			incomingHeaders,
+			state.clientApiKey,
+		);
+		if (authorizedPathname === null) {
 			writeUnauthorized(res);
 			return;
 		}
 
 		const isResponsesRequest =
-			req.method === "POST" && isResponsesPath(incomingUrl.pathname);
+			req.method === "POST" && isResponsesPath(authorizedPathname);
 		const isModelsRequest =
-			req.method === "GET" && isModelsPath(incomingUrl.pathname);
+			req.method === "GET" && isModelsPath(authorizedPathname);
 		const isThreadGoalRequest =
 			(req.method === "GET" || req.method === "POST") &&
-			isThreadGoalPath(incomingUrl.pathname);
+			isThreadGoalPath(authorizedPathname);
 		if (!isResponsesRequest && !isModelsRequest && !isThreadGoalRequest) {
 			writeMethodOrPathError(res);
 			return;
@@ -1054,7 +1079,7 @@ async function handleRequestInner(
 		const context = isModelsRequest
 			? buildModelsRequestContext(req)
 			: isThreadGoalRequest
-				? buildThreadGoalRequestContext(req, requestBody, incomingUrl.pathname)
+				? buildThreadGoalRequestContext(req, requestBody, authorizedPathname)
 				: buildResponsesRequestContext(req, requestBody);
 		const requestStartedAt = state.now();
 		let policyDecision: RuntimePolicyDecision | null = null;

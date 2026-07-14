@@ -734,6 +734,97 @@ describe("runtime rotation proxy", () => {
 		expect(calls).toHaveLength(2);
 	});
 
+	it("authorizes native-provider model traffic with the exact secret path", async () => {
+		const now = Date.now();
+		const accountManager = new AccountManager(undefined, createStorage(now));
+		const { calls, fetchImpl } = createRecordingFetch((call) =>
+			call.url.includes("/models")
+				? new Response('{"data":[]}\n', {
+						status: HTTP_STATUS.OK,
+						headers: { "content-type": "application/json" },
+					})
+				: textEventStream("data: forwarded\n\n"),
+		);
+		const proxy = await startProxy({ accountManager, fetchImpl });
+
+		const responses = await postResponses(
+			proxy,
+			{ model: "gpt-5-codex" },
+			`/v1/${DEFAULT_CLIENT_API_KEY}/responses?trace=native`,
+			{
+				authorization: "Bearer native-chatgpt-token",
+				"x-api-key": "native-chatgpt-token",
+			},
+		);
+		const models = await getModels(
+			proxy,
+			`/v1/${DEFAULT_CLIENT_API_KEY}/models?client_version=0.144.4`,
+			{
+				authorization: "Bearer native-chatgpt-token",
+				"x-api-key": "native-chatgpt-token",
+			},
+		);
+
+		expect(responses.status).toBe(HTTP_STATUS.OK);
+		expect(await responses.text()).toBe("data: forwarded\n\n");
+		expect(models.status).toBe(HTTP_STATUS.OK);
+		expect(calls.map((call) => call.url)).toEqual([
+			"https://example.test/backend-api/codex/responses?trace=native",
+			"https://example.test/backend-api/codex/models?client_version=0.144.4",
+		]);
+		expect(calls.map((call) => call.headers.get("authorization"))).toEqual([
+			"Bearer access-1",
+			"Bearer access-1",
+		]);
+	});
+
+	it("rejects wrong or alternatively encoded native route secrets", async () => {
+		const now = Date.now();
+		const accountManager = new AccountManager(undefined, createStorage(now));
+		const { calls, fetchImpl } = createRecordingFetch(() =>
+			textEventStream("data: unreachable\n\n"),
+		);
+		const proxy = await startProxy({ accountManager, fetchImpl });
+		const nativeHeaders = {
+			authorization: "Bearer native-chatgpt-token",
+			"x-api-key": "native-chatgpt-token",
+		};
+
+		const wrong = await postResponses(
+			proxy,
+			{ model: "gpt-5-codex" },
+			"/v1/wrong-secret/responses",
+			nativeHeaders,
+		);
+		const alternativelyEncoded = await postResponses(
+			proxy,
+			{ model: "gpt-5-codex" },
+			"/v1/runtime%2Dsecret/responses",
+			nativeHeaders,
+		);
+
+		expect(wrong.status).toBe(HTTP_STATUS.UNAUTHORIZED);
+		expect(alternativelyEncoded.status).toBe(HTTP_STATUS.UNAUTHORIZED);
+		expect(calls).toHaveLength(0);
+	});
+
+	it("returns not found for an unsupported endpoint after a valid route secret", async () => {
+		const now = Date.now();
+		const accountManager = new AccountManager(undefined, createStorage(now));
+		const { calls, fetchImpl } = createRecordingFetch(() =>
+			new Response('{"ok":true}', { status: HTTP_STATUS.OK }),
+		);
+		const proxy = await startProxy({ accountManager, fetchImpl });
+
+		const response = await fetch(
+			`${proxy.baseUrl}/v1/${DEFAULT_CLIENT_API_KEY}/plugins/catalog`,
+			{ headers: { authorization: "Bearer native-chatgpt-token" } },
+		);
+
+		expect(response.status).toBe(HTTP_STATUS.NOT_FOUND);
+		expect(calls).toHaveLength(0);
+	});
+
 	// L5 (endpoint enumeration): the auth check must run BEFORE path/method
 	// discrimination so an unauthenticated caller cannot distinguish a valid
 	// endpoint from an invalid one — both must return 401. Authorized callers
