@@ -1889,6 +1889,56 @@ describe("runtime rotation proxy", () => {
 		expect(JSON.stringify(status.threadStatuses)).not.toContain("refresh-1");
 	});
 
+	it("publishes the shared aggregate from the quota cache without identities", async () => {
+		const now = Date.now();
+		const accountManager = new AccountManager(undefined, createStorage(now, 2));
+		const { fetchImpl } = createRecordingFetch(() => textEventStream());
+		const proxy = await startProxy({
+			accountManager,
+			fetchImpl,
+			options: {
+				now: () => now,
+				quotaCache: quotaCacheFor(now, [
+					{
+						accountId: "acc_1",
+						left5h: 20,
+						left7d: 40,
+						reset7dAtMs: now + 1_000,
+					},
+					{
+						accountId: "acc_2",
+						left5h: 80,
+						left7d: 60,
+						reset7dAtMs: now + 2_000,
+					},
+				]),
+			},
+		});
+
+		expect(proxy.getStatus().poolQuota).toEqual({
+			accountCount: 2,
+			fiveHour: {
+				windowMinutes: 300,
+				reportedCount: 2,
+				totalRemainingPercent: 100,
+				averageRemainingPercent: 50,
+				earliestResetAtMs: now + 60_000,
+				latestResetAtMs: now + 60_000,
+			},
+			sevenDay: {
+				windowMinutes: 10_080,
+				reportedCount: 2,
+				totalRemainingPercent: 100,
+				averageRemainingPercent: 50,
+				earliestResetAtMs: now + 1_000,
+				latestResetAtMs: now + 2_000,
+			},
+			updatedAt: now,
+		});
+		expect(JSON.stringify(proxy.getStatus().poolQuota)).not.toContain("@example.com");
+		expect(JSON.stringify(proxy.getStatus().poolQuota)).not.toContain("refresh-");
+	});
+
 	it("publishes the selected account before a new thread stream completes", async () => {
 		const now = Date.now();
 		const accountManager = new AccountManager(undefined, createStorage(now, 2));

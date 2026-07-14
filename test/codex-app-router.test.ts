@@ -59,6 +59,13 @@ function createRouterFixture(root: string, options: { withProxyModule?: boolean 
 				"      lastAccountLabel: 'Account 2 (hidden@example.com)',",
 				"      lastAccountId: 'acc_2',",
 				"      lastAccountUpdatedAt: 123,",
+				"      poolQuota: {",
+				"        accountCount: 7,",
+				"        fiveHour: null,",
+				"        sevenDay: { windowMinutes: 10080, reportedCount: 7, totalRemainingPercent: 176, averageRemainingPercent: 176 / 7 },",
+				"        updatedAt: 456,",
+				"        secretEmail: 'hidden@example.com',",
+				"      },",
 				"      threadStatuses: {",
 				"        'thread-a': {",
 				"          accountNumber: 2,",
@@ -167,6 +174,18 @@ describe("codex app router daemon", () => {
 			expect(running.kind).toBe("codex-app-runtime-rotation-router");
 			expect(running.baseUrl).toBe("http://127.0.0.1:4567");
 			expect(running.lastAccountLabel).toBe("Account 2");
+			expect(running.poolQuota).toEqual({
+				accountCount: 7,
+				fiveHour: null,
+				sevenDay: {
+					windowMinutes: 10_080,
+					reportedCount: 7,
+					totalRemainingPercent: 176,
+					averageRemainingPercent: 176 / 7,
+				},
+				updatedAt: 456,
+			});
+			expect(JSON.stringify(running.poolQuota)).not.toContain("@");
 			expect(running.threadStatuses).toEqual({
 				"thread-a": {
 					accountNumber: 2,

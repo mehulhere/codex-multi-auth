@@ -1,6 +1,7 @@
 import type { AccountManager } from "../accounts.js";
 import type { ModelFamily } from "../prompts/codex.js";
 import type { QuotaCacheData } from "../quota-cache.js";
+import type { QuotaPoolAggregate } from "../quota-pool-aggregate.js";
 import type {
 	RuntimeThreadStatus,
 	ThreadStatusPersistenceState,
@@ -28,6 +29,7 @@ export interface RuntimeRotationProxyStatus {
 	lastAccountUpdatedAt: number | null;
 	threadStatuses: Record<string, RuntimeThreadStatus>;
 	threadStatusPersistence: ThreadStatusPersistenceState;
+	poolQuota: QuotaPoolAggregate & { updatedAt: number };
 }
 
 export interface RuntimeRotationProxyOptions {

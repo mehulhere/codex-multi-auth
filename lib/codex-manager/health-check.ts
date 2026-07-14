@@ -16,9 +16,14 @@ import {
 import { isCodexUnavailableError } from "../errors.js";
 import { loadQuotaCache, saveQuotaCache } from "../quota-cache.js";
 import {
+	type CodexQuotaSnapshot,
 	CODEX_UNAVAILABLE_PROBE_NOTE,
 	fetchCodexQuotaSnapshot,
 } from "../quota-probe.js";
+import {
+	aggregateQuotaPool,
+	formatQuotaPoolAggregate,
+} from "../quota-pool-aggregate.js";
 import { buildQuotaEmailFallbackState } from "../quota-readiness.js";
 import { queuedRefresh } from "../refresh-queue.js";
 import { resolveActiveIndex } from "../runtime/account-status.js";
@@ -85,6 +90,7 @@ export async function runHealthCheck(
 	let warnings = 0;
 	let codexAvailable = 0;
 	let signedInOnly = 0;
+	const quotaSnapshots: CodexQuotaSnapshot[] = [];
 	const activeIndex = resolveActiveIndex(storage, "codex");
 	let activeAccountRefreshed = false;
 	const now = Date.now();
@@ -138,6 +144,7 @@ export async function runHealthCheck(
 							accessToken: currentAccessToken,
 							model: modelInspection.normalized,
 						});
+						quotaSnapshots.push(snapshot);
 						if (workingQuotaCache) {
 							quotaCacheChanged =
 								updateQuotaCacheForAccount(
@@ -246,6 +253,7 @@ export async function runHealthCheck(
 							accessToken: result.access,
 							model: modelInspection.normalized,
 						});
+						quotaSnapshots.push(snapshot);
 						if (workingQuotaCache) {
 							quotaCacheChanged =
 								updateQuotaCacheForAccount(
@@ -355,6 +363,14 @@ export async function runHealthCheck(
 				refreshToken: activeAccount.refreshToken,
 				expiresAt: activeAccount.expiresAt,
 			});
+		}
+	}
+
+	if (liveProbe) {
+		for (const line of formatQuotaPoolAggregate(
+			aggregateQuotaPool(storage.accounts.length, quotaSnapshots),
+		)) {
+			console.log(line);
 		}
 	}
 

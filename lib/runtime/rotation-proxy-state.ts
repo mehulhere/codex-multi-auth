@@ -95,6 +95,12 @@ export function createRotationProxyState(
 			lastAccountUpdatedAt: null,
 			threadStatuses: {},
 			threadStatusPersistence: "memory-only",
+			poolQuota: {
+				accountCount: 0,
+				fiveHour: null,
+				sevenDay: null,
+				updatedAt: init.now(),
+			},
 		},
 		threadGoalFallbacks: new Map<string, string | null>(),
 		quotaByAccountIndex: new Map<number, HybridQuotaMetrics>(),

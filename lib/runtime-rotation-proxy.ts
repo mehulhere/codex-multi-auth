@@ -52,6 +52,7 @@ import {
 	type QuotaCacheEntry,
 } from "./quota-cache.js";
 import { findQuotaCacheEntryForAccount } from "./quota-readiness.js";
+import { aggregateQuotaPool } from "./quota-pool-aggregate.js";
 import { createLogger, maskString, runWithCorrelationId } from "./logger.js";
 import { CodexValidationError } from "./errors.js";
 import {
@@ -965,8 +966,21 @@ export async function startRuntimeRotationProxy(
 		},
 		getStatus: () => {
 			const threadStatusPersistence = state.threadStatusStore.getPersistenceState();
+			const accounts = state.activeAccountManager.getAccountsSnapshot();
+			const snapshots = accounts.flatMap((account) => {
+				const entry = findQuotaCacheEntryForAccount(
+					state.quotaCache,
+					account,
+					accounts,
+				);
+				return entry ? [entry] : [];
+			});
 			return {
 				...state.status,
+				poolQuota: {
+					...aggregateQuotaPool(accounts.length, snapshots),
+					updatedAt: state.now(),
+				},
 				threadStatusPersistence,
 				threadStatuses:
 					threadStatusPersistence === "error"

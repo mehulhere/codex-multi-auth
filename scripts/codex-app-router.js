@@ -146,6 +146,53 @@ function sanitizeQuotaWindow(value) {
 	return result;
 }
 
+function sanitizePoolQuotaWindow(value, expectedMinutes, accountCount) {
+	if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+	const { windowMinutes, reportedCount, totalRemainingPercent, averageRemainingPercent } = value;
+	if (windowMinutes !== expectedMinutes) return null;
+	if (!Number.isInteger(reportedCount) || reportedCount < 1 || reportedCount > accountCount) {
+		return null;
+	}
+	if (
+		typeof totalRemainingPercent !== "number" ||
+		!Number.isFinite(totalRemainingPercent) ||
+		totalRemainingPercent < 0 ||
+		totalRemainingPercent > accountCount * 100 ||
+		typeof averageRemainingPercent !== "number" ||
+		!Number.isFinite(averageRemainingPercent) ||
+		averageRemainingPercent < 0 ||
+		averageRemainingPercent > 100
+	) {
+		return null;
+	}
+	const result = {
+		windowMinutes,
+		reportedCount,
+		totalRemainingPercent,
+		averageRemainingPercent,
+	};
+	for (const key of ["earliestResetAtMs", "latestResetAtMs"]) {
+		const candidate = value[key];
+		if (typeof candidate === "number" && Number.isFinite(candidate) && candidate > 0) {
+			result[key] = candidate;
+		}
+	}
+	return result;
+}
+
+function sanitizePoolQuota(value) {
+	if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+	const { accountCount, updatedAt } = value;
+	if (!Number.isInteger(accountCount) || accountCount < 1 || accountCount > 256) return null;
+	if (typeof updatedAt !== "number" || !Number.isFinite(updatedAt) || updatedAt <= 0) return null;
+	return {
+		accountCount,
+		fiveHour: sanitizePoolQuotaWindow(value.fiveHour, 300, accountCount),
+		sevenDay: sanitizePoolQuotaWindow(value.sevenDay, 10_080, accountCount),
+		updatedAt,
+	};
+}
+
 function sanitizeThreadStatuses(value) {
 	if (!value || typeof value !== "object" || Array.isArray(value)) return {};
 	const result = {};
@@ -211,6 +258,7 @@ function createStatusPayload({ state, proxyServer, error, stateRecord }) {
 		lastAccountLabel,
 		lastAccountId: proxyStatus.lastAccountId ?? null,
 		lastAccountUpdatedAt: proxyStatus.lastAccountUpdatedAt ?? null,
+		poolQuota: sanitizePoolQuota(proxyStatus.poolQuota),
 		threadStatuses: sanitizeThreadStatuses(proxyStatus.threadStatuses),
 		threadStatusPersistence: ["durable", "memory-only", "error"].includes(
 			proxyStatus.threadStatusPersistence,

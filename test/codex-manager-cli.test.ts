@@ -3090,6 +3090,10 @@ describe("codex manager cli commands", () => {
 					String(call[0]).includes("Result: 2 Codex available"),
 				),
 			).toBe(true);
+			const rendered = logSpy.mock.calls.map((call) => String(call[0])).join("\n");
+			expect(rendered).toContain("Combined limits (2 accounts):");
+			expect(rendered).toContain("7d: 150% total | 75% average");
+			expect(rendered).toContain("5h: 110% total | 55% average");
 		} finally {
 			extractAccountIdMock.mockReset();
 			extractAccountIdMock.mockImplementation(() => "acc_test");
