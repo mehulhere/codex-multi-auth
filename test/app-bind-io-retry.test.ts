@@ -126,7 +126,7 @@ describe("Codex app bind filesystem retry behavior", () => {
 
 		expect(result.status.bound).toBe(true);
 		expect(await readFile(paths.configPath, "utf8")).toContain(
-			'base_url = "http://127.0.0.1:4567"',
+			'openai_base_url = "http://127.0.0.1:4567/v1/existing-secret"',
 		);
 
 		fsFaults.renameFailures = 2;

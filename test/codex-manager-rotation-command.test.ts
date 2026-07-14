@@ -539,7 +539,8 @@ describe("codex-multi-auth rotation command", () => {
 		expect(bindCodexAppMock).toHaveBeenCalledTimes(1);
 		expect(unbindCodexAppMock).toHaveBeenCalledTimes(1);
 		expect(infos.join("\n")).toContain("Codex app bind: running, port=4567");
-		expect(infos.join("\n")).toContain("Codex Desktop may hide history");
+		expect(infos.join("\n")).toContain("preserves the native `openai` provider");
+		expect(infos.join("\n")).toContain("ChatGPT dictation");
 		expect(infos.join("\n")).toContain("model_reasoning_effort");
 		expect(infos.join("\n")).toContain("Unbound Codex app config");
 	});

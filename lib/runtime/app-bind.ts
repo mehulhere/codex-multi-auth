@@ -1083,12 +1083,10 @@ export function formatAppBindStatus(status: AppBindStatus): string {
 	return [
 		`Codex app bind: ${parts.join(", ")}`,
 		[
-			"Note: provider-filtered Codex Desktop builds may hide threads recorded",
-			"under a different model provider. The ilysenko Linux",
-			"`unified-provider-history` feature keeps native and routed threads visible",
-			"without disabling rotation. Verify all stored sessions with",
-			"`codex-multi-auth history list --json`; use `rotation unbind-app` only",
-			"when intentionally removing Desktop routing.",
+			"Desktop routing preserves the native `openai` provider so first-party",
+			"tools, ChatGPT dictation, and provider-filtered history remain available.",
+			"Verify all stored sessions with `codex-multi-auth history list --json`;",
+			"use `rotation unbind-app` only when intentionally removing Desktop routing.",
 		].join(" "),
 		[
 			"Model speed/reasoning controls stay in Codex config/CLI flags; set",
