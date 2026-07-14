@@ -170,6 +170,7 @@ describe("Codex app runtime rotation bind", () => {
 	it("rewrites and restores Codex config TOML without disturbing other sections", () => {
 		const original = [
 			'model_provider = "openai"',
+			'openai_base_url = "https://original.example/v1"',
 			'model = "gpt-5.4"',
 			"disable_response_storage = true",
 			"",
@@ -184,17 +185,14 @@ describe("Codex app runtime rotation bind", () => {
 			"http://127.0.0.1:32123",
 			"app-secret",
 		);
+		expect(bound).toContain('model_provider = "openai"');
 		expect(bound).toContain(
-			`model_provider = "${RUNTIME_ROTATION_PROXY_PROVIDER_ID}"`,
+			'openai_base_url = "http://127.0.0.1:32123/v1/app-secret"',
 		);
-		expect(bound).toContain(
-			`[model_providers.${RUNTIME_ROTATION_PROXY_PROVIDER_ID}]`,
-		);
-		expect(bound).toContain('name = "codex-multi-auth"');
-		expect(bound).toContain('base_url = "http://127.0.0.1:32123"');
-		expect(bound).toContain("requires_openai_auth = false");
-		expect(bound).toContain('experimental_bearer_token = "app-secret"');
-		expect(bound).toContain('wire_api = "responses"');
+		expect(bound).not.toContain(RUNTIME_ROTATION_PROXY_PROVIDER_ID);
+		expect(bound).not.toContain("requires_openai_auth");
+		expect(bound).not.toContain("experimental_bearer_token");
+		expect(bound).not.toContain("wire_api");
 		expect(bound).toContain("disable_response_storage = false");
 		expect(bound).toContain("[profiles.default]\nmodel = \"gpt-5.4\"\ndisable_response_storage = true");
 		expect(bound).not.toContain("env_key");
@@ -204,7 +202,7 @@ describe("Codex app runtime rotation bind", () => {
 		expect(restored).toBe(original);
 	});
 
-	it("keeps model_provider top-level before TOML array tables", () => {
+	it("keeps native routing keys top-level before TOML array tables", () => {
 		const original = [
 			"[[profiles.experimental]]",
 			'model = "gpt-5.4"',
@@ -217,14 +215,47 @@ describe("Codex app runtime rotation bind", () => {
 			"app-secret",
 		);
 
-		expect(
-			bound.startsWith(
-				`model_provider = "${RUNTIME_ROTATION_PROXY_PROVIDER_ID}"`,
-			),
-		).toBe(true);
-		expect(
-			bound.indexOf(`model_provider = "${RUNTIME_ROTATION_PROXY_PROVIDER_ID}"`),
-		).toBeLessThan(bound.indexOf("[[profiles.experimental]]"));
+		expect(bound).toContain('model_provider = "openai"');
+		expect(bound).toContain(
+			'openai_base_url = "http://127.0.0.1:32123/v1/app-secret"',
+		);
+		expect(bound.indexOf('model_provider = "openai"')).toBeLessThan(
+			bound.indexOf("[[profiles.experimental]]"),
+		);
+		expect(bound.indexOf("openai_base_url =")).toBeLessThan(
+			bound.indexOf("[[profiles.experimental]]"),
+		);
+	});
+
+	it("removes bind-owned openai_base_url when the original config omitted it", () => {
+		const original = 'model_provider = "openai"\n[profiles.default]\nmodel = "gpt-5.4"\n';
+		const bound = rewriteConfigTomlForAppBind(
+			original,
+			"http://127.0.0.1:32123/",
+			"app secret/with slash",
+		);
+
+		expect(bound).toContain(
+			'openai_base_url = "http://127.0.0.1:32123/v1/app%20secret%2Fwith%20slash"',
+		);
+		expect(restoreConfigTomlFromAppBind(bound, original)).toBe(original);
+	});
+
+	it("is idempotent when rebinding a native-provider config", () => {
+		const original = 'model_provider = "openai"\r\n[profiles.default]\r\nmodel = "gpt-5.4"\r\n';
+		const once = rewriteConfigTomlForAppBind(
+			original,
+			"http://127.0.0.1:32123",
+			"app-secret",
+		);
+		const twice = rewriteConfigTomlForAppBind(
+			once,
+			"http://127.0.0.1:32123",
+			"app-secret",
+		);
+
+		expect(twice).toBe(once);
+		expect(twice.replace(/\r\n/g, "")).not.toContain("\n");
 	});
 
 	it("removes runtime provider subtables when restoring Codex config TOML", () => {
@@ -424,14 +455,13 @@ describe("Codex app runtime rotation bind", () => {
 			join(multiAuthDir, "app-bind", "runtime-rotation-app-bind.json"),
 		);
 		const config = await readFile(join(codexHome, "config.toml"), "utf8");
+		expect(config).toContain('model_provider = "openai"');
 		expect(config).toContain(
-			`[model_providers.${RUNTIME_ROTATION_PROXY_PROVIDER_ID}]`,
+			`openai_base_url = "${result.status.state?.baseUrl}/v1/${result.status.state?.clientApiKey}"`,
 		);
-		expect(config).toContain(result.status.state?.baseUrl);
-		expect(config).toContain("requires_openai_auth = false");
-		expect(config).toContain(
-			`experimental_bearer_token = "${result.status.state?.clientApiKey}"`,
-		);
+		expect(config).not.toContain(RUNTIME_ROTATION_PROXY_PROVIDER_ID);
+		expect(config).not.toContain("requires_openai_auth");
+		expect(config).not.toContain("experimental_bearer_token");
 		expect(config).not.toContain("env_key");
 		if (process.platform !== "win32") {
 			expect(statSync(join(codexHome, "config.toml")).mode & 0o777).toBe(0o600);
@@ -536,12 +566,11 @@ describe("Codex app runtime rotation bind", () => {
 		const backup = JSON.parse(await readFile(paths.backupPath, "utf8")) as {
 			content: string;
 		};
+		expect(config).toContain('model_provider = "openai"');
 		expect(config).toContain(
-			`model_provider = "${RUNTIME_ROTATION_PROXY_PROVIDER_ID}"`,
+			`openai_base_url = "http://127.0.0.1:4567/v1/${state.clientApiKey}"`,
 		);
-		expect(config).toContain(
-			`experimental_bearer_token = "${state.clientApiKey}"`,
-		);
+		expect(config).not.toContain(RUNTIME_ROTATION_PROXY_PROVIDER_ID);
 		expect(state.boundConfigHash).toBe(sha256(config));
 		expect(backup.content).toBe('model_provider = "openai"\n');
 	});
@@ -656,9 +685,8 @@ describe("Codex app runtime rotation bind", () => {
 			expect(statSync(result.status.paths.logPath).mode & 0o777).toBe(0o600);
 		}
 		const config = await readFile(join(codexHome, "config.toml"), "utf8");
-		expect(config).toContain('base_url = "http://127.0.0.1:54321"');
 		expect(config).toContain(
-			`experimental_bearer_token = "${result.status.state?.clientApiKey}"`,
+			`openai_base_url = "http://127.0.0.1:54321/v1/${result.status.state?.clientApiKey}"`,
 		);
 
 		await unbindCodexAppRuntimeRotation({
