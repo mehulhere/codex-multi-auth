@@ -4,14 +4,14 @@
 
 **Goal:** Preserve native Codex Desktop capabilities and ChatGPT dictation while retaining quota-aware multi-account routing for model traffic.
 
-**Architecture:** Keep the built-in `openai` provider and point only `openai_base_url` at the loopback router. Authenticate native-provider requests with an unguessable path segment, normalize that prefix before the router's existing endpoint allowlist, and retain legacy header authentication for compatibility.
+**Architecture:** Keep the built-in `openai` provider and point only `openai_base_url` at the loopback router. Authenticate native-provider requests with an unguessable path segment, rotate managed accounts for models and Responses, and narrowly pass native image generation through to ChatGPT unchanged.
 
 **Tech Stack:** TypeScript, Node.js HTTP server, TOML text rewriting, Vitest, Codex Desktop 0.144.4.
 
 ## Global Constraints
 
 - Do not patch Codex Desktop application binaries or feature gates.
-- Route only model discovery and Responses traffic through the local router.
+- Route model discovery and Responses through managed-account rotation; pass through only the proven native image-generation endpoint.
 - Preserve account selection, thread affinity, quota failover, status, and reversible app binding.
 - Keep the router loopback-only and protect it with the existing random client secret.
 - Never log or return inbound native ChatGPT credentials or the route secret.
@@ -196,7 +196,52 @@ git add lib/runtime-rotation-proxy.ts test/runtime-rotation-proxy.test.ts
 git commit -m "fix: authenticate native model routes by secret path"
 ```
 
-### Task 3: Install And Verify Desktop Behavior
+### Task 3: Native Image-Generation Pass-Through
+
+**Files:**
+- Modify: `lib/runtime-rotation-proxy.ts`
+- Test: `test/runtime-rotation-proxy.test.ts`
+
+**Interfaces:**
+- Consumes: secret-path requests shaped as `/v1/<clientApiKey>/images/generations` with native ChatGPT authorization and account headers.
+- Produces: a `POST /codex/images/generations` pass-through that bypasses managed-account selection and strips hop-by-hop, host, cookie, proxy-auth, and local API-key headers.
+
+- [ ] **Step 1: Write failing pass-through tests**
+
+Cover exact secret-path authorization, body/query preservation, native bearer and account-header preservation, response forwarding, unsafe-header stripping, no managed-account selection, wrong-secret rejection, and legacy local-token rejection.
+
+- [ ] **Step 2: Run the focused tests and verify RED**
+
+Run:
+
+```bash
+npx vitest run test/runtime-rotation-proxy.test.ts -t "image generation"
+```
+
+Expected: the secret-path image request returns not found because the endpoint is not yet allowlisted.
+
+- [ ] **Step 3: Implement the narrow pass-through**
+
+Normalize the secret path, accept only `POST /v1/images/generations`, forward it to `/codex/images/generations` with the inbound native credentials, strip unsafe local headers, preserve the query/body, and return before policy or managed-account selection.
+
+- [ ] **Step 4: Run focused tests and verify GREEN**
+
+```bash
+npx vitest run test/runtime-rotation-proxy.test.ts
+npx eslint lib/runtime-rotation-proxy.ts test/runtime-rotation-proxy.test.ts
+npm run typecheck
+```
+
+Expected: all proxy tests and static checks pass.
+
+- [ ] **Step 5: Commit the pass-through**
+
+```bash
+git add docs/superpowers/specs/2026-07-14-native-desktop-capabilities-routing-design.md docs/superpowers/plans/2026-07-14-native-desktop-capabilities-routing.md lib/runtime-rotation-proxy.ts test/runtime-rotation-proxy.test.ts
+git commit -m "fix: pass through native image generation"
+```
+
+### Task 4: Install And Verify Desktop Behavior
 
 **Files:**
 - Modify if required by existing project convention: `Done.md`
@@ -240,7 +285,7 @@ image_gen__imagegen: present
 web__run: present
 ```
 
-Run one image-generation request and one web request. Confirm both succeed and that router logs contain only model/models traffic.
+Run one image-generation request and one web request. Confirm both succeed and that router logs contain only model/models traffic plus the narrow image-generation pass-through.
 
 - [ ] **Step 4: Verify dictation and account rotation**
 

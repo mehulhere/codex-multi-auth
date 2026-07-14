@@ -216,6 +216,24 @@ async function getModels(
 	});
 }
 
+async function postImages(
+	proxy: RuntimeRotationProxyServer,
+	body: Record<string, unknown>,
+	path = `/v1/${DEFAULT_CLIENT_API_KEY}/images/generations`,
+	headers: Record<string, string> = {},
+): Promise<Response> {
+	return fetch(`${proxy.baseUrl}${path}`, {
+		method: "POST",
+		headers: {
+			authorization: "Bearer native-chatgpt-token",
+			"chatgpt-account-id": "native-account-id",
+			"content-type": "application/json",
+			...headers,
+		},
+		body: JSON.stringify(body),
+	});
+}
+
 async function postThreadGoal(
 	proxy: RuntimeRotationProxyServer,
 	body: Record<string, unknown>,
@@ -776,6 +794,91 @@ describe("runtime rotation proxy", () => {
 			"Bearer access-1",
 			"Bearer access-1",
 		]);
+	});
+
+	it("passes secret-path image generation through with native ChatGPT credentials", async () => {
+		const now = Date.now();
+		const accountManager = new AccountManager(undefined, createStorage(now));
+		const { calls, fetchImpl } = createRecordingFetch(() =>
+			new Response('{"data":[{"url":"https://example.test/image.png"}]}', {
+				status: HTTP_STATUS.OK,
+				headers: {
+					"content-type": "application/json",
+					"content-encoding": "gzip",
+				},
+			}),
+		);
+		const proxy = await startProxy({ accountManager, fetchImpl });
+		const body = { model: "gpt-image-2", prompt: "draw a red square" };
+
+		const response = await postImages(
+			proxy,
+			body,
+			`/v1/${DEFAULT_CLIENT_API_KEY}/images/generations?client_version=0.144.4`,
+			{
+				connection: "keep-alive",
+				cookie: "session=must-not-leak",
+				host: "must-not-leak.example",
+				"proxy-authorization": "Basic must-not-leak",
+				"x-api-key": "must-not-leak",
+			},
+		);
+
+		expect(response.status).toBe(HTTP_STATUS.OK);
+		expect(await response.json()).toEqual({
+			data: [{ url: "https://example.test/image.png" }],
+		});
+		expect(response.headers.get("content-encoding")).toBeNull();
+		expect(calls).toHaveLength(1);
+		expect(calls[0]?.url).toBe(
+			"https://example.test/backend-api/codex/images/generations?client_version=0.144.4",
+		);
+		expect(calls[0]?.bodyText).toBe(JSON.stringify(body));
+		expect(calls[0]?.headers.get("authorization")).toBe(
+			"Bearer native-chatgpt-token",
+		);
+		expect(calls[0]?.headers.get("chatgpt-account-id")).toBe(
+			"native-account-id",
+		);
+		expect(calls[0]?.headers.get("connection")).toBeNull();
+		expect(calls[0]?.headers.get("cookie")).toBeNull();
+		expect(calls[0]?.headers.get("host")).toBeNull();
+		expect(calls[0]?.headers.get("proxy-authorization")).toBeNull();
+		expect(calls[0]?.headers.get("x-api-key")).toBeNull();
+		expect(proxy.getStatus()).toMatchObject({
+			totalRequests: 1,
+			upstreamRequests: 1,
+			rotations: 0,
+			lastAccountIndex: null,
+		});
+	});
+
+	it("does not expose image generation through legacy local-token auth", async () => {
+		const now = Date.now();
+		const accountManager = new AccountManager(undefined, createStorage(now));
+		const { calls, fetchImpl } = createRecordingFetch(() =>
+			new Response('{"data":[]}', { status: HTTP_STATUS.OK }),
+		);
+		const proxy = await startProxy({ accountManager, fetchImpl });
+
+		const legacy = await postImages(
+			proxy,
+			{ model: "gpt-image-2", prompt: "legacy" },
+			"/images/generations",
+			{
+				authorization: `Bearer ${DEFAULT_CLIENT_API_KEY}`,
+				"chatgpt-account-id": "",
+			},
+		);
+		const wrongSecret = await postImages(
+			proxy,
+			{ model: "gpt-image-2", prompt: "wrong secret" },
+			"/v1/wrong-secret/images/generations",
+		);
+
+		expect(legacy.status).toBe(HTTP_STATUS.NOT_FOUND);
+		expect(wrongSecret.status).toBe(HTTP_STATUS.UNAUTHORIZED);
+		expect(calls).toHaveLength(0);
 	});
 
 	it("rejects wrong or alternatively encoded native route secrets", async () => {

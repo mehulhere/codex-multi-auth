@@ -19,8 +19,8 @@ authentication identity used to reach it.
 ## Goals
 
 - Keep the native `openai` provider identity and ChatGPT authentication state.
-- Route only model discovery and Responses traffic through the local account
-  rotation router.
+- Route model discovery and Responses traffic through managed-account rotation,
+  with only the native image-generation endpoint passed through unchanged.
 - Restore image generation, web browsing/search, and the dictation button.
 - Preserve account selection, thread affinity, quota failover, status, and
   reversible app binding.
@@ -28,8 +28,8 @@ authentication identity used to reach it.
 
 ## Non-goals
 
-- Proxy ChatGPT application endpoints such as plugins, Apps, analytics, or
-  dictation transcription.
+- Proxy ChatGPT application endpoints other than the proven image-generation
+  endpoint; plugins, Apps, analytics, and dictation transcription stay excluded.
 - Patch the Codex Desktop application or its feature gates.
 - Change account selection or quota policy.
 
@@ -45,7 +45,10 @@ discovery and Responses requests reach the router.
 This is the smallest boundary and matches Codex's supported endpoint override.
 The router must recognize the secret path prefix, strip it before endpoint
 classification, and continue replacing inbound credentials with the selected
-managed account token upstream.
+managed account token for model traffic. Runtime tracing established that native
+image generation also follows `openai_base_url`, so that single endpoint is
+forwarded with the inbound native ChatGPT credentials instead of entering
+managed-account selection.
 
 ### 2. Selective ChatGPT reverse proxy
 
@@ -84,10 +87,11 @@ reference the protected state file instead of embedding the secret.
 The router accepts only loopback connections. A native-provider request is
 authorized when its URL starts with the exact secret route prefix. After
 constant-time secret comparison, the prefix is removed and the remaining path
-must be one of the existing allowlisted endpoints:
+must be one of the narrowly allowlisted endpoints:
 
 - `GET /models`
 - `POST /responses`
+- `POST /images/generations`
 - the existing equivalent `/v1` and `/codex` forms where applicable
 
 Legacy bearer or `x-api-key` authentication remains accepted temporarily for
@@ -97,6 +101,12 @@ the current non-enumerating error behavior.
 The router ignores the caller's native ChatGPT bearer token and continues to
 replace it with the selected managed account token before forwarding upstream.
 Secrets and inbound tokens are never logged or returned.
+
+For `POST /images/generations` only, the router forwards to
+`/codex/images/generations`, preserves the native ChatGPT bearer and account
+headers, removes hop-by-hop, host, cookie, proxy-auth, and local API-key headers,
+and bypasses managed-account rotation. This route is available only through the
+exact secret path; legacy local-token authentication cannot access it.
 
 If Codex attempts a Responses WebSocket prewarm, the HTTP-only router may reject
 the upgrade and Codex falls back to its normal HTTP Responses path. Supporting
@@ -126,6 +136,9 @@ Automated tests will prove:
    the prefix, and preserves the endpoint allowlist.
 4. Legacy header authentication remains functional.
 5. Managed upstream credentials replace native inbound credentials.
+6. Image generation preserves native ChatGPT credentials, strips unsafe local
+   headers, forwards body and query unchanged, and never selects a managed
+   account.
 
 Live verification will use a fresh Desktop task to confirm:
 

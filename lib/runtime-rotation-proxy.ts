@@ -195,6 +195,8 @@ const ALLOWED_THREAD_GOAL_PATHS = new Set([
 	"/codex/thread/goal/get",
 	"/codex/thread/goal/set",
 ]);
+const NATIVE_IMAGE_GENERATIONS_PATH = "/v1/images/generations";
+const NATIVE_IMAGE_GENERATIONS_UPSTREAM_PATH = "/codex/images/generations";
 
 function isResponsesPath(pathname: string): boolean {
 	return ALLOWED_RESPONSES_PATHS.has(pathname);
@@ -206,6 +208,10 @@ function isModelsPath(pathname: string): boolean {
 
 function isThreadGoalPath(pathname: string): boolean {
 	return ALLOWED_THREAD_GOAL_PATHS.has(pathname);
+}
+
+function isNativeImageGenerationsPath(pathname: string): boolean {
+	return pathname === NATIVE_IMAGE_GENERATIONS_PATH;
 }
 
 function normalizeThreadGoalUpstreamPath(pathname: string): string {
@@ -282,6 +288,18 @@ function createOutboundHeaders(
 	return headers;
 }
 
+function createNativePassThroughHeaders(incoming: Headers): Headers {
+	const headers = new Headers(incoming);
+	for (const name of HOP_BY_HOP_HEADERS) {
+		headers.delete(name);
+	}
+	headers.delete("host");
+	headers.delete("x-api-key");
+	headers.delete("cookie");
+	headers.delete("proxy-authorization");
+	return headers;
+}
+
 function isAuthorizedClient(headers: Headers, clientApiKey: string): boolean {
 	const authorization = headers.get("authorization") ?? "";
 	const bearerMatch = authorization.match(/^Bearer\s+(.+)$/i);
@@ -291,9 +309,8 @@ function isAuthorizedClient(headers: Headers, clientApiKey: string): boolean {
 	return typeof apiKey === "string" && safeEqual(apiKey, clientApiKey);
 }
 
-function resolveAuthorizedRequestPath(
+function resolveNativeSecretPath(
 	pathname: string,
-	headers: Headers,
 	clientApiKey: string,
 ): string | null {
 	const nativeRoutePrefix = "/v1/";
@@ -308,6 +325,16 @@ function resolveAuthorizedRequestPath(
 			}
 		}
 	}
+	return null;
+}
+
+function resolveAuthorizedRequestPath(
+	pathname: string,
+	headers: Headers,
+	clientApiKey: string,
+): string | null {
+	const nativeSecretPath = resolveNativeSecretPath(pathname, clientApiKey);
+	if (nativeSecretPath !== null) return nativeSecretPath;
 	return isAuthorizedClient(headers, clientApiKey) ? pathname : null;
 }
 
@@ -1047,6 +1074,10 @@ async function handleRequestInner(
 		// unauthorized). Authorized callers still fall through to the 404 below
 		// when they hit an unsupported path/method.
 		const incomingHeaders = headersFromIncoming(req);
+		const nativeSecretPathname = resolveNativeSecretPath(
+			incomingUrl.pathname,
+			state.clientApiKey,
+		);
 		const authorizedPathname = resolveAuthorizedRequestPath(
 			incomingUrl.pathname,
 			incomingHeaders,
@@ -1064,12 +1095,50 @@ async function handleRequestInner(
 		const isThreadGoalRequest =
 			(req.method === "GET" || req.method === "POST") &&
 			isThreadGoalPath(authorizedPathname);
-		if (!isResponsesRequest && !isModelsRequest && !isThreadGoalRequest) {
+		const isNativeImageGenerationsRequest =
+			nativeSecretPathname !== null &&
+			req.method === "POST" &&
+			isNativeImageGenerationsPath(authorizedPathname);
+		if (
+			!isResponsesRequest &&
+			!isModelsRequest &&
+			!isThreadGoalRequest &&
+			!isNativeImageGenerationsRequest
+		) {
 			writeMethodOrPathError(res);
 			return;
 		}
 
 		state.status.totalRequests += 1;
+		if (isNativeImageGenerationsRequest) {
+			const requestBody = await readRequestBody(req, state.maxRequestBodyBytes);
+			const upstreamUrl = buildUpstreamUrl(
+				req,
+				state.upstreamBaseUrl,
+				NATIVE_IMAGE_GENERATIONS_UPSTREAM_PATH,
+			);
+			const fetchAbortController = new AbortController();
+			state.status.upstreamRequests += 1;
+			const upstream = await withTimeout(
+				state.fetchImpl(upstreamUrl, {
+					method: "POST",
+					headers: createNativePassThroughHeaders(incomingHeaders),
+					body: requestBody,
+					signal: fetchAbortController.signal,
+				}),
+				state.fetchTimeoutMs,
+				() => fetchAbortController.abort(),
+				`native image generation fetch timed out after ${state.fetchTimeoutMs}ms`,
+			);
+			await forwardStreamingResponse(
+				upstream,
+				res,
+				state.status,
+				() => undefined,
+				state.streamStallTimeoutMs,
+			);
+			return;
+		}
 		const affinityWriteVersion =
 			state.sessionAffinityStore?.allocateWriteVersion();
 		const requestBody =
