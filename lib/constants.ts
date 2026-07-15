@@ -40,6 +40,8 @@ export const OPENAI_HEADERS = {
 	BETA: "OpenAI-Beta",
 	ACCOUNT_ID: "chatgpt-account-id",
 	ORIGINATOR: "originator",
+	THREAD_ID: "thread-id",
+	SESSION_ID_DASHED: "session-id",
 	SESSION_ID: "session_id",
 	CONVERSATION_ID: "conversation_id",
 } as const;

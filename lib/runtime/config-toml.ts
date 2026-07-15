@@ -291,6 +291,23 @@ function createNativeOpenAIBaseUrl(baseUrl: string, clientApiKey: string): strin
 	return `${baseUrl.replace(/\/+$/, "")}/v1/${encodeURIComponent(clientApiKey)}`;
 }
 
+function appendLegacyRuntimeProvider(
+	rawConfig: string,
+	baseUrl: string,
+	clientApiKey: string,
+	lineEnding: string,
+): string {
+	const providerTable = [
+		`[model_providers.${RUNTIME_ROTATION_PROXY_PROVIDER_ID}]`,
+		'name = "codex-multi-auth"',
+		`base_url = ${tomlStringLiteral(baseUrl.replace(/\/+$/, ""))}`,
+		"requires_openai_auth = false",
+		`experimental_bearer_token = ${tomlStringLiteral(clientApiKey)}`,
+		'wire_api = "responses"',
+	].join(lineEnding);
+	return `${rawConfig.replace(/[\r\n]*$/, "")}${lineEnding}${lineEnding}${providerTable}`;
+}
+
 function isNativeRuntimeBaseUrlLine(line: string): boolean {
 	const match = /^\s*openai_base_url\s*=\s*["']([^"']+)["']/.exec(line);
 	if (!match?.[1]) return false;
@@ -329,7 +346,13 @@ export function rewriteConfigTomlForRuntimeRotationProvider(
 		"openai_base_url",
 		tomlStringLiteral(createNativeOpenAIBaseUrl(baseUrl, clientApiKey)),
 	);
-	return ensureTomlTrailingNewlineWithStyle(withBaseUrl, lineEnding);
+	const withLegacyProvider = appendLegacyRuntimeProvider(
+		withBaseUrl,
+		baseUrl,
+		clientApiKey,
+		lineEnding,
+	);
+	return ensureTomlTrailingNewlineWithStyle(withLegacyProvider, lineEnding);
 }
 
 export function restoreConfigTomlFromRuntimeRotationProvider(

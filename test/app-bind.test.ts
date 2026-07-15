@@ -190,10 +190,9 @@ describe("Codex app runtime rotation bind", () => {
 		expect(bound).toContain(
 			'openai_base_url = "http://127.0.0.1:32123/v1/app-secret"',
 		);
-		expect(bound).not.toContain(RUNTIME_ROTATION_PROXY_PROVIDER_ID);
-		expect(bound).not.toContain("requires_openai_auth");
-		expect(bound).not.toContain("experimental_bearer_token");
-		expect(bound).not.toContain("wire_api");
+		expect(bound).toContain(
+			`[model_providers.${RUNTIME_ROTATION_PROXY_PROVIDER_ID}]`,
+		);
 		expect(bound).toContain("disable_response_storage = false");
 		expect(bound).toContain("[profiles.default]\nmodel = \"gpt-5.4\"\ndisable_response_storage = true");
 		expect(bound).not.toContain("env_key");
@@ -226,6 +225,23 @@ describe("Codex app runtime rotation bind", () => {
 		expect(bound.indexOf("openai_base_url =")).toBeLessThan(
 			bound.indexOf("[[profiles.experimental]]"),
 		);
+	});
+
+	it("keeps a compatibility provider for persisted legacy Desktop threads", () => {
+		const bound = rewriteConfigTomlForAppBind(
+			'model_provider = "openai"\n',
+			"http://127.0.0.1:32123",
+			"app-secret",
+		);
+
+		expect(bound).toContain('model_provider = "openai"');
+		expect(bound).toContain(
+			`[model_providers.${RUNTIME_ROTATION_PROXY_PROVIDER_ID}]`,
+		);
+		expect(bound).toContain('base_url = "http://127.0.0.1:32123"');
+		expect(bound).toContain("requires_openai_auth = false");
+		expect(bound).toContain('experimental_bearer_token = "app-secret"');
+		expect(bound).toContain('wire_api = "responses"');
 	});
 
 	it("removes bind-owned openai_base_url when the original config omitted it", () => {
@@ -460,9 +476,9 @@ describe("Codex app runtime rotation bind", () => {
 		expect(config).toContain(
 			`openai_base_url = "${result.status.state?.baseUrl}/v1/${result.status.state?.clientApiKey}"`,
 		);
-		expect(config).not.toContain(RUNTIME_ROTATION_PROXY_PROVIDER_ID);
-		expect(config).not.toContain("requires_openai_auth");
-		expect(config).not.toContain("experimental_bearer_token");
+		expect(config).toContain(
+			`[model_providers.${RUNTIME_ROTATION_PROXY_PROVIDER_ID}]`,
+		);
 		expect(config).not.toContain("env_key");
 		if (process.platform !== "win32") {
 			expect(statSync(join(codexHome, "config.toml")).mode & 0o777).toBe(0o600);
@@ -571,7 +587,9 @@ describe("Codex app runtime rotation bind", () => {
 		expect(config).toContain(
 			`openai_base_url = "http://127.0.0.1:4567/v1/${state.clientApiKey}"`,
 		);
-		expect(config).not.toContain(RUNTIME_ROTATION_PROXY_PROVIDER_ID);
+		expect(config).toContain(
+			`[model_providers.${RUNTIME_ROTATION_PROXY_PROVIDER_ID}]`,
+		);
 		expect(state.boundConfigHash).toBe(sha256(config));
 		expect(backup.content).toBe('model_provider = "openai"\n');
 	});

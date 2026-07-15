@@ -2083,6 +2083,33 @@ describe("runtime rotation proxy", () => {
 		expect(JSON.stringify(status.threadStatuses)).not.toContain("refresh-1");
 	});
 
+	it("publishes thread status for current Codex thread-id headers", async () => {
+		const now = Date.now();
+		const accountManager = new AccountManager(undefined, createStorage(now, 2));
+		const { fetchImpl } = createRecordingFetch(() =>
+			textEventStream(
+				'data: {"type":"response.completed","response":{"id":"resp_thread_header","status":"completed"}}\n\n',
+			),
+		);
+		const proxy = await startProxy({ accountManager, fetchImpl });
+
+		await (
+			await postResponses(
+				proxy,
+				{ model: "gpt-5-codex", stream: true },
+				"/responses",
+				{
+					"session-id": "session-header-value",
+					"thread-id": "thread-header-value",
+				},
+			)
+		).text();
+
+		expect(proxy.getStatus().threadStatuses?.["thread-header-value"]).toMatchObject({
+			accountDisplay: "Account 1 (ac***@example.com)",
+		});
+	});
+
 	it("publishes the shared aggregate from the quota cache without identities", async () => {
 		const now = Date.now();
 		const accountManager = new AccountManager(undefined, createStorage(now, 2));

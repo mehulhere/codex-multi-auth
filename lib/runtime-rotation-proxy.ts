@@ -588,6 +588,8 @@ function getThreadGoalFallback(
 
 function resolveSessionKey(headers: Headers, parsedBody: RequestBody | null): string | null {
 	const headerKey =
+		headers.get(OPENAI_HEADERS.THREAD_ID) ??
+		headers.get(OPENAI_HEADERS.SESSION_ID_DASHED) ??
 		headers.get(OPENAI_HEADERS.SESSION_ID) ??
 		headers.get(OPENAI_HEADERS.CONVERSATION_ID) ??
 		null;
