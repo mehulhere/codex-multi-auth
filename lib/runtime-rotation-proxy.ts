@@ -202,6 +202,17 @@ function isResponsesPath(pathname: string): boolean {
 	return ALLOWED_RESPONSES_PATHS.has(pathname);
 }
 
+function isWebSocketUpgradeRequest(req: IncomingMessage): boolean {
+	const connection = req.headers.connection ?? "";
+	const upgrade = req.headers.upgrade ?? "";
+	return (
+		connection
+			.split(",")
+			.some((value) => value.trim().toLowerCase() === "upgrade") &&
+		upgrade.trim().toLowerCase() === "websocket"
+	);
+}
+
 function isModelsPath(pathname: string): boolean {
 	return ALLOWED_MODELS_PATHS.has(pathname);
 }
@@ -1087,6 +1098,16 @@ async function handleRequestInner(
 		);
 		if (authorizedPathname === null) {
 			writeUnauthorized(res);
+			return;
+		}
+		if (
+			req.method === "GET" &&
+			isResponsesPath(authorizedPathname) &&
+			isWebSocketUpgradeRequest(req)
+		) {
+			proxyLog.info("responses websocket unavailable; using HTTP fallback");
+			res.writeHead(426);
+			res.end();
 			return;
 		}
 

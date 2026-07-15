@@ -322,6 +322,43 @@ async function postResponsesWithHttp(
 	});
 }
 
+async function requestResponsesWebSocketUpgrade(
+	proxy: RuntimeRotationProxyServer,
+	path = `/v1/${DEFAULT_CLIENT_API_KEY}/responses`,
+): Promise<{ status: number; text: string }> {
+	const url = new URL(`${proxy.baseUrl}${path}`);
+	return new Promise((resolve, reject) => {
+		const req = request(
+			{
+				host: url.hostname,
+				port: Number(url.port),
+				path: `${url.pathname}${url.search}`,
+				method: "GET",
+				headers: {
+					connection: "Upgrade",
+					upgrade: "websocket",
+					"sec-websocket-key": Buffer.from("runtime-proxy-test").toString("base64"),
+					"sec-websocket-version": "13",
+				},
+			},
+			(res) => {
+				const chunks: Buffer[] = [];
+				res.on("data", (chunk) =>
+					chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)),
+				);
+				res.on("end", () =>
+					resolve({
+						status: res.statusCode ?? 0,
+						text: Buffer.concat(chunks).toString("utf8"),
+					}),
+				);
+			},
+		);
+		req.on("error", reject);
+		req.end();
+	});
+}
+
 interface ActiveHandleProcess {
 	_getActiveHandles?: () => unknown[];
 }
@@ -794,6 +831,21 @@ describe("runtime rotation proxy", () => {
 			"Bearer access-1",
 			"Bearer access-1",
 		]);
+	});
+
+	it("returns 426 for native-provider Responses WebSocket upgrades", async () => {
+		const now = Date.now();
+		const accountManager = new AccountManager(undefined, createStorage(now));
+		const { calls, fetchImpl } = createRecordingFetch(() =>
+			textEventStream("data: must-not-forward\n\n"),
+		);
+		const proxy = await startProxy({ accountManager, fetchImpl });
+
+		const response = await requestResponsesWebSocketUpgrade(proxy);
+
+		expect(response.status).toBe(426);
+		expect(response.text).toBe("");
+		expect(calls).toHaveLength(0);
 	});
 
 	it("passes secret-path image generation through with native ChatGPT credentials", async () => {
