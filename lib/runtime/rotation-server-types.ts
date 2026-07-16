@@ -22,6 +22,12 @@ export interface RuntimeRotationProxyStatus {
 	retries: number;
 	rotations: number;
 	streamsStarted: number;
+	activeWebSockets: number;
+	webSocketUpgrades: number;
+	webSocketFallbacks: number;
+	webSocketAbnormalCloses: number;
+	webSocketPeakBufferedBytes: number;
+	webSocketLastError: string | null;
 	lastError: string | null;
 	lastAccountIndex: number | null;
 	lastAccountLabel: string | null;
@@ -66,6 +72,7 @@ export interface RuntimeRotationProxyOptions {
 	 * the value survives the launcher -> detached app-helper process boundary.
 	 */
 	forcedAccountIndex?: number | null;
+	responsesWebSockets?: "auto" | "off";
 }
 
 export interface RequestContext {

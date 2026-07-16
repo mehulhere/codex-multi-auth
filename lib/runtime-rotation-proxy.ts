@@ -9,6 +9,7 @@ import {
 import { withRoutingMutex } from "./routing-mutex.js";
 import {
 	getFetchTimeoutMs,
+	getCodexRuntimeResponsesWebSockets,
 	getNetworkErrorCooldownMs,
 	getRetryAllAccountsMaxRetries,
 	getServerErrorCooldownMs,
@@ -102,6 +103,10 @@ import { SessionAffinityStore } from "./session-affinity.js";
 import { ThreadStatusStore } from "./runtime/thread-status.js";
 import type { RequestBody } from "./types.js";
 import { isRecord } from "./utils.js";
+import {
+	createResponsesWebSocketBridge,
+	type PreparedResponsesWebSocketUpstream,
+} from "./runtime/responses-websocket-bridge.js";
 
 // Re-exports: these symbols were defined in this module before the §4.1.3
 // phase-1 and phase-2 carves and are part of its public surface (lib/index.ts
@@ -173,7 +178,9 @@ function toUrlHost(host: string): string {
 const proxyLog = createLogger("runtime-proxy");
 const DEFAULT_QUOTA_REMAINING_THRESHOLD = 0;
 const DEFAULT_AFFINITY_QUOTA_FLOOR_PERCENT = 5;
+const NATIVE_IMAGE_GENERATION_FETCH_TIMEOUT_MS = 5 * 60 * 1_000;
 const STREAM_USAGE_LIMIT_COOLDOWN_MS = 5 * 60 * 60 * 1000;
+const WEBSOCKET_ABNORMAL_CLOSE_COOLDOWN_MS = 60_000;
 
 const DEFAULT_MAX_RUNTIME_ACCOUNT_ATTEMPTS = 4;
 
@@ -813,6 +820,217 @@ export function resolveRuntimePinnedIndex(
 	return forcedAccountIndex ?? (honorStoredPin ? storedPinnedIndex : null);
 }
 
+async function prepareResponsesWebSocketUpstream(
+	state: RotationProxyState,
+	req: IncomingMessage,
+): Promise<PreparedResponsesWebSocketUpstream | null> {
+	const incomingUrl = new URL(req.url ?? "/", "http://127.0.0.1");
+	const incomingHeaders = headersFromIncoming(req);
+	const authorizedPathname = resolveAuthorizedRequestPath(
+		incomingUrl.pathname,
+		incomingHeaders,
+		state.clientApiKey,
+	);
+	if (
+		req.method !== "GET" ||
+		authorizedPathname === null ||
+		!isResponsesPath(authorizedPathname) ||
+		!isWebSocketUpgradeRequest(req)
+	) {
+		return null;
+	}
+
+	const context = buildResponsesRequestContext(req, Buffer.alloc(0));
+	let policyDecision: RuntimePolicyDecision | null = null;
+	try {
+		const policyState = await loadRuntimePolicyState();
+		policyDecision = await evaluateRuntimePolicy({
+			state: policyState,
+			accounts: state.activeAccountManager.getAccountsSnapshot(),
+			model: CURRENT_CODEX_MODEL,
+			now: state.now(),
+		});
+	} catch (error) {
+		state.status.webSocketLastError = maskString(
+			error instanceof Error ? error.message : String(error),
+		);
+		return null;
+	}
+	if (!policyDecision.allowed) return null;
+
+	const storageMeta = readStorageMetaFromDisk();
+	const pinnedIndex = resolveRuntimePinnedIndex(
+		state.forcedAccountIndex,
+		storageMeta.pinnedAccountIndex,
+		state.honorStoredPin,
+	);
+	if (storageMeta.affinityGeneration > state.lastObservedAffinityGeneration) {
+		state.sessionAffinityStore?.clearAll();
+		state.lastObservedAffinityGeneration = storageMeta.affinityGeneration;
+	}
+	const attemptedIndexes = new Set<number>();
+	const skipReasons = new Map<number, string>();
+	const selectAccount = (): ManagedAccount | null =>
+		chooseAccount({
+			accountManager: state.activeAccountManager,
+			sessionAffinityStore: state.sessionAffinityStore,
+			sessionKey: context.sessionKey,
+			previousResponseId: null,
+			family: "codex",
+			model: CURRENT_CODEX_MODEL,
+			attemptedIndexes,
+			now: state.now(),
+			policy: policyDecision,
+			pinnedIndex,
+			skipReasons,
+			pidOffsetEnabled: state.pidOffsetEnabled,
+			schedulingStrategy: state.schedulingStrategy,
+			quotaByAccountIndex: state.quotaByAccountIndex,
+			affinityQuotaFloorPercent: DEFAULT_AFFINITY_QUOTA_FLOOR_PERCENT,
+		});
+	const selected =
+		state.routingMutexMode === "enabled"
+			? await withRoutingMutex(state.routingMutexMode, async () => {
+					const candidate = selectAccount();
+					if (
+						candidate &&
+						pinnedIndex === null &&
+						state.schedulingStrategy !== "sequential"
+					) {
+						await state.activeAccountManager.markSwitchedLocked(
+							candidate,
+							"rotation",
+							"codex",
+						);
+					}
+					return candidate;
+				})
+			: selectAccount();
+	if (!selected) return null;
+	if (
+		!state.activeAccountManager.consumeToken(
+			selected,
+			"codex",
+			CURRENT_CODEX_MODEL,
+		)
+	) {
+		return null;
+	}
+
+	const refreshed = await ensureFreshAccessToken({
+		accountManager: state.activeAccountManager,
+		account: selected,
+		family: "codex",
+		model: CURRENT_CODEX_MODEL,
+		now: state.now(),
+		tokenRefreshSkewMs: state.tokenRefreshSkewMs,
+		tokenInvalidationCooldownMs: state.tokenInvalidationCooldownMs,
+	});
+	if (!refreshed.ok) {
+		state.activeAccountManager.refundToken(
+			selected,
+			"codex",
+			CURRENT_CODEX_MODEL,
+		);
+		return null;
+	}
+	const accountId = resolveAccountId(refreshed.account, refreshed.accessToken);
+	if (!accountId) {
+		state.activeAccountManager.refundToken(
+			refreshed.account,
+			"codex",
+			CURRENT_CODEX_MODEL,
+		);
+		return null;
+	}
+
+	const outboundHeaders = createOutboundHeaders(
+		context.headers,
+		refreshed.account,
+		refreshed.accessToken,
+		accountId,
+	);
+	for (const header of [
+		"sec-websocket-key",
+		"sec-websocket-version",
+		"sec-websocket-extensions",
+		"sec-websocket-protocol",
+	]) {
+		outboundHeaders.delete(header);
+	}
+	outboundHeaders.set(OPENAI_HEADERS.BETA, "responses_websockets=2026-02-06");
+	const upstreamUrl = new URL(
+		buildUpstreamUrl(req, state.upstreamBaseUrl, URL_PATHS.CODEX_RESPONSES),
+	);
+	upstreamUrl.protocol = upstreamUrl.protocol === "https:" ? "wss:" : "ws:";
+	state.status.upstreamRequests += 1;
+	const onConnectionFailure = (error: unknown): void => {
+		state.status.webSocketLastError = maskString(
+			error instanceof Error ? error.message : String(error),
+		);
+		state.activeAccountManager.refundToken(
+			refreshed.account,
+			"codex",
+			CURRENT_CODEX_MODEL,
+		);
+		state.activeAccountManager.recordFailure(
+			refreshed.account,
+			"codex",
+			CURRENT_CODEX_MODEL,
+		);
+		state.activeAccountManager.markAccountCoolingDown(
+			refreshed.account,
+			state.networkErrorCooldownMs,
+			"network-error",
+		);
+		state.activeAccountManager.saveToDiskDebounced();
+	};
+	const onOpen = (): void => {
+		state.activeAccountManager.recordSuccess(
+			refreshed.account,
+			"codex",
+			CURRENT_CODEX_MODEL,
+		);
+		recordRuntimeAccountRecovery(refreshed.account.index);
+		const identity = accountIdentityFromAccount(refreshed.account, state.now());
+		recordLastRuntimeAccount(state.status, identity);
+		state.sessionAffinityStore?.remember(
+			context.sessionKey,
+			refreshed.account.index,
+			state.now(),
+		);
+		void persistRuntimeActiveAccount(
+			state.activeAccountManager,
+			refreshed.account,
+			"codex",
+			pinnedIndex === refreshed.account.index,
+			state.schedulingStrategy,
+		);
+	};
+	const onAbnormalClose = (): void => {
+		state.activeAccountManager.recordFailure(
+			refreshed.account,
+			"codex",
+			CURRENT_CODEX_MODEL,
+		);
+		state.activeAccountManager.markAccountCoolingDown(
+			refreshed.account,
+			WEBSOCKET_ABNORMAL_CLOSE_COOLDOWN_MS,
+			"network-error",
+		);
+		state.sessionAffinityStore?.forgetSession(context.sessionKey);
+		state.activeAccountManager.saveToDiskDebounced();
+	};
+
+	return {
+		url: upstreamUrl.toString(),
+		headers: Object.fromEntries(outboundHeaders.entries()),
+		onOpen,
+		onConnectionFailure,
+		onAbnormalClose,
+	};
+}
+
 export async function startRuntimeRotationProxy(
 	options: RuntimeRotationProxyOptions,
 ): Promise<RuntimeRotationProxyServer> {
@@ -957,6 +1175,23 @@ export async function startRuntimeRotationProxy(
 	let closing = false;
 	let closingPromise: Promise<void> | null = null;
 	const activeHandlers = new Set<Promise<void>>();
+	const responsesWebSocketMode =
+		options.responsesWebSockets ??
+		getCodexRuntimeResponsesWebSockets(pluginConfig);
+	const responsesWebSocketBridge = createResponsesWebSocketBridge({
+		prepareUpstream: (request) =>
+			responsesWebSocketMode === "auto"
+				? prepareResponsesWebSocketUpstream(state, request)
+				: Promise.resolve(null),
+		onMetrics: (metrics) => {
+			state.status.activeWebSockets = metrics.activeConnections;
+			state.status.webSocketUpgrades = metrics.upgrades;
+			state.status.webSocketFallbacks = metrics.fallbacks;
+			state.status.webSocketAbnormalCloses = metrics.abnormalCloses;
+			state.status.webSocketPeakBufferedBytes = metrics.peakBufferedBytes;
+			state.status.webSocketLastError = metrics.lastError;
+		},
+	});
 	const server = createServer((req, res) => {
 		if (closing) {
 			res.destroy();
@@ -974,6 +1209,13 @@ export async function startRuntimeRotationProxy(
 				activeHandlers.delete(trackedHandler);
 			});
 		activeHandlers.add(trackedHandler);
+	});
+	server.on("upgrade", (request, socket, head) => {
+		if (closing) {
+			socket.destroy();
+			return;
+		}
+		void responsesWebSocketBridge.handleUpgrade(request, socket, head);
 	});
 	const sockets = new Set<Socket>();
 	server.on("connection", (socket) => {
@@ -1013,6 +1255,7 @@ export async function startRuntimeRotationProxy(
 			if (closingPromise) return closingPromise;
 			closing = true;
 			closingPromise = (async () => {
+				await responsesWebSocketBridge.close();
 				await closeServer(server, sockets);
 				await Promise.all([...activeHandlers]);
 				await flushPendingQuotaCacheSave(state);
@@ -1141,6 +1384,10 @@ async function handleRequestInner(
 				NATIVE_IMAGE_GENERATIONS_UPSTREAM_PATH,
 			);
 			const fetchAbortController = new AbortController();
+			const imageFetchTimeoutMs = Math.max(
+				state.fetchTimeoutMs,
+				NATIVE_IMAGE_GENERATION_FETCH_TIMEOUT_MS,
+			);
 			state.status.upstreamRequests += 1;
 			const upstream = await withTimeout(
 				state.fetchImpl(upstreamUrl, {
@@ -1149,9 +1396,9 @@ async function handleRequestInner(
 					body: requestBody,
 					signal: fetchAbortController.signal,
 				}),
-				state.fetchTimeoutMs,
+				imageFetchTimeoutMs,
 				() => fetchAbortController.abort(),
-				`native image generation fetch timed out after ${state.fetchTimeoutMs}ms`,
+				`native image generation fetch timed out after ${imageFetchTimeoutMs}ms`,
 			);
 			await forwardStreamingResponse(
 				upstream,

@@ -76,6 +76,12 @@ export interface AppBindRouterStatus {
 	pid: number | null;
 	baseUrl: string | null;
 	totalRequests: number | null;
+	activeWebSockets: number | null;
+	webSocketUpgrades: number | null;
+	webSocketFallbacks: number | null;
+	webSocketAbnormalCloses: number | null;
+	webSocketPeakBufferedBytes: number | null;
+	webSocketLastError: string | null;
 	lastAccountIndex: number | null;
 	lastAccountLabel: string | null;
 	lastAccountEmail: string | null;
@@ -353,6 +359,12 @@ async function readRouterStatus(path: string): Promise<AppBindRouterStatus | nul
 		pid: readNumber(record, "pid"),
 		baseUrl: readString(record, "baseUrl"),
 		totalRequests: readNumber(record, "totalRequests"),
+		activeWebSockets: readNumber(record, "activeWebSockets"),
+		webSocketUpgrades: readNumber(record, "webSocketUpgrades"),
+		webSocketFallbacks: readNumber(record, "webSocketFallbacks"),
+		webSocketAbnormalCloses: readNumber(record, "webSocketAbnormalCloses"),
+		webSocketPeakBufferedBytes: readNumber(record, "webSocketPeakBufferedBytes"),
+		webSocketLastError: readString(record, "webSocketLastError"),
 		lastAccountIndex: readNumber(record, "lastAccountIndex"),
 		lastAccountLabel: readString(record, "lastAccountLabel"),
 		lastAccountEmail: readString(record, "lastAccountEmail"),

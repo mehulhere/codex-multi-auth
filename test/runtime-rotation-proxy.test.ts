@@ -1,5 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { request } from "node:http";
+import { createServer as createHttpServer, request, type Server } from "node:http";
+import type { AddressInfo } from "node:net";
+import WebSocket, { WebSocketServer } from "ws";
 import { AccountManager } from "../lib/accounts.js";
 import { CodexValidationError } from "../lib/errors.js";
 import { HTTP_STATUS, OPENAI_HEADERS } from "../lib/constants.js";
@@ -74,6 +76,7 @@ interface FetchCall {
 
 const openServers: RuntimeRotationProxyServer[] = [];
 const openManagers: AccountManager[] = [];
+const openWebSocketUpstreams: Array<{ server: Server; wss: WebSocketServer }> = [];
 const DEFAULT_CLIENT_API_KEY = "runtime-secret";
 
 function createStorage(now: number, count = 2): AccountStorageV3 {
@@ -451,6 +454,11 @@ afterEach(async () => {
 	}
 	for (const accountManager of openManagers.splice(0, openManagers.length)) {
 		await accountManager.flushPendingSave();
+	}
+	for (const upstream of openWebSocketUpstreams.splice(0)) {
+		for (const client of upstream.wss.clients) client.terminate();
+		upstream.wss.close();
+		await new Promise<void>((resolve) => upstream.server.close(() => resolve()));
 	}
 	resetTrackers();
 	clearCircuitBreakers();
@@ -839,13 +847,76 @@ describe("runtime rotation proxy", () => {
 		const { calls, fetchImpl } = createRecordingFetch(() =>
 			textEventStream("data: must-not-forward\n\n"),
 		);
-		const proxy = await startProxy({ accountManager, fetchImpl });
+		const proxy = await startProxy({
+			accountManager,
+			fetchImpl,
+			options: { responsesWebSockets: "off" },
+		});
 
 		const response = await requestResponsesWebSocketUpgrade(proxy);
 
 		expect(response.status).toBe(426);
 		expect(response.text).toBe("");
 		expect(calls).toHaveLength(0);
+	});
+
+	it("upgrades Responses WebSockets with one selected managed account", async () => {
+		const upstreamServer = createHttpServer();
+		const upstreamWss = new WebSocketServer({ noServer: true, perMessageDeflate: false });
+		let upstreamHeaders: typeof import("node:http").IncomingHttpHeaders | null = null;
+		upstreamServer.on("upgrade", (request, socket, head) => {
+			upstreamHeaders = request.headers;
+			upstreamWss.handleUpgrade(request, socket, head, (ws) => {
+				upstreamWss.emit("connection", ws, request);
+			});
+		});
+		upstreamWss.on("connection", (ws) => {
+			ws.on("message", (data, isBinary) => ws.send(data, { binary: isBinary }));
+		});
+		await new Promise<void>((resolve) =>
+			upstreamServer.listen(0, "127.0.0.1", () => resolve()),
+		);
+		openWebSocketUpstreams.push({ server: upstreamServer, wss: upstreamWss });
+		const upstreamPort = (upstreamServer.address() as AddressInfo).port;
+		const now = Date.now();
+		const accountManager = new AccountManager(undefined, createStorage(now, 1));
+		const { fetchImpl } = createRecordingFetch(() => textEventStream());
+		const proxy = await startRuntimeRotationProxy({
+			accountManager,
+			fetchImpl,
+			upstreamBaseUrl: `http://127.0.0.1:${upstreamPort}/backend-api`,
+			clientApiKey: DEFAULT_CLIENT_API_KEY,
+			responsesWebSockets: "auto",
+		});
+		openServers.push(proxy);
+		openManagers.push(accountManager);
+
+		const client = await new Promise<WebSocket>((resolve, reject) => {
+			const socket = new WebSocket(
+				`${proxy.baseUrl.replace("http:", "ws:")}/v1/${DEFAULT_CLIENT_API_KEY}/responses`,
+				{ perMessageDeflate: false },
+			);
+			socket.once("open", () => resolve(socket));
+			socket.once("error", reject);
+		});
+		const echoed = new Promise<string>((resolve) =>
+			client.once("message", (data) => resolve(data.toString())),
+		);
+		client.send('{"type":"response.create"}');
+		expect(await echoed).toBe('{"type":"response.create"}');
+		expect(upstreamHeaders?.authorization).toBe("Bearer access-1");
+		expect(upstreamHeaders?.[OPENAI_HEADERS.ACCOUNT_ID]).toBe("acc_1");
+		expect(upstreamHeaders?.[OPENAI_HEADERS.BETA.toLowerCase()]).toBe(
+			"responses_websockets=2026-02-06",
+		);
+		expect(upstreamHeaders?.["x-api-key"]).toBeUndefined();
+		expect(proxy.getStatus()).toMatchObject({
+			activeWebSockets: 1,
+			webSocketUpgrades: 1,
+			webSocketFallbacks: 0,
+		});
+		client.close(1000, "done");
+		await new Promise<void>((resolve) => client.once("close", () => resolve()));
 	});
 
 	it("passes secret-path image generation through with native ChatGPT credentials", async () => {
@@ -1271,6 +1342,33 @@ describe("runtime rotation proxy", () => {
 		);
 		expect(calls[0]?.headers.get("authorization")).toBe("Bearer access-1");
 		expect(calls[0]?.headers.get("x-api-key")).toBeNull();
+	});
+
+	it("does not apply the short Responses timeout to accepted image renders", async () => {
+		const now = Date.now();
+		const accountManager = new AccountManager(undefined, createStorage(now));
+		const { fetchImpl } = createRecordingFetch(async () => {
+			await new Promise((resolve) => setTimeout(resolve, 30));
+			return new Response('{"data":[{"b64_json":"discarded"}]}', {
+				status: HTTP_STATUS.OK,
+				headers: { "content-type": "application/json" },
+			});
+		});
+		const proxy = await startProxy({
+			accountManager,
+			fetchImpl,
+			options: { fetchTimeoutMs: 10 },
+		});
+
+		const response = await postImages(proxy, {
+			model: "gpt-image-1",
+			prompt: "draw a blue square",
+		});
+
+		expect(response.status).toBe(HTTP_STATUS.OK);
+		expect(await response.json()).toEqual({
+			data: [{ b64_json: "discarded" }],
+		});
 	});
 
 	it("falls back locally when upstream blocks TUI thread goal requests", async () => {

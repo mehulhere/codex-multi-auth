@@ -34,6 +34,7 @@ describe("PluginConfigSchema", () => {
 		const config = {
 			codexMode: true,
 			codexRuntimeRotationProxy: true,
+			codexRuntimeResponsesWebSockets: "auto",
 			fastSession: true,
 			retryAllAccountsRateLimited: true,
 			retryAllAccountsMaxWaitMs: 5000,
@@ -74,6 +75,13 @@ describe("PluginConfigSchema", () => {
 		};
 		const result = PluginConfigSchema.safeParse(config);
 		expect(result.success).toBe(true);
+	});
+
+	it("rejects invalid Responses WebSocket modes", () => {
+		expect(
+			PluginConfigSchema.safeParse({ codexRuntimeResponsesWebSockets: "always" })
+				.success,
+		).toBe(false);
 	});
 
 	it.each([

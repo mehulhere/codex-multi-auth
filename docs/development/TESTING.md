@@ -35,6 +35,7 @@ npm test -- test/documentation.test.ts
 npm test -- test/runtime-rotation-proxy.test.ts test/codex-bin-wrapper.test.ts
 npm run test:model-matrix:smoke
 npm run bench:edit-formats:smoke
+npm run bench:websocket-memory -- --json
 ```
 
 ## Desktop Capability Matrix
@@ -59,6 +60,11 @@ image bytes, credentials, and account identity. Computer Use input, microphone
 speech, audio confirmation, and conversation remain `interactive_required` in
 non-interactive runs. Use `--require=<capability-id>` to make selected failures
 control the exit status; with no `--require`, every failed row is required.
+
+The WebSocket memory benchmark runs with explicit garbage collection, measures
+idle connection retention, active text overhead, an 8 MiB binary payload, and
+cleanup after 100 connection cycles. It fails above the relaxed 2 MiB idle,
+10 MiB active-text, or 10 MiB post-cycle retained-heap targets.
 
 * * *
 

@@ -47,11 +47,24 @@ Used only for host plugin mode through the host runtime config file.
 | --- | --- |
 | `codexMode` | `true` |
 | `codexRuntimeRotationProxy` | `true` |
+| `codexRuntimeResponsesWebSockets` | `auto` |
 | `codexTuiV2` | `true` |
 | `codexTuiColorProfile` | `truecolor` |
 | `codexTuiGlyphMode` | `ascii` |
 
 `codexRuntimeRotationProxy` enables the wrapper/app local Responses proxy path. It is enabled by default and can be overridden per process with `CODEX_MULTI_AUTH_RUNTIME_ROTATION_PROXY`.
+
+`codexRuntimeResponsesWebSockets` controls the hybrid Responses transport.
+`auto` tries an account-sticky WebSocket first and returns HTTP 426 before the
+upgrade when preparation fails, allowing official Codex to use the existing
+HTTP streaming path immediately. `off` always returns 426. Override it per
+process with `CODEX_MULTI_AUTH_RESPONSES_WEBSOCKETS=auto|off`.
+
+The WebSocket path is loopback-authenticated and bounded to 32 connections,
+64 MiB per message, 16 MiB buffered per direction, and a 300-second idle
+timeout. Compression is disabled. One connection keeps one managed account for
+its full lifetime; abnormal closes cool that account for 60 seconds and are
+never replayed after the local client receives 101.
 
 ### Fast Session
 

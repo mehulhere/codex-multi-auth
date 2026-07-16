@@ -51,6 +51,7 @@ lib/runtime-rotation-proxy.ts
   |- validates local client token
   |- selects/refreshes managed account
   |- forwards Responses/model requests to official backend
+  |- relays account-sticky Responses WebSockets with HTTP fallback
   |- rotates on rate limit/auth/network/server failure
   |- persists runtime observability and selected-account mirrors
 
@@ -109,10 +110,18 @@ Codex or ChatGPT-backed request flow
 4. The wrapper creates a temporary shadow `CODEX_HOME`, copies relevant official Codex state, and rewrites `config.toml` to select `codex-multi-auth-runtime-proxy`.
 5. The official Codex CLI sends Responses/model traffic to the local provider.
 6. The proxy validates the client token, selects a managed account, refreshes tokens if needed, and forwards to the official backend.
-7. The proxy rotates to another account before streaming response bytes when it sees retryable auth refresh failures, 429s, 5xx responses, or network errors.
-8. Successful responses stream back to the local Codex client with hop-by-hop/private/stale decoded headers removed.
-9. Runtime counters and last-account metadata are persisted for status/report commands.
-10. On exit, the wrapper syncs refreshed official state files back from the shadow home and cleans up the temporary directory.
+7. For a Responses WebSocket upgrade, the proxy authenticates the exact local
+   path, selects and refreshes one account, opens the upstream socket, and only
+   then accepts the local 101. Pre-upgrade failure returns 426 for HTTP fallback.
+8. An accepted WebSocket never rotates or replays; one account owns it until
+   normal close, bounded idle cleanup, or abnormal-close cooldown.
+9. HTTP requests continue to rotate to another account before streaming
+   response bytes when they see retryable auth refresh failures, 429s, 5xx
+   responses, or network errors.
+10. Successful HTTP responses stream back to the local Codex client with
+    hop-by-hop/private/stale decoded headers removed.
+11. Runtime counters and last-account metadata are persisted for status/report commands.
+12. On exit, the wrapper syncs refreshed official state files back from the shadow home and cleans up the temporary directory.
 
 * * *
 

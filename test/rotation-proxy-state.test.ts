@@ -114,6 +114,12 @@ describe("createRotationProxyState", () => {
 			retries: 0,
 			rotations: 0,
 			streamsStarted: 0,
+			activeWebSockets: 0,
+			webSocketUpgrades: 0,
+			webSocketFallbacks: 0,
+			webSocketAbnormalCloses: 0,
+			webSocketPeakBufferedBytes: 0,
+			webSocketLastError: null,
 			lastError: null,
 			lastAccountIndex: null,
 			lastAccountLabel: null,
@@ -121,6 +127,12 @@ describe("createRotationProxyState", () => {
 			lastAccountUpdatedAt: null,
 			threadStatuses: {},
 			threadStatusPersistence: "memory-only",
+			poolQuota: {
+				accountCount: 0,
+				fiveHour: null,
+				sevenDay: null,
+				updatedAt: NOW,
+			},
 		});
 		expect(state.lastGlobalAccountIndex).toBeNull();
 		expect(state.lastStaleRuntimeReloadAt).toBe(0);

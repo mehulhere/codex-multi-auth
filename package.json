@@ -103,6 +103,7 @@
 		"bench:edit-formats:render": "node scripts/benchmark-render-dashboard.mjs",
 		"bench:runtime-path": "npm run build && node scripts/benchmark-runtime-path.mjs",
 		"bench:runtime-path:quick": "node scripts/benchmark-runtime-path.mjs",
+		"bench:websocket-memory": "npm run build && node --expose-gc scripts/benchmark-responses-websocket-memory.mjs",
 		"test:coverage": "vitest run --coverage --maxWorkers=1",
 		"coverage": "npm run build && vitest run --coverage --maxWorkers=1",
 		"audit:prod": "npm audit --omit=dev --audit-level=high",
@@ -158,6 +159,7 @@
 	},
 	"devDependencies": {
 		"@types/node": "^20.19.42",
+		"@types/ws": "8.18.1",
 		"@typescript-eslint/eslint-plugin": "^8.56.0",
 		"@typescript-eslint/parser": "^8.56.0",
 		"@vitest/coverage-v8": "^4.1.8",
@@ -178,6 +180,7 @@
 		"@openauthjs/openauth": "^0.4.3",
 		"hono": "4.12.29",
 		"undici": "6.27.0",
+		"ws": "8.21.1",
 		"zod": "4.4.3"
 	},
 	"overrides": {
