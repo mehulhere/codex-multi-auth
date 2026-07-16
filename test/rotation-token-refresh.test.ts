@@ -247,6 +247,26 @@ describe("ensureFreshAccessToken", () => {
 		);
 	});
 
+	it("quarantines a refresh-token-reuse failure", async () => {
+		const accountManager = managerWith(STALE_EXPIRES);
+		queuedRefreshMock.mockResolvedValue({
+			type: "failed",
+			reason: "http_error",
+			statusCode: 400,
+			message:
+				"Your refresh token has already been used to generate a new access token. Please try signing in again.",
+		});
+
+		const result = await ensureFreshAccessToken(refreshParams(accountManager));
+
+		expect(result).toMatchObject({
+			ok: false,
+			retryable: false,
+			invalidated: true,
+		});
+		expect(accountManager.getAccountByIndex(0)?.enabled).toBe(false);
+	});
+
 	it("never lets a later generic failure truncate an invalidation cooldown", async () => {
 		const accountManager = managerWith(STALE_EXPIRES);
 		const account = accountManager.getAccountByIndex(0);

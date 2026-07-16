@@ -1,5 +1,7 @@
 import type { ServerResponse } from "node:http";
+import { TextDecoder } from "node:util";
 import type { RuntimeRotationProxyStatus } from "../runtime/rotation-server-types.js";
+import { isRecord } from "../utils.js";
 
 export const HOP_BY_HOP_HEADERS = new Set([
 	"connection",
@@ -22,6 +24,10 @@ const DECODED_UPSTREAM_RESPONSE_HEADERS = new Set([
 	// Node fetch returns decoded bytes while preserving the upstream encoding header.
 	"content-encoding",
 ]);
+// Match the Responses SSE parser's accepted size while keeping this optional
+// affinity observer bounded. Lines beyond the cap are ignored until their
+// newline; the original upstream bytes are still forwarded unchanged.
+const MAX_OBSERVED_SSE_LINE_BYTES = 10 * 1024 * 1024;
 
 export function responseHeadersForClient(upstreamHeaders: Headers): Record<string, string> {
 	const headers: Record<string, string> = {};
@@ -140,12 +146,137 @@ function waitForDrain(res: ServerResponse): Promise<void> {
 	});
 }
 
+export interface RuntimeStreamObserver {
+	onResponseId?: (responseId: string) => void;
+	onTerminalEvent?: (type: string) => void;
+	onTerminalFailure?: (failure: {
+		type: string;
+		code: string | null;
+		message: string | null;
+	}) => void;
+}
+
+function readOptionalString(record: Record<string, unknown>, key: string): string | null {
+	const value = record[key];
+	return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
+function extractTerminalFailure(
+	data: Record<string, unknown>,
+	type: string,
+): { type: string; code: string | null; message: string | null } {
+	const response = isRecord(data.response) ? data.response : null;
+	const error = isRecord(response?.error)
+		? response.error
+		: isRecord(data.error)
+			? data.error
+			: data;
+	return {
+		type,
+		code: readOptionalString(error, "code"),
+		message: readOptionalString(error, "message"),
+	};
+}
+
+function extractResponseId(value: unknown): string | null {
+	if (!isRecord(value)) return null;
+	const id = value.id;
+	return typeof id === "string" && id.trim() ? id.trim() : null;
+}
+
+function observeSseLine(line: string, observer: RuntimeStreamObserver): void {
+	const trimmed = line.trim();
+	if (!trimmed.startsWith("data:")) return;
+	const payload = trimmed.slice(5).trim();
+	if (!payload || payload === "[DONE]") return;
+	try {
+		const data = JSON.parse(payload) as unknown;
+		if (!isRecord(data)) return;
+		const type = typeof data.type === "string" ? data.type : "";
+		if (
+			type === "response.completed" ||
+			type === "response.done" ||
+			type === "response.incomplete" ||
+			type === "response.failed" ||
+			type === "error"
+		) {
+			observer.onTerminalEvent?.(type);
+			if (type === "response.failed" || type === "error") {
+				observer.onTerminalFailure?.(extractTerminalFailure(data, type));
+			}
+		}
+		if (
+			type === "response.completed" ||
+			type === "response.done" ||
+			type === "response.incomplete"
+		) {
+			const responseId = extractResponseId(data.response);
+			if (responseId) observer.onResponseId?.(responseId);
+		}
+	} catch {
+		// Forwarding must stay lossless even if an upstream chunk is malformed.
+	}
+}
+
+interface SseObserverBuffer {
+	chunks: Uint8Array[];
+	byteLength: number;
+	overflowed: boolean;
+}
+
+function appendObservedSseBytes(
+	buffer: SseObserverBuffer,
+	bytes: Uint8Array,
+): void {
+	if (buffer.overflowed || bytes.byteLength === 0) return;
+	if (buffer.byteLength + bytes.byteLength > MAX_OBSERVED_SSE_LINE_BYTES) {
+		buffer.chunks = [];
+		buffer.byteLength = 0;
+		buffer.overflowed = true;
+		return;
+	}
+	buffer.chunks.push(bytes.slice());
+	buffer.byteLength += bytes.byteLength;
+}
+
+function flushObservedSseLine(
+	decoder: TextDecoder,
+	buffer: SseObserverBuffer,
+	observer: RuntimeStreamObserver,
+): void {
+	if (!buffer.overflowed && buffer.byteLength > 0) {
+		const line = decoder.decode(Buffer.concat(buffer.chunks, buffer.byteLength));
+		observeSseLine(line, observer);
+	}
+	buffer.chunks = [];
+	buffer.byteLength = 0;
+	buffer.overflowed = false;
+}
+
+function observeSseChunk(
+	decoder: TextDecoder,
+	buffer: SseObserverBuffer,
+	chunk: Uint8Array,
+	observer: RuntimeStreamObserver | undefined,
+): void {
+	if (!observer) return;
+	let lineStart = 0;
+	for (let index = 0; index < chunk.byteLength; index += 1) {
+		if (chunk[index] !== 0x0a) continue;
+		appendObservedSseBytes(buffer, chunk.subarray(lineStart, index));
+		flushObservedSseLine(decoder, buffer, observer);
+		lineStart = index + 1;
+	}
+	appendObservedSseBytes(buffer, chunk.subarray(lineStart));
+}
+
 export async function forwardStreamingResponse(
 	upstream: Response,
 	res: ServerResponse,
 	status: RuntimeRotationProxyStatus,
 	onStreamError: () => void,
 	streamStallTimeoutMs: number,
+	observer?: RuntimeStreamObserver,
 ): Promise<boolean> {
 	status.streamsStarted += 1;
 	res.writeHead(
@@ -158,6 +289,8 @@ export async function forwardStreamingResponse(
 	}
 
 	const reader = upstream.body.getReader();
+	const decoder = observer ? new TextDecoder() : null;
+	const observerBuffer = { chunks: [] as Uint8Array[], byteLength: 0, overflowed: false };
 	res.on("close", () => {
 		if (!res.writableEnded) {
 			void reader.cancel().catch(() => undefined);
@@ -175,6 +308,9 @@ export async function forwardStreamingResponse(
 			);
 			if (done) break;
 			if (value && value.byteLength > 0) {
+				if (decoder) {
+					observeSseChunk(decoder, observerBuffer, value, observer);
+				}
 				// If the response is already finished (clean end by a concurrent
 				// close-then-reader-cancel path), stop writing. Do NOT guard on
 				// res.destroyed here: a socket-error-during-backpressure scenario sets
@@ -188,6 +324,9 @@ export async function forwardStreamingResponse(
 					await waitForDrain(res);
 				}
 			}
+		}
+		if (observer && decoder) {
+			flushObservedSseLine(decoder, observerBuffer, observer);
 		}
 		res.end();
 		return true;

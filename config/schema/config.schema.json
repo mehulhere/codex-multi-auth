@@ -37,6 +37,13 @@
         "codexRuntimeRotationProxy": {
           "type": "boolean"
         },
+        "codexRuntimeResponsesWebSockets": {
+          "type": "string",
+          "enum": [
+            "auto",
+            "off"
+          ]
+        },
         "codexTuiV2": {
           "type": "boolean"
         },

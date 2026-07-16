@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { RepairCommandDeps } from "../lib/codex-manager/repair-commands.js";
+import type { AppBindStatus } from "../lib/runtime/app-bind.js";
 import { CodexUnavailableError } from "../lib/errors.js";
 import {
 	createCodexCliStateMocks,
@@ -152,6 +153,46 @@ function createDeps(
 		}),
 		applyTokenAccountIdentity: () => false,
 		...overrides,
+	};
+}
+
+function createDesktopBindStatus(running: boolean): AppBindStatus {
+	return {
+		bound: true,
+		running,
+		unmanagedBind: false,
+		state: {
+			version: 1,
+			platform: "linux",
+			host: "127.0.0.1",
+			port: 32899,
+			baseUrl: "http://127.0.0.1:32899",
+			configPath: "/mock/config.toml",
+			statePath: "/mock/app-bind/state.json",
+			backupPath: "/mock/app-bind/backup.json",
+			statusPath: "/mock/app-bind/status.json",
+			logPath: "/mock/app-bind/router.log",
+			nodePath: "/mock/node",
+			routerScriptPath: "/mock/codex-app-router.js",
+			clientApiKey: "test-token",
+			startupPath: null,
+			launchAgentPath: null,
+			boundConfigHash: "hash",
+			updatedAt: 1,
+		},
+		router: null,
+		paths: {
+			codexHome: "/mock",
+			configPath: "/mock/config.toml",
+			bindDir: "/mock/app-bind",
+			statePath: "/mock/app-bind/state.json",
+			backupPath: "/mock/app-bind/backup.json",
+			statusPath: "/mock/app-bind/status.json",
+			logPath: "/mock/app-bind/router.log",
+			routerScriptPath: "/mock/codex-app-router.js",
+			startupPath: null,
+			launchAgentPath: null,
+		},
 	};
 }
 
@@ -833,6 +874,82 @@ describe("repair-commands direct deps coverage", () => {
 			expect.objectContaining({
 				key: "refresh-token-shape",
 				severity: "warn",
+			}),
+		);
+	});
+
+	it("runDoctor reports a bound but unreachable Codex Desktop router", async () => {
+		storageMocks.loadAccounts.mockResolvedValue(null);
+		const appBind = createDesktopBindStatus(false);
+		const consoleSpy = silenceConsole("log");
+
+		const exitCode = await runDoctor(
+			["--json"],
+			createDeps({
+				getCodexAppBindStatus: vi.fn(async () => appBind),
+				probeCodexAppRuntimeRotation: vi.fn(async () => ({
+					reachable: false,
+					baseUrl: appBind.state?.baseUrl ?? null,
+					error: "ECONNREFUSED",
+				})),
+			}),
+		);
+
+		expect(exitCode).toBe(0);
+		const payload = JSON.parse(String(consoleSpy.mock.calls.at(-1)?.[0] ?? "{}")) as {
+			checks: Array<{ key: string; severity: string; details?: string }>;
+		};
+		expect(payload.checks).toContainEqual(
+			expect.objectContaining({
+				key: "desktop-router-endpoint",
+				severity: "warn",
+				details: expect.stringContaining("ECONNREFUSED"),
+			}),
+		);
+	});
+
+	it("runDoctor --fix restarts an unreachable Desktop router in place", async () => {
+		storageMocks.loadAccounts.mockResolvedValue(null);
+		const dead = createDesktopBindStatus(false);
+		const repaired = createDesktopBindStatus(true);
+		const restart = vi.fn(async () => ({ status: repaired, message: "restarted" }));
+		const probe = vi
+			.fn()
+			.mockResolvedValueOnce({
+				reachable: false,
+				baseUrl: dead.state?.baseUrl ?? null,
+				error: "ECONNREFUSED",
+			})
+			.mockResolvedValueOnce({
+				reachable: true,
+				baseUrl: repaired.state?.baseUrl ?? null,
+			});
+		const consoleSpy = silenceConsole("log");
+
+		const exitCode = await runDoctor(
+			["--json", "--fix"],
+			createDeps({
+				getCodexAppBindStatus: vi.fn(async () => dead),
+				probeCodexAppRuntimeRotation: probe,
+				restartCodexAppRuntimeRotation: restart,
+			}),
+		);
+
+		expect(exitCode).toBe(0);
+		expect(restart).toHaveBeenCalledTimes(1);
+		const payload = JSON.parse(String(consoleSpy.mock.calls.at(-1)?.[0] ?? "{}")) as {
+			checks: Array<{ key: string; severity: string }>;
+			fix: { changed: boolean; actions: Array<{ key: string }> };
+		};
+		expect(payload.checks).toContainEqual(
+			expect.objectContaining({ key: "desktop-router-endpoint", severity: "ok" }),
+		);
+		expect(payload.fix).toEqual(
+			expect.objectContaining({
+				changed: true,
+				actions: expect.arrayContaining([
+					expect.objectContaining({ key: "desktop-router-restart" }),
+				]),
 			}),
 		);
 	});

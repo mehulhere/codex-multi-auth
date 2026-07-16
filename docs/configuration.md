@@ -30,6 +30,7 @@ Runtime configuration is resolved from unified settings, optional override files
   "pluginConfig": {
     "codexMode": true,
     "codexRuntimeRotationProxy": true,
+    "codexRuntimeResponsesWebSockets": "auto",
     "liveAccountSync": true,
     "sessionAffinity": true,
     "proactiveRefreshGuardian": true,
@@ -72,7 +73,7 @@ These are safe for most operators and frequently used in day-to-day workflows.
 | `CODEX_TUI_V2=0/1` | Disable or enable TUI v2 |
 | `CODEX_TUI_COLOR_PROFILE=truecolor|ansi256|ansi16` | Color profile selection |
 | `CODEX_TUI_GLYPHS=ascii|unicode|auto` | Glyph mode selection |
-| `CODEX_AUTH_FETCH_TIMEOUT_MS=<ms>` | HTTP request timeout override |
+| `CODEX_AUTH_FETCH_TIMEOUT_MS=<ms>` | HTTP request timeout override. Native ImageGen requests use at least five minutes because an accepted render can legitimately outlive the shorter Responses timeout. |
 | `CODEX_AUTH_STREAM_STALL_TIMEOUT_MS=<ms>` | Stream stall timeout override |
 | `CODEX_AUTH_MIN_ROTATION_INTERVAL_MS=<ms>` | Minimum time between global account switches (default `60000`). The proxy biases selection toward the last-served account within this window to reduce the rate at which different OAuth tokens appear from the same IP. Set to `0` to disable. |
 | `CODEX_AUTH_SCHEDULING_STRATEGY=hybrid/sequential` | Account scheduling strategy (default `hybrid`). `sequential` (drain-first) keeps one active account until it is fully exhausted before advancing to the next; see [Sequential / drain-first scheduling](#sequential--drain-first-scheduling). |
@@ -112,6 +113,13 @@ Keep these enabled for most environments:
 ## Runtime Rotation Proxy
 
 `codexRuntimeRotationProxy` is enabled by default. When enabled through defaults, settings, `codex-multi-auth rotation enable`, or `CODEX_MULTI_AUTH_RUNTIME_ROTATION_PROXY=1`, the `codex-multi-auth-codex` wrapper starts a localhost-only Responses proxy for forwarded official Codex sessions, including CLI request commands, `codex app-server`, and `codex app` launches through the wrapper. The wrapper writes a temporary shadow `CODEX_HOME/config.toml` that selects a custom provider named `codex-multi-auth-runtime-proxy`, launches the official Codex surface against that provider, and removes the shadow home after the owning process exits. Set `codexRuntimeRotationProxy=false`, run `codex-multi-auth rotation disable`, or set `CODEX_MULTI_AUTH_RUNTIME_ROTATION_PROXY=0` to bypass the proxy.
+
+`codexRuntimeResponsesWebSockets` defaults to `auto`. The router first prepares
+one managed account and opens the official upstream Responses WebSocket; only
+then does it accept the local upgrade. If preparation or the upstream handshake
+fails, it returns 426 so official Codex immediately retries over HTTP streaming.
+Set it to `off`, or use
+`CODEX_MULTI_AUTH_RESPONSES_WEBSOCKETS=off`, to force HTTP fallback.
 
 A single forwarded run can be pinned to one account with `codex-multi-auth-codex --account <selector>` (or `CODEX_MULTI_AUTH_FORCE_ACCOUNT`). The pin is applied per-invocation by that run's own proxy instance, so it never touches the persisted `switch` pin and cannot leak across concurrent sessions. Because the proxy is required for the pin to take effect, `--account` fails hard when the proxy is disabled rather than silently using a rotated account. See [Force an account for one invocation](reference/commands.md#force-an-account-for-one-invocation).
 

@@ -2,6 +2,7 @@ import { HTTP_STATUS, MAX_RATE_LIMIT_DELAY_MS } from "../constants.js";
 import type { ExhaustionReason } from "../runtime/rotation-server-types.js";
 import type { TokenResult } from "../types.js";
 import { isRecord } from "../utils.js";
+import { isRefreshTokenReuseMessage } from "../auth/permanent-failure.js";
 
 // Phrases observed in upstream 401 response bodies when OpenAI/Microsoft has
 // explicitly revoked an OAuth token (as opposed to a generic expired-token 401
@@ -17,7 +18,10 @@ const TOKEN_INVALIDATION_PHRASES = [
 
 export function isTokenInvalidationError(bodyText: string): boolean {
 	const lower = bodyText.toLowerCase();
-	return TOKEN_INVALIDATION_PHRASES.some((phrase) => lower.includes(phrase));
+	return (
+		TOKEN_INVALIDATION_PHRASES.some((phrase) => lower.includes(phrase)) ||
+		isRefreshTokenReuseMessage(lower)
+	);
 }
 
 export function isTokenRefreshRetryable(result: Extract<TokenResult, { type: "failed" }>): boolean {

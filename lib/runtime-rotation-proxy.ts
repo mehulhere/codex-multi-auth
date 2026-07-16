@@ -9,6 +9,7 @@ import {
 import { withRoutingMutex } from "./routing-mutex.js";
 import {
 	getFetchTimeoutMs,
+	getCodexRuntimeResponsesWebSockets,
 	getNetworkErrorCooldownMs,
 	getRetryAllAccountsMaxRetries,
 	getServerErrorCooldownMs,
@@ -45,6 +46,14 @@ import {
 	type RuntimePolicyDecision,
 } from "./policy/runtime-policy.js";
 import { isWorkspaceDisabledError } from "./request/fetch-helpers.js";
+import {
+	loadQuotaCache,
+	saveQuotaCache,
+	upsertQuotaCacheEntryForAccount,
+	type QuotaCacheEntry,
+} from "./quota-cache.js";
+import { findQuotaCacheEntryForAccount } from "./quota-readiness.js";
+import { aggregateQuotaPool } from "./quota-pool-aggregate.js";
 import { createLogger, maskString, runWithCorrelationId } from "./logger.js";
 import { CodexValidationError } from "./errors.js";
 import {
@@ -67,6 +76,7 @@ import {
 import { chooseAccount } from "./runtime/rotation-account-selection.js";
 import {
 	createRotationProxyState,
+	rebuildQuotaByAccountIndex,
 	recoverStaleRuntimeState,
 	type RotationProxyState,
 } from "./runtime/rotation-proxy-state.js";
@@ -81,13 +91,22 @@ import type {
 } from "./runtime/rotation-server-types.js";
 import { readStorageMetaFromDisk } from "./runtime/rotation-storage-meta.js";
 import {
+	parseCodexQuotaSnapshot,
+	type ParsedCodexQuotaSnapshot,
+} from "./runtime/quota-headers.js";
+import {
 	applyMonotonicAuthCooldown,
 	DEFAULT_AUTH_FAILURE_COOLDOWN_MS,
 	ensureFreshAccessToken,
 } from "./runtime/rotation-token-refresh.js";
 import { SessionAffinityStore } from "./session-affinity.js";
+import { ThreadStatusStore } from "./runtime/thread-status.js";
 import type { RequestBody } from "./types.js";
 import { isRecord } from "./utils.js";
+import {
+	createResponsesWebSocketBridge,
+	type PreparedResponsesWebSocketUpstream,
+} from "./runtime/responses-websocket-bridge.js";
 
 // Re-exports: these symbols were defined in this module before the §4.1.3
 // phase-1 and phase-2 carves and are part of its public surface (lib/index.ts
@@ -157,7 +176,11 @@ function toUrlHost(host: string): string {
 // failures surfaced only as a last-write-wins status.lastError string. Logs are
 // level-gated and carry the per-request correlation id set in handleRequest.
 const proxyLog = createLogger("runtime-proxy");
-const DEFAULT_QUOTA_REMAINING_THRESHOLD = 10;
+const DEFAULT_QUOTA_REMAINING_THRESHOLD = 0;
+const DEFAULT_AFFINITY_QUOTA_FLOOR_PERCENT = 5;
+const NATIVE_IMAGE_GENERATION_FETCH_TIMEOUT_MS = 5 * 60 * 1_000;
+const STREAM_USAGE_LIMIT_COOLDOWN_MS = 5 * 60 * 60 * 1000;
+const WEBSOCKET_ABNORMAL_CLOSE_COOLDOWN_MS = 60_000;
 
 const DEFAULT_MAX_RUNTIME_ACCOUNT_ATTEMPTS = 4;
 
@@ -179,9 +202,22 @@ const ALLOWED_THREAD_GOAL_PATHS = new Set([
 	"/codex/thread/goal/get",
 	"/codex/thread/goal/set",
 ]);
+const NATIVE_IMAGE_GENERATIONS_PATH = "/v1/images/generations";
+const NATIVE_IMAGE_GENERATIONS_UPSTREAM_PATH = "/codex/images/generations";
 
 function isResponsesPath(pathname: string): boolean {
 	return ALLOWED_RESPONSES_PATHS.has(pathname);
+}
+
+function isWebSocketUpgradeRequest(req: IncomingMessage): boolean {
+	const connection = req.headers.connection ?? "";
+	const upgrade = req.headers.upgrade ?? "";
+	return (
+		connection
+			.split(",")
+			.some((value) => value.trim().toLowerCase() === "upgrade") &&
+		upgrade.trim().toLowerCase() === "websocket"
+	);
 }
 
 function isModelsPath(pathname: string): boolean {
@@ -192,8 +228,44 @@ function isThreadGoalPath(pathname: string): boolean {
 	return ALLOWED_THREAD_GOAL_PATHS.has(pathname);
 }
 
+function isNativeImageGenerationsPath(pathname: string): boolean {
+	return pathname === NATIVE_IMAGE_GENERATIONS_PATH;
+}
+
 function normalizeThreadGoalUpstreamPath(pathname: string): string {
 	return pathname.startsWith("/codex/") ? pathname : `/codex${pathname}`;
+}
+
+function isStreamUsageLimitFailure(
+	code: string | null,
+	message: string | null,
+): boolean {
+	const normalizedCode = code?.trim().toLowerCase() ?? "";
+	if (
+		normalizedCode.includes("usage_limit") ||
+		normalizedCode.includes("quota_exhaust") ||
+		normalizedCode === "rate_limit_exceeded"
+	) {
+		return true;
+	}
+	const normalizedMessage = message?.trim().toLowerCase() ?? "";
+	return (
+		normalizedMessage.includes("usage limit") ||
+		normalizedMessage.includes("quota exhausted") ||
+		normalizedMessage.includes("out of codex")
+	);
+}
+
+function threadQuotaFromCacheEntry(
+	entry: QuotaCacheEntry | null,
+): ParsedCodexQuotaSnapshot | null {
+	if (!entry) return null;
+	return {
+		status: entry.status,
+		planType: entry.planType,
+		primary: entry.primary,
+		secondary: entry.secondary,
+	};
 }
 
 function headersFromIncoming(req: IncomingMessage): Headers {
@@ -234,6 +306,18 @@ function createOutboundHeaders(
 	return headers;
 }
 
+function createNativePassThroughHeaders(incoming: Headers): Headers {
+	const headers = new Headers(incoming);
+	for (const name of HOP_BY_HOP_HEADERS) {
+		headers.delete(name);
+	}
+	headers.delete("host");
+	headers.delete("x-api-key");
+	headers.delete("cookie");
+	headers.delete("proxy-authorization");
+	return headers;
+}
+
 function isAuthorizedClient(headers: Headers, clientApiKey: string): boolean {
 	const authorization = headers.get("authorization") ?? "";
 	const bearerMatch = authorization.match(/^Bearer\s+(.+)$/i);
@@ -241,6 +325,35 @@ function isAuthorizedClient(headers: Headers, clientApiKey: string): boolean {
 	if (bearer && safeEqual(bearer, clientApiKey)) return true;
 	const apiKey = headers.get("x-api-key");
 	return typeof apiKey === "string" && safeEqual(apiKey, clientApiKey);
+}
+
+function resolveNativeSecretPath(
+	pathname: string,
+	clientApiKey: string,
+): string | null {
+	const nativeRoutePrefix = "/v1/";
+	if (pathname.startsWith(nativeRoutePrefix)) {
+		const remainder = pathname.slice(nativeRoutePrefix.length);
+		const separatorIndex = remainder.indexOf("/");
+		if (separatorIndex > 0) {
+			const routeSecret = remainder.slice(0, separatorIndex);
+			const expectedRouteSecret = encodeURIComponent(clientApiKey);
+			if (safeEqual(routeSecret, expectedRouteSecret)) {
+				return `/v1${remainder.slice(separatorIndex)}`;
+			}
+		}
+	}
+	return null;
+}
+
+function resolveAuthorizedRequestPath(
+	pathname: string,
+	headers: Headers,
+	clientApiKey: string,
+): string | null {
+	const nativeSecretPath = resolveNativeSecretPath(pathname, clientApiKey);
+	if (nativeSecretPath !== null) return nativeSecretPath;
+	return isAuthorizedClient(headers, clientApiKey) ? pathname : null;
 }
 
 function safeEqual(left: string, right: string): boolean {
@@ -270,6 +383,64 @@ function accountIdentityFromAccount(
 		accountId: readTrimmedString(account.accountId),
 		updatedAt,
 	};
+}
+
+function observeUpstreamQuota(
+	state: RotationProxyState,
+	accountManager: AccountManager,
+	account: ManagedAccount,
+	model: string | null,
+	upstream: Response,
+): void {
+	const snapshot = parseCodexQuotaSnapshot(upstream.headers, upstream.status);
+	if (!snapshot) return;
+
+	const entry: QuotaCacheEntry = {
+		updatedAt: state.now(),
+		status: snapshot.status,
+		model: model ?? CURRENT_CODEX_MODEL,
+		planType: snapshot.planType,
+		primary: snapshot.primary,
+		secondary: snapshot.secondary,
+	};
+	const accounts = accountManager.getAccountsSnapshot();
+	const cacheChanged =
+		upsertQuotaCacheEntryForAccount(
+			state.quotaCache,
+			account,
+			accounts,
+			entry,
+		);
+	// The response may belong to a request that captured an older manager before
+	// a concurrent stale-state reload reordered the active pool. Never carry the
+	// old manager's numeric index across that boundary: resolve the stable cache
+	// identity against the current active manager instead.
+	rebuildQuotaByAccountIndex(state);
+	if (cacheChanged) {
+		const previousSave = state.pendingQuotaCacheSave;
+		const queuedSave = (previousSave ?? Promise.resolve())
+			.catch(() => undefined)
+			.then(() => saveQuotaCache(state.quotaCache))
+			.catch((error) => {
+				state.status.lastError = error instanceof Error ? error.message : String(error);
+			});
+		state.pendingQuotaCacheSave = queuedSave;
+		void queuedSave.finally(() => {
+			if (state.pendingQuotaCacheSave === queuedSave) {
+				state.pendingQuotaCacheSave = null;
+			}
+		});
+	}
+}
+
+async function flushPendingQuotaCacheSave(state: RotationProxyState): Promise<void> {
+	while (state.pendingQuotaCacheSave) {
+		const pending = state.pendingQuotaCacheSave;
+		await pending;
+		if (state.pendingQuotaCacheSave === pending) {
+			state.pendingQuotaCacheSave = null;
+		}
+	}
 }
 
 function recordLastRuntimeAccount(
@@ -435,6 +606,8 @@ function getThreadGoalFallback(
 
 function resolveSessionKey(headers: Headers, parsedBody: RequestBody | null): string | null {
 	const headerKey =
+		headers.get(OPENAI_HEADERS.THREAD_ID) ??
+		headers.get(OPENAI_HEADERS.SESSION_ID_DASHED) ??
 		headers.get(OPENAI_HEADERS.SESSION_ID) ??
 		headers.get(OPENAI_HEADERS.CONVERSATION_ID) ??
 		null;
@@ -442,10 +615,6 @@ function resolveSessionKey(headers: Headers, parsedBody: RequestBody | null): st
 	if (!parsedBody) return null;
 	if (typeof parsedBody.prompt_cache_key === "string") {
 		const key = parsedBody.prompt_cache_key.trim();
-		if (key.length > 0) return key;
-	}
-	if (typeof parsedBody.previous_response_id === "string") {
-		const key = parsedBody.previous_response_id.trim();
 		if (key.length > 0) return key;
 	}
 	const metadata = parsedBody.metadata;
@@ -457,6 +626,12 @@ function resolveSessionKey(headers: Headers, parsedBody: RequestBody | null): st
 		);
 	}
 	return null;
+}
+
+function resolvePreviousResponseId(parsedBody: RequestBody | null): string | null {
+	if (typeof parsedBody?.previous_response_id !== "string") return null;
+	const responseId = parsedBody.previous_response_id.trim();
+	return responseId || null;
 }
 
 function buildResponsesRequestContext(
@@ -482,6 +657,7 @@ function buildResponsesRequestContext(
 		family: getModelFamily(model ?? CURRENT_CODEX_MODEL),
 		stream: parsedBody?.stream === true,
 		sessionKey: resolveSessionKey(headers, parsedBody),
+		previousResponseId: resolvePreviousResponseId(parsedBody),
 	};
 }
 
@@ -490,11 +666,12 @@ function buildModelsRequestContext(req: IncomingMessage): RequestContext {
 		body: Buffer.alloc(0),
 		headers: headersFromIncoming(req),
 		method: "GET",
-		upstreamPath: URL_PATHS.MODELS,
+		upstreamPath: URL_PATHS.CODEX_MODELS,
 		model: null,
 		family: "codex",
 		stream: false,
 		sessionKey: null,
+		previousResponseId: null,
 	};
 }
 
@@ -523,6 +700,7 @@ function buildThreadGoalRequestContext(
 		family: "codex",
 		stream: false,
 		sessionKey,
+		previousResponseId: resolvePreviousResponseId(parsedBody),
 	};
 }
 
@@ -626,6 +804,233 @@ export function normalizeForcedAccountIndex(
 	return parsed;
 }
 
+/**
+ * Resolve the effective strict pin for one runtime request. Explicit
+ * per-invocation pins always win. Callers using automatic account routing can
+ * ignore the persisted `switch` pin without weakening explicit `--account`
+ * behavior or changing the default semantics for other proxy surfaces.
+ *
+ * @internal
+ */
+export function resolveRuntimePinnedIndex(
+	forcedAccountIndex: number | null,
+	storedPinnedIndex: number | null,
+	honorStoredPin: boolean,
+): number | null {
+	return forcedAccountIndex ?? (honorStoredPin ? storedPinnedIndex : null);
+}
+
+async function prepareResponsesWebSocketUpstream(
+	state: RotationProxyState,
+	req: IncomingMessage,
+): Promise<PreparedResponsesWebSocketUpstream | null> {
+	const incomingUrl = new URL(req.url ?? "/", "http://127.0.0.1");
+	const incomingHeaders = headersFromIncoming(req);
+	const authorizedPathname = resolveAuthorizedRequestPath(
+		incomingUrl.pathname,
+		incomingHeaders,
+		state.clientApiKey,
+	);
+	if (
+		req.method !== "GET" ||
+		authorizedPathname === null ||
+		!isResponsesPath(authorizedPathname) ||
+		!isWebSocketUpgradeRequest(req)
+	) {
+		return null;
+	}
+
+	const context = buildResponsesRequestContext(req, Buffer.alloc(0));
+	let policyDecision: RuntimePolicyDecision | null = null;
+	try {
+		const policyState = await loadRuntimePolicyState();
+		policyDecision = await evaluateRuntimePolicy({
+			state: policyState,
+			accounts: state.activeAccountManager.getAccountsSnapshot(),
+			model: CURRENT_CODEX_MODEL,
+			now: state.now(),
+		});
+	} catch (error) {
+		state.status.webSocketLastError = maskString(
+			error instanceof Error ? error.message : String(error),
+		);
+		return null;
+	}
+	if (!policyDecision.allowed) return null;
+
+	const storageMeta = readStorageMetaFromDisk();
+	const pinnedIndex = resolveRuntimePinnedIndex(
+		state.forcedAccountIndex,
+		storageMeta.pinnedAccountIndex,
+		state.honorStoredPin,
+	);
+	if (storageMeta.affinityGeneration > state.lastObservedAffinityGeneration) {
+		state.sessionAffinityStore?.clearAll();
+		state.lastObservedAffinityGeneration = storageMeta.affinityGeneration;
+	}
+	const attemptedIndexes = new Set<number>();
+	const skipReasons = new Map<number, string>();
+	const selectAccount = (): ManagedAccount | null =>
+		chooseAccount({
+			accountManager: state.activeAccountManager,
+			sessionAffinityStore: state.sessionAffinityStore,
+			sessionKey: context.sessionKey,
+			previousResponseId: null,
+			family: "codex",
+			model: CURRENT_CODEX_MODEL,
+			attemptedIndexes,
+			now: state.now(),
+			policy: policyDecision,
+			pinnedIndex,
+			skipReasons,
+			pidOffsetEnabled: state.pidOffsetEnabled,
+			schedulingStrategy: state.schedulingStrategy,
+			quotaByAccountIndex: state.quotaByAccountIndex,
+			affinityQuotaFloorPercent: DEFAULT_AFFINITY_QUOTA_FLOOR_PERCENT,
+		});
+	const selected =
+		state.routingMutexMode === "enabled"
+			? await withRoutingMutex(state.routingMutexMode, async () => {
+					const candidate = selectAccount();
+					if (
+						candidate &&
+						pinnedIndex === null &&
+						state.schedulingStrategy !== "sequential"
+					) {
+						await state.activeAccountManager.markSwitchedLocked(
+							candidate,
+							"rotation",
+							"codex",
+						);
+					}
+					return candidate;
+				})
+			: selectAccount();
+	if (!selected) return null;
+	if (
+		!state.activeAccountManager.consumeToken(
+			selected,
+			"codex",
+			CURRENT_CODEX_MODEL,
+		)
+	) {
+		return null;
+	}
+
+	const refreshed = await ensureFreshAccessToken({
+		accountManager: state.activeAccountManager,
+		account: selected,
+		family: "codex",
+		model: CURRENT_CODEX_MODEL,
+		now: state.now(),
+		tokenRefreshSkewMs: state.tokenRefreshSkewMs,
+		tokenInvalidationCooldownMs: state.tokenInvalidationCooldownMs,
+	});
+	if (!refreshed.ok) {
+		state.activeAccountManager.refundToken(
+			selected,
+			"codex",
+			CURRENT_CODEX_MODEL,
+		);
+		return null;
+	}
+	const accountId = resolveAccountId(refreshed.account, refreshed.accessToken);
+	if (!accountId) {
+		state.activeAccountManager.refundToken(
+			refreshed.account,
+			"codex",
+			CURRENT_CODEX_MODEL,
+		);
+		return null;
+	}
+
+	const outboundHeaders = createOutboundHeaders(
+		context.headers,
+		refreshed.account,
+		refreshed.accessToken,
+		accountId,
+	);
+	for (const header of [
+		"sec-websocket-key",
+		"sec-websocket-version",
+		"sec-websocket-extensions",
+		"sec-websocket-protocol",
+	]) {
+		outboundHeaders.delete(header);
+	}
+	outboundHeaders.set(OPENAI_HEADERS.BETA, "responses_websockets=2026-02-06");
+	const upstreamUrl = new URL(
+		buildUpstreamUrl(req, state.upstreamBaseUrl, URL_PATHS.CODEX_RESPONSES),
+	);
+	upstreamUrl.protocol = upstreamUrl.protocol === "https:" ? "wss:" : "ws:";
+	state.status.upstreamRequests += 1;
+	const onConnectionFailure = (error: unknown): void => {
+		state.status.webSocketLastError = maskString(
+			error instanceof Error ? error.message : String(error),
+		);
+		state.activeAccountManager.refundToken(
+			refreshed.account,
+			"codex",
+			CURRENT_CODEX_MODEL,
+		);
+		state.activeAccountManager.recordFailure(
+			refreshed.account,
+			"codex",
+			CURRENT_CODEX_MODEL,
+		);
+		state.activeAccountManager.markAccountCoolingDown(
+			refreshed.account,
+			state.networkErrorCooldownMs,
+			"network-error",
+		);
+		state.activeAccountManager.saveToDiskDebounced();
+	};
+	const onOpen = (): void => {
+		state.activeAccountManager.recordSuccess(
+			refreshed.account,
+			"codex",
+			CURRENT_CODEX_MODEL,
+		);
+		recordRuntimeAccountRecovery(refreshed.account.index);
+		const identity = accountIdentityFromAccount(refreshed.account, state.now());
+		recordLastRuntimeAccount(state.status, identity);
+		state.sessionAffinityStore?.remember(
+			context.sessionKey,
+			refreshed.account.index,
+			state.now(),
+		);
+		void persistRuntimeActiveAccount(
+			state.activeAccountManager,
+			refreshed.account,
+			"codex",
+			pinnedIndex === refreshed.account.index,
+			state.schedulingStrategy,
+		);
+	};
+	const onAbnormalClose = (): void => {
+		state.activeAccountManager.recordFailure(
+			refreshed.account,
+			"codex",
+			CURRENT_CODEX_MODEL,
+		);
+		state.activeAccountManager.markAccountCoolingDown(
+			refreshed.account,
+			WEBSOCKET_ABNORMAL_CLOSE_COOLDOWN_MS,
+			"network-error",
+		);
+		state.sessionAffinityStore?.forgetSession(context.sessionKey);
+		state.activeAccountManager.saveToDiskDebounced();
+	};
+
+	return {
+		url: upstreamUrl.toString(),
+		headers: Object.fromEntries(outboundHeaders.entries()),
+		onOpen,
+		onConnectionFailure,
+		onAbnormalClose,
+	};
+}
+
 export async function startRuntimeRotationProxy(
 	options: RuntimeRotationProxyOptions,
 ): Promise<RuntimeRotationProxyServer> {
@@ -683,6 +1088,7 @@ export async function startRuntimeRotationProxy(
 		options.forcedAccountIndex ??
 			process.env.CODEX_MULTI_AUTH_FORCE_ACCOUNT_INDEX,
 	);
+	const honorStoredPin = options.honorStoredPin !== false;
 	const tokenRefreshSkewMs = getTokenRefreshSkewMs(pluginConfig);
 	const networkErrorCooldownMs = getNetworkErrorCooldownMs(pluginConfig);
 	const serverErrorCooldownMs = getServerErrorCooldownMs(pluginConfig);
@@ -701,12 +1107,39 @@ export async function startRuntimeRotationProxy(
 		options.maxRequestBodyBytes ?? MAX_REQUEST_BODY_BYTES;
 	const quotaRemainingPercentThreshold =
 		options.quotaRemainingPercentThreshold ?? DEFAULT_QUOTA_REMAINING_THRESHOLD;
+	const quotaCache = options.quotaCache ?? (await loadQuotaCache());
 	const sessionAffinityStore = getSessionAffinity(pluginConfig)
 		? new SessionAffinityStore({
 				ttlMs: getSessionAffinityTtlMs(pluginConfig),
 				maxEntries: getSessionAffinityMaxEntries(pluginConfig),
 			})
 		: null;
+	const threadStatusStore = new ThreadStatusStore({
+		ttlMs: options.threadStatusTtlMs,
+		maxEntries: getSessionAffinityMaxEntries(pluginConfig),
+		storagePath: options.threadStatusPath,
+	});
+	threadStatusStore.importRuntimeStatuses(
+		options.initialThreadStatuses,
+		activeAccountManager.getAccountsSnapshot(),
+		now(),
+	);
+	const startupAccounts = activeAccountManager.getAccountsSnapshot();
+	for (const [sessionKey, status] of Object.entries(
+		threadStatusStore.snapshot(startupAccounts, now()),
+	)) {
+		if (status.primary.windowMinutes && status.secondary.windowMinutes) continue;
+		const account = startupAccounts.find(
+			(candidate) => candidate.index + 1 === status.accountNumber,
+		);
+		if (!account) continue;
+		const cachedQuota = threadQuotaFromCacheEntry(
+			findQuotaCacheEntryForAccount(options.quotaCache ?? quotaCache, account, startupAccounts),
+		);
+		if (cachedQuota) {
+			threadStatusStore.remember(sessionKey, account, cachedQuota, now());
+		}
+	}
 	// Initialize from disk so the proxy starts in sync with whatever generation
 	// the storage file already shows. Subsequent disk bumps (from CLI commands)
 	// are detected per-request via `maybeInvalidateAffinityFromDisk`.
@@ -731,13 +1164,58 @@ export async function startRuntimeRotationProxy(
 		maxRuntimeAccountAttempts,
 		maxRequestBodyBytes,
 		quotaRemainingPercentThreshold,
+		quotaCache,
 		sessionAffinityStore,
+		threadStatusStore,
 		lastObservedAffinityGeneration,
+		honorStoredPin,
 		forcedAccountIndex,
 	});
 
+	let closing = false;
+	let closingPromise: Promise<void> | null = null;
+	const activeHandlers = new Set<Promise<void>>();
+	const responsesWebSocketMode =
+		options.responsesWebSockets ??
+		getCodexRuntimeResponsesWebSockets(pluginConfig);
+	const responsesWebSocketBridge = createResponsesWebSocketBridge({
+		prepareUpstream: (request) =>
+			responsesWebSocketMode === "auto"
+				? prepareResponsesWebSocketUpstream(state, request)
+				: Promise.resolve(null),
+		onMetrics: (metrics) => {
+			state.status.activeWebSockets = metrics.activeConnections;
+			state.status.webSocketUpgrades = metrics.upgrades;
+			state.status.webSocketFallbacks = metrics.fallbacks;
+			state.status.webSocketAbnormalCloses = metrics.abnormalCloses;
+			state.status.webSocketPeakBufferedBytes = metrics.peakBufferedBytes;
+			state.status.webSocketLastError = metrics.lastError;
+		},
+	});
 	const server = createServer((req, res) => {
-		void handleRequest(state, req, res);
+		if (closing) {
+			res.destroy();
+			return;
+		}
+		const trackedHandler = handleRequest(state, req, res)
+			.catch((error) => {
+				state.status.lastError =
+					error instanceof Error ? error.message : String(error);
+				if (!res.destroyed) {
+					res.destroy(error instanceof Error ? error : undefined);
+				}
+			})
+			.finally(() => {
+				activeHandlers.delete(trackedHandler);
+			});
+		activeHandlers.add(trackedHandler);
+	});
+	server.on("upgrade", (request, socket, head) => {
+		if (closing) {
+			socket.destroy();
+			return;
+		}
+		void responsesWebSocketBridge.handleUpgrade(request, socket, head);
 	});
 	const sockets = new Set<Socket>();
 	server.on("connection", (socket) => {
@@ -773,17 +1251,54 @@ export async function startRuntimeRotationProxy(
 		host: bindHost,
 		port: resolvedPort,
 		baseUrl: `http://${urlHost}:${resolvedPort}`,
-		close: async () => {
-			await closeServer(server, sockets);
-			await state.activeAccountManager.flushPendingSave();
+		close: () => {
+			if (closingPromise) return closingPromise;
+			closing = true;
+			closingPromise = (async () => {
+				await responsesWebSocketBridge.close();
+				await closeServer(server, sockets);
+				await Promise.all([...activeHandlers]);
+				await flushPendingQuotaCacheSave(state);
+				await Promise.all(
+					[...state.knownAccountManagers].map((manager) =>
+						manager.flushPendingSave(),
+					),
+				);
+			})();
+			return closingPromise;
 		},
-		getStatus: () => ({
-			...state.status,
+		getStatus: () => {
+			const threadStatusPersistence = state.threadStatusStore.getPersistenceState();
+			const accounts = state.activeAccountManager.getAccountsSnapshot();
+			const snapshots = accounts.flatMap((account) => {
+				const entry = findQuotaCacheEntryForAccount(
+					state.quotaCache,
+					account,
+					accounts,
+				);
+				return entry ? [entry] : [];
+			});
+			return {
+				...state.status,
+				poolQuota: {
+					...aggregateQuotaPool(accounts.length, snapshots),
+					updatedAt: state.now(),
+				},
+				threadStatusPersistence,
+				threadStatuses:
+					threadStatusPersistence === "error"
+						? {}
+						: state.threadStatusStore.snapshot(
+								state.activeAccountManager.getAccountsSnapshot(),
+								state.now(),
+							),
 			// Redact any email/token material that leaked into a raw upstream or
 			// refresh error string before exposing it to status/report consumers
 			// (errors-logging-08). maskString is a no-op for clean diagnostic text.
-			lastError: state.status.lastError === null ? null : maskString(state.status.lastError),
-		}),
+				lastError:
+					state.status.lastError === null ? null : maskString(state.status.lastError),
+			};
+		},
 	};
 }
 
@@ -815,24 +1330,87 @@ async function handleRequestInner(
 		// unauthorized). Authorized callers still fall through to the 404 below
 		// when they hit an unsupported path/method.
 		const incomingHeaders = headersFromIncoming(req);
-		if (!isAuthorizedClient(incomingHeaders, state.clientApiKey)) {
+		const nativeSecretPathname = resolveNativeSecretPath(
+			incomingUrl.pathname,
+			state.clientApiKey,
+		);
+		const authorizedPathname = resolveAuthorizedRequestPath(
+			incomingUrl.pathname,
+			incomingHeaders,
+			state.clientApiKey,
+		);
+		if (authorizedPathname === null) {
 			writeUnauthorized(res);
+			return;
+		}
+		if (
+			req.method === "GET" &&
+			isResponsesPath(authorizedPathname) &&
+			isWebSocketUpgradeRequest(req)
+		) {
+			proxyLog.info("responses websocket unavailable; using HTTP fallback");
+			res.writeHead(426);
+			res.end();
 			return;
 		}
 
 		const isResponsesRequest =
-			req.method === "POST" && isResponsesPath(incomingUrl.pathname);
+			req.method === "POST" && isResponsesPath(authorizedPathname);
 		const isModelsRequest =
-			req.method === "GET" && isModelsPath(incomingUrl.pathname);
+			req.method === "GET" && isModelsPath(authorizedPathname);
 		const isThreadGoalRequest =
 			(req.method === "GET" || req.method === "POST") &&
-			isThreadGoalPath(incomingUrl.pathname);
-		if (!isResponsesRequest && !isModelsRequest && !isThreadGoalRequest) {
+			isThreadGoalPath(authorizedPathname);
+		const isNativeImageGenerationsRequest =
+			nativeSecretPathname !== null &&
+			req.method === "POST" &&
+			isNativeImageGenerationsPath(authorizedPathname);
+		if (
+			!isResponsesRequest &&
+			!isModelsRequest &&
+			!isThreadGoalRequest &&
+			!isNativeImageGenerationsRequest
+		) {
 			writeMethodOrPathError(res);
 			return;
 		}
 
 		state.status.totalRequests += 1;
+		if (isNativeImageGenerationsRequest) {
+			const requestBody = await readRequestBody(req, state.maxRequestBodyBytes);
+			const upstreamUrl = buildUpstreamUrl(
+				req,
+				state.upstreamBaseUrl,
+				NATIVE_IMAGE_GENERATIONS_UPSTREAM_PATH,
+			);
+			const fetchAbortController = new AbortController();
+			const imageFetchTimeoutMs = Math.max(
+				state.fetchTimeoutMs,
+				NATIVE_IMAGE_GENERATION_FETCH_TIMEOUT_MS,
+			);
+			state.status.upstreamRequests += 1;
+			const upstream = await withTimeout(
+				state.fetchImpl(upstreamUrl, {
+					method: "POST",
+					headers: createNativePassThroughHeaders(incomingHeaders),
+					body: requestBody,
+					signal: fetchAbortController.signal,
+				}),
+				imageFetchTimeoutMs,
+				() => fetchAbortController.abort(),
+				`native image generation fetch timed out after ${imageFetchTimeoutMs}ms`,
+			);
+			await forwardStreamingResponse(
+				upstream,
+				res,
+				state.status,
+				() => undefined,
+				state.streamStallTimeoutMs,
+			);
+			return;
+		}
+		const affinityWriteVersion =
+			state.sessionAffinityStore?.allocateWriteVersion();
 		const requestBody =
 			isResponsesRequest || (isThreadGoalRequest && req.method === "POST")
 				? await readRequestBody(req, state.maxRequestBodyBytes)
@@ -840,7 +1418,7 @@ async function handleRequestInner(
 		const context = isModelsRequest
 			? buildModelsRequestContext(req)
 			: isThreadGoalRequest
-				? buildThreadGoalRequestContext(req, requestBody, incomingUrl.pathname)
+				? buildThreadGoalRequestContext(req, requestBody, authorizedPathname)
 				: buildResponsesRequestContext(req, requestBody);
 		const requestStartedAt = state.now();
 		let policyDecision: RuntimePolicyDecision | null = null;
@@ -942,7 +1520,11 @@ async function handleRequestInner(
 		// everything downstream — deterministic pick, no cursor advance, no
 		// stale-state recovery, the `codex_pinned_account_unavailable` failure —
 		// applies unchanged because it all keys off `pinnedIndex` / `isPinned`.
-		const pinnedIndex = state.forcedAccountIndex ?? storageMeta.pinnedAccountIndex;
+		const pinnedIndex = resolveRuntimePinnedIndex(
+			state.forcedAccountIndex,
+			storageMeta.pinnedAccountIndex,
+			state.honorStoredPin,
+		);
 		const isPinned = typeof pinnedIndex === "number";
 		if (storageMeta.affinityGeneration > state.lastObservedAffinityGeneration) {
 			state.sessionAffinityStore?.clearAll();
@@ -979,6 +1561,7 @@ async function handleRequestInner(
 					accountManager,
 					sessionAffinityStore: state.sessionAffinityStore,
 					sessionKey: context.sessionKey,
+					previousResponseId: context.previousResponseId,
 					family: context.family,
 					model: context.model,
 					attemptedIndexes,
@@ -989,6 +1572,8 @@ async function handleRequestInner(
 					stickyBoostByAccount: rotationStickyBoost,
 					pidOffsetEnabled: state.pidOffsetEnabled,
 					schedulingStrategy: state.schedulingStrategy,
+					quotaByAccountIndex: state.quotaByAccountIndex,
+					affinityQuotaFloorPercent: DEFAULT_AFFINITY_QUOTA_FLOOR_PERCENT,
 				});
 			const selected =
 				state.routingMutexMode === "enabled"
@@ -1122,6 +1707,19 @@ async function handleRequestInner(
 
 			const accountIdentity = accountIdentityFromAccount(refreshed.account, state.now());
 			recordLastRuntimeAccount(state.status, accountIdentity);
+			const cachedThreadQuota = threadQuotaFromCacheEntry(
+				findQuotaCacheEntryForAccount(
+					state.quotaCache,
+					refreshed.account,
+					accountManager.getAccountsSnapshot(),
+				),
+			);
+			state.threadStatusStore.remember(
+				context.sessionKey,
+				refreshed.account,
+				cachedThreadQuota,
+				state.now(),
+			);
 
 			const outboundHeaders = createOutboundHeaders(
 				context.headers,
@@ -1165,6 +1763,14 @@ async function handleRequestInner(
 				state.status.rotations += 1;
 				continue;
 			}
+
+			observeUpstreamQuota(
+				state,
+				accountManager,
+				refreshed.account,
+				context.model,
+				upstream,
+			);
 
 			if (upstream.status === HTTP_STATUS.TOO_MANY_REQUESTS) {
 				const bodyText = await readErrorBody(upstream, state.streamStallTimeoutMs);
@@ -1303,6 +1909,7 @@ async function handleRequestInner(
 						refreshed.account,
 						state.tokenInvalidationCooldownMs,
 					);
+					accountManager.setAccountEnabled(refreshed.account.index, false);
 					state.sessionAffinityStore?.forgetSession(context.sessionKey);
 					accountManager.saveToDiskDebounced();
 					// Emit the same machine-readable shape as the refresh-failure path
@@ -1392,6 +1999,9 @@ async function handleRequestInner(
 				state.quotaRemainingPercentThreshold,
 				state.now(),
 			);
+			const previousGlobalAccountIndex = state.lastGlobalAccountIndex;
+			const previousGlobalSwitchAt = state.lastGlobalSwitchAt;
+			let globalAffinityUpdatedAt: number | null = null;
 			if (nearExhaustionWaitMs > 0) {
 				accountManager.markRateLimitedWithReason(
 					refreshed.account,
@@ -1403,15 +2013,17 @@ async function handleRequestInner(
 				state.sessionAffinityStore?.forgetSession(context.sessionKey);
 				accountManager.saveToDiskDebounced();
 			} else {
-				state.sessionAffinityStore?.remember(
+				globalAffinityUpdatedAt = state.now();
+				state.sessionAffinityStore?.rememberWithVersion(
 					context.sessionKey,
 					refreshed.account.index,
-					state.now(),
+					globalAffinityUpdatedAt,
+					affinityWriteVersion,
 				);
 				if (refreshed.account.index !== state.lastGlobalAccountIndex) {
 					state.lastGlobalAccountIndex = refreshed.account.index;
 				}
-				state.lastGlobalSwitchAt = state.now();
+				state.lastGlobalSwitchAt = globalAffinityUpdatedAt;
 			}
 			await persistRuntimeActiveAccount(
 				accountManager,
@@ -1421,6 +2033,13 @@ async function handleRequestInner(
 				state.schedulingStrategy,
 			);
 
+			let streamTerminalEvent: string | null = null;
+			let streamUsageLimitReached = false;
+			let observedResponseId: string | null = null;
+			const threadQuotaSnapshot = parseCodexQuotaSnapshot(
+				upstream.headers,
+				upstream.status,
+			);
 			const forwarded = await forwardStreamingResponse(
 				upstream,
 				res,
@@ -1440,11 +2059,79 @@ async function handleRequestInner(
 					accountManager.saveToDiskDebounced();
 				},
 				state.streamStallTimeoutMs,
+				{
+					onResponseId: (responseId) => {
+						observedResponseId = responseId;
+					},
+					onTerminalEvent: (type) => {
+						streamTerminalEvent = type;
+					},
+					onTerminalFailure: ({ code, message }) => {
+						streamUsageLimitReached = isStreamUsageLimitFailure(code, message);
+					},
+				},
 			);
+			if (streamUsageLimitReached) {
+				accountManager.markRateLimitedWithReason(
+					refreshed.account,
+					STREAM_USAGE_LIMIT_COOLDOWN_MS,
+					context.family,
+					"quota",
+					context.model,
+				);
+				state.sessionAffinityStore?.forgetSession(context.sessionKey);
+				accountManager.saveToDiskDebounced();
+			}
+			const streamSucceeded =
+				forwarded &&
+				streamTerminalEvent !== "response.failed" &&
+				streamTerminalEvent !== "error";
+			if (streamSucceeded) {
+				state.threadStatusStore.remember(
+					context.sessionKey,
+					refreshed.account,
+					threadQuotaSnapshot,
+					state.now(),
+				);
+			}
+			if (
+				streamSucceeded &&
+				observedResponseId !== null &&
+				(streamTerminalEvent === "response.completed" ||
+					streamTerminalEvent === "response.done" ||
+					streamTerminalEvent === "response.incomplete")
+			) {
+				const affinityUpdatedAt = state.now();
+				state.sessionAffinityStore?.updateLastResponseId(
+					context.sessionKey,
+					observedResponseId,
+					affinityUpdatedAt,
+					affinityWriteVersion,
+				);
+				state.sessionAffinityStore?.bindResponseToAccount(
+					observedResponseId,
+					refreshed.account.index,
+					affinityUpdatedAt,
+					affinityWriteVersion,
+				);
+			}
+			if (
+				!streamSucceeded &&
+				globalAffinityUpdatedAt !== null &&
+				state.lastGlobalAccountIndex === refreshed.account.index &&
+				state.lastGlobalSwitchAt === globalAffinityUpdatedAt
+			) {
+				state.lastGlobalAccountIndex = previousGlobalAccountIndex;
+				state.lastGlobalSwitchAt = previousGlobalSwitchAt;
+			}
 			await usageRecorder.record({
-				outcome: forwarded ? "success" : "failure",
+				outcome: streamSucceeded ? "success" : "failure",
 				statusCode: upstream.status,
-				errorCode: forwarded ? null : "stream_forward_failed",
+				errorCode: streamSucceeded
+					? null
+					: forwarded
+						? streamTerminalEvent
+						: "stream_forward_failed",
 				account: refreshed.account,
 			});
 			return;

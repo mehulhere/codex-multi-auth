@@ -102,6 +102,9 @@ export async function ensureFreshAccessToken(params: {
 		// the long cooldown and signal to the caller to stop rotating rather than
 		// presenting other accounts' tokens from the same IP.
 		const invalidated = isTokenInvalidationError(refreshResult.message ?? "");
+		if (invalidated) {
+			accountManager.setAccountEnabled(account.index, false);
+		}
 		applyMonotonicAuthCooldown(
 			accountManager,
 			account,

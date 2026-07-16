@@ -40,6 +40,8 @@ export const OPENAI_HEADERS = {
 	BETA: "OpenAI-Beta",
 	ACCOUNT_ID: "chatgpt-account-id",
 	ORIGINATOR: "originator",
+	THREAD_ID: "thread-id",
+	SESSION_ID_DASHED: "session-id",
 	SESSION_ID: "session_id",
 	CONVERSATION_ID: "conversation_id",
 } as const;
@@ -53,6 +55,7 @@ export const OPENAI_HEADER_VALUES = {
 /** URL path segments */
 export const URL_PATHS = {
 	MODELS: "/models",
+	CODEX_MODELS: "/codex/models",
 	RESPONSES: "/responses",
 	CODEX_RESPONSES: "/codex/responses",
 } as const;

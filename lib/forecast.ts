@@ -9,6 +9,7 @@ import {
 import { getRateLimitResetTimeForFamily } from "./runtime/account-status.js";
 import type { AccountMetadataV3 } from "./storage.js";
 import type { TokenFailure } from "./types.js";
+import { isPermanentAuthFailure } from "./auth/permanent-failure.js";
 
 type ForecastAvailability = "ready" | "delayed" | "unavailable";
 type ForecastRiskLevel = "low" | "medium" | "high";
@@ -164,15 +165,7 @@ function describeQuotaUsage(
 }
 
 export function isHardRefreshFailure(failure: TokenFailure): boolean {
-	if (failure.reason === "missing_refresh") return true;
-	if (failure.statusCode === 401) return true;
-	if (failure.statusCode !== 400) return false;
-	const message = (failure.message ?? "").toLowerCase();
-	return (
-		message.includes("invalid_grant") ||
-		message.includes("invalid refresh") ||
-		message.includes("token has been revoked")
-	);
+	return isPermanentAuthFailure(failure);
 }
 
 function appendWaitReason(

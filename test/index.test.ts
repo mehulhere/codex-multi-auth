@@ -212,7 +212,11 @@ vi.mock("../lib/update-notice.js", () => ({
 }));
 
 vi.mock("../lib/runtime/app-bind.js", () => ({
+	bindCodexAppRuntimeRotation: vi.fn(),
 	getAppBindStatus: getAppBindStatusMock,
+	probeCodexAppRuntimeRotation: vi.fn(async () => ({ reachable: true, baseUrl: null })),
+	restartCodexAppRuntimeRotation: vi.fn(),
+	unbindCodexAppRuntimeRotation: vi.fn(),
 }));
 
 vi.mock("../lib/runtime/runtime-current-account.js", async () => {

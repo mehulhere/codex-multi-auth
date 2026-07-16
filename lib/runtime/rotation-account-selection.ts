@@ -1,7 +1,10 @@
 import type { AccountManager, ManagedAccount } from "../accounts.js";
 import type { ModelFamily } from "../prompts/codex.js";
 import type { RuntimePolicyDecision } from "../policy/runtime-policy.js";
+import type { HybridQuotaMetrics } from "../rotation.js";
 import type { SessionAffinityStore } from "../session-affinity.js";
+
+const NEW_SESSION_FIVE_HOUR_RESERVE_PERCENT = 50;
 
 /**
  * `chooseAccount` is a SYNC selector that internally advances the rotation
@@ -25,6 +28,7 @@ export function chooseAccount(params: {
 	accountManager: AccountManager;
 	sessionAffinityStore: SessionAffinityStore | null;
 	sessionKey: string | null;
+	previousResponseId?: string | null;
 	family: ModelFamily;
 	model: string | null;
 	attemptedIndexes: ReadonlySet<number>;
@@ -35,11 +39,14 @@ export function chooseAccount(params: {
 	stickyBoostByAccount?: Record<number, number>;
 	pidOffsetEnabled?: boolean;
 	schedulingStrategy?: "hybrid" | "sequential";
+	quotaByAccountIndex?: Map<number, HybridQuotaMetrics>;
+	affinityQuotaFloorPercent?: number;
 }): ManagedAccount | null {
 	const {
 		accountManager,
 		sessionAffinityStore,
 		sessionKey,
+		previousResponseId,
 		family,
 		model,
 		attemptedIndexes,
@@ -50,6 +57,8 @@ export function chooseAccount(params: {
 		stickyBoostByAccount,
 		pidOffsetEnabled,
 		schedulingStrategy,
+		quotaByAccountIndex,
+		affinityQuotaFloorPercent = 5,
 	} = params;
 
 	// Manual pin (from `codex-multi-auth switch <n>`) overrides every other
@@ -129,9 +138,59 @@ export function chooseAccount(params: {
 		});
 	}
 
-	const preferredIndex = sessionAffinityStore?.getPreferredAccountIndex(sessionKey, now);
+	const sessionPreferredIndex = sessionAffinityStore?.getPreferredAccountIndex(
+		sessionKey,
+		now,
+	);
+	const preferredIndex =
+		typeof sessionPreferredIndex === "number"
+			? sessionPreferredIndex
+			: sessionAffinityStore?.getPreferredAccountIndexForResponse(
+					previousResponseId,
+					now,
+				) ?? null;
+	const excludedIndexes = new Set<number>();
+	for (const [index, quota] of quotaByAccountIndex ?? []) {
+		if (
+			quota.reset7dAtMs > now &&
+			(quota.left5h <= 0 || quota.left7d <= 0)
+		) {
+			excludedIndexes.add(index);
+		}
+	}
+	const preferredQuota =
+		typeof preferredIndex === "number"
+			? quotaByAccountIndex?.get(preferredIndex)
+			: undefined;
+	const normalizedAffinityFloor = Number.isFinite(affinityQuotaFloorPercent)
+		? Math.max(0, affinityQuotaFloorPercent)
+		: 5;
 	if (
 		typeof preferredIndex === "number" &&
+		preferredQuota !== undefined &&
+		(preferredQuota.reset7dAtMs <= now ||
+			preferredQuota.left5h < normalizedAffinityFloor ||
+			preferredQuota.left7d < normalizedAffinityFloor)
+	) {
+		excludedIndexes.add(preferredIndex);
+	}
+	const selectionQuotaByAccountIndex =
+		quotaByAccountIndex && excludedIndexes.size > 0
+			? new Map(quotaByAccountIndex)
+			: quotaByAccountIndex;
+	for (const index of excludedIndexes) {
+		const quota = selectionQuotaByAccountIndex?.get(index);
+		if (quota) {
+			selectionQuotaByAccountIndex?.set(index, {
+				...quota,
+				left5h: 0,
+				left7d: 0,
+			});
+		}
+	}
+	if (
+		typeof preferredIndex === "number" &&
+		!excludedIndexes.has(preferredIndex) &&
 		!attemptedIndexes.has(preferredIndex) &&
 		!policy?.blockedAccountIndexes.has(preferredIndex)
 	) {
@@ -154,6 +213,10 @@ export function chooseAccount(params: {
 	}
 
 	const selected = accountManager.getCurrentOrNextForFamilyHybrid(family, model, {
+		deferLowFiveHourLeaderBelowPercent:
+			typeof preferredIndex === "number"
+				? undefined
+				: NEW_SESSION_FIVE_HOUR_RESERVE_PERCENT,
 		scoreBoostByAccount: {
 			...(policy?.scoreBoostByAccount ?? {}),
 			...(stickyBoostByAccount ?? {}),
@@ -162,9 +225,12 @@ export function chooseAccount(params: {
 		// path too (index.ts already does). Without it, parallel proxy processes can
 		// stampede the same account instead of spreading across the pool.
 		pidOffsetEnabled,
+		quotaByAccountIndex: selectionQuotaByAccountIndex,
+		now,
 	});
 	if (
 		selected &&
+		!excludedIndexes.has(selected.index) &&
 		!attemptedIndexes.has(selected.index) &&
 		!policy?.blockedAccountIndexes.has(selected.index)
 	) {
@@ -184,6 +250,7 @@ export function chooseAccount(params: {
 		attemptedIndexes,
 		policy,
 		skipReasons,
+		excludedIndexes,
 	});
 }
 
@@ -214,6 +281,7 @@ function chooseLinearScanFallback(params: {
 	policy: RuntimePolicyDecision | null;
 	skipReasons?: Map<number, string>;
 	advanceActivePointer?: boolean;
+	excludedIndexes?: ReadonlySet<number>;
 }): ManagedAccount | null {
 	const {
 		accountManager,
@@ -223,9 +291,14 @@ function chooseLinearScanFallback(params: {
 		policy,
 		skipReasons,
 		advanceActivePointer = true,
+		excludedIndexes,
 	} = params;
 
 	for (const account of accountManager.getAccountsSnapshot()) {
+		if (excludedIndexes?.has(account.index)) {
+			skipReasons?.set(account.index, "quota-excluded");
+			continue;
+		}
 		if (attemptedIndexes.has(account.index)) {
 			skipReasons?.set(account.index, "already-attempted");
 			continue;

@@ -4,6 +4,10 @@ import {
 	formatAccountLabel,
 	sanitizeEmail,
 } from "../accounts.js";
+import {
+	isPermanentAuthFailure,
+	isRefreshTokenReuseMessage,
+} from "../auth/permanent-failure.js";
 import { setCodexCliActiveSelection } from "../codex-cli/writer.js";
 import {
 	type DashboardDisplaySettings,
@@ -12,9 +16,14 @@ import {
 import { isCodexUnavailableError } from "../errors.js";
 import { loadQuotaCache, saveQuotaCache } from "../quota-cache.js";
 import {
+	type CodexQuotaSnapshot,
 	CODEX_UNAVAILABLE_PROBE_NOTE,
 	fetchCodexQuotaSnapshot,
 } from "../quota-probe.js";
+import {
+	aggregateQuotaPool,
+	formatQuotaPoolAggregate,
+} from "../quota-pool-aggregate.js";
 import { buildQuotaEmailFallbackState } from "../quota-readiness.js";
 import { queuedRefresh } from "../refresh-queue.js";
 import { resolveActiveIndex } from "../runtime/account-status.js";
@@ -81,6 +90,7 @@ export async function runHealthCheck(
 	let warnings = 0;
 	let codexAvailable = 0;
 	let signedInOnly = 0;
+	const quotaSnapshots: CodexQuotaSnapshot[] = [];
 	const activeIndex = resolveActiveIndex(storage, "codex");
 	let activeAccountRefreshed = false;
 	const now = Date.now();
@@ -134,6 +144,7 @@ export async function runHealthCheck(
 							accessToken: currentAccessToken,
 							model: modelInspection.normalized,
 						});
+						quotaSnapshots.push(snapshot);
 						if (workingQuotaCache) {
 							quotaCacheChanged =
 								updateQuotaCacheForAccount(
@@ -242,6 +253,7 @@ export async function runHealthCheck(
 							accessToken: result.access,
 							model: modelInspection.normalized,
 						});
+						quotaSnapshots.push(snapshot);
 						if (workingQuotaCache) {
 							quotaCacheChanged =
 								updateQuotaCacheForAccount(
@@ -278,7 +290,16 @@ export async function runHealthCheck(
 				);
 			}
 		} else {
-			const detail = normalizeFailureDetail(result.message, result.reason);
+			const normalizedDetail = normalizeFailureDetail(
+				result.message,
+				result.reason,
+			);
+			const permanentFailure = isPermanentAuthFailure(result);
+			const detail = permanentFailure
+				? isRefreshTokenReuseMessage(result.message ?? "")
+					? "refresh token reused; run codex-multi-auth login to reconnect this account"
+					: `${normalizedDetail}; run codex-multi-auth login to reconnect this account`
+				: normalizedDetail;
 			if (sessionLikelyValid) {
 				warnings += 1;
 				if (liveProbe) {
@@ -290,6 +311,10 @@ export async function runHealthCheck(
 					);
 				}
 			} else {
+				if (permanentFailure && account.enabled !== false) {
+					account.enabled = false;
+					changed = true;
+				}
 				failed += 1;
 				if (display.showPerAccountRows) {
 					console.log(
@@ -338,6 +363,14 @@ export async function runHealthCheck(
 				refreshToken: activeAccount.refreshToken,
 				expiresAt: activeAccount.expiresAt,
 			});
+		}
+	}
+
+	if (liveProbe) {
+		for (const line of formatQuotaPoolAggregate(
+			aggregateQuotaPool(storage.accounts.length, quotaSnapshots),
+		)) {
+			console.log(line);
 		}
 	}
 

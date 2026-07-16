@@ -44,6 +44,9 @@ function createRouterFixture(root: string, options: { withProxyModule?: boolean 
 				"export async function startRuntimeRotationProxy(options) {",
 				"  if (process.env.CODEX_APP_ROUTER_TEST_FAIL_PROXY === '1') throw new Error('proxy boom');",
 				"  marker(`start:${options.host}:${options.port}:${options.clientApiKey}`);",
+				"  marker(`thread-status-path:${options.threadStatusPath ?? ''}`);",
+				"  marker(`initial-thread-statuses:${Object.keys(options.initialThreadStatuses ?? {}).length}`);",
+				"  marker(`honor-stored-pin:${options.honorStoredPin}`);",
 				"  return {",
 				"    baseUrl: `http://${options.host}:${options.port || 4567}`,",
 				"    close: async () => marker('close'),",
@@ -56,6 +59,24 @@ function createRouterFixture(root: string, options: { withProxyModule?: boolean 
 				"      lastAccountLabel: 'Account 2 (hidden@example.com)',",
 				"      lastAccountId: 'acc_2',",
 				"      lastAccountUpdatedAt: 123,",
+				"      poolQuota: {",
+				"        accountCount: 7,",
+				"        fiveHour: null,",
+				"        sevenDay: { windowMinutes: 10080, reportedCount: 7, totalRemainingPercent: 176, averageRemainingPercent: 176 / 7 },",
+				"        updatedAt: 456,",
+				"        secretEmail: 'hidden@example.com',",
+				"      },",
+				"      threadStatuses: {",
+				"        'thread-a': {",
+				"          accountNumber: 2,",
+				"          accountDisplay: 'Account 2 (hi***@example.com)',",
+				"          maskedEmail: 'hi***@example.com',",
+				"          primary: { usedPercent: 4, windowMinutes: 300, resetAtMs: 456 },",
+				"          secondary: { usedPercent: 1, windowMinutes: 10080, resetAtMs: 789 },",
+				"          updatedAt: 123,",
+				"        },",
+				"      },",
+				"      threadStatusPersistence: 'durable',",
 				"      lastError: null,",
 				"    }),",
 				"  };",
@@ -109,7 +130,24 @@ describe("codex app router daemon", () => {
 		const scriptPath = createRouterFixture(root);
 		const statePath = join(root, "state.json");
 		const statusPath = join(root, "status.json");
+		const migrationPath = join(root, "runtime-rotation-thread-status-migration.json");
 		const markerPath = join(root, "marker.log");
+		writeFileSync(
+			migrationPath,
+			JSON.stringify({
+				state: "running",
+				threadStatuses: {
+					legacy: {
+						accountNumber: 2,
+						accountDisplay: "Account 2 (hi***@example.com)",
+						maskedEmail: "hi***@example.com",
+						primary: {},
+						secondary: {},
+						updatedAt: 123,
+					},
+				},
+			}),
+		);
 		await writeState(statePath, {
 			clientApiKey: "router-secret",
 			host: "127.0.0.1",
@@ -129,15 +167,45 @@ describe("codex app router daemon", () => {
 		try {
 			const running = await readJsonWhen(
 				statusPath,
-				(status) => status.state === "running",
+				(status) =>
+					status.state === "running" &&
+					status.kind === "codex-app-runtime-rotation-router",
 			);
 			expect(running.kind).toBe("codex-app-runtime-rotation-router");
 			expect(running.baseUrl).toBe("http://127.0.0.1:4567");
 			expect(running.lastAccountLabel).toBe("Account 2");
+			expect(running.poolQuota).toEqual({
+				accountCount: 7,
+				fiveHour: null,
+				sevenDay: {
+					windowMinutes: 10_080,
+					reportedCount: 7,
+					totalRemainingPercent: 176,
+					averageRemainingPercent: 176 / 7,
+				},
+				updatedAt: 456,
+			});
+			expect(JSON.stringify(running.poolQuota)).not.toContain("@");
+			expect(running.threadStatuses).toEqual({
+				"thread-a": {
+					accountNumber: 2,
+					accountDisplay: "Account 2 (hi***@example.com)",
+					maskedEmail: "hi***@example.com",
+					primary: { usedPercent: 4, windowMinutes: 300, resetAtMs: 456 },
+					secondary: { usedPercent: 1, windowMinutes: 10_080, resetAtMs: 789 },
+					updatedAt: 123,
+				},
+			});
 			expect(running).not.toHaveProperty("clientApiKey");
 			if (process.platform !== "win32") {
 				expect(statSync(statusPath).mode & 0o777).toBe(0o600);
 			}
+			expect(readFileSync(markerPath, "utf8")).toContain(
+				`thread-status-path:${join(root, "runtime-rotation-thread-assignments.json")}\n`,
+			);
+			expect(readFileSync(markerPath, "utf8")).toContain("initial-thread-statuses:1\n");
+			expect(readFileSync(markerPath, "utf8")).toContain("honor-stored-pin:false\n");
+			expect(existsSync(migrationPath)).toBe(false);
 			child.kill("SIGTERM");
 			if (process.platform !== "win32") {
 				await readJsonWhen(statusPath, (status) => status.state === "stopped");

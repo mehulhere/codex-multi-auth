@@ -1,5 +1,11 @@
 import type { AccountManager } from "../accounts.js";
 import type { ModelFamily } from "../prompts/codex.js";
+import type { QuotaCacheData } from "../quota-cache.js";
+import type { QuotaPoolAggregate } from "../quota-pool-aggregate.js";
+import type {
+	RuntimeThreadStatus,
+	ThreadStatusPersistenceState,
+} from "./thread-status.js";
 
 export interface RuntimeRotationProxyServer {
 	host: string;
@@ -16,11 +22,20 @@ export interface RuntimeRotationProxyStatus {
 	retries: number;
 	rotations: number;
 	streamsStarted: number;
+	activeWebSockets: number;
+	webSocketUpgrades: number;
+	webSocketFallbacks: number;
+	webSocketAbnormalCloses: number;
+	webSocketPeakBufferedBytes: number;
+	webSocketLastError: string | null;
 	lastError: string | null;
 	lastAccountIndex: number | null;
 	lastAccountLabel: string | null;
 	lastAccountId: string | null;
 	lastAccountUpdatedAt: number | null;
+	threadStatuses: Record<string, RuntimeThreadStatus>;
+	threadStatusPersistence: ThreadStatusPersistenceState;
+	poolQuota: QuotaPoolAggregate & { updatedAt: number };
 }
 
 export interface RuntimeRotationProxyOptions {
@@ -32,9 +47,22 @@ export interface RuntimeRotationProxyOptions {
 	fetchImpl?: typeof fetch;
 	now?: () => number;
 	quotaRemainingPercentThreshold?: number;
+	/** Optional initial cache for isolated callers/tests; disk is loaded when omitted. */
+	quotaCache?: QuotaCacheData;
 	maxRequestBodyBytes?: number;
 	fetchTimeoutMs?: number;
 	streamStallTimeoutMs?: number;
+	/** Owner-only durable per-thread account assignment sidecar used by Desktop. */
+	threadStatusPath?: string;
+	threadStatusTtlMs?: number;
+	initialThreadStatuses?: Record<string, RuntimeThreadStatus>;
+	/**
+	 * Whether this proxy honors the persisted manual pin written by `switch`.
+	 * Defaults to true. Desktop app-bind disables it because that surface uses
+	 * automatic per-thread best-account routing; explicit forced pins remain
+	 * strict regardless of this setting.
+	 */
+	honorStoredPin?: boolean;
 	/**
 	 * Ephemeral, per-instance account pin (0-based) for a single invocation
 	 * (issue #623: `codex-multi-auth-codex --account`). When set, this proxy
@@ -44,6 +72,7 @@ export interface RuntimeRotationProxyOptions {
 	 * the value survives the launcher -> detached app-helper process boundary.
 	 */
 	forcedAccountIndex?: number | null;
+	responsesWebSockets?: "auto" | "off";
 }
 
 export interface RequestContext {
@@ -55,6 +84,7 @@ export interface RequestContext {
 	family: ModelFamily;
 	stream: boolean;
 	sessionKey: string | null;
+	previousResponseId: string | null;
 }
 
 export type ExhaustionReason =

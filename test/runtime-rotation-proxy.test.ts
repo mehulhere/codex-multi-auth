@@ -1,5 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { request } from "node:http";
+import { createServer as createHttpServer, request, type Server } from "node:http";
+import type { AddressInfo } from "node:net";
+import WebSocket, { WebSocketServer } from "ws";
 import { AccountManager } from "../lib/accounts.js";
 import { CodexValidationError } from "../lib/errors.js";
 import { HTTP_STATUS, OPENAI_HEADERS } from "../lib/constants.js";
@@ -8,6 +10,7 @@ import {
 	buildTokenInvalidationBody,
 	chooseAccount,
 	normalizeForcedAccountIndex,
+	resolveRuntimePinnedIndex,
 	type RuntimeRotationProxyServer,
 } from "../lib/runtime-rotation-proxy.js";
 import { SessionAffinityStore } from "../lib/session-affinity.js";
@@ -20,19 +23,33 @@ import {
 import * as runtimePolicy from "../lib/policy/runtime-policy.js";
 import { resetRefreshQueue } from "../lib/refresh-queue.js";
 import { resetTrackers } from "../lib/rotation.js";
+import type { QuotaCacheData } from "../lib/quota-cache.js";
 import type { AccountStorageV3 } from "../lib/storage.js";
 
 const {
 	refreshAccessTokenMock,
+	loadQuotaCacheMock,
+	saveQuotaCacheMock,
 	saveAccountsMock,
 	withAccountStorageTransactionMock,
 } = vi.hoisted(
 	() => ({
 		refreshAccessTokenMock: vi.fn(),
+		loadQuotaCacheMock: vi.fn(),
+		saveQuotaCacheMock: vi.fn(),
 		saveAccountsMock: vi.fn(),
 		withAccountStorageTransactionMock: vi.fn(),
 	}),
 );
+
+vi.mock("../lib/quota-cache.js", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("../lib/quota-cache.js")>();
+	return {
+		...actual,
+		loadQuotaCache: loadQuotaCacheMock,
+		saveQuotaCache: saveQuotaCacheMock,
+	};
+});
 
 vi.mock("../lib/auth/auth.js", async (importOriginal) => {
 	const actual = await importOriginal<typeof import("../lib/auth/auth.js")>();
@@ -59,6 +76,7 @@ interface FetchCall {
 
 const openServers: RuntimeRotationProxyServer[] = [];
 const openManagers: AccountManager[] = [];
+const openWebSocketUpstreams: Array<{ server: Server; wss: WebSocketServer }> = [];
 const DEFAULT_CLIENT_API_KEY = "runtime-secret";
 
 function createStorage(now: number, count = 2): AccountStorageV3 {
@@ -76,6 +94,40 @@ function createStorage(now: number, count = 2): AccountStorageV3 {
 			lastUsed: now - (count - index) * 60_000,
 			enabled: true,
 		})),
+	};
+}
+
+function quotaCacheFor(
+	now: number,
+	entries: Array<{
+		accountId: string;
+		left5h: number;
+		left7d: number;
+		reset7dAtMs: number;
+	}>,
+): QuotaCacheData {
+	return {
+		byAccountId: Object.fromEntries(
+			entries.map((entry) => [
+				entry.accountId,
+				{
+					updatedAt: now,
+					status: 200,
+					model: "gpt-5-codex",
+					primary: {
+						usedPercent: 100 - entry.left5h,
+						windowMinutes: 300,
+						resetAtMs: now + 60_000,
+					},
+					secondary: {
+						usedPercent: 100 - entry.left7d,
+						windowMinutes: 10_080,
+						resetAtMs: entry.reset7dAtMs,
+					},
+				},
+			]),
+		),
+		byEmail: {},
 	};
 }
 
@@ -107,6 +159,14 @@ function timeoutResult(ms: number): Promise<"timeout"> {
 		setTimeout(() => resolve("timeout"), ms);
 	});
 }
+
+describe("runtime pin resolution", () => {
+	it("ignores persisted switch pins in automatic mode while preserving forced pins", () => {
+		expect(resolveRuntimePinnedIndex(null, 0, false)).toBeNull();
+		expect(resolveRuntimePinnedIndex(2, 0, false)).toBe(2);
+		expect(resolveRuntimePinnedIndex(null, 0, true)).toBe(0);
+	});
+});
 
 async function startProxy(params: {
 	accountManager: AccountManager;
@@ -156,6 +216,24 @@ async function getModels(
 			"x-api-key": "caller-key",
 			...headers,
 		},
+	});
+}
+
+async function postImages(
+	proxy: RuntimeRotationProxyServer,
+	body: Record<string, unknown>,
+	path = `/v1/${DEFAULT_CLIENT_API_KEY}/images/generations`,
+	headers: Record<string, string> = {},
+): Promise<Response> {
+	return fetch(`${proxy.baseUrl}${path}`, {
+		method: "POST",
+		headers: {
+			authorization: "Bearer native-chatgpt-token",
+			"chatgpt-account-id": "native-account-id",
+			"content-type": "application/json",
+			...headers,
+		},
+		body: JSON.stringify(body),
 	});
 }
 
@@ -247,6 +325,43 @@ async function postResponsesWithHttp(
 	});
 }
 
+async function requestResponsesWebSocketUpgrade(
+	proxy: RuntimeRotationProxyServer,
+	path = `/v1/${DEFAULT_CLIENT_API_KEY}/responses`,
+): Promise<{ status: number; text: string }> {
+	const url = new URL(`${proxy.baseUrl}${path}`);
+	return new Promise((resolve, reject) => {
+		const req = request(
+			{
+				host: url.hostname,
+				port: Number(url.port),
+				path: `${url.pathname}${url.search}`,
+				method: "GET",
+				headers: {
+					connection: "Upgrade",
+					upgrade: "websocket",
+					"sec-websocket-key": Buffer.from("runtime-proxy-test").toString("base64"),
+					"sec-websocket-version": "13",
+				},
+			},
+			(res) => {
+				const chunks: Buffer[] = [];
+				res.on("data", (chunk) =>
+					chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)),
+				);
+				res.on("end", () =>
+					resolve({
+						status: res.statusCode ?? 0,
+						text: Buffer.concat(chunks).toString("utf8"),
+					}),
+				);
+			},
+		);
+		req.on("error", reject);
+		req.end();
+	});
+}
+
 interface ActiveHandleProcess {
 	_getActiveHandles?: () => unknown[];
 }
@@ -293,12 +408,38 @@ function textEventStream(body = "data: {}\n\n", headers?: HeadersInit): Response
 	});
 }
 
+function chunkedTextEventStream(body: string, chunkSize: number): Response {
+	const bytes = new TextEncoder().encode(body);
+	let offset = 0;
+	return new Response(
+		new ReadableStream<Uint8Array>({
+			pull(controller) {
+				if (offset >= bytes.byteLength) {
+					controller.close();
+					return;
+				}
+				const end = Math.min(offset + chunkSize, bytes.byteLength);
+				controller.enqueue(bytes.slice(offset, end));
+				offset = end;
+			},
+		}),
+		{
+			status: HTTP_STATUS.OK,
+			headers: { "content-type": "text/event-stream" },
+		},
+	);
+}
+
 beforeEach(() => {
 	resetTrackers();
 	clearCircuitBreakers();
 	resetRefreshQueue();
 	__resetRoutingMutexForTests();
 	refreshAccessTokenMock.mockReset();
+	loadQuotaCacheMock.mockReset();
+	loadQuotaCacheMock.mockResolvedValue({ byAccountId: {}, byEmail: {} });
+	saveQuotaCacheMock.mockReset();
+	saveQuotaCacheMock.mockResolvedValue(undefined);
 	saveAccountsMock.mockReset();
 	saveAccountsMock.mockResolvedValue(undefined);
 	withAccountStorageTransactionMock.mockReset();
@@ -313,6 +454,11 @@ afterEach(async () => {
 	}
 	for (const accountManager of openManagers.splice(0, openManagers.length)) {
 		await accountManager.flushPendingSave();
+	}
+	for (const upstream of openWebSocketUpstreams.splice(0)) {
+		for (const client of upstream.wss.clients) client.terminate();
+		upstream.wss.close();
+		await new Promise<void>((resolve) => upstream.server.close(() => resolve()));
 	}
 	resetTrackers();
 	clearCircuitBreakers();
@@ -651,6 +797,260 @@ describe("runtime rotation proxy", () => {
 		expect(calls).toHaveLength(2);
 	});
 
+	it("authorizes native-provider model traffic with the exact secret path", async () => {
+		const now = Date.now();
+		const accountManager = new AccountManager(undefined, createStorage(now));
+		const { calls, fetchImpl } = createRecordingFetch((call) =>
+			call.url.includes("/models")
+				? new Response('{"data":[]}\n', {
+						status: HTTP_STATUS.OK,
+						headers: { "content-type": "application/json" },
+					})
+				: textEventStream("data: forwarded\n\n"),
+		);
+		const proxy = await startProxy({ accountManager, fetchImpl });
+
+		const responses = await postResponses(
+			proxy,
+			{ model: "gpt-5-codex" },
+			`/v1/${DEFAULT_CLIENT_API_KEY}/responses?trace=native`,
+			{
+				authorization: "Bearer native-chatgpt-token",
+				"x-api-key": "native-chatgpt-token",
+			},
+		);
+		const models = await getModels(
+			proxy,
+			`/v1/${DEFAULT_CLIENT_API_KEY}/models?client_version=0.144.4`,
+			{
+				authorization: "Bearer native-chatgpt-token",
+				"x-api-key": "native-chatgpt-token",
+			},
+		);
+
+		expect(responses.status).toBe(HTTP_STATUS.OK);
+		expect(await responses.text()).toBe("data: forwarded\n\n");
+		expect(models.status).toBe(HTTP_STATUS.OK);
+		expect(calls.map((call) => call.url)).toEqual([
+			"https://example.test/backend-api/codex/responses?trace=native",
+			"https://example.test/backend-api/codex/models?client_version=0.144.4",
+		]);
+		expect(calls.map((call) => call.headers.get("authorization"))).toEqual([
+			"Bearer access-1",
+			"Bearer access-1",
+		]);
+	});
+
+	it("returns 426 for native-provider Responses WebSocket upgrades", async () => {
+		const now = Date.now();
+		const accountManager = new AccountManager(undefined, createStorage(now));
+		const { calls, fetchImpl } = createRecordingFetch(() =>
+			textEventStream("data: must-not-forward\n\n"),
+		);
+		const proxy = await startProxy({
+			accountManager,
+			fetchImpl,
+			options: { responsesWebSockets: "off" },
+		});
+
+		const response = await requestResponsesWebSocketUpgrade(proxy);
+
+		expect(response.status).toBe(426);
+		expect(response.text).toBe("");
+		expect(calls).toHaveLength(0);
+	});
+
+	it("upgrades Responses WebSockets with one selected managed account", async () => {
+		const upstreamServer = createHttpServer();
+		const upstreamWss = new WebSocketServer({ noServer: true, perMessageDeflate: false });
+		let upstreamHeaders: typeof import("node:http").IncomingHttpHeaders | null = null;
+		upstreamServer.on("upgrade", (request, socket, head) => {
+			upstreamHeaders = request.headers;
+			upstreamWss.handleUpgrade(request, socket, head, (ws) => {
+				upstreamWss.emit("connection", ws, request);
+			});
+		});
+		upstreamWss.on("connection", (ws) => {
+			ws.on("message", (data, isBinary) => ws.send(data, { binary: isBinary }));
+		});
+		await new Promise<void>((resolve) =>
+			upstreamServer.listen(0, "127.0.0.1", () => resolve()),
+		);
+		openWebSocketUpstreams.push({ server: upstreamServer, wss: upstreamWss });
+		const upstreamPort = (upstreamServer.address() as AddressInfo).port;
+		const now = Date.now();
+		const accountManager = new AccountManager(undefined, createStorage(now, 1));
+		const { fetchImpl } = createRecordingFetch(() => textEventStream());
+		const proxy = await startRuntimeRotationProxy({
+			accountManager,
+			fetchImpl,
+			upstreamBaseUrl: `http://127.0.0.1:${upstreamPort}/backend-api`,
+			clientApiKey: DEFAULT_CLIENT_API_KEY,
+			responsesWebSockets: "auto",
+		});
+		openServers.push(proxy);
+		openManagers.push(accountManager);
+
+		const client = await new Promise<WebSocket>((resolve, reject) => {
+			const socket = new WebSocket(
+				`${proxy.baseUrl.replace("http:", "ws:")}/v1/${DEFAULT_CLIENT_API_KEY}/responses`,
+				{ perMessageDeflate: false },
+			);
+			socket.once("open", () => resolve(socket));
+			socket.once("error", reject);
+		});
+		const echoed = new Promise<string>((resolve) =>
+			client.once("message", (data) => resolve(data.toString())),
+		);
+		client.send('{"type":"response.create"}');
+		expect(await echoed).toBe('{"type":"response.create"}');
+		expect(upstreamHeaders?.authorization).toBe("Bearer access-1");
+		expect(upstreamHeaders?.[OPENAI_HEADERS.ACCOUNT_ID]).toBe("acc_1");
+		expect(upstreamHeaders?.[OPENAI_HEADERS.BETA.toLowerCase()]).toBe(
+			"responses_websockets=2026-02-06",
+		);
+		expect(upstreamHeaders?.["x-api-key"]).toBeUndefined();
+		expect(proxy.getStatus()).toMatchObject({
+			activeWebSockets: 1,
+			webSocketUpgrades: 1,
+			webSocketFallbacks: 0,
+		});
+		client.close(1000, "done");
+		await new Promise<void>((resolve) => client.once("close", () => resolve()));
+	});
+
+	it("passes secret-path image generation through with native ChatGPT credentials", async () => {
+		const now = Date.now();
+		const accountManager = new AccountManager(undefined, createStorage(now));
+		const { calls, fetchImpl } = createRecordingFetch(() =>
+			new Response('{"data":[{"url":"https://example.test/image.png"}]}', {
+				status: HTTP_STATUS.OK,
+				headers: {
+					"content-type": "application/json",
+					"content-encoding": "gzip",
+				},
+			}),
+		);
+		const proxy = await startProxy({ accountManager, fetchImpl });
+		const body = { model: "gpt-image-2", prompt: "draw a red square" };
+
+		const response = await postImages(
+			proxy,
+			body,
+			`/v1/${DEFAULT_CLIENT_API_KEY}/images/generations?client_version=0.144.4`,
+			{
+				connection: "keep-alive",
+				cookie: "session=must-not-leak",
+				host: "must-not-leak.example",
+				"proxy-authorization": "Basic must-not-leak",
+				"x-api-key": "must-not-leak",
+			},
+		);
+
+		expect(response.status).toBe(HTTP_STATUS.OK);
+		expect(await response.json()).toEqual({
+			data: [{ url: "https://example.test/image.png" }],
+		});
+		expect(response.headers.get("content-encoding")).toBeNull();
+		expect(calls).toHaveLength(1);
+		expect(calls[0]?.url).toBe(
+			"https://example.test/backend-api/codex/images/generations?client_version=0.144.4",
+		);
+		expect(calls[0]?.bodyText).toBe(JSON.stringify(body));
+		expect(calls[0]?.headers.get("authorization")).toBe(
+			"Bearer native-chatgpt-token",
+		);
+		expect(calls[0]?.headers.get("chatgpt-account-id")).toBe(
+			"native-account-id",
+		);
+		expect(calls[0]?.headers.get("connection")).toBeNull();
+		expect(calls[0]?.headers.get("cookie")).toBeNull();
+		expect(calls[0]?.headers.get("host")).toBeNull();
+		expect(calls[0]?.headers.get("proxy-authorization")).toBeNull();
+		expect(calls[0]?.headers.get("x-api-key")).toBeNull();
+		expect(proxy.getStatus()).toMatchObject({
+			totalRequests: 1,
+			upstreamRequests: 1,
+			rotations: 0,
+			lastAccountIndex: null,
+		});
+	});
+
+	it("does not expose image generation through legacy local-token auth", async () => {
+		const now = Date.now();
+		const accountManager = new AccountManager(undefined, createStorage(now));
+		const { calls, fetchImpl } = createRecordingFetch(() =>
+			new Response('{"data":[]}', { status: HTTP_STATUS.OK }),
+		);
+		const proxy = await startProxy({ accountManager, fetchImpl });
+
+		const legacy = await postImages(
+			proxy,
+			{ model: "gpt-image-2", prompt: "legacy" },
+			"/images/generations",
+			{
+				authorization: `Bearer ${DEFAULT_CLIENT_API_KEY}`,
+				"chatgpt-account-id": "",
+			},
+		);
+		const wrongSecret = await postImages(
+			proxy,
+			{ model: "gpt-image-2", prompt: "wrong secret" },
+			"/v1/wrong-secret/images/generations",
+		);
+
+		expect(legacy.status).toBe(HTTP_STATUS.NOT_FOUND);
+		expect(wrongSecret.status).toBe(HTTP_STATUS.UNAUTHORIZED);
+		expect(calls).toHaveLength(0);
+	});
+
+	it("rejects wrong or alternatively encoded native route secrets", async () => {
+		const now = Date.now();
+		const accountManager = new AccountManager(undefined, createStorage(now));
+		const { calls, fetchImpl } = createRecordingFetch(() =>
+			textEventStream("data: unreachable\n\n"),
+		);
+		const proxy = await startProxy({ accountManager, fetchImpl });
+		const nativeHeaders = {
+			authorization: "Bearer native-chatgpt-token",
+			"x-api-key": "native-chatgpt-token",
+		};
+
+		const wrong = await postResponses(
+			proxy,
+			{ model: "gpt-5-codex" },
+			"/v1/wrong-secret/responses",
+			nativeHeaders,
+		);
+		const alternativelyEncoded = await postResponses(
+			proxy,
+			{ model: "gpt-5-codex" },
+			"/v1/runtime%2Dsecret/responses",
+			nativeHeaders,
+		);
+
+		expect(wrong.status).toBe(HTTP_STATUS.UNAUTHORIZED);
+		expect(alternativelyEncoded.status).toBe(HTTP_STATUS.UNAUTHORIZED);
+		expect(calls).toHaveLength(0);
+	});
+
+	it("returns not found for an unsupported endpoint after a valid route secret", async () => {
+		const now = Date.now();
+		const accountManager = new AccountManager(undefined, createStorage(now));
+		const { calls, fetchImpl } = createRecordingFetch(() =>
+			new Response('{"ok":true}', { status: HTTP_STATUS.OK }),
+		);
+		const proxy = await startProxy({ accountManager, fetchImpl });
+
+		const response = await fetch(
+			`${proxy.baseUrl}/v1/${DEFAULT_CLIENT_API_KEY}/plugins/catalog`,
+			{ headers: { authorization: "Bearer native-chatgpt-token" } },
+		);
+
+		expect(response.status).toBe(HTTP_STATUS.NOT_FOUND);
+		expect(calls).toHaveLength(0);
+	});
+
 	// L5 (endpoint enumeration): the auth check must run BEFORE path/method
 	// discrimination so an unauthenticated caller cannot distinguish a valid
 	// endpoint from an invalid one — both must return 401. Authorized callers
@@ -870,7 +1270,7 @@ describe("runtime rotation proxy", () => {
 		expect(await response.text()).toBe('{"data":[]}\n');
 		expect(calls).toHaveLength(1);
 		expect(calls[0]?.url).toBe(
-			"https://example.test/backend-api/models?client_version=0.125.0",
+			"https://example.test/backend-api/codex/models?client_version=0.125.0",
 		);
 		expect(calls[0]?.headers.get("authorization")).toBe("Bearer access-1");
 		expect(calls[0]?.headers.get("x-api-key")).toBeNull();
@@ -942,6 +1342,33 @@ describe("runtime rotation proxy", () => {
 		);
 		expect(calls[0]?.headers.get("authorization")).toBe("Bearer access-1");
 		expect(calls[0]?.headers.get("x-api-key")).toBeNull();
+	});
+
+	it("does not apply the short Responses timeout to accepted image renders", async () => {
+		const now = Date.now();
+		const accountManager = new AccountManager(undefined, createStorage(now));
+		const { fetchImpl } = createRecordingFetch(async () => {
+			await new Promise((resolve) => setTimeout(resolve, 30));
+			return new Response('{"data":[{"b64_json":"discarded"}]}', {
+				status: HTTP_STATUS.OK,
+				headers: { "content-type": "application/json" },
+			});
+		});
+		const proxy = await startProxy({
+			accountManager,
+			fetchImpl,
+			options: { fetchTimeoutMs: 10 },
+		});
+
+		const response = await postImages(proxy, {
+			model: "gpt-image-1",
+			prompt: "draw a blue square",
+		});
+
+		expect(response.status).toBe(HTTP_STATUS.OK);
+		expect(await response.json()).toEqual({
+			data: [{ b64_json: "discarded" }],
+		});
 	});
 
 	it("falls back locally when upstream blocks TUI thread goal requests", async () => {
@@ -1410,6 +1837,335 @@ describe("runtime rotation proxy", () => {
 		).toBeTypeOf("number");
 	});
 
+	it("loads cached quota before listening and selects the eligible account with the nearest weekly reset", async () => {
+		const now = Date.now();
+		const accountManager = new AccountManager(undefined, createStorage(now));
+		const cache = quotaCacheFor(now, [
+			{ accountId: "acc_1", left5h: 80, left7d: 60, reset7dAtMs: now + 90_000 },
+			{ accountId: "acc_2", left5h: 80, left7d: 60, reset7dAtMs: now + 30_000 },
+		]);
+		loadQuotaCacheMock.mockResolvedValue(cache);
+		const { calls, fetchImpl } = createRecordingFetch(() => textEventStream());
+
+		const proxy = await startProxy({ accountManager, fetchImpl });
+		await (await postResponses(proxy, { model: "gpt-5-codex", stream: true })).text();
+
+		expect(loadQuotaCacheMock).toHaveBeenCalledTimes(1);
+		expect(calls[0]?.headers.get(OPENAI_HEADERS.ACCOUNT_ID)).toBe("acc_2");
+	});
+
+	it("uses the second-best weekly-reset account for a new task when the leader has under 50% 5h", async () => {
+		const now = Date.now();
+		const accountManager = new AccountManager(undefined, createStorage(now));
+		const cache = quotaCacheFor(now, [
+			{ accountId: "acc_1", left5h: 40, left7d: 60, reset7dAtMs: now + 30_000 },
+			{ accountId: "acc_2", left5h: 80, left7d: 60, reset7dAtMs: now + 90_000 },
+		]);
+		const { calls, fetchImpl } = createRecordingFetch(() => textEventStream());
+		const proxy = await startProxy({
+			accountManager,
+			fetchImpl,
+			options: { quotaCache: cache },
+		});
+
+		await (
+			await postResponses(proxy, {
+				model: "gpt-5-codex",
+				stream: true,
+				metadata: { session_id: "new-thread-low-leader" },
+			})
+		).text();
+
+		expect(calls[0]?.headers.get(OPENAI_HEADERS.ACCOUNT_ID)).toBe("acc_2");
+	});
+
+	it("refreshes runtime quota from successful response headers, persists it, and releases below-floor affinity", async () => {
+		const now = Date.now();
+		const accountManager = new AccountManager(undefined, createStorage(now));
+		const quotaCache: QuotaCacheData = { byAccountId: {}, byEmail: {} };
+		const { calls, fetchImpl } = createRecordingFetch((_call, attempt) =>
+			textEventStream(
+				attempt === 1
+					? 'data: {"type":"response.completed","response":{"id":"resp_low","status":"completed"}}\n\n'
+					: "data: done\n\n",
+				attempt === 1
+					? {
+							"x-codex-primary-used-percent": "96",
+							"x-codex-primary-window-minutes": "300",
+							"x-codex-primary-reset-after-seconds": "60",
+							"x-codex-secondary-used-percent": "96",
+							"x-codex-secondary-window-minutes": "10080",
+							"x-codex-secondary-reset-after-seconds": "120",
+						}
+					: undefined,
+			),
+		);
+		const proxy = await startProxy({
+			accountManager,
+			fetchImpl,
+			options: { quotaCache, quotaRemainingPercentThreshold: 0 },
+		});
+
+		await (
+			await postResponses(proxy, {
+				model: "gpt-5-codex",
+				stream: true,
+				metadata: { session_id: "thread-low" },
+			})
+		).text();
+		await (
+			await postResponses(proxy, {
+				model: "gpt-5-codex",
+				stream: true,
+				prompt_cache_key: "thread-child",
+				previous_response_id: "resp_low",
+			})
+		).text();
+
+		expect(calls.map((call) => call.headers.get(OPENAI_HEADERS.ACCOUNT_ID))).toEqual([
+			"acc_1",
+			"acc_2",
+		]);
+		expect(quotaCache.byAccountId.acc_1).toMatchObject({
+			status: 200,
+			model: "gpt-5-codex",
+			primary: { usedPercent: 96, windowMinutes: 300 },
+			secondary: { usedPercent: 96, windowMinutes: 10_080 },
+		});
+		expect(saveQuotaCacheMock).toHaveBeenCalledWith(quotaCache);
+	});
+
+	it("retains cached healthy quota when a 429 has no quota headers while retrying the next account", async () => {
+		const now = Date.now();
+		const accountManager = new AccountManager(undefined, createStorage(now));
+		const quotaCache = quotaCacheFor(now, [
+			{ accountId: "acc_1", left5h: 70, left7d: 80, reset7dAtMs: now + 30_000 },
+		]);
+		const previousEntry = quotaCache.byAccountId.acc_1;
+		const { calls, fetchImpl } = createRecordingFetch((_call, attempt) =>
+			attempt === 1
+				? new Response('{"error":{"message":"limited"}}', {
+						status: HTTP_STATUS.TOO_MANY_REQUESTS,
+						headers: { "content-type": "application/json", "retry-after": "1" },
+					})
+				: textEventStream("data: recovered\n\n"),
+		);
+		const proxy = await startProxy({ accountManager, fetchImpl, options: { quotaCache } });
+
+		const response = await postResponses(proxy, { model: "gpt-5-codex", stream: true });
+		expect(response.status).toBe(HTTP_STATUS.OK);
+		await response.text();
+
+		expect(calls.map((call) => call.headers.get(OPENAI_HEADERS.ACCOUNT_ID))).toEqual([
+			"acc_1",
+			"acc_2",
+		]);
+		expect(quotaCache.byAccountId.acc_1).toBe(previousEntry);
+		expect(saveQuotaCacheMock).not.toHaveBeenCalled();
+	});
+
+	it("waits for the last queued quota-cache write when closing", async () => {
+		const now = Date.now();
+		const accountManager = new AccountManager(undefined, createStorage(now));
+		let releaseSave: (() => void) | undefined;
+		const delayedSave = new Promise<void>((resolve) => {
+			releaseSave = resolve;
+		});
+		saveQuotaCacheMock
+			.mockResolvedValueOnce(undefined)
+			.mockReturnValueOnce(delayedSave);
+		const { fetchImpl } = createRecordingFetch(() =>
+			textEventStream("data: {}\n\n", {
+				"x-codex-primary-used-percent": "10",
+				"x-codex-primary-window-minutes": "300",
+				"x-codex-primary-reset-after-seconds": "60",
+				"x-codex-secondary-used-percent": "20",
+				"x-codex-secondary-window-minutes": "10080",
+				"x-codex-secondary-reset-after-seconds": "120",
+			}),
+		);
+		const proxy = await startProxy({ accountManager, fetchImpl });
+
+		await (await postResponses(proxy, { model: "gpt-5-codex", stream: true })).text();
+		await (await postResponses(proxy, { model: "gpt-5-codex", stream: true })).text();
+		expect(saveQuotaCacheMock).toHaveBeenCalledTimes(2);
+
+		const closing = proxy.close().then(() => "closed" as const);
+		expect(await Promise.race([closing, timeoutResult(25)])).toBe("timeout");
+		releaseSave?.();
+		await expect(closing).resolves.toBe("closed");
+	});
+
+	it("waits for an active handler and quota save enqueued after close begins", async () => {
+		const now = Date.now();
+		const accountManager = new AccountManager(undefined, createStorage(now));
+		let releaseUpstream: ((response: Response) => void) | undefined;
+		let markRequestStarted: (() => void) | undefined;
+		const requestStarted = new Promise<void>((resolve) => {
+			markRequestStarted = resolve;
+		});
+		const delayedUpstream = new Promise<Response>((resolve) => {
+			releaseUpstream = resolve;
+		});
+		let releaseSave: (() => void) | undefined;
+		let markSaveStarted: (() => void) | undefined;
+		const saveStarted = new Promise<void>((resolve) => {
+			markSaveStarted = resolve;
+		});
+		const delayedSave = new Promise<void>((resolve) => {
+			releaseSave = resolve;
+		});
+		saveQuotaCacheMock.mockImplementationOnce(() => {
+			markSaveStarted?.();
+			return delayedSave;
+		});
+		const { fetchImpl } = createRecordingFetch(() => {
+			markRequestStarted?.();
+			return delayedUpstream;
+		});
+		const proxy = await startProxy({ accountManager, fetchImpl });
+		const requestSettled = postResponses(proxy, {
+			model: "gpt-5-codex",
+			stream: true,
+		})
+			.then((response) => response.text())
+			.catch(() => undefined);
+		await requestStarted;
+
+		const closing = proxy.close().then(() => "closed" as const);
+		const beforeUpstreamCompletes = await Promise.race([
+			closing,
+			timeoutResult(25),
+		]);
+		releaseUpstream?.(
+			textEventStream("data: {}\n\n", {
+				"x-codex-primary-used-percent": "10",
+				"x-codex-primary-window-minutes": "300",
+				"x-codex-primary-reset-after-seconds": "60",
+				"x-codex-secondary-used-percent": "20",
+				"x-codex-secondary-window-minutes": "10080",
+				"x-codex-secondary-reset-after-seconds": "120",
+			}),
+		);
+		await saveStarted;
+		const whileFinalSaveIsPending = await Promise.race([
+			closing,
+			timeoutResult(25),
+		]);
+		releaseSave?.();
+		await requestSettled;
+		await expect(closing).resolves.toBe("closed");
+
+		expect(beforeUpstreamCompletes).toBe("timeout");
+		expect(whileFinalSaveIsPending).toBe("timeout");
+	});
+
+	it("remaps a delayed old-manager quota response by stable identity after reload reorder", async () => {
+		const now = Date.now();
+		const staleManager = new AccountManager(undefined, createStorage(now));
+		const reorderedStorage = createStorage(now);
+		reorderedStorage.accounts.reverse();
+		const freshManager = new AccountManager(undefined, reorderedStorage);
+		let releaseOldResponse: ((response: Response) => void) | undefined;
+		const oldResponse = new Promise<Response>((resolve) => {
+			releaseOldResponse = resolve;
+		});
+		const { calls, fetchImpl } = createRecordingFetch((_call, attempt) => {
+			if (attempt === 1) return oldResponse;
+			return textEventStream(`data: fresh-${attempt}\n\n`);
+		});
+		const loadSpy = vi
+			.spyOn(AccountManager, "loadFromDisk")
+			.mockResolvedValueOnce(freshManager);
+		const originalSkipReason = staleManager.getAccountRuntimeSkipReason;
+		let stalePoolUnavailable = false;
+		const skipReasonSpy = vi
+			.spyOn(AccountManager.prototype, "getAccountRuntimeSkipReason")
+			.mockImplementation(function mockedSkipReason(index, family, model) {
+				if (this === staleManager && stalePoolUnavailable) return "circuit-open";
+				return originalSkipReason.call(this, index, family, model);
+			});
+
+		try {
+			const proxy = await startProxy({
+				accountManager: staleManager,
+				fetchImpl,
+				options: {
+					quotaCache: { byAccountId: {}, byEmail: {} },
+					quotaRemainingPercentThreshold: 0,
+				},
+			});
+			const delayed = postResponses(proxy, { model: "gpt-5-codex", stream: true });
+			await vi.waitFor(() => expect(calls).toHaveLength(1));
+
+			stalePoolUnavailable = true;
+			const reloadResponse = await postResponses(proxy, {
+				model: "gpt-5-codex",
+				stream: true,
+			});
+			await reloadResponse.text();
+			expect(loadSpy).toHaveBeenCalledTimes(1);
+			expect(calls[1]?.headers.get(OPENAI_HEADERS.ACCOUNT_ID)).toBe("acc_1");
+
+			releaseOldResponse?.(
+				textEventStream("data: delayed\n\n", {
+					"x-codex-primary-used-percent": "100",
+					"x-codex-primary-window-minutes": "300",
+					"x-codex-primary-reset-after-seconds": "60",
+					"x-codex-secondary-used-percent": "100",
+					"x-codex-secondary-window-minutes": "10080",
+					"x-codex-secondary-reset-after-seconds": "120",
+				}),
+			);
+			await (await delayed).text();
+
+			const next = await postResponses(proxy, {
+				model: "gpt-5-codex",
+				stream: true,
+			});
+			await next.text();
+
+			expect(calls.map((call) => call.headers.get(OPENAI_HEADERS.ACCOUNT_ID))).toEqual([
+				"acc_1",
+				"acc_1",
+				"acc_2",
+			]);
+		} finally {
+			skipReasonSpy.mockRestore();
+			loadSpy.mockRestore();
+		}
+	});
+
+	it("does not globally bench low positive quota by default", async () => {
+		const now = Date.now();
+		const accountManager = new AccountManager(undefined, createStorage(now, 1));
+		const { fetchImpl } = createRecordingFetch(() =>
+			textEventStream("data: ok\n\n", {
+				"x-codex-primary-used-percent": "99",
+				"x-codex-primary-window-minutes": "300",
+				"x-codex-primary-reset-after-seconds": "60",
+				"x-codex-secondary-used-percent": "99",
+				"x-codex-secondary-window-minutes": "10080",
+				"x-codex-secondary-reset-after-seconds": "120",
+			}),
+		);
+		const proxy = await startRuntimeRotationProxy({
+			accountManager,
+			fetchImpl,
+			upstreamBaseUrl: "https://example.test/backend-api",
+			clientApiKey: DEFAULT_CLIENT_API_KEY,
+			quotaCache: { byAccountId: {}, byEmail: {} },
+		});
+		openManagers.push(accountManager);
+		openServers.push(proxy);
+
+		await (await postResponses(proxy, { model: "gpt-5-codex", stream: true })).text();
+
+		expect(
+			accountManager.getAccountByIndex(0)?.rateLimitResetTimes["gpt-5-codex"],
+		).toBeUndefined();
+	});
+
 	it("pins repeated session requests to the first served account", async () => {
 		const now = Date.now();
 		const accountManager = new AccountManager(undefined, createStorage(now, 3));
@@ -1430,6 +2186,579 @@ describe("runtime rotation proxy", () => {
 			"acc_1",
 			"acc_1",
 		]);
+	});
+
+	it("publishes redacted quota status for the successfully served thread", async () => {
+		const now = Date.now();
+		const accountManager = new AccountManager(undefined, createStorage(now, 2));
+		const { fetchImpl } = createRecordingFetch(() =>
+			textEventStream(
+				'data: {"type":"response.completed","response":{"id":"resp_status","status":"completed"}}\n\n',
+				{
+					"x-codex-primary-used-percent": "4",
+					"x-codex-primary-window-minutes": "300",
+					"x-codex-primary-reset-after-seconds": "60",
+					"x-codex-secondary-used-percent": "1",
+					"x-codex-secondary-window-minutes": "10080",
+					"x-codex-secondary-reset-after-seconds": "120",
+				},
+			),
+		);
+		const proxy = await startProxy({ accountManager, fetchImpl });
+
+		await (
+			await postResponses(proxy, {
+				model: "gpt-5-codex",
+				stream: true,
+				metadata: { session_id: "thread-status" },
+			})
+		).text();
+
+		const status = proxy.getStatus() as ReturnType<typeof proxy.getStatus> & {
+			threadStatuses?: Record<
+				string,
+				{
+					accountDisplay: string;
+					primary: { usedPercent?: number };
+					secondary: { usedPercent?: number };
+				}
+			>;
+		};
+		expect(status.threadStatuses?.["thread-status"]).toMatchObject({
+			accountDisplay: "Account 1 (ac***@example.com)",
+			primary: { usedPercent: 4 },
+			secondary: { usedPercent: 1 },
+		});
+		expect(JSON.stringify(status.threadStatuses)).not.toContain("account-1@example.com");
+		expect(JSON.stringify(status.threadStatuses)).not.toContain("refresh-1");
+	});
+
+	it("publishes thread status for current Codex thread-id headers", async () => {
+		const now = Date.now();
+		const accountManager = new AccountManager(undefined, createStorage(now, 2));
+		const { fetchImpl } = createRecordingFetch(() =>
+			textEventStream(
+				'data: {"type":"response.completed","response":{"id":"resp_thread_header","status":"completed"}}\n\n',
+			),
+		);
+		const proxy = await startProxy({ accountManager, fetchImpl });
+
+		await (
+			await postResponses(
+				proxy,
+				{ model: "gpt-5-codex", stream: true },
+				"/responses",
+				{
+					"session-id": "session-header-value",
+					"thread-id": "thread-header-value",
+				},
+			)
+		).text();
+
+		expect(proxy.getStatus().threadStatuses?.["thread-header-value"]).toMatchObject({
+			accountDisplay: "Account 1 (ac***@example.com)",
+		});
+	});
+
+	it("publishes the shared aggregate from the quota cache without identities", async () => {
+		const now = Date.now();
+		const accountManager = new AccountManager(undefined, createStorage(now, 2));
+		const { fetchImpl } = createRecordingFetch(() => textEventStream());
+		const proxy = await startProxy({
+			accountManager,
+			fetchImpl,
+			options: {
+				now: () => now,
+				quotaCache: quotaCacheFor(now, [
+					{
+						accountId: "acc_1",
+						left5h: 20,
+						left7d: 40,
+						reset7dAtMs: now + 1_000,
+					},
+					{
+						accountId: "acc_2",
+						left5h: 80,
+						left7d: 60,
+						reset7dAtMs: now + 2_000,
+					},
+				]),
+			},
+		});
+
+		expect(proxy.getStatus().poolQuota).toEqual({
+			accountCount: 2,
+			fiveHour: {
+				windowMinutes: 300,
+				reportedCount: 2,
+				totalRemainingPercent: 100,
+				averageRemainingPercent: 50,
+				earliestResetAtMs: now + 60_000,
+				latestResetAtMs: now + 60_000,
+			},
+			sevenDay: {
+				windowMinutes: 10_080,
+				reportedCount: 2,
+				totalRemainingPercent: 100,
+				averageRemainingPercent: 50,
+				earliestResetAtMs: now + 1_000,
+				latestResetAtMs: now + 2_000,
+			},
+			updatedAt: now,
+		});
+		expect(JSON.stringify(proxy.getStatus().poolQuota)).not.toContain("@example.com");
+		expect(JSON.stringify(proxy.getStatus().poolQuota)).not.toContain("refresh-");
+	});
+
+	it("publishes the selected account before a new thread stream completes", async () => {
+		const now = Date.now();
+		const accountManager = new AccountManager(undefined, createStorage(now, 2));
+		const { fetchImpl } = createRecordingFetch(() =>
+			textEventStream(
+				'data: {"type":"response.failed","response":{"id":"resp_failed","status":"failed"}}\n\n',
+			),
+		);
+		const proxy = await startProxy({
+			accountManager,
+			fetchImpl,
+			options: {
+				quotaCache: quotaCacheFor(now, [
+					{
+						accountId: "acc_1",
+						left5h: 36,
+						left7d: 90,
+						reset7dAtMs: now + 7 * 24 * 60 * 60_000,
+					},
+				]),
+			},
+		});
+
+		await (
+			await postResponses(proxy, {
+				model: "gpt-5-codex",
+				stream: true,
+				metadata: { session_id: "thread-selected" },
+			})
+		).text();
+
+		expect(proxy.getStatus().threadStatuses["thread-selected"]).toMatchObject({
+			accountDisplay: "Account 1 (ac***@example.com)",
+			primary: { usedPercent: 64, windowMinutes: 300 },
+			secondary: { usedPercent: 10, windowMinutes: 10_080 },
+		});
+	});
+
+	it("backfills restored thread quota from cache before the first request", async () => {
+		const now = Date.now();
+		const accountManager = new AccountManager(undefined, createStorage(now, 1));
+		const { fetchImpl } = createRecordingFetch(() => textEventStream());
+		const proxy = await startProxy({
+			accountManager,
+			fetchImpl,
+			options: {
+				quotaCache: quotaCacheFor(now, [
+					{
+						accountId: "acc_1",
+						left5h: 36,
+						left7d: 90,
+						reset7dAtMs: now + 7 * 24 * 60 * 60_000,
+					},
+				]),
+				initialThreadStatuses: {
+					"thread-restored": {
+						accountNumber: 1,
+						accountDisplay: "Account 1 (ac***@example.com)",
+						maskedEmail: "ac***@example.com",
+						primary: {},
+						secondary: {},
+						updatedAt: now,
+					},
+				},
+			},
+		});
+
+		expect(proxy.getStatus().threadStatuses["thread-restored"]).toMatchObject({
+			accountDisplay: "Account 1 (ac***@example.com)",
+			primary: { usedPercent: 64, windowMinutes: 300 },
+			secondary: { usedPercent: 10, windowMinutes: 10_080 },
+		});
+	});
+
+	it("releases thread affinity after a streamed usage-limit failure", async () => {
+		const now = Date.now();
+		const accountManager = new AccountManager(undefined, createStorage(now, 3));
+		const { calls, fetchImpl } = createRecordingFetch((_call, attempt) =>
+			attempt === 1
+				? textEventStream(
+						'data: {"type":"response.failed","response":{"id":"resp_limit","status":"failed","error":{"code":"usage_limit_reached","message":"You have hit your usage limit"}}}\n\n',
+					)
+				: textEventStream(
+						'data: {"type":"response.completed","response":{"id":"resp_ok","status":"completed"}}\n\n',
+					),
+		);
+		const proxy = await startProxy({ accountManager, fetchImpl });
+		const body = {
+			model: "gpt-5-codex",
+			stream: true,
+			metadata: { session_id: "thread-stream-limit" },
+		};
+
+		await (await postResponses(proxy, body)).text();
+		await (await postResponses(proxy, body)).text();
+
+		expect(calls.map((call) => call.headers.get(OPENAI_HEADERS.ACCOUNT_ID))).toEqual([
+			"acc_1",
+			"acc_2",
+		]);
+		expect(
+			accountManager.getAccountByIndex(0)?.rateLimitResetTimes["gpt-5-codex"],
+		).toBeGreaterThan(now);
+	});
+
+	it("keeps a fork with a new prompt cache key on its parent response account", async () => {
+		const now = Date.now();
+		const accountManager = new AccountManager(undefined, createStorage(now, 3));
+		const { calls, fetchImpl } = createRecordingFetch((_call, attempt) =>
+			textEventStream(
+				`data: {"type":"response.completed","response":{"id":"resp_${attempt}","status":"completed"}}\n\n`,
+			),
+		);
+		const proxy = await startProxy({ accountManager, fetchImpl });
+
+		await (
+			await postResponses(proxy, {
+				model: "gpt-5-codex",
+				stream: true,
+				metadata: { session_id: "thread-a" },
+			})
+		).text();
+		await (
+			await postResponses(proxy, {
+				model: "gpt-5-codex",
+				stream: true,
+				prompt_cache_key: "child-thread",
+				previous_response_id: "resp_1",
+			})
+		).text();
+
+		expect(calls.map((call) => call.headers.get(OPENAI_HEADERS.ACCOUNT_ID))).toEqual([
+			"acc_1",
+			"acc_1",
+		]);
+	});
+
+	it("binds a response id from a chunked 9 MiB terminal event without changing forwarded bytes", async () => {
+		const now = Date.now();
+		const accountManager = new AccountManager(undefined, createStorage(now, 3));
+		const filler = "x".repeat(9 * 1024 * 1024);
+		const largeTerminalEvent = `data: {"type":"response.completed","response":{"id":"resp_large","output":${JSON.stringify(filler)}}}\n\n`;
+		const { calls, fetchImpl } = createRecordingFetch((_call, attempt) =>
+			attempt === 1
+				? chunkedTextEventStream(largeTerminalEvent, 128 * 1024)
+				: textEventStream(
+						'data: {"type":"response.completed","response":{"id":"resp_child"}}\n\n',
+					),
+		);
+		const proxy = await startProxy({ accountManager, fetchImpl });
+
+		const parent = await postResponses(proxy, {
+			model: "gpt-5-codex",
+			stream: true,
+			metadata: { session_id: "large-parent" },
+		});
+		expect(await parent.text()).toBe(largeTerminalEvent);
+		const parentAccount = accountManager.getAccountByIndex(0);
+		if (!parentAccount) throw new Error("parent account was not selected");
+		accountManager.markRateLimitedWithReason(
+			parentAccount,
+			60_000,
+			"gpt-5-codex",
+			"quota",
+			"gpt-5-codex",
+		);
+		await (
+			await postResponses(proxy, {
+				model: "gpt-5-codex",
+				stream: true,
+				metadata: { session_id: "unrelated-thread" },
+			})
+		).text();
+		accountManager.clearAccountTransientState();
+
+		await (
+			await postResponses(proxy, {
+				model: "gpt-5-codex",
+				stream: true,
+				prompt_cache_key: "large-child",
+				previous_response_id: "resp_large",
+			})
+		).text();
+
+		expect(calls.map((call) => call.headers.get(OPENAI_HEADERS.ACCOUNT_ID))).toEqual([
+			"acc_1",
+			"acc_2",
+			"acc_1",
+		]);
+	});
+
+	it("forwards an oversized malformed SSE line without changing its bytes", async () => {
+		const now = Date.now();
+		const accountManager = new AccountManager(undefined, createStorage(now, 3));
+		const oversizedMalformedEvent = `data: ${"x".repeat(10 * 1024 * 1024 + 1)}\n\n`;
+		const { fetchImpl } = createRecordingFetch(() =>
+			chunkedTextEventStream(oversizedMalformedEvent, 128 * 1024),
+		);
+		const proxy = await startProxy({ accountManager, fetchImpl });
+
+		const response = await postResponses(proxy, {
+			model: "gpt-5-codex",
+			stream: true,
+			metadata: { session_id: "oversized-malformed" },
+		});
+
+		expect(await response.text()).toBe(oversizedMalformedEvent);
+	});
+
+	it("moves a fork with a new session header off an exhausted parent account", async () => {
+		const now = Date.now();
+		const accountManager = new AccountManager(undefined, createStorage(now, 3));
+		const { calls, fetchImpl } = createRecordingFetch((_call, attempt) =>
+			textEventStream(
+				`data: {"type":"response.completed","response":{"id":"resp_${attempt}","status":"completed"}}\n\n`,
+				attempt === 1
+					? {
+							"x-codex-primary-used-percent": "96",
+							"x-codex-primary-reset-after-seconds": "60",
+						}
+					: undefined,
+			),
+		);
+		const proxy = await startProxy({ accountManager, fetchImpl });
+
+		await (
+			await postResponses(proxy, {
+				model: "gpt-5-codex",
+				stream: true,
+				metadata: { session_id: "thread-a" },
+			})
+		).text();
+		await (
+			await postResponses(
+				proxy,
+				{
+					model: "gpt-5-codex",
+					stream: true,
+					previous_response_id: "resp_1",
+				},
+				"/responses",
+				{ [OPENAI_HEADERS.SESSION_ID]: "child-thread" },
+			)
+		).text();
+
+		expect(calls.map((call) => call.headers.get(OPENAI_HEADERS.ACCOUNT_ID))).toEqual([
+			"acc_1",
+			"acc_2",
+		]);
+	});
+
+	it.each(["response.completed", "response.done", "response.incomplete"])(
+		"binds a %s response id to the serving account",
+		async (terminalType) => {
+			const now = Date.now();
+			const accountManager = new AccountManager(undefined, createStorage(now, 3));
+			const { calls, fetchImpl } = createRecordingFetch((_call, attempt) =>
+				textEventStream(
+					`data: {"type":"${terminalType}","response":{"id":"resp_${attempt}"}}\n\n`,
+				),
+			);
+			const proxy = await startProxy({ accountManager, fetchImpl });
+
+			await (
+				await postResponses(proxy, {
+					model: "gpt-5-codex",
+					stream: true,
+					metadata: { session_id: "parent-thread" },
+				})
+			).text();
+			await (
+				await postResponses(proxy, {
+					model: "gpt-5-codex",
+					stream: true,
+					prompt_cache_key: "child-thread",
+					previous_response_id: "resp_1",
+				})
+			).text();
+
+			expect(calls.map((call) => call.headers.get(OPENAI_HEADERS.ACCOUNT_ID))).toEqual([
+				"acc_1",
+				"acc_1",
+			]);
+		},
+	);
+
+	it.each(["response.failed", "error"])(
+		"does not bind a %s response id",
+		async (terminalType) => {
+			const now = Date.now();
+			const accountManager = new AccountManager(undefined, createStorage(now, 3));
+			const { calls, fetchImpl } = createRecordingFetch((_call, attempt) =>
+				textEventStream(
+					attempt === 1
+						? `data: {"type":"${terminalType}","response":{"id":"resp_failed"}}\n\n`
+						: `data: {"type":"response.completed","response":{"id":"resp_${attempt}"}}\n\n`,
+				),
+			);
+			const proxy = await startProxy({ accountManager, fetchImpl });
+
+			await (
+				await postResponses(proxy, {
+					model: "gpt-5-codex",
+					stream: true,
+					metadata: { session_id: "failed-parent" },
+				})
+			).text();
+			await (
+				await postResponses(proxy, {
+					model: "gpt-5-codex",
+					stream: true,
+					prompt_cache_key: "failed-child",
+					previous_response_id: "resp_failed",
+				})
+			).text();
+
+			expect(calls.map((call) => call.headers.get(OPENAI_HEADERS.ACCOUNT_ID))).toEqual([
+				"acc_1",
+				"acc_2",
+			]);
+		},
+	);
+
+	it("does not bind a response id when a completed event is followed by an error", async () => {
+		const now = Date.now();
+		const accountManager = new AccountManager(undefined, createStorage(now, 3));
+		const { calls, fetchImpl } = createRecordingFetch((_call, attempt) =>
+			textEventStream(
+				attempt === 1
+					? [
+							'data: {"type":"response.completed","response":{"id":"resp_not_final"}}',
+							'data: {"type":"error","error":{"message":"late failure"}}',
+							"",
+						].join("\n\n")
+					: `data: {"type":"response.completed","response":{"id":"resp_${attempt}"}}\n\n`,
+			),
+		);
+		const proxy = await startProxy({ accountManager, fetchImpl });
+
+		await (
+			await postResponses(proxy, {
+				model: "gpt-5-codex",
+				stream: true,
+				metadata: { session_id: "late-failed-parent" },
+			})
+		).text();
+		await (
+			await postResponses(proxy, {
+				model: "gpt-5-codex",
+				stream: true,
+				prompt_cache_key: "late-failed-child",
+				previous_response_id: "resp_not_final",
+			})
+		).text();
+
+		expect(calls.map((call) => call.headers.get(OPENAI_HEADERS.ACCOUNT_ID))).toEqual([
+			"acc_1",
+			"acc_2",
+		]);
+	});
+
+	it("keeps newer affinity state when an older overlapping stream completes last", async () => {
+		const now = Date.now();
+		const accountManager = new AccountManager(undefined, createStorage(now, 3));
+		let firstController: ReadableStreamDefaultController<Uint8Array> | null = null;
+		const encoder = new TextEncoder();
+		const { calls, fetchImpl } = createRecordingFetch((_call, attempt) => {
+			if (attempt === 1) {
+				return new Response(
+					new ReadableStream<Uint8Array>({
+						start(controller) {
+							firstController = controller;
+							controller.enqueue(encoder.encode(": waiting\n\n"));
+						},
+					}),
+					{
+						status: HTTP_STATUS.OK,
+						headers: { "content-type": "text/event-stream" },
+					},
+				);
+			}
+			return textEventStream(
+				`data: {"type":"response.completed","response":{"id":"resp_new"}}\n\n`,
+			);
+		});
+		const proxy = await startProxy({ accountManager, fetchImpl });
+		const updateLastResponseId = vi.spyOn(
+			SessionAffinityStore.prototype,
+			"updateLastResponseId",
+		);
+
+		try {
+			const firstResponse = await postResponses(proxy, {
+				model: "gpt-5-codex",
+				stream: true,
+				metadata: { session_id: "shared-thread" },
+			});
+			const firstAccount = accountManager.getAccountByIndex(0);
+			if (!firstAccount || !firstController) throw new Error("first request did not start");
+			accountManager.markRateLimitedWithReason(
+				firstAccount,
+				60_000,
+				"gpt-5-codex",
+				"quota",
+				"gpt-5-codex",
+			);
+
+			await (
+				await postResponses(proxy, {
+					model: "gpt-5-codex",
+					stream: true,
+					metadata: { session_id: "shared-thread" },
+				})
+			).text();
+			accountManager.clearAccountTransientState();
+
+			firstController.enqueue(
+				encoder.encode(
+					'data: {"type":"response.completed","response":{"id":"resp_old"}}\n\n',
+				),
+			);
+			firstController.close();
+			await firstResponse.text();
+
+			const responseCalls = updateLastResponseId.mock.calls.filter(
+				(call) => call[1] === "resp_new" || call[1] === "resp_old",
+			);
+			const newVersion = responseCalls.find((call) => call[1] === "resp_new")?.[3];
+			const oldVersion = responseCalls.find((call) => call[1] === "resp_old")?.[3];
+			expect(oldVersion).toBeTypeOf("number");
+			expect(newVersion).toBeTypeOf("number");
+			expect(oldVersion).toBeLessThan(newVersion as number);
+
+			await (
+				await postResponses(proxy, {
+					model: "gpt-5-codex",
+					stream: true,
+					prompt_cache_key: "fork-from-old",
+					previous_response_id: "resp_old",
+				})
+			).text();
+			expect(calls.map((call) => call.headers.get(OPENAI_HEADERS.ACCOUNT_ID))).toEqual([
+				"acc_1",
+				"acc_2",
+				"acc_1",
+			]);
+		} finally {
+			updateLastResponseId.mockRestore();
+		}
 	});
 
 	it("retries a 429 on another account before returning bytes to the client", async () => {
@@ -2374,6 +3703,7 @@ describe("runtime rotation proxy", () => {
 		);
 		expect(calls).toHaveLength(1);
 		expect(calls[0]?.headers.get(OPENAI_HEADERS.ACCOUNT_ID)).toBe("acc_1");
+		expect(accountManager.getAccountByIndex(0)?.enabled).toBe(false);
 		expect(accountManager.getAccountByIndex(0)?.cooldownReason).toBe("auth-failure");
 		// token invalidation applies the long cooldown (~5min), not the generic 30s
 		const coolingDownUntil = accountManager.getAccountByIndex(0)?.coolingDownUntil ?? 0;

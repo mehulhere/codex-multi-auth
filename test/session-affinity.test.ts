@@ -118,9 +118,24 @@ describe("SessionAffinityStore", () => {
 		const store = new SessionAffinityStore({ ttlMs: 10_000, maxEntries: 4 });
 		store.remember("session-a", 1, 1_000);
 		store.updateLastResponseId("session-a", "resp_123", 2_000);
+		store.bindResponseToAccount("resp_123", 1, 2_000);
 
 		expect(store.getLastResponseId("session-a", 2_500)).toBe("resp_123");
 		expect(store.getPreferredAccountIndex("session-a", 2_500)).toBe(1);
+		expect(store.getPreferredAccountIndex("resp_123", 2_500)).toBeNull();
+		expect(store.getPreferredAccountIndexForResponse("resp_123", 2_500)).toBe(1);
+		expect(store.size()).toBe(1);
+	});
+
+	it("keeps response aliases separate from colliding session keys", () => {
+		const store = new SessionAffinityStore({ ttlMs: 10_000, maxEntries: 4 });
+		store.remember("resp_same", 2, 1_000);
+		store.bindResponseToAccount("resp_same", 1, 1_000);
+
+		expect(store.getPreferredAccountIndex("resp_same", 2_000)).toBe(2);
+		expect(store.getPreferredAccountIndexForResponse("resp_same", 2_000)).toBe(1);
+		expect(store.size()).toBe(1);
+		expect(store.prune(2_000)).toBe(0);
 	});
 
 	it("does not persist response ids for missing or expired sessions", () => {
@@ -148,14 +163,19 @@ describe("SessionAffinityStore", () => {
 		const store = new SessionAffinityStore({ ttlMs: 10_000, maxEntries: 4 });
 		store.rememberWithVersion("session-a", 1, 1_000, 1);
 		store.updateLastResponseId("session-a", "resp_first", 2_000, 1);
+		store.bindResponseToAccount("resp_first", 1, 2_000, 1);
 		store.rememberWithVersion("session-a", 2, 3_000, 2);
 		store.updateLastResponseId("session-a", "resp_second", 4_000, 2);
+		store.bindResponseToAccount("resp_second", 2, 4_000, 2);
 
 		store.rememberWithVersion("session-a", 1, 5_000, 1);
 		store.updateLastResponseId("session-a", "resp_stale", 5_000, 1);
+		store.bindResponseToAccount("resp_stale", 1, 5_000, 1);
 
 		expect(store.getPreferredAccountIndex("session-a", 5_500)).toBe(2);
 		expect(store.getLastResponseId("session-a", 5_500)).toBe("resp_second");
+		expect(store.getPreferredAccountIndexForResponse("resp_second", 5_500)).toBe(2);
+		expect(store.getPreferredAccountIndexForResponse("resp_stale", 5_500)).toBe(1);
 	});
 
 	it("generates distinct default write versions for same-timestamp overlaps", () => {

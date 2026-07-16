@@ -26,6 +26,11 @@ export interface QuotaCacheData {
 	byEmail: Record<string, QuotaCacheEntry>;
 }
 
+export interface QuotaCacheAccountRef {
+	accountId?: string;
+	email?: string;
+}
+
 interface QuotaCacheFile {
 	version: 1;
 	byAccountId: Record<string, QuotaCacheEntry>;
@@ -35,6 +40,55 @@ interface QuotaCacheFile {
 const QUOTA_CACHE_PATH = join(getCodexMultiAuthDir(), "quota-cache.json");
 const QUOTA_CACHE_LABEL = basename(QUOTA_CACHE_PATH);
 let quotaCacheWriteQueue: Promise<void> = Promise.resolve();
+
+function normalizeAccountId(value: string | undefined): string | null {
+	const trimmed = value?.trim();
+	return trimmed && trimmed.length > 0 ? trimmed : null;
+}
+
+function normalizeEmail(value: string | undefined): string | null {
+	const trimmed = value?.trim().toLowerCase();
+	return trimmed && trimmed.length > 0 ? trimmed : null;
+}
+
+/**
+ * Update an in-memory quota cache using only an unambiguous account identity.
+ *
+ * A unique account ID takes precedence over email. Email is used only when
+ * exactly one account owns the normalized address, and a redundant or unsafe
+ * email-keyed entry is removed when encountered.
+ */
+export function upsertQuotaCacheEntryForAccount(
+	cache: QuotaCacheData,
+	account: QuotaCacheAccountRef,
+	accounts: readonly QuotaCacheAccountRef[],
+	entry: QuotaCacheEntry,
+): boolean {
+	const accountId = normalizeAccountId(account.accountId);
+	const hasUniqueAccountId =
+		accountId !== null &&
+		accounts.filter(
+			(candidate) => normalizeAccountId(candidate.accountId) === accountId,
+		).length === 1;
+	if (hasUniqueAccountId) {
+		cache.byAccountId[accountId] = entry;
+	}
+
+	const email = normalizeEmail(account.email);
+	const hasUniqueEmail =
+		email !== null &&
+		accounts.filter((candidate) => normalizeEmail(candidate.email) === email)
+			.length === 1;
+	if (!hasUniqueAccountId && hasUniqueEmail) {
+		cache.byEmail[email] = entry;
+		return true;
+	}
+	if (email && cache.byEmail[email]) {
+		delete cache.byEmail[email];
+		return true;
+	}
+	return hasUniqueAccountId;
+}
 
 /**
  * Normalizes an unknown value to a finite number.

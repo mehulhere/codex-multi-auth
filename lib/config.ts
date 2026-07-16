@@ -42,6 +42,7 @@ const LEGACY_CODEX_AUTH_CONFIG_PATH = join(
 );
 const TUI_COLOR_PROFILES = new Set(["truecolor", "ansi16", "ansi256"]);
 const TUI_GLYPH_MODES = new Set(["ascii", "unicode", "auto"]);
+const RESPONSES_WEBSOCKET_MODES = new Set(["auto", "off"]);
 const UNSUPPORTED_CODEX_POLICIES = new Set(["strict", "fallback"]);
 const emittedConfigWarnings = new Set<string>();
 const configSaveQueues = new Map<string, Promise<void>>();
@@ -189,6 +190,7 @@ function resolvePluginConfigPath(): string | null {
 export const DEFAULT_PLUGIN_CONFIG: PluginConfig = {
 	codexMode: true,
 	codexRuntimeRotationProxy: true,
+	codexRuntimeResponsesWebSockets: "auto",
 	codexTuiV2: true,
 	codexTuiColorProfile: "truecolor",
 	codexTuiGlyphMode: "ascii",
@@ -1091,6 +1093,17 @@ export function getCodexRuntimeRotationProxy(
 	);
 }
 
+export function getCodexRuntimeResponsesWebSockets(
+	pluginConfig: PluginConfig,
+): "auto" | "off" {
+	return resolveStringSetting(
+		"CODEX_MULTI_AUTH_RESPONSES_WEBSOCKETS",
+		pluginConfig.codexRuntimeResponsesWebSockets,
+		"auto",
+		RESPONSES_WEBSOCKET_MODES,
+	);
+}
+
 export function getCodexTuiV2(pluginConfig: PluginConfig): boolean {
 	return resolveBooleanSetting("CODEX_TUI_V2", pluginConfig.codexTuiV2, true);
 }
@@ -1979,6 +1992,11 @@ const CONFIG_EXPLAIN_ENTRIES: ConfigExplainMeta[] = [
 		key: "codexRuntimeRotationProxy",
 		envNames: ["CODEX_MULTI_AUTH_RUNTIME_ROTATION_PROXY"],
 		getValue: getCodexRuntimeRotationProxy,
+	},
+	{
+		key: "codexRuntimeResponsesWebSockets",
+		envNames: ["CODEX_MULTI_AUTH_RESPONSES_WEBSOCKETS"],
+		getValue: getCodexRuntimeResponsesWebSockets,
 	},
 	{ key: "codexTuiV2", envNames: ["CODEX_TUI_V2"], getValue: getCodexTuiV2 },
 	{

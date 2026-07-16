@@ -474,7 +474,7 @@ failure.
 - `CODEX_AUTH_NO_BROWSER=1` suppresses browser launch for automation/headless sessions. False-like values such as `0` and `false` do not disable browser launch by themselves.
 - In non-TTY/manual shells, pass the full redirect URL on stdin, for example: `echo "http://127.0.0.1:1455/auth/callback?code=..." | codex-multi-auth login --manual`.
 - `codex-multi-auth forecast --explain` now keeps the explain breakdown visible in text mode even when dashboard settings hide recommendation summary lines. Pair it with `--json` for machine-readable reasoning snapshots.
-- `codex-multi-auth switch <index>` now also pins the chosen account for runtime routing. The desktop-app rotation proxy honors the pin on every request and hard-fails with HTTP 503 `codex_pinned_account_unavailable` when the pinned account is rate-limited or otherwise unavailable. Run `codex-multi-auth unpin` (or `codex-multi-auth best`) to clear the pin and resume hybrid rotation. See issue #474.
+- `codex-multi-auth switch <index>` pins the chosen account for normal runtime proxy instances, which hard-fail with HTTP 503 `codex_pinned_account_unavailable` when that account is unavailable. The persistent Desktop app-bind router intentionally ignores this global pin and keeps automatic per-thread rotation enabled; explicit per-invocation `--account` pins remain strict. Run `codex-multi-auth unpin` (or `codex-multi-auth best`) to clear the stored pin for other proxy instances. See issue #474.
 - No new npm scripts or storage migration steps were introduced for this auth-flow update.
 
 ---
@@ -545,6 +545,12 @@ codex-multi-auth fix --dry-run
 codex-multi-auth fix --live --model gpt-5.3-codex
 codex-multi-auth doctor --fix
 ```
+
+`doctor` also inspects the persistent Codex Desktop app bind, verifies its
+startup entry, and opens a TCP connection to the exact localhost endpoint saved
+in Desktop tasks. `doctor --fix` restarts an unavailable router in place and
+then probes it again. It preserves the configured port and client token, so
+existing tasks do not become bound to a retired endpoint.
 
 ---
 

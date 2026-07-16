@@ -4,9 +4,9 @@
 
 Route every Codex Desktop thread through one shared account pool without splitting
 `CODEX_HOME`, chat history, or workspaces. New threads use the account whose
-7-day quota resets soonest while both its 5-hour and 7-day windows retain at
-least 5%. Existing threads and forks remain on their current account while that
-account remains above the same floor.
+7-day quota resets soonest while both its 5-hour and 7-day windows retain more
+than 0%. Existing threads and forks remain on their current account while that
+account retains at least 5% in both windows.
 
 ## Architecture
 
@@ -35,7 +35,7 @@ For a new thread, known quota snapshots are normalized by window duration. The
 secondary.
 
 An account with a known snapshot is eligible for a new thread only when both
-windows have at least 5% remaining. Eligible known accounts sort by:
+windows have more than 0% remaining. Eligible known accounts sort by:
 
 1. Earliest future 7-day reset time.
 2. More 7-day quota remaining.
@@ -57,7 +57,7 @@ The request context keeps both the current thread key and
 `previous_response_id`. A direct continuation first uses current-thread
 affinity. A fork with a new thread key consults the parent response mapping and
 inherits its account when that account has at least 5% remaining in both quota
-windows.
+windows. Below that threshold the child is routed as a new thread.
 
 When a successful stream emits `response.completed`, `response.done`, or
 `response.incomplete`, the proxy maps the response ID to the account that
@@ -77,8 +77,9 @@ account becomes the thread's new affinity.
 
 A successful terminal SSE event means the turn completed. Completion retains
 affinity; it does not rotate accounts by itself. A successful response whose
-quota headers show either window below 5% is delivered normally, but the account
-is excluded from the next turn or fork until its quota window resets.
+quota headers show either window below 5% is delivered normally, but its current
+thread affinity is released. The account remains eligible for brand-new threads
+while both windows remain above 0%.
 
 Network errors, server errors, token invalidation, manual pins, and policy
 blocks retain their current behavior.

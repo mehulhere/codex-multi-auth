@@ -5,11 +5,14 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import { createServer } from "node:net";
+import { once } from "node:events";
 import { afterEach, describe, expect, it } from "vitest";
 import {
 	bindCodexAppRuntimeRotation,
 	formatAppBindStatus,
 	getAppBindStatus,
+	probeCodexAppRuntimeRotation,
 	resolveAppBindPaths,
 	restoreConfigTomlFromAppBind,
 	rewriteConfigTomlForAppBind,
@@ -121,12 +124,54 @@ it("prints the resolved app-bind config path in reasoning guidance", () => {
 
 	expect(message).toContain(configPath);
 	expect(message).not.toContain("~/.codex/config.toml");
+	expect(message).toContain("preserves the native `openai` provider");
+	expect(message).toContain("ChatGPT dictation");
+	expect(message).toContain("history list --json");
+	expect(message).not.toContain("rotation disable");
 });
 
 describe("Codex app runtime rotation bind", () => {
+	it("probes the configured Desktop router endpoint without an upstream request", async () => {
+		const server = createServer();
+		server.listen(0, "127.0.0.1");
+		await once(server, "listening");
+		const address = server.address();
+		if (!address || typeof address === "string") throw new Error("missing TCP port");
+		const status = {
+			bound: true,
+			running: true,
+			unmanagedBind: false,
+			state: null,
+			router: {
+				state: "running",
+				pid: process.pid,
+				baseUrl: `http://127.0.0.1:${address.port}`,
+				totalRequests: null,
+				lastAccountIndex: null,
+				lastAccountLabel: null,
+				lastAccountEmail: null,
+				lastAccountId: null,
+				updatedAt: Date.now(),
+				lastError: null,
+			},
+			paths: resolveAppBindPaths(),
+		};
+
+		await expect(probeCodexAppRuntimeRotation(status)).resolves.toEqual({
+			reachable: true,
+			baseUrl: `http://127.0.0.1:${address.port}`,
+		});
+		await new Promise<void>((resolve, reject) =>
+			server.close((error) => (error ? reject(error) : resolve())),
+		);
+		await expect(probeCodexAppRuntimeRotation(status, 250)).resolves.toEqual(
+			expect.objectContaining({ reachable: false, baseUrl: status.router.baseUrl }),
+		);
+	});
 	it("rewrites and restores Codex config TOML without disturbing other sections", () => {
 		const original = [
 			'model_provider = "openai"',
+			'openai_base_url = "https://original.example/v1"',
 			'model = "gpt-5.4"',
 			"disable_response_storage = true",
 			"",
@@ -141,17 +186,13 @@ describe("Codex app runtime rotation bind", () => {
 			"http://127.0.0.1:32123",
 			"app-secret",
 		);
+		expect(bound).toContain('model_provider = "openai"');
 		expect(bound).toContain(
-			`model_provider = "${RUNTIME_ROTATION_PROXY_PROVIDER_ID}"`,
+			'openai_base_url = "http://127.0.0.1:32123/v1/app-secret"',
 		);
 		expect(bound).toContain(
 			`[model_providers.${RUNTIME_ROTATION_PROXY_PROVIDER_ID}]`,
 		);
-		expect(bound).toContain('name = "codex-multi-auth"');
-		expect(bound).toContain('base_url = "http://127.0.0.1:32123"');
-		expect(bound).toContain("requires_openai_auth = false");
-		expect(bound).toContain('experimental_bearer_token = "app-secret"');
-		expect(bound).toContain('wire_api = "responses"');
 		expect(bound).toContain("disable_response_storage = false");
 		expect(bound).toContain("[profiles.default]\nmodel = \"gpt-5.4\"\ndisable_response_storage = true");
 		expect(bound).not.toContain("env_key");
@@ -161,7 +202,7 @@ describe("Codex app runtime rotation bind", () => {
 		expect(restored).toBe(original);
 	});
 
-	it("keeps model_provider top-level before TOML array tables", () => {
+	it("keeps native routing keys top-level before TOML array tables", () => {
 		const original = [
 			"[[profiles.experimental]]",
 			'model = "gpt-5.4"',
@@ -174,14 +215,64 @@ describe("Codex app runtime rotation bind", () => {
 			"app-secret",
 		);
 
-		expect(
-			bound.startsWith(
-				`model_provider = "${RUNTIME_ROTATION_PROXY_PROVIDER_ID}"`,
-			),
-		).toBe(true);
-		expect(
-			bound.indexOf(`model_provider = "${RUNTIME_ROTATION_PROXY_PROVIDER_ID}"`),
-		).toBeLessThan(bound.indexOf("[[profiles.experimental]]"));
+		expect(bound).toContain('model_provider = "openai"');
+		expect(bound).toContain(
+			'openai_base_url = "http://127.0.0.1:32123/v1/app-secret"',
+		);
+		expect(bound.indexOf('model_provider = "openai"')).toBeLessThan(
+			bound.indexOf("[[profiles.experimental]]"),
+		);
+		expect(bound.indexOf("openai_base_url =")).toBeLessThan(
+			bound.indexOf("[[profiles.experimental]]"),
+		);
+	});
+
+	it("keeps a compatibility provider for persisted legacy Desktop threads", () => {
+		const bound = rewriteConfigTomlForAppBind(
+			'model_provider = "openai"\n',
+			"http://127.0.0.1:32123",
+			"app-secret",
+		);
+
+		expect(bound).toContain('model_provider = "openai"');
+		expect(bound).toContain(
+			`[model_providers.${RUNTIME_ROTATION_PROXY_PROVIDER_ID}]`,
+		);
+		expect(bound).toContain('base_url = "http://127.0.0.1:32123"');
+		expect(bound).toContain("requires_openai_auth = false");
+		expect(bound).toContain('experimental_bearer_token = "app-secret"');
+		expect(bound).toContain('wire_api = "responses"');
+	});
+
+	it("removes bind-owned openai_base_url when the original config omitted it", () => {
+		const original = 'model_provider = "openai"\n[profiles.default]\nmodel = "gpt-5.4"\n';
+		const bound = rewriteConfigTomlForAppBind(
+			original,
+			"http://127.0.0.1:32123/",
+			"app secret/with slash",
+		);
+
+		expect(bound).toContain(
+			'openai_base_url = "http://127.0.0.1:32123/v1/app%20secret%2Fwith%20slash"',
+		);
+		expect(restoreConfigTomlFromAppBind(bound, original)).toBe(original);
+	});
+
+	it("is idempotent when rebinding a native-provider config", () => {
+		const original = 'model_provider = "openai"\r\n[profiles.default]\r\nmodel = "gpt-5.4"\r\n';
+		const once = rewriteConfigTomlForAppBind(
+			original,
+			"http://127.0.0.1:32123",
+			"app-secret",
+		);
+		const twice = rewriteConfigTomlForAppBind(
+			once,
+			"http://127.0.0.1:32123",
+			"app-secret",
+		);
+
+		expect(twice).toBe(once);
+		expect(twice.replace(/\r\n/g, "")).not.toContain("\n");
 	});
 
 	it("removes runtime provider subtables when restoring Codex config TOML", () => {
@@ -247,6 +338,96 @@ describe("Codex app runtime rotation bind", () => {
 		expect(paths.launchAgentPath).toBeNull();
 	});
 
+	it("resolves the Linux XDG autostart path", async () => {
+		const root = await createTempRoot("codex-app-bind-linux-paths-");
+		const paths = resolveAppBindPaths({
+			platform: "linux",
+			home: root,
+			env: {},
+		});
+
+		expect(paths.startupPath).toBe(
+			join(root, ".config", "autostart", "codex-multi-auth-runtime-router.desktop"),
+		);
+		expect(paths.launchAgentPath).toBeNull();
+	});
+
+	it("writes and removes Linux XDG autostart without exposing the client token", async () => {
+		const root = await createTempRoot("codex-app-bind-linux-autostart-");
+		const multiAuthDir = join(root, "multi auth");
+		const codexHome = join(root, "codex home");
+		const nodePath = join(root, "Node Runtime", "node");
+		const routerScriptPath = join(root, "router dir", "codex-app-router.js");
+		const env = {
+			CODEX_MULTI_AUTH_DIR: multiAuthDir,
+			CODEX_MULTI_AUTH_APP_BIND_CODEX_HOME: codexHome,
+		};
+		await mkdir(codexHome, { recursive: true });
+		await writeFile(join(codexHome, "config.toml"), 'model_provider = "openai"\n', "utf8");
+		await seedExistingAppBindState({
+			platform: "linux",
+			home: root,
+			env,
+			port: 4567,
+			baseUrl: "http://127.0.0.1:4567",
+			nodePath,
+			routerScriptPath,
+		});
+
+		const result = await bindCodexAppRuntimeRotation({
+			platform: "linux",
+			home: root,
+			env,
+			nodePath,
+			routerScriptPath,
+			spawnDetached: false,
+		});
+		const startupPath = result.status.paths.startupPath ?? "";
+		const desktopEntry = await readFile(startupPath, "utf8");
+		expect(desktopEntry).toContain("[Desktop Entry]");
+		expect(desktopEntry).toContain("X-GNOME-Autostart-enabled=true");
+		expect(desktopEntry).toContain('Exec="');
+		expect(desktopEntry).toContain("--state");
+		expect(desktopEntry).toContain("--log");
+		expect(desktopEntry).toContain("--max-log-bytes");
+		expect(desktopEntry).toContain("runtime-rotation-app-bind.json");
+		expect(desktopEntry).not.toContain(result.status.state?.clientApiKey ?? "");
+		await writeFile(
+			result.status.paths.statusPath,
+			JSON.stringify({
+				state: "running",
+				pid: 999_999_999,
+				threadStatuses: {
+					"thread-before-upgrade": {
+						accountNumber: 2,
+						accountDisplay: "Account 2 (hi***@example.com)",
+						maskedEmail: "hi***@example.com",
+						primary: {},
+						secondary: {},
+						updatedAt: 123,
+						accessToken: "must-not-migrate",
+					},
+				},
+			}),
+		);
+
+		await unbindCodexAppRuntimeRotation({
+			platform: "linux",
+			home: root,
+			env,
+			spawnDetached: false,
+		});
+		expect(existsSync(startupPath)).toBe(false);
+		const migrationPath = join(
+			result.status.paths.bindDir,
+			"runtime-rotation-thread-status-migration.json",
+		);
+		const migration = await readFile(migrationPath, "utf8");
+		expect(migration).toContain("thread-before-upgrade");
+		expect(migration).toContain("hi***@example.com");
+		expect(migration).not.toContain("must-not-migrate");
+	});
+
 	it("binds and unbinds the Windows app config without spawning during tests", async () => {
 		const root = await createTempRoot("codex-app-bind-win-");
 		const multiAuthDir = join(root, "multi%auth");
@@ -291,13 +472,12 @@ describe("Codex app runtime rotation bind", () => {
 			join(multiAuthDir, "app-bind", "runtime-rotation-app-bind.json"),
 		);
 		const config = await readFile(join(codexHome, "config.toml"), "utf8");
+		expect(config).toContain('model_provider = "openai"');
+		expect(config).toContain(
+			`openai_base_url = "${result.status.state?.baseUrl}/v1/${result.status.state?.clientApiKey}"`,
+		);
 		expect(config).toContain(
 			`[model_providers.${RUNTIME_ROTATION_PROXY_PROVIDER_ID}]`,
-		);
-		expect(config).toContain(result.status.state?.baseUrl);
-		expect(config).toContain("requires_openai_auth = false");
-		expect(config).toContain(
-			`experimental_bearer_token = "${result.status.state?.clientApiKey}"`,
 		);
 		expect(config).not.toContain("env_key");
 		if (process.platform !== "win32") {
@@ -403,11 +583,12 @@ describe("Codex app runtime rotation bind", () => {
 		const backup = JSON.parse(await readFile(paths.backupPath, "utf8")) as {
 			content: string;
 		};
+		expect(config).toContain('model_provider = "openai"');
 		expect(config).toContain(
-			`model_provider = "${RUNTIME_ROTATION_PROXY_PROVIDER_ID}"`,
+			`openai_base_url = "http://127.0.0.1:4567/v1/${state.clientApiKey}"`,
 		);
 		expect(config).toContain(
-			`experimental_bearer_token = "${state.clientApiKey}"`,
+			`[model_providers.${RUNTIME_ROTATION_PROXY_PROVIDER_ID}]`,
 		);
 		expect(state.boundConfigHash).toBe(sha256(config));
 		expect(backup.content).toBe('model_provider = "openai"\n');
@@ -523,9 +704,8 @@ describe("Codex app runtime rotation bind", () => {
 			expect(statSync(result.status.paths.logPath).mode & 0o777).toBe(0o600);
 		}
 		const config = await readFile(join(codexHome, "config.toml"), "utf8");
-		expect(config).toContain('base_url = "http://127.0.0.1:54321"');
 		expect(config).toContain(
-			`experimental_bearer_token = "${result.status.state?.clientApiKey}"`,
+			`openai_base_url = "http://127.0.0.1:54321/v1/${result.status.state?.clientApiKey}"`,
 		);
 
 		await unbindCodexAppRuntimeRotation({
@@ -874,6 +1054,42 @@ describe("orphaned app-bind recovery (#614)", () => {
 		expect(unbound.message).toContain("orphaned runtime-proxy bind");
 		expect(unbound.status.bound).toBe(false);
 		expect(unbound.status.unmanagedBind).toBe(false);
+	});
+
+	it("removes an orphaned Linux autostart entry when bind state is missing", async () => {
+		const { root, env } = await seedOrphanedBind();
+		const paths = resolveAppBindPaths({ platform: "linux", home: root, env });
+		if (!paths.startupPath) throw new Error("Linux startup path was not resolved");
+		await mkdir(dirname(paths.startupPath), { recursive: true });
+		await writeFile(paths.startupPath, "[Desktop Entry]\n", "utf8");
+
+		await unbindCodexAppRuntimeRotation({
+			platform: "linux",
+			home: root,
+			env,
+			spawnDetached: false,
+		});
+
+		expect(existsSync(paths.startupPath)).toBe(false);
+	});
+
+	it("reports orphaned startup cleanup failures instead of claiming success", async () => {
+		const { root, env } = await seedOrphanedBind();
+		const paths = resolveAppBindPaths({ platform: "linux", home: root, env });
+		if (!paths.startupPath) throw new Error("Linux startup path was not resolved");
+		await mkdir(paths.startupPath, { recursive: true });
+
+		await expect(
+			unbindCodexAppRuntimeRotation({
+				platform: "linux",
+				home: root,
+				env,
+				spawnDetached: false,
+			}),
+		).rejects.toThrow(paths.startupPath);
+		const restored = await readFile(paths.configPath, "utf8");
+		expect(restored).toContain('model_provider = "openai"');
+		expect(restored).not.toContain("codex-multi-auth-runtime-proxy");
 	});
 
 	it("self-heals a half-orphan (proxy block present, model_provider already native) without duplicating keys", async () => {

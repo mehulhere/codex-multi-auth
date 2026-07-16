@@ -55,12 +55,15 @@ function baseParams(accountManager: AccountManager) {
 		accountManager,
 		sessionAffinityStore: null,
 		sessionKey: null,
+		previousResponseId: null,
 		family: FAMILY,
 		model: null,
 		attemptedIndexes: new Set<number>(),
 		now: NOW,
 		policy: null,
 		pinnedIndex: null,
+		quotaByAccountIndex: undefined,
+		affinityQuotaFloorPercent: 5,
 	};
 }
 
@@ -220,6 +223,93 @@ describe("chooseAccount session affinity tier", () => {
 
 		expect(skipReasons.get(2)).toBe("rate-limited");
 		expect(selected?.index).toBe(0);
+	});
+
+	it("uses a parent response alias only when the current thread is unbound", () => {
+		const accountManager = manager();
+		const store = new SessionAffinityStore();
+		store.remember("current-thread", 1, NOW);
+		store.bindResponseToAccount("resp_parent", 2, NOW);
+
+		const current = chooseAccount({
+			...baseParams(accountManager),
+			sessionAffinityStore: store,
+			sessionKey: "current-thread",
+			previousResponseId: "resp_parent",
+		});
+		expect(current?.index).toBe(1);
+
+		const child = chooseAccount({
+			...baseParams(accountManager),
+			sessionAffinityStore: store,
+			sessionKey: "new-child-thread",
+			previousResponseId: "resp_parent",
+		});
+		expect(child?.index).toBe(2);
+	});
+
+	it("retains exact-floor and unknown parent affinity", () => {
+		const accountManager = manager();
+		const store = new SessionAffinityStore();
+		store.bindResponseToAccount("resp_exact", 1, NOW);
+		store.bindResponseToAccount("resp_unknown", 2, NOW);
+
+		const exact = chooseAccount({
+			...baseParams(accountManager),
+			sessionAffinityStore: store,
+			previousResponseId: "resp_exact",
+			quotaByAccountIndex: new Map([
+				[1, { left5h: 5, left7d: 5, reset7dAtMs: NOW + 60_000 }],
+			]),
+		});
+		expect(exact?.index).toBe(1);
+
+		const unknown = chooseAccount({
+			...baseParams(accountManager),
+			sessionAffinityStore: store,
+			previousResponseId: "resp_unknown",
+			quotaByAccountIndex: new Map([
+				[0, { left5h: 80, left7d: 80, reset7dAtMs: NOW + 30_000 }],
+			]),
+		});
+		expect(unknown?.index).toBe(2);
+	});
+
+	it("releases below-floor parent affinity and chooses the next quota-ranked account", () => {
+		const accountManager = manager();
+		const store = new SessionAffinityStore();
+		store.bindResponseToAccount("resp_parent", 0, NOW);
+
+		const selected = chooseAccount({
+			...baseParams(accountManager),
+			sessionAffinityStore: store,
+			previousResponseId: "resp_parent",
+			quotaByAccountIndex: new Map([
+				[0, { left5h: 4.99, left7d: 90, reset7dAtMs: NOW + 10_000 }],
+				[1, { left5h: 80, left7d: 80, reset7dAtMs: NOW + 90_000 }],
+				[2, { left5h: 60, left7d: 60, reset7dAtMs: NOW + 30_000 }],
+			]),
+		});
+
+		expect(selected?.index).toBe(2);
+	});
+
+	it("does not reselect a known-zero preferred account in linear fallback", () => {
+		const accountManager = manager();
+		vi.spyOn(accountManager, "getCurrentOrNextForFamilyHybrid").mockReturnValue(null);
+		const store = new SessionAffinityStore();
+		store.remember("session-zero", 0, NOW);
+
+		const selected = chooseAccount({
+			...baseParams(accountManager),
+			sessionAffinityStore: store,
+			sessionKey: "session-zero",
+			quotaByAccountIndex: new Map([
+				[0, { left5h: 0, left7d: 50, reset7dAtMs: NOW + 60_000 }],
+			]),
+		});
+
+		expect(selected?.index).toBe(1);
 	});
 });
 

@@ -28,6 +28,7 @@ import {
 	getResponseContinuation,
 	getBackgroundResponses,
 	getCodexRuntimeRotationProxy,
+	getCodexRuntimeResponsesWebSockets,
 } from "../lib/config.js";
 import type { PluginConfig } from "../lib/types.js";
 import * as fs from "node:fs";
@@ -65,6 +66,7 @@ describe("Plugin Configuration", () => {
 		"CODEX_MULTI_AUTH_DIR",
 		"CODEX_MODE",
 		"CODEX_MULTI_AUTH_RUNTIME_ROTATION_PROXY",
+		"CODEX_MULTI_AUTH_RESPONSES_WEBSOCKETS",
 		"CODEX_TUI_V2",
 		"CODEX_TUI_COLOR_PROFILE",
 		"CODEX_TUI_GLYPHS",
@@ -117,6 +119,7 @@ describe("Plugin Configuration", () => {
 			expect(config).toEqual({
 				codexMode: true,
 				codexRuntimeRotationProxy: true,
+				codexRuntimeResponsesWebSockets: "auto",
 				codexTuiV2: true,
 				codexTuiColorProfile: "truecolor",
 				codexTuiGlyphMode: "ascii",
@@ -191,6 +194,7 @@ describe("Plugin Configuration", () => {
 			expect(config).toEqual({
 				codexMode: false,
 				codexRuntimeRotationProxy: true,
+				codexRuntimeResponsesWebSockets: "auto",
 				codexTuiV2: true,
 				codexTuiColorProfile: "truecolor",
 				codexTuiGlyphMode: "ascii",
@@ -621,6 +625,7 @@ describe("Plugin Configuration", () => {
 			expect(config).toEqual({
 				codexMode: true,
 				codexRuntimeRotationProxy: true,
+				codexRuntimeResponsesWebSockets: "auto",
 				codexTuiV2: true,
 				codexTuiColorProfile: "truecolor",
 				codexTuiGlyphMode: "ascii",
@@ -696,6 +701,7 @@ describe("Plugin Configuration", () => {
 			expect(config).toEqual({
 				codexMode: true,
 				codexRuntimeRotationProxy: true,
+				codexRuntimeResponsesWebSockets: "auto",
 				codexTuiV2: true,
 				codexTuiColorProfile: "truecolor",
 				codexTuiGlyphMode: "ascii",
@@ -765,6 +771,7 @@ describe("Plugin Configuration", () => {
 			expect(config).toEqual({
 				codexMode: true,
 				codexRuntimeRotationProxy: true,
+				codexRuntimeResponsesWebSockets: "auto",
 				codexTuiV2: true,
 				codexTuiColorProfile: "truecolor",
 				codexTuiGlyphMode: "ascii",
@@ -1281,6 +1288,26 @@ describe("Plugin Configuration", () => {
 
 			process.env.CODEX_MULTI_AUTH_RUNTIME_ROTATION_PROXY = "1";
 			expect(getCodexRuntimeRotationProxy({})).toBe(true);
+		});
+
+		it("resolves Responses WebSockets from env over config over auto default", () => {
+			delete process.env.CODEX_MULTI_AUTH_RESPONSES_WEBSOCKETS;
+			expect(getCodexRuntimeResponsesWebSockets({})).toBe("auto");
+			expect(
+				getCodexRuntimeResponsesWebSockets({
+					codexRuntimeResponsesWebSockets: "off",
+				}),
+			).toBe("off");
+
+			process.env.CODEX_MULTI_AUTH_RESPONSES_WEBSOCKETS = "auto";
+			expect(
+				getCodexRuntimeResponsesWebSockets({
+					codexRuntimeResponsesWebSockets: "off",
+				}),
+			).toBe("auto");
+
+			process.env.CODEX_MULTI_AUTH_RESPONSES_WEBSOCKETS = "invalid";
+			expect(getCodexRuntimeResponsesWebSockets({})).toBe("auto");
 		});
 	});
 

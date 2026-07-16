@@ -35,7 +35,36 @@ npm test -- test/documentation.test.ts
 npm test -- test/runtime-rotation-proxy.test.ts test/codex-bin-wrapper.test.ts
 npm run test:model-matrix:smoke
 npm run bench:edit-formats:smoke
+npm run bench:websocket-memory -- --json
 ```
+
+## Desktop Capability Matrix
+
+Run the deterministic inventory without upstream requests:
+
+```bash
+npm run test:desktop-capabilities -- --json
+```
+
+Run minimal live probes for Responses, models, function tools, hosted web
+search, ImageGen, thread goals, history, plugins, bundled skills, and Desktop
+bridges:
+
+```bash
+npm run test:desktop-capabilities -- --live --json
+```
+
+Live mode creates disposable text/tool requests and one blue-square image. It
+validates only event/response shape and discards prompts, generated content,
+image bytes, credentials, and account identity. Computer Use input, microphone
+speech, audio confirmation, and conversation remain `interactive_required` in
+non-interactive runs. Use `--require=<capability-id>` to make selected failures
+control the exit status; with no `--require`, every failed row is required.
+
+The WebSocket memory benchmark runs with explicit garbage collection, measures
+idle connection retention, active text overhead, an 8 MiB binary payload, and
+cleanup after 100 connection cycles. It fails above the relaxed 2 MiB idle,
+10 MiB active-text, or 10 MiB post-cycle retained-heap targets.
 
 * * *
 

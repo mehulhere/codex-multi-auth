@@ -93,4 +93,109 @@ describe("H3 - cross-process token clobber protection", () => {
 		expect(afterB?.refreshToken).toBe("RT_B2");
 		expect(afterB?.accessToken).toBe("AT_B2");
 	});
+
+	it("preserves an account another process added after manager startup", async () => {
+		const now = Date.now();
+		const storage: AccountStorageV3 = {
+			version: 3,
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0 },
+			accounts: [
+				{
+					accountId: "acc-a",
+					email: "a@example.com",
+					refreshToken: "RT_A1",
+					accessToken: "AT_A1",
+					expiresAt: now + 60_000,
+					addedAt: now,
+					lastUsed: now,
+				},
+			],
+		};
+		const storagePath = makeStoragePath();
+		writeFileSync(storagePath, JSON.stringify(storage), "utf8");
+		setStoragePathDirect(storagePath);
+
+		// proc1 is a long-running Desktop helper with the original one-account pool.
+		const proc1 = new AccountManager(undefined, storage);
+		managers.push(proc1);
+
+		// proc2 (simulated): login adds a new account to the shared pool.
+		const expanded = JSON.parse(
+			readFileSync(storagePath, "utf8"),
+		) as AccountStorageV3;
+		expanded.accounts.push({
+			accountId: "acc-b",
+			email: "b@example.com",
+			refreshToken: "RT_B1",
+			accessToken: "AT_B1",
+			expiresAt: now + 60_000,
+			addedAt: now,
+			lastUsed: now,
+		});
+		writeFileSync(storagePath, JSON.stringify(expanded), "utf8");
+
+		// A later cooldown/routing save by proc1 must not erase proc2's account.
+		await proc1.saveToDisk();
+
+		const after = JSON.parse(
+			readFileSync(storagePath, "utf8"),
+		) as AccountStorageV3;
+		expect(after.accounts.map((account) => account.accountId)).toEqual([
+			"acc-a",
+			"acc-b",
+		]);
+	});
+
+	it("does not resurrect an account another process removed", async () => {
+		const now = Date.now();
+		const storage: AccountStorageV3 = {
+			version: 3,
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0 },
+			accounts: [
+				{ accountId: "acc-a", refreshToken: "RT_A1", addedAt: now, lastUsed: now },
+				{ accountId: "acc-b", refreshToken: "RT_B1", addedAt: now, lastUsed: now },
+			],
+		};
+		const storagePath = makeStoragePath();
+		writeFileSync(storagePath, JSON.stringify(storage), "utf8");
+		setStoragePathDirect(storagePath);
+		const proc1 = new AccountManager(undefined, storage);
+		managers.push(proc1);
+
+		writeFileSync(
+			storagePath,
+			JSON.stringify({ ...storage, accounts: [storage.accounts[0]] }),
+			"utf8",
+		);
+		await proc1.saveToDisk();
+
+		const after = JSON.parse(readFileSync(storagePath, "utf8")) as AccountStorageV3;
+		expect(after.accounts.map((account) => account.accountId)).toEqual(["acc-a"]);
+	});
+
+	it("persists an account intentionally removed by the current manager", async () => {
+		const now = Date.now();
+		const storage: AccountStorageV3 = {
+			version: 3,
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0 },
+			accounts: [
+				{ accountId: "acc-a", refreshToken: "RT_A1", addedAt: now, lastUsed: now },
+				{ accountId: "acc-b", refreshToken: "RT_B1", addedAt: now, lastUsed: now },
+			],
+		};
+		const storagePath = makeStoragePath();
+		writeFileSync(storagePath, JSON.stringify(storage), "utf8");
+		setStoragePathDirect(storagePath);
+		const proc1 = new AccountManager(undefined, storage);
+		managers.push(proc1);
+
+		expect(proc1.removeAccountByIndex(1)).toBe(true);
+		await proc1.saveToDisk();
+
+		const after = JSON.parse(readFileSync(storagePath, "utf8")) as AccountStorageV3;
+		expect(after.accounts.map((account) => account.accountId)).toEqual(["acc-a"]);
+	});
 });

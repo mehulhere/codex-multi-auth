@@ -10,6 +10,7 @@ import {
 	DEFAULT_HEALTH_SCORE_CONFIG,
 	DEFAULT_TOKEN_BUCKET_CONFIG,
 	type AccountWithMetrics,
+	type HybridQuotaMetrics,
 } from "../lib/rotation.js";
 
 describe("HealthScoreTracker", () => {
@@ -449,6 +450,240 @@ describe("selectHybridAccount", () => {
 
 		const result = selectHybridAccount(accounts, healthTracker, tokenTracker);
 		expect(result?.index).toBe(1);
+	});
+
+	it("prefers the earliest future 7-day reset", () => {
+		const now = Date.now();
+		const accounts: AccountWithMetrics[] = [
+			{ index: 0, isAvailable: true, lastUsed: now },
+			{ index: 1, isAvailable: true, lastUsed: now },
+			{ index: 2, isAvailable: true, lastUsed: now },
+		];
+		healthTracker.recordFailure(0);
+		const quotaByAccountIndex = new Map<number, HybridQuotaMetrics>([
+			[0, { left5h: 80, left7d: 20, reset7dAtMs: now + 2_000 }],
+			[1, { left5h: 80, left7d: 80, reset7dAtMs: now + 9_000 }],
+			[2, { left5h: 80, left7d: 80, reset7dAtMs: now - 1_000 }],
+		]);
+
+		const selected = selectHybridAccount({
+			accounts,
+			healthTracker,
+			tokenTracker,
+			options: { now, quotaByAccountIndex },
+		});
+
+		expect(selected?.index).toBe(0);
+	});
+
+	it("uses the second-best weekly reset for a new task when the leader is below 50% 5h", () => {
+		const now = Date.now();
+		const accounts: AccountWithMetrics[] = [
+			{ index: 0, isAvailable: true, lastUsed: now },
+			{ index: 1, isAvailable: true, lastUsed: now },
+		];
+		const selected = selectHybridAccount({
+			accounts,
+			healthTracker,
+			tokenTracker,
+			options: {
+				now,
+				deferLowFiveHourLeaderBelowPercent: 50,
+				quotaByAccountIndex: new Map([
+					[0, { left5h: 49, left7d: 70, reset7dAtMs: now + 1_000 }],
+					[1, { left5h: 80, left7d: 90, reset7dAtMs: now + 2_000 }],
+				]),
+			},
+		});
+
+		expect(selected?.index).toBe(1);
+	});
+
+	it("keeps the best weekly reset when its 5h quota is exactly 50%", () => {
+		const now = Date.now();
+		const accounts: AccountWithMetrics[] = [
+			{ index: 0, isAvailable: true, lastUsed: now },
+			{ index: 1, isAvailable: true, lastUsed: now },
+		];
+		const selected = selectHybridAccount({
+			accounts,
+			healthTracker,
+			tokenTracker,
+			options: {
+				now,
+				deferLowFiveHourLeaderBelowPercent: 50,
+				quotaByAccountIndex: new Map([
+					[0, { left5h: 50, left7d: 70, reset7dAtMs: now + 1_000 }],
+					[1, { left5h: 80, left7d: 90, reset7dAtMs: now + 2_000 }],
+				]),
+			},
+		});
+
+		expect(selected?.index).toBe(0);
+	});
+
+	it("falls back to the low-5h leader when no second-best account is eligible", () => {
+		const now = Date.now();
+		const accounts: AccountWithMetrics[] = [
+			{ index: 0, isAvailable: true, lastUsed: now },
+			{ index: 1, isAvailable: false, lastUsed: now },
+		];
+		const selected = selectHybridAccount({
+			accounts,
+			healthTracker,
+			tokenTracker,
+			options: {
+				now,
+				deferLowFiveHourLeaderBelowPercent: 50,
+				quotaByAccountIndex: new Map([
+					[0, { left5h: 20, left7d: 70, reset7dAtMs: now + 1_000 }],
+				]),
+			},
+		});
+
+		expect(selected?.index).toBe(0);
+	});
+
+	it.each([
+		{ left5h: 0, left7d: 80 },
+		{ left5h: 80, left7d: 0 },
+	])("gates an account when a quota window is zero", (gatedQuota) => {
+		const now = Date.now();
+		const accounts: AccountWithMetrics[] = [
+			{ index: 0, isAvailable: true, lastUsed: now },
+			{ index: 1, isAvailable: true, lastUsed: now },
+		];
+
+		const selected = selectHybridAccount({
+			accounts,
+			healthTracker,
+			tokenTracker,
+			options: {
+				now,
+				quotaByAccountIndex: new Map([
+					[0, { ...gatedQuota, reset7dAtMs: now + 1_000 }],
+					[1, { left5h: 10, left7d: 10, reset7dAtMs: now + 9_000 }],
+				]),
+			},
+		});
+
+		expect(selected?.index).toBe(1);
+	});
+
+	it("uses unknown quota only as a fallback", () => {
+		const now = Date.now();
+		const accounts: AccountWithMetrics[] = [
+			{ index: 0, isAvailable: true, lastUsed: now - 86_400_000 },
+			{ index: 1, isAvailable: true, lastUsed: now },
+		];
+		const knownQuota = new Map<number, HybridQuotaMetrics>([
+			[1, { left5h: 10, left7d: 10, reset7dAtMs: now + 9_000 }],
+		]);
+
+		const selectedWithKnownQuota = selectHybridAccount({
+			accounts,
+			healthTracker,
+			tokenTracker,
+			options: { now, quotaByAccountIndex: knownQuota },
+		});
+		const selectedWithoutPositiveQuota = selectHybridAccount({
+			accounts,
+			healthTracker,
+			tokenTracker,
+			options: {
+				now,
+				quotaByAccountIndex: new Map([
+					[1, { left5h: 0, left7d: 10, reset7dAtMs: now + 9_000 }],
+				]),
+			},
+		});
+
+		expect(selectedWithKnownQuota?.index).toBe(1);
+		expect(selectedWithoutPositiveQuota?.index).toBe(0);
+	});
+
+	it("uses the legacy score when positive quotas have equal resets", () => {
+		const now = Date.now();
+		const accounts: AccountWithMetrics[] = [
+			{ index: 0, isAvailable: true, lastUsed: now },
+			{ index: 1, isAvailable: true, lastUsed: now },
+		];
+		healthTracker.recordFailure(0);
+		const equalResetQuota = new Map<number, HybridQuotaMetrics>([
+			[0, { left5h: 10, left7d: 10, reset7dAtMs: now + 9_000 }],
+			[1, { left5h: 10, left7d: 10, reset7dAtMs: now + 9_000 }],
+		]);
+
+		const selected = selectHybridAccount({
+			accounts,
+			healthTracker,
+			tokenTracker,
+			options: { now, quotaByAccountIndex: equalResetQuota },
+		});
+
+		expect(selected?.index).toBe(1);
+	});
+
+	it("uses the lowest index when reset and legacy score are equal", () => {
+		const now = Date.now();
+		const accounts: AccountWithMetrics[] = [
+			{ index: 1, isAvailable: true, lastUsed: now },
+			{ index: 0, isAvailable: true, lastUsed: now },
+		];
+		const equalResetQuota = new Map<number, HybridQuotaMetrics>([
+			[0, { left5h: 10, left7d: 10, reset7dAtMs: now + 9_000 }],
+			[1, { left5h: 10, left7d: 10, reset7dAtMs: now + 9_000 }],
+		]);
+
+		const selected = selectHybridAccount({
+			accounts,
+			healthTracker,
+			tokenTracker,
+			options: { now, quotaByAccountIndex: equalResetQuota },
+		});
+
+		expect(selected?.index).toBe(0);
+	});
+
+	it("preserves legacy input order when fallback scores are equal", () => {
+		const now = Date.now();
+		const accounts: AccountWithMetrics[] = [
+			{ index: 1, isAvailable: true, lastUsed: now },
+			{ index: 0, isAvailable: true, lastUsed: now },
+		];
+
+		const selected = selectHybridAccount({
+			accounts,
+			healthTracker,
+			tokenTracker,
+			options: { now },
+		});
+
+		expect(selected?.index).toBe(1);
+	});
+
+	it("uses the injected clock for freshness", () => {
+		const now = Date.now();
+		const accounts: AccountWithMetrics[] = [
+			{ index: 0, isAvailable: true, lastUsed: now },
+			{ index: 1, isAvailable: true, lastUsed: now - 86_400_000 },
+		];
+		const dateNow = vi.spyOn(Date, "now").mockImplementation(() => {
+			throw new Error("ambient clock used");
+		});
+
+		try {
+			const selected = selectHybridAccount({
+				accounts,
+				healthTracker,
+				tokenTracker,
+				options: { now },
+			});
+
+			expect(selected?.index).toBe(1);
+		} finally {
+			dateNow.mockRestore();
+		}
 	});
 
 	it("uses trackerKey when runtime state is keyed by stable identity", () => {
@@ -927,6 +1162,39 @@ describe("selectHybridAccountTraced", () => {
 			healthTracker: health,
 			tokenTracker: token,
 		});
+		expect(traced.selected?.index).toBe(plain?.index);
+	});
+
+	it("agrees with quota-aware selection on the winning index", () => {
+		const now = Date.now();
+		const health = new HealthScoreTracker();
+		const token = new TokenBucketTracker();
+		health.recordFailure(0);
+		const accounts: AccountWithMetrics[] = [
+			{ index: 0, isAvailable: true, lastUsed: now },
+			{ index: 1, isAvailable: true, lastUsed: now },
+		];
+		const options = {
+			now,
+			quotaByAccountIndex: new Map<number, HybridQuotaMetrics>([
+				[0, { left5h: 10, left7d: 10, reset7dAtMs: now + 1_000 }],
+				[1, { left5h: 10, left7d: 10, reset7dAtMs: now + 9_000 }],
+			]),
+		};
+
+		const plain = selectHybridAccount({
+			accounts,
+			healthTracker: health,
+			tokenTracker: token,
+			options,
+		});
+		const traced = selectHybridAccountTraced({
+			accounts,
+			healthTracker: health,
+			tokenTracker: token,
+			options,
+		});
+
 		expect(traced.selected?.index).toBe(plain?.index);
 	});
 });

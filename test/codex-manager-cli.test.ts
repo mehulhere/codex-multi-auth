@@ -725,6 +725,8 @@ describe("codex manager cli commands", () => {
 		runtimeObservabilityMocks.loadPersistedRuntimeObservabilitySnapshot.mockReset();
 		appBindMocks.bindCodexAppRuntimeRotation.mockReset();
 		appBindMocks.getAppBindStatus.mockReset();
+		appBindMocks.probeCodexAppRuntimeRotation.mockReset();
+		appBindMocks.restartCodexAppRuntimeRotation.mockReset();
 		appBindMocks.unbindCodexAppRuntimeRotation.mockReset();
 		uiMocks.confirm.mockReset();
 		planOcChatgptSyncMock.mockReset();
@@ -868,7 +870,22 @@ describe("codex manager cli commands", () => {
 			message: "Codex app bind unavailable in tests",
 			status: { router: null },
 		});
-		appBindMocks.getAppBindStatus.mockResolvedValue({ router: null });
+		appBindMocks.getAppBindStatus.mockResolvedValue({
+			bound: false,
+			running: false,
+			unmanagedBind: false,
+			state: null,
+			router: null,
+			paths: { configPath: "/mock/config.toml", startupPath: null },
+		});
+		appBindMocks.probeCodexAppRuntimeRotation.mockResolvedValue({
+			reachable: false,
+			baseUrl: null,
+		});
+		appBindMocks.restartCodexAppRuntimeRotation.mockResolvedValue({
+			message: "Codex app restart unavailable in tests",
+			status: { router: null },
+		});
 		appBindMocks.unbindCodexAppRuntimeRotation.mockResolvedValue({
 			message: "Codex app unbind unavailable in tests",
 			status: { router: null },
@@ -3073,6 +3090,10 @@ describe("codex manager cli commands", () => {
 					String(call[0]).includes("Result: 2 Codex available"),
 				),
 			).toBe(true);
+			const rendered = logSpy.mock.calls.map((call) => String(call[0])).join("\n");
+			expect(rendered).toContain("Combined limits (2 accounts):");
+			expect(rendered).toContain("7d: 150% total | 75% average");
+			expect(rendered).toContain("5h: 110% total | 55% average");
 		} finally {
 			extractAccountIdMock.mockReset();
 			extractAccountIdMock.mockImplementation(() => "acc_test");
@@ -8617,7 +8638,9 @@ describe("codex manager cli commands", () => {
 		expect(
 			firstCallAccounts.map((account) => account.quota7dLeftPercent),
 		).toEqual([80, undefined]);
-		expect(firstCallAccounts[1]?.quotaSummary).toBe("5h 90%");
+		expect(firstCallAccounts[1]?.quotaSummary).toMatch(
+			/^5h 90% \(resets .+\)$/,
+		);
 	});
 
 	it("surfaces persisted account rate limits when quota cache is empty", async () => {

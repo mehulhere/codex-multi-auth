@@ -20,6 +20,7 @@ import process from "node:process";
 
 const DEFAULT_MAX_LOG_BYTES = 1024 * 1024;
 const LOG_SIZE_CHECK_INTERVAL_MS = 60_000;
+const THREAD_STATUS_MIGRATION_FILE = "runtime-rotation-thread-status-migration.json";
 
 function parsePort(value) {
 	if (typeof value !== "string" && typeof value !== "number") return Number.NaN;
@@ -133,6 +134,104 @@ function writeStatus(statusPath, payload) {
 	}
 }
 
+function sanitizeQuotaWindow(value) {
+	if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+	const result = {};
+	for (const key of ["usedPercent", "windowMinutes", "resetAtMs"]) {
+		const candidate = value[key];
+		if (typeof candidate === "number" && Number.isFinite(candidate)) {
+			result[key] = candidate;
+		}
+	}
+	return result;
+}
+
+function sanitizePoolQuotaWindow(value, expectedMinutes, accountCount) {
+	if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+	const { windowMinutes, reportedCount, totalRemainingPercent, averageRemainingPercent } = value;
+	if (windowMinutes !== expectedMinutes) return null;
+	if (!Number.isInteger(reportedCount) || reportedCount < 1 || reportedCount > accountCount) {
+		return null;
+	}
+	if (
+		typeof totalRemainingPercent !== "number" ||
+		!Number.isFinite(totalRemainingPercent) ||
+		totalRemainingPercent < 0 ||
+		totalRemainingPercent > accountCount * 100 ||
+		typeof averageRemainingPercent !== "number" ||
+		!Number.isFinite(averageRemainingPercent) ||
+		averageRemainingPercent < 0 ||
+		averageRemainingPercent > 100
+	) {
+		return null;
+	}
+	const result = {
+		windowMinutes,
+		reportedCount,
+		totalRemainingPercent,
+		averageRemainingPercent,
+	};
+	for (const key of ["earliestResetAtMs", "latestResetAtMs"]) {
+		const candidate = value[key];
+		if (typeof candidate === "number" && Number.isFinite(candidate) && candidate > 0) {
+			result[key] = candidate;
+		}
+	}
+	return result;
+}
+
+function sanitizePoolQuota(value) {
+	if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+	const { accountCount, updatedAt } = value;
+	if (!Number.isInteger(accountCount) || accountCount < 1 || accountCount > 256) return null;
+	if (typeof updatedAt !== "number" || !Number.isFinite(updatedAt) || updatedAt <= 0) return null;
+	return {
+		accountCount,
+		fiveHour: sanitizePoolQuotaWindow(value.fiveHour, 300, accountCount),
+		sevenDay: sanitizePoolQuotaWindow(value.sevenDay, 10_080, accountCount),
+		updatedAt,
+	};
+}
+
+function sanitizeThreadStatuses(value) {
+	if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+	const result = {};
+	for (const [sessionKey, entry] of Object.entries(value).slice(0, 512)) {
+		if (!sessionKey || sessionKey.length > 256) continue;
+		if (!entry || typeof entry !== "object" || Array.isArray(entry)) continue;
+		const accountNumber = entry.accountNumber;
+		const accountDisplay = entry.accountDisplay;
+		const maskedEmail = entry.maskedEmail;
+		const updatedAt = entry.updatedAt;
+		if (!Number.isInteger(accountNumber) || accountNumber < 1) continue;
+		if (
+			typeof accountDisplay !== "string" ||
+			accountDisplay.length > 200 ||
+			!accountDisplay.startsWith(`Account ${accountNumber}`)
+		) {
+			continue;
+		}
+		if (
+			maskedEmail !== null &&
+			(typeof maskedEmail !== "string" ||
+				maskedEmail.length > 160 ||
+				!maskedEmail.includes("***@"))
+		) {
+			continue;
+		}
+		if (typeof updatedAt !== "number" || !Number.isFinite(updatedAt)) continue;
+		result[sessionKey] = {
+			accountNumber,
+			accountDisplay,
+			maskedEmail,
+			primary: sanitizeQuotaWindow(entry.primary),
+			secondary: sanitizeQuotaWindow(entry.secondary),
+			updatedAt,
+		};
+	}
+	return result;
+}
+
 function createStatusPayload({ state, proxyServer, error, stateRecord }) {
 	const proxyStatus =
 		typeof proxyServer?.getStatus === "function" ? proxyServer.getStatus() : {};
@@ -155,10 +254,23 @@ function createStatusPayload({ state, proxyServer, error, stateRecord }) {
 		upstreamRequests: proxyStatus.upstreamRequests ?? 0,
 		retries: proxyStatus.retries ?? 0,
 		rotations: proxyStatus.rotations ?? 0,
+		activeWebSockets: proxyStatus.activeWebSockets ?? 0,
+		webSocketUpgrades: proxyStatus.webSocketUpgrades ?? 0,
+		webSocketFallbacks: proxyStatus.webSocketFallbacks ?? 0,
+		webSocketAbnormalCloses: proxyStatus.webSocketAbnormalCloses ?? 0,
+		webSocketPeakBufferedBytes: proxyStatus.webSocketPeakBufferedBytes ?? 0,
+		webSocketLastError: proxyStatus.webSocketLastError ?? null,
 		lastAccountIndex,
 		lastAccountLabel,
 		lastAccountId: proxyStatus.lastAccountId ?? null,
 		lastAccountUpdatedAt: proxyStatus.lastAccountUpdatedAt ?? null,
+		poolQuota: sanitizePoolQuota(proxyStatus.poolQuota),
+		threadStatuses: sanitizeThreadStatuses(proxyStatus.threadStatuses),
+		threadStatusPersistence: ["durable", "memory-only", "error"].includes(
+			proxyStatus.threadStatusPersistence,
+		)
+			? proxyStatus.threadStatusPersistence
+			: "memory-only",
 		lastError: error ? (error instanceof Error ? error.message : String(error)) : proxyStatus.lastError ?? null,
 	};
 }
@@ -277,12 +389,24 @@ async function main() {
 	};
 
 	try {
+		const resolvedStatusPath = args.statusPath || stateRecord?.statusPath || "";
+		const migrationPath = join(dirname(resolvedStatusPath || args.statePath), THREAD_STATUS_MIGRATION_FILE);
+		const previousStatus = readState(resolvedStatusPath) ?? readState(migrationPath);
 		const proxyModule = await import("../dist/lib/runtime-rotation-proxy.js");
 		proxyServer = await proxyModule.startRuntimeRotationProxy({
 			host,
 			port,
 			clientApiKey,
+			honorStoredPin: false,
+			threadStatusPath: join(
+				dirname(args.statusPath || stateRecord?.statusPath || args.statePath),
+				"runtime-rotation-thread-assignments.json",
+			),
+			initialThreadStatuses: sanitizeThreadStatuses(previousStatus?.threadStatuses),
 		});
+		if (proxyServer.getStatus?.().threadStatusPersistence === "durable") {
+			rmSync(migrationPath, { force: true });
+		}
 		writeCurrentStatus("running");
 		const timer = setInterval(() => writeCurrentStatus("running"), 1000);
 		let cleanupPromise = null;

@@ -32,6 +32,7 @@ import { ensureFirstRunSetup } from "./runtime/first-run.js";
 import { runBudgetCommand } from "./codex-manager/commands/budget.js";
 import { runBridgeCommand } from "./codex-manager/commands/bridge.js";
 import { runCheckCommand } from "./codex-manager/commands/check.js";
+import { ensureTailscaleRunning } from "./codex-manager/tailscale-check.js";
 import { runIntegrationsCommand } from "./codex-manager/commands/integrations.js";
 import { runModelsCommand } from "./codex-manager/commands/models.js";
 import { runMonitorCommand } from "./codex-manager/commands/monitor.js";
@@ -105,6 +106,8 @@ import {
 import {
 	bindCodexAppRuntimeRotation,
 	getAppBindStatus,
+	probeCodexAppRuntimeRotation,
+	restartCodexAppRuntimeRotation,
 	unbindCodexAppRuntimeRotation,
 } from "./runtime/app-bind.js";
 import {
@@ -161,6 +164,10 @@ function createRepairCommandDeps(): RepairCommandDeps {
 		formatCompactQuotaSnapshot,
 		resolveStoredAccountIdentity,
 		applyTokenAccountIdentity,
+		getCodexAppBindStatus: getAppBindStatus,
+		probeCodexAppRuntimeRotation,
+		bindCodexAppRuntimeRotation,
+		restartCodexAppRuntimeRotation,
 	};
 }
 
@@ -487,7 +494,7 @@ const CLI_COMMAND_HANDLERS: ReadonlyMap<string, CliCommandHandler> = new Map<
 				saveAccounts,
 			}),
 	],
-	["check", () => runCheckCommand({ runHealthCheck })],
+	["check", () => runCheckCommand({ ensureTailscaleRunning, runHealthCheck })],
 	[
 		"features",
 		() => runFeaturesCommand({ implementedFeatures: IMPLEMENTED_FEATURES }),
@@ -560,6 +567,7 @@ const CLI_COMMAND_HANDLERS: ReadonlyMap<string, CliCommandHandler> = new Map<
 				saveAccounts,
 				resolveActiveIndex,
 				bindCodexApp: bindCodexAppRuntimeRotation,
+				restartCodexApp: restartCodexAppRuntimeRotation,
 				unbindCodexApp: unbindCodexAppRuntimeRotation,
 				getCodexAppBindStatus: getAppBindStatus,
 				loadRuntimeObservabilitySnapshot:

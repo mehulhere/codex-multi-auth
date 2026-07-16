@@ -50,10 +50,15 @@ function removeRuntimeRotationProviderBlock(rawConfig: string): string {
 	return output.join(rawConfig.includes("\r\n") ? "\r\n" : "\n");
 }
 
-function rewriteTopLevelModelProvider(rawConfig: string): string {
+function rewriteTopLevelKey(
+	rawConfig: string,
+	key: string,
+	value: string,
+): string {
 	const lineEnding = rawConfig.includes("\r\n") ? "\r\n" : "\n";
 	const lines = rawConfig.length > 0 ? rawConfig.split(/\r?\n/) : [];
-	const rewrittenLine = `model_provider = ${tomlStringLiteral(RUNTIME_ROTATION_PROXY_PROVIDER_ID)}`;
+	const rewrittenLine = `${key} = ${value}`;
+	const keyPattern = new RegExp(`^\\s*${key}\\s*=`);
 	let replaced = false;
 	const output: string[] = [];
 
@@ -63,7 +68,7 @@ function rewriteTopLevelModelProvider(rawConfig: string): string {
 			output.push(rewrittenLine);
 			replaced = true;
 		}
-		if (!replaced && /^\s*model_provider\s*=/.test(line)) {
+		if (!replaced && keyPattern.test(line)) {
 			output.push(rewrittenLine);
 			replaced = true;
 			continue;
@@ -73,6 +78,14 @@ function rewriteTopLevelModelProvider(rawConfig: string): string {
 
 	if (!replaced) output.push(rewrittenLine);
 	return output.join(lineEnding);
+}
+
+function rewriteTopLevelModelProvider(rawConfig: string, provider: string): string {
+	return rewriteTopLevelKey(
+		rawConfig,
+		"model_provider",
+		tomlStringLiteral(provider),
+	);
 }
 
 function enableTopLevelResponseStorage(rawConfig: string): string {
@@ -111,6 +124,54 @@ function extractTopLevelLine(rawConfig: string, key: string): string | null {
 
 function extractTopLevelModelProviderLine(rawConfig: string): string | null {
 	return extractTopLevelLine(rawConfig, "model_provider");
+}
+
+function restoreTopLevelKey(
+	currentConfig: string,
+	originalConfig: string,
+	key: string,
+	shouldReplace: (line: string) => boolean,
+): string {
+	const lineEnding = currentConfig.includes("\r\n") ? "\r\n" : "\n";
+	const originalLine = extractTopLevelLine(originalConfig, key);
+	const keyPattern = new RegExp(`^\\s*${key}\\s*=`);
+	const lines = currentConfig.length > 0 ? currentConfig.split(/\r?\n/) : [];
+	const output: string[] = [];
+	let handled = false;
+	let inTopLevel = true;
+
+	for (const line of lines) {
+		if (readTomlTableName(line) !== null) {
+			inTopLevel = false;
+			output.push(line);
+			continue;
+		}
+		if (!handled && inTopLevel && keyPattern.test(line) && shouldReplace(line)) {
+			if (originalLine) output.push(originalLine);
+			handled = true;
+			continue;
+		}
+		output.push(line);
+	}
+
+	if (!handled && originalLine) {
+		const hasTopLevelKey = (() => {
+			for (const line of output) {
+				if (readTomlTableName(line) !== null) return false;
+				if (keyPattern.test(line)) return true;
+			}
+			return false;
+		})();
+		if (!hasTopLevelKey) {
+			const firstSectionIdx = output.findIndex(
+				(line) => readTomlTableName(line) !== null,
+			);
+			if (firstSectionIdx === -1) output.push(originalLine);
+			else output.splice(firstSectionIdx, 0, originalLine);
+		}
+	}
+
+	return output.join(lineEnding);
 }
 
 export function restoreTopLevelModelProvider(
@@ -222,29 +283,45 @@ export function restoreTopLevelResponseStorage(
 	return output.join(lineEnding);
 }
 
-function ensureTomlTrailingNewline(value: string): string {
-	return value.replace(/[\r\n]*$/, "\n");
+function ensureTomlTrailingNewlineWithStyle(value: string, lineEnding: string): string {
+	return `${value.replace(/[\r\n]*$/, "")}${lineEnding}`;
 }
 
-function createRuntimeRotationProviderBlock(
+function createNativeOpenAIBaseUrl(baseUrl: string, clientApiKey: string): string {
+	return `${baseUrl.replace(/\/+$/, "")}/v1/${encodeURIComponent(clientApiKey)}`;
+}
+
+function appendLegacyRuntimeProvider(
+	rawConfig: string,
 	baseUrl: string,
-	clientApiKey = "",
-): string[] {
-	const lines = [
+	clientApiKey: string,
+	lineEnding: string,
+): string {
+	const providerTable = [
 		`[model_providers.${RUNTIME_ROTATION_PROXY_PROVIDER_ID}]`,
 		'name = "codex-multi-auth"',
-		`base_url = ${tomlStringLiteral(baseUrl)}`,
+		`base_url = ${tomlStringLiteral(baseUrl.replace(/\/+$/, ""))}`,
 		"requires_openai_auth = false",
+		`experimental_bearer_token = ${tomlStringLiteral(clientApiKey)}`,
 		'wire_api = "responses"',
-	];
-	if (clientApiKey.trim().length > 0) {
-		lines.splice(
-			4,
-			0,
-			`experimental_bearer_token = ${tomlStringLiteral(clientApiKey)}`,
+	].join(lineEnding);
+	return `${rawConfig.replace(/[\r\n]*$/, "")}${lineEnding}${lineEnding}${providerTable}`;
+}
+
+function isNativeRuntimeBaseUrlLine(line: string): boolean {
+	const match = /^\s*openai_base_url\s*=\s*["']([^"']+)["']/.exec(line);
+	if (!match?.[1]) return false;
+	try {
+		const url = new URL(match[1]);
+		const host = url.hostname.replace(/^\[|\]$/g, "").toLowerCase();
+		return (
+			url.protocol === "http:" &&
+			(host === "127.0.0.1" || host === "::1" || host === "localhost") &&
+			/^\/v1\/[^/]+\/?$/.test(url.pathname)
 		);
+	} catch {
+		return false;
 	}
-	return lines;
 }
 
 export function rewriteConfigTomlForRuntimeRotationProvider(
@@ -257,35 +334,55 @@ export function rewriteConfigTomlForRuntimeRotationProvider(
 		/[\r\n]*$/,
 		"",
 	);
-	const withModelProvider = rewriteTopLevelModelProvider(withoutOldProvider).replace(
-		/[\r\n]*$/,
-		"",
-	);
+	const withModelProvider = rewriteTopLevelModelProvider(
+		withoutOldProvider,
+		"openai",
+	).replace(/[\r\n]*$/, "");
 	const withResponseStorage = enableTopLevelResponseStorage(
 		withModelProvider,
 	).replace(/[\r\n]*$/, "");
-	const providerBlock = createRuntimeRotationProviderBlock(
+	const withBaseUrl = rewriteTopLevelKey(
+		withResponseStorage,
+		"openai_base_url",
+		tomlStringLiteral(createNativeOpenAIBaseUrl(baseUrl, clientApiKey)),
+	);
+	const withLegacyProvider = appendLegacyRuntimeProvider(
+		withBaseUrl,
 		baseUrl,
 		clientApiKey,
-	).join(lineEnding);
-	return `${withResponseStorage}${lineEnding}${lineEnding}${providerBlock}${lineEnding}`;
+		lineEnding,
+	);
+	return ensureTomlTrailingNewlineWithStyle(withLegacyProvider, lineEnding);
 }
 
 export function restoreConfigTomlFromRuntimeRotationProvider(
 	currentConfig: string,
 	originalConfig: string,
 ): string {
+	const lineEnding = currentConfig.includes("\r\n") ? "\r\n" : "\n";
+	const hadNativeRuntimeBaseUrl = currentConfig
+		.split(/\r?\n/)
+		.some(isNativeRuntimeBaseUrlLine);
 	const withoutProvider = removeRuntimeRotationProviderBlock(currentConfig);
-	const withResponseStorage = restoreTopLevelResponseStorage(
+	const withBaseUrl = restoreTopLevelKey(
 		withoutProvider,
 		originalConfig,
+		"openai_base_url",
+		isNativeRuntimeBaseUrlLine,
 	);
-	return ensureTomlTrailingNewline(
-		restoreTopLevelModelProvider(withResponseStorage, originalConfig).replace(
-			/[\r\n]*$/,
-			"",
-		),
+	const withResponseStorage = restoreTopLevelResponseStorage(
+		withBaseUrl,
+		originalConfig,
 	);
+	const withModelProvider = hadNativeRuntimeBaseUrl
+		? restoreTopLevelKey(
+				withResponseStorage,
+				originalConfig,
+				"model_provider",
+				() => true,
+			)
+		: restoreTopLevelModelProvider(withResponseStorage, originalConfig);
+	return ensureTomlTrailingNewlineWithStyle(withModelProvider, lineEnding);
 }
 
 /**
@@ -314,6 +411,7 @@ export function configHasRuntimeRotationProvider(rawConfig: string): boolean {
 		) {
 			return true;
 		}
+		if (inTopLevel && isNativeRuntimeBaseUrlLine(line)) return true;
 	}
 	return false;
 }
@@ -348,4 +446,3 @@ export function restoreConfigTomlFromRuntimeRotationProviderWithoutBackup(
 	}
 	return restored.replace(/\r\n/g, "\n");
 }
-

@@ -5,6 +5,7 @@ import { mkdir, open, readFile, rename, unlink } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import process from "node:process";
+import { createConnection } from "node:net";
 import { fileURLToPath } from "node:url";
 import { withFileOperationRetry } from "../fs-retry.js";
 import { getCodexMultiAuthDir } from "../runtime-paths.js";
@@ -19,7 +20,10 @@ const APP_BIND_DIR_NAME = "app-bind";
 const APP_BIND_STATE_FILE = "runtime-rotation-app-bind.json";
 const APP_BIND_BACKUP_FILE = "codex-config-backup.json";
 const APP_BIND_STATUS_FILE = "runtime-rotation-app-bind-status.json";
+const APP_BIND_THREAD_STATUS_MIGRATION_FILE =
+	"runtime-rotation-thread-status-migration.json";
 const WINDOWS_STARTUP_FILE = "Codex Multi Auth Runtime Router.cmd";
+const LINUX_AUTOSTART_FILE = "codex-multi-auth-runtime-router.desktop";
 const MACOS_LAUNCH_AGENT_ID = "com.ndycode.codex-multi-auth.runtime-router";
 const DEFAULT_ROUTER_READY_TIMEOUT_MS = 15_000;
 const ROUTER_STATUS_POLL_INTERVAL_MS = 100;
@@ -72,6 +76,12 @@ export interface AppBindRouterStatus {
 	pid: number | null;
 	baseUrl: string | null;
 	totalRequests: number | null;
+	activeWebSockets: number | null;
+	webSocketUpgrades: number | null;
+	webSocketFallbacks: number | null;
+	webSocketAbnormalCloses: number | null;
+	webSocketPeakBufferedBytes: number | null;
+	webSocketLastError: string | null;
 	lastAccountIndex: number | null;
 	lastAccountLabel: string | null;
 	lastAccountEmail: string | null;
@@ -98,6 +108,12 @@ export interface AppBindStatus {
 export interface AppBindResult {
 	status: AppBindStatus;
 	message: string;
+}
+
+export interface AppBindEndpointProbe {
+	reachable: boolean;
+	baseUrl: string | null;
+	error?: string;
 }
 
 export interface AppBindOptions {
@@ -343,6 +359,12 @@ async function readRouterStatus(path: string): Promise<AppBindRouterStatus | nul
 		pid: readNumber(record, "pid"),
 		baseUrl: readString(record, "baseUrl"),
 		totalRequests: readNumber(record, "totalRequests"),
+		activeWebSockets: readNumber(record, "activeWebSockets"),
+		webSocketUpgrades: readNumber(record, "webSocketUpgrades"),
+		webSocketFallbacks: readNumber(record, "webSocketFallbacks"),
+		webSocketAbnormalCloses: readNumber(record, "webSocketAbnormalCloses"),
+		webSocketPeakBufferedBytes: readNumber(record, "webSocketPeakBufferedBytes"),
+		webSocketLastError: readString(record, "webSocketLastError"),
 		lastAccountIndex: readNumber(record, "lastAccountIndex"),
 		lastAccountLabel: readString(record, "lastAccountLabel"),
 		lastAccountEmail: readString(record, "lastAccountEmail"),
@@ -350,6 +372,54 @@ async function readRouterStatus(path: string): Promise<AppBindRouterStatus | nul
 		updatedAt: readNumber(record, "updatedAt"),
 		lastError: readString(record, "lastError"),
 	};
+}
+
+function sanitizeMigrationWindow(value: unknown): Record<string, number> {
+	if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+	const record = value as Record<string, unknown>;
+	const result: Record<string, number> = {};
+	for (const key of ["usedPercent", "windowMinutes", "resetAtMs"]) {
+		const candidate = record[key];
+		if (typeof candidate === "number" && Number.isFinite(candidate)) {
+			result[key] = candidate;
+		}
+	}
+	return result;
+}
+
+function sanitizeMigrationThreadStatuses(value: unknown): Record<string, unknown> {
+	if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+	const result: Record<string, unknown> = {};
+	for (const [sessionKey, candidate] of Object.entries(value).slice(0, 512)) {
+		if (!/^[A-Za-z0-9._:-]{1,256}$/.test(sessionKey)) continue;
+		if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) continue;
+		const record = candidate as Record<string, unknown>;
+		const accountNumber = record.accountNumber;
+		const accountDisplay = record.accountDisplay;
+		const maskedEmail = record.maskedEmail;
+		const updatedAt = record.updatedAt;
+		if (
+			!Number.isInteger(accountNumber) ||
+			(accountNumber as number) < 1 ||
+			typeof accountDisplay !== "string" ||
+			!accountDisplay.startsWith(`Account ${accountNumber}`) ||
+			(maskedEmail !== null &&
+				(typeof maskedEmail !== "string" || !maskedEmail.includes("***@"))) ||
+			typeof updatedAt !== "number" ||
+			!Number.isFinite(updatedAt)
+		) {
+			continue;
+		}
+		result[sessionKey] = {
+			accountNumber,
+			accountDisplay,
+			maskedEmail,
+			primary: sanitizeMigrationWindow(record.primary),
+			secondary: sanitizeMigrationWindow(record.secondary),
+			updatedAt,
+		};
+	}
+	return result;
 }
 
 function isProcessAlive(pid: number | null): boolean {
@@ -379,6 +449,11 @@ function resolveWindowsStartupPath(env: NodeJS.ProcessEnv, home: string): string
 
 function resolveMacLaunchAgentPath(home: string): string {
 	return join(home, "Library", "LaunchAgents", `${MACOS_LAUNCH_AGENT_ID}.plist`);
+}
+
+function resolveLinuxAutostartPath(env: NodeJS.ProcessEnv, home: string): string {
+	const configHome = (env.XDG_CONFIG_HOME ?? "").trim() || join(home, ".config");
+	return join(configHome, "autostart", LINUX_AUTOSTART_FILE);
 }
 
 function resolveRouterScriptPath(
@@ -420,7 +495,11 @@ export function resolveAppBindPaths(options: AppBindOptions = {}): AppBindPaths 
 			options.routerScriptCandidates,
 		),
 		startupPath:
-			platform === "win32" ? resolveWindowsStartupPath(env, home) : null,
+			platform === "win32"
+				? resolveWindowsStartupPath(env, home)
+				: platform === "linux"
+					? resolveLinuxAutostartPath(env, home)
+					: null,
 		launchAgentPath: platform === "darwin" ? resolveMacLaunchAgentPath(home) : null,
 	};
 }
@@ -505,10 +584,51 @@ function createMacLaunchAgentPlist(state: AppBindState): string {
 	].join("\n");
 }
 
+function escapeDesktopExecArg(value: string): string {
+	return `"${value
+		.replace(/\\/g, "\\\\")
+		.replace(/"/g, '\\"')
+		.replace(/`/g, "\\`")
+		.replace(/\$/g, "\\$")
+		.replace(/%/g, "%%")}"`;
+}
+
+function createLinuxAutostartDesktop(state: AppBindState): string {
+	const args = [
+		state.nodePath,
+		state.routerScriptPath,
+		"--port",
+		String(state.port),
+		"--status",
+		state.statusPath,
+		"--state",
+		state.statePath,
+		"--log",
+		state.logPath,
+		"--max-log-bytes",
+		String(APP_ROUTER_MAX_LOG_BYTES),
+	];
+	return [
+		"[Desktop Entry]",
+		"Type=Application",
+		"Name=Codex Multi Auth Runtime Router",
+		`Exec=${args.map(escapeDesktopExecArg).join(" ")}`,
+		"Terminal=false",
+		"NoDisplay=true",
+		"X-GNOME-Autostart-enabled=true",
+		"",
+	].join("\n");
+}
+
 async function writeAppBindStartup(state: AppBindState): Promise<void> {
 	if (state.platform === "win32" && state.startupPath) {
 		await mkdir(dirname(state.startupPath), { recursive: true });
 		await atomicWriteFile(state.startupPath, createWindowsStartupCommand(state));
+		return;
+	}
+	if (state.platform === "linux" && state.startupPath) {
+		await mkdir(dirname(state.startupPath), { recursive: true });
+		await atomicWriteFile(state.startupPath, createLinuxAutostartDesktop(state));
 		return;
 	}
 	if (state.platform === "darwin" && state.launchAgentPath) {
@@ -517,16 +637,24 @@ async function writeAppBindStartup(state: AppBindState): Promise<void> {
 	}
 }
 
-async function removeAppBindStartup(state: AppBindState): Promise<void> {
-	const candidates = [state.startupPath, state.launchAgentPath].filter(
+async function removeAppBindStartup(
+	candidatePaths: Array<string | null>,
+): Promise<void> {
+	const candidates = [...new Set(candidatePaths)].filter(
 		(path): path is string => typeof path === "string" && path.length > 0,
 	);
+	const failures: string[] = [];
 	for (const candidate of candidates) {
 		try {
 			await unlinkIfExists(candidate);
-		} catch {
-			// Best-effort cleanup.
+		} catch (error) {
+			failures.push(
+				`${candidate}: ${error instanceof Error ? error.message : String(error)}`,
+			);
 		}
+	}
+	if (failures.length > 0) {
+		throw new Error(`Failed to remove app bind startup file(s): ${failures.join("; ")}`);
 	}
 }
 
@@ -640,6 +768,40 @@ export async function getAppBindStatus(options: AppBindOptions = {}): Promise<Ap
 	};
 }
 
+export async function probeCodexAppRuntimeRotation(
+	status: AppBindStatus,
+	timeoutMs = 1_000,
+): Promise<AppBindEndpointProbe> {
+	const baseUrl = status.state?.baseUrl ?? status.router?.baseUrl ?? null;
+	if (!baseUrl) return { reachable: false, baseUrl, error: "endpoint unavailable" };
+	let url: URL;
+	try {
+		url = new URL(baseUrl);
+	} catch {
+		return { reachable: false, baseUrl, error: "invalid endpoint URL" };
+	}
+	const port = Number.parseInt(url.port, 10);
+	if (!Number.isInteger(port) || port <= 0 || port > 65_535) {
+		return { reachable: false, baseUrl, error: "invalid endpoint port" };
+	}
+	return new Promise((resolve) => {
+		const socket = createConnection({ host: url.hostname, port });
+		let settled = false;
+		const finish = (reachable: boolean, error?: string): void => {
+			if (settled) return;
+			settled = true;
+			socket.destroy();
+			resolve({ reachable, baseUrl, ...(error ? { error } : {}) });
+		};
+		socket.setTimeout(Math.max(100, timeoutMs));
+		socket.once("connect", () => finish(true));
+		socket.once("timeout", () => finish(false, "connection timed out"));
+		socket.once("error", (error: NodeJS.ErrnoException) =>
+			finish(false, error.code ?? error.message),
+		);
+	});
+}
+
 export async function bindCodexAppRuntimeRotation(
 	options: AppBindOptions = {},
 ): Promise<AppBindResult> {
@@ -647,6 +809,40 @@ export async function bindCodexAppRuntimeRotation(
 	return withAppBindLock(paths.bindDir, () =>
 		bindCodexAppRuntimeRotationLocked(options, paths),
 	);
+}
+
+/**
+ * Restart the persistent app router without changing its endpoint identity.
+ * Existing Desktop tasks persist the provider base URL and bearer token, so
+ * reset/repair operations must retain both values or those tasks reconnect to
+ * a retired endpoint while newly created tasks continue working.
+ */
+export async function restartCodexAppRuntimeRotation(
+	options: AppBindOptions = {},
+): Promise<AppBindResult> {
+	const paths = resolveAppBindPaths(options);
+	return withAppBindLock(paths.bindDir, async () => {
+		const existingState = await readAppBindState(paths.statePath);
+		if (!existingState) {
+			return bindCodexAppRuntimeRotationLocked(options, paths);
+		}
+		const router = await readRouterStatus(paths.statusPath);
+		await stopRouter(router);
+		if (router?.pid && isProcessAlive(router.pid)) {
+			throw new Error(`Codex app runtime router (pid ${router.pid}) did not stop`);
+		}
+		const result = await bindCodexAppRuntimeRotationLocked(options, paths);
+		if (
+			result.status.state?.port !== existingState.port ||
+			result.status.state?.clientApiKey !== existingState.clientApiKey
+		) {
+			throw new Error("Codex app runtime router restart changed its endpoint identity");
+		}
+		return {
+			...result,
+			message: `Restarted Codex app runtime router on ${existingState.baseUrl}`,
+		};
+	});
 }
 
 async function bindCodexAppRuntimeRotationLocked(
@@ -773,6 +969,17 @@ async function unbindCodexAppRuntimeRotationLocked(
 ): Promise<AppBindResult> {
 	const state = await readAppBindState(paths.statePath);
 	const router = await readRouterStatus(paths.statusPath);
+	const rawRouterStatus = await readJsonFile(paths.statusPath);
+	const migrationThreadStatuses = sanitizeMigrationThreadStatuses(
+		rawRouterStatus?.threadStatuses,
+	);
+	if (Object.keys(migrationThreadStatuses).length > 0) {
+		await atomicWriteFile(
+			join(paths.bindDir, APP_BIND_THREAD_STATUS_MIGRATION_FILE),
+			`${JSON.stringify({ version: 1, threadStatuses: migrationThreadStatuses }, null, 2)}\n`,
+		);
+	}
+	let startupCleanupError: Error | null = null;
 	if (state) {
 		await stopRouter(router);
 		if (router?.pid && isProcessAlive(router.pid)) {
@@ -780,7 +987,16 @@ async function unbindCodexAppRuntimeRotationLocked(
 				`Warning: runtime router (pid ${router.pid}) did not stop; continuing cleanup`,
 			);
 		}
-		await removeAppBindStartup(state);
+	}
+	try {
+		await removeAppBindStartup([
+			paths.startupPath,
+			paths.launchAgentPath,
+			state?.startupPath ?? null,
+			state?.launchAgentPath ?? null,
+		]);
+	} catch (error) {
+		startupCleanupError = error instanceof Error ? error : new Error(String(error));
 	}
 
 	const backup = await readAppBindBackup(paths.backupPath);
@@ -837,6 +1053,9 @@ async function unbindCodexAppRuntimeRotationLocked(
 	}
 
 	const status = await getAppBindStatus(options);
+	if (startupCleanupError) {
+		throw startupCleanupError;
+	}
 	let message: string;
 	if (backup) {
 		message = `Unbound Codex app config ${backup.configPath}`;
@@ -876,10 +1095,10 @@ export function formatAppBindStatus(status: AppBindStatus): string {
 	return [
 		`Codex app bind: ${parts.join(", ")}`,
 		[
-			"Note: Codex Desktop may hide history while the app bind selects the",
-			"codex-multi-auth-runtime-proxy provider; use `codex-multi-auth rotation",
-			"unbind-app` or `codex-multi-auth rotation disable` to restore the original",
-			"Codex provider/config.",
+			"Desktop routing preserves the native `openai` provider so first-party",
+			"tools, ChatGPT dictation, and provider-filtered history remain available.",
+			"Verify all stored sessions with `codex-multi-auth history list --json`;",
+			"use `rotation unbind-app` only when intentionally removing Desktop routing.",
 		].join(" "),
 		[
 			"Model speed/reasoning controls stay in Codex config/CLI flags; set",
