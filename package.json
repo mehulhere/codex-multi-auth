@@ -94,6 +94,7 @@
 		"test:model-matrix": "node scripts/test-model-matrix.js",
 		"test:model-matrix:smoke": "node scripts/test-model-matrix.js --smoke",
 		"test:model-matrix:report": "node scripts/test-model-matrix.js --smoke --report-json=.tmp/model-matrix-report.json",
+		"test:desktop-capabilities": "npm run build && node scripts/test-desktop-capabilities.js",
 		"clean:repo": "node scripts/repo-hygiene.js clean --mode aggressive",
 		"clean:repo:check": "node scripts/repo-hygiene.js check",
 		"pack:check": "npm run build && node scripts/check-pack-budget.mjs",
