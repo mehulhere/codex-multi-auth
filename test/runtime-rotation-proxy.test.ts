@@ -237,6 +237,23 @@ async function postImages(
 	});
 }
 
+async function postNativeRaw(
+	proxy: RuntimeRotationProxyServer,
+	body: string,
+	path: string,
+	headers: Record<string, string> = {},
+): Promise<Response> {
+	return fetch(`${proxy.baseUrl}${path}`, {
+		method: "POST",
+		headers: {
+			authorization: "Bearer native-chatgpt-token",
+			"chatgpt-account-id": "native-account-id",
+			...headers,
+		},
+		body,
+	});
+}
+
 async function postThreadGoal(
 	proxy: RuntimeRotationProxyServer,
 	body: Record<string, unknown>,
@@ -976,7 +993,89 @@ describe("runtime rotation proxy", () => {
 		});
 	});
 
-	it("does not expose image generation through legacy local-token auth", async () => {
+	it("passes secret-path image edits through without rotating managed accounts", async () => {
+		const now = Date.now();
+		const accountManager = new AccountManager(undefined, createStorage(now));
+		const { calls, fetchImpl } = createRecordingFetch(() =>
+			new Response('{"data":[{"url":"https://example.test/edited.png"}]}', {
+				status: HTTP_STATUS.OK,
+				headers: { "content-type": "application/json" },
+			}),
+		);
+		const proxy = await startProxy({ accountManager, fetchImpl });
+		const multipartBody = "--boundary\\r\\ncontent-disposition: form-data; name=prompt\\r\\n\\r\\nretouch\\r\\n--boundary--\\r\\n";
+
+		const response = await postNativeRaw(
+			proxy,
+			multipartBody,
+			`/v1/${DEFAULT_CLIENT_API_KEY}/images/edits?client_version=0.144.4`,
+			{ "content-type": "multipart/form-data; boundary=boundary" },
+		);
+
+		expect(response.status).toBe(HTTP_STATUS.OK);
+		expect(await response.json()).toEqual({
+			data: [{ url: "https://example.test/edited.png" }],
+		});
+		expect(calls).toHaveLength(1);
+		expect(calls[0]?.url).toBe(
+			"https://example.test/backend-api/codex/images/edits?client_version=0.144.4",
+		);
+		expect(calls[0]?.bodyText).toBe(multipartBody);
+		expect(calls[0]?.headers.get("content-type")).toBe(
+			"multipart/form-data; boundary=boundary",
+		);
+		expect(calls[0]?.headers.get("authorization")).toBe(
+			"Bearer native-chatgpt-token",
+		);
+		expect(proxy.getStatus()).toMatchObject({
+			totalRequests: 1,
+			upstreamRequests: 1,
+			rotations: 0,
+			lastAccountIndex: null,
+		});
+	});
+
+	it("passes secret-path alpha search through with native ChatGPT credentials", async () => {
+		const now = Date.now();
+		const accountManager = new AccountManager(undefined, createStorage(now));
+		const { calls, fetchImpl } = createRecordingFetch(() =>
+			new Response('{"results":[{"title":"Codex"}]}', {
+				status: HTTP_STATUS.OK,
+				headers: { "content-type": "application/json" },
+			}),
+		);
+		const proxy = await startProxy({ accountManager, fetchImpl });
+		const body = JSON.stringify({ query: "OpenAI Codex", sources: ["web"] });
+
+		const response = await postNativeRaw(
+			proxy,
+			body,
+			`/v1/${DEFAULT_CLIENT_API_KEY}/alpha/search`,
+			{ "content-type": "application/json" },
+		);
+
+		expect(response.status).toBe(HTTP_STATUS.OK);
+		expect(await response.json()).toEqual({ results: [{ title: "Codex" }] });
+		expect(calls).toHaveLength(1);
+		expect(calls[0]?.url).toBe(
+			"https://example.test/backend-api/codex/alpha/search",
+		);
+		expect(calls[0]?.bodyText).toBe(body);
+		expect(calls[0]?.headers.get("authorization")).toBe(
+			"Bearer native-chatgpt-token",
+		);
+		expect(calls[0]?.headers.get("chatgpt-account-id")).toBe(
+			"native-account-id",
+		);
+		expect(proxy.getStatus()).toMatchObject({
+			totalRequests: 1,
+			upstreamRequests: 1,
+			rotations: 0,
+			lastAccountIndex: null,
+		});
+	});
+
+	it("does not expose native pass-through routes through legacy local-token auth", async () => {
 		const now = Date.now();
 		const accountManager = new AccountManager(undefined, createStorage(now));
 		const { calls, fetchImpl } = createRecordingFetch(() =>
@@ -998,9 +1097,29 @@ describe("runtime rotation proxy", () => {
 			{ model: "gpt-image-2", prompt: "wrong secret" },
 			"/v1/wrong-secret/images/generations",
 		);
+		const legacyEdit = await postNativeRaw(
+			proxy,
+			"invalid multipart",
+			"/images/edits",
+			{
+				authorization: `Bearer ${DEFAULT_CLIENT_API_KEY}`,
+				"content-type": "multipart/form-data; boundary=boundary",
+			},
+		);
+		const legacySearch = await postNativeRaw(
+			proxy,
+			JSON.stringify({ query: "legacy" }),
+			"/alpha/search",
+			{
+				authorization: `Bearer ${DEFAULT_CLIENT_API_KEY}`,
+				"content-type": "application/json",
+			},
+		);
 
 		expect(legacy.status).toBe(HTTP_STATUS.NOT_FOUND);
 		expect(wrongSecret.status).toBe(HTTP_STATUS.UNAUTHORIZED);
+		expect(legacyEdit.status).toBe(HTTP_STATUS.NOT_FOUND);
+		expect(legacySearch.status).toBe(HTTP_STATUS.NOT_FOUND);
 		expect(calls).toHaveLength(0);
 	});
 
@@ -1089,7 +1208,7 @@ describe("runtime rotation proxy", () => {
 		expect(await authUnknownPath.json()).toEqual({
 			error: {
 				message:
-					"Runtime rotation proxy only accepts Responses API, model discovery, and Codex thread goal requests.",
+					"Runtime rotation proxy only accepts Responses API, model discovery, Codex thread goal, native image, and native search requests.",
 				code: "runtime_rotation_proxy_not_found",
 			},
 		});
@@ -1402,6 +1521,39 @@ describe("runtime rotation proxy", () => {
 		expect(calls.map((call) => call.url)).toEqual([
 			"https://example.test/backend-api/codex/thread/goal/set",
 			"https://example.test/backend-api/codex/thread/goal/get",
+		]);
+	});
+
+	it("falls back locally when upstream does not expose thread goal requests", async () => {
+		const now = Date.now();
+		const accountManager = new AccountManager(undefined, createStorage(now));
+		const { calls, fetchImpl } = createRecordingFetch(
+			() =>
+				new Response('{"error":{"code":"not_found"}}', {
+					status: HTTP_STATUS.NOT_FOUND,
+					headers: { "content-type": "application/json" },
+				}),
+		);
+		const proxy = await startProxy({ accountManager, fetchImpl });
+
+		const setResponse = await postThreadGoal(
+			proxy,
+			{ threadId: "thread-404", goal: "keep working" },
+			`/v1/${DEFAULT_CLIENT_API_KEY}/thread/goal/set`,
+		);
+		const getResponse = await getThreadGoal(
+			proxy,
+			`/v1/${DEFAULT_CLIENT_API_KEY}/thread/goal/get?thread_id=thread-404`,
+		);
+
+		expect(setResponse.status).toBe(HTTP_STATUS.OK);
+		expect(await setResponse.json()).toEqual({ ok: true, goal: "keep working" });
+		expect(getResponse.status).toBe(HTTP_STATUS.OK);
+		expect(await getResponse.json()).toEqual({ goal: "keep working" });
+		expect(calls).toHaveLength(2);
+		expect(calls.map((call) => call.url)).toEqual([
+			"https://example.test/backend-api/codex/thread/goal/set",
+			"https://example.test/backend-api/codex/thread/goal/get?thread_id=thread-404",
 		]);
 	});
 

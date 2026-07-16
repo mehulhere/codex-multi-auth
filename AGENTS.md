@@ -79,7 +79,7 @@ Package version: 2.6.1
 - Canonical command family is `codex-multi-auth ...`.
 - The package does not publish a global `codex` bin; `codex-multi-auth-codex` is the explicit wrapper: auth commands run locally, non-auth commands forward to official Codex.
 - Runtime rotation is default-on through `codexRuntimeRotationProxy`; users can opt out with `codex-multi-auth rotation disable` or `CODEX_MULTI_AUTH_RUNTIME_ROTATION_PROXY=0`.
-- The runtime proxy is loopback-only and uses a per-process client token. It forwards only Responses API and model discovery requests.
+- The runtime proxy is loopback-only and uses a per-process client token. It rotates managed accounts for Responses API, model discovery, and thread-goal requests; exact secret-path native image generation, image editing, and hosted-search requests pass through with the Desktop client's native ChatGPT credentials.
 - The persistent desktop app bind is reversible and edits user config/startup metadata, not official app binaries.
 - OAuth callback port remains 1455.
 - Local project-owned state defaults to `~/.codex/multi-auth`; official Codex state remains under `~/.codex`.
@@ -128,4 +128,3 @@ npm run vendor:verify    # vendored dependency provenance check
 - App bind state/logs: `~/.codex/multi-auth/app-bind/`.
 - Prompt templates sync from Codex CLI GitHub releases with ETag caching.
 - Historical audit evidence under `docs/audits/evidence/` is snapshot evidence, not current architecture guidance.
-

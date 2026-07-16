@@ -178,7 +178,7 @@ function toUrlHost(host: string): string {
 const proxyLog = createLogger("runtime-proxy");
 const DEFAULT_QUOTA_REMAINING_THRESHOLD = 0;
 const DEFAULT_AFFINITY_QUOTA_FLOOR_PERCENT = 5;
-const NATIVE_IMAGE_GENERATION_FETCH_TIMEOUT_MS = 5 * 60 * 1_000;
+const NATIVE_IMAGE_FETCH_TIMEOUT_MS = 5 * 60 * 1_000;
 const STREAM_USAGE_LIMIT_COOLDOWN_MS = 5 * 60 * 60 * 1000;
 const WEBSOCKET_ABNORMAL_CLOSE_COOLDOWN_MS = 60_000;
 
@@ -199,11 +199,17 @@ const ALLOWED_MODELS_PATHS = new Set([
 const ALLOWED_THREAD_GOAL_PATHS = new Set([
 	"/thread/goal/get",
 	"/thread/goal/set",
+	"/v1/thread/goal/get",
+	"/v1/thread/goal/set",
 	"/codex/thread/goal/get",
 	"/codex/thread/goal/set",
 ]);
 const NATIVE_IMAGE_GENERATIONS_PATH = "/v1/images/generations";
 const NATIVE_IMAGE_GENERATIONS_UPSTREAM_PATH = "/codex/images/generations";
+const NATIVE_IMAGE_EDITS_PATH = "/v1/images/edits";
+const NATIVE_IMAGE_EDITS_UPSTREAM_PATH = "/codex/images/edits";
+const NATIVE_ALPHA_SEARCH_PATH = "/v1/alpha/search";
+const NATIVE_ALPHA_SEARCH_UPSTREAM_PATH = "/codex/alpha/search";
 
 function isResponsesPath(pathname: string): boolean {
 	return ALLOWED_RESPONSES_PATHS.has(pathname);
@@ -228,12 +234,25 @@ function isThreadGoalPath(pathname: string): boolean {
 	return ALLOWED_THREAD_GOAL_PATHS.has(pathname);
 }
 
-function isNativeImageGenerationsPath(pathname: string): boolean {
-	return pathname === NATIVE_IMAGE_GENERATIONS_PATH;
+function resolveNativePassThroughUpstreamPath(pathname: string): string | null {
+	switch (pathname) {
+		case NATIVE_IMAGE_GENERATIONS_PATH:
+			return NATIVE_IMAGE_GENERATIONS_UPSTREAM_PATH;
+		case NATIVE_IMAGE_EDITS_PATH:
+			return NATIVE_IMAGE_EDITS_UPSTREAM_PATH;
+		case NATIVE_ALPHA_SEARCH_PATH:
+			return NATIVE_ALPHA_SEARCH_UPSTREAM_PATH;
+		default:
+			return null;
+	}
 }
 
 function normalizeThreadGoalUpstreamPath(pathname: string): string {
-	return pathname.startsWith("/codex/") ? pathname : `/codex${pathname}`;
+	if (pathname.startsWith("/codex/")) return pathname;
+	const withoutVersionPrefix = pathname.startsWith("/v1/")
+		? pathname.slice("/v1".length)
+		: pathname;
+	return `/codex${withoutVersionPrefix}`;
 }
 
 function isStreamUsageLimitFailure(
@@ -574,7 +593,7 @@ function readStringSearchParam(searchParams: URLSearchParams, key: string): stri
 }
 
 function isThreadGoalFallbackStatus(status: number): boolean {
-	return status === HTTP_STATUS.FORBIDDEN;
+	return status === HTTP_STATUS.FORBIDDEN || status === HTTP_STATUS.NOT_FOUND;
 }
 
 function setThreadGoalFallback(
@@ -732,7 +751,7 @@ function writeMethodOrPathError(res: ServerResponse): void {
 	writeJson(res, 404, {
 		error: {
 			message:
-				"Runtime rotation proxy only accepts Responses API, model discovery, and Codex thread goal requests.",
+				"Runtime rotation proxy only accepts Responses API, model discovery, Codex thread goal, native image, and native search requests.",
 			code: "runtime_rotation_proxy_not_found",
 		},
 	});
@@ -1361,33 +1380,40 @@ async function handleRequestInner(
 		const isThreadGoalRequest =
 			(req.method === "GET" || req.method === "POST") &&
 			isThreadGoalPath(authorizedPathname);
-		const isNativeImageGenerationsRequest =
+		const nativePassThroughUpstreamPath =
 			nativeSecretPathname !== null &&
-			req.method === "POST" &&
-			isNativeImageGenerationsPath(authorizedPathname);
+			req.method === "POST"
+				? resolveNativePassThroughUpstreamPath(authorizedPathname)
+				: null;
 		if (
 			!isResponsesRequest &&
 			!isModelsRequest &&
 			!isThreadGoalRequest &&
-			!isNativeImageGenerationsRequest
+			nativePassThroughUpstreamPath === null
 		) {
+			proxyLog.warn("unsupported authenticated runtime route", {
+				method: req.method ?? "UNKNOWN",
+				path: authorizedPathname,
+			});
 			writeMethodOrPathError(res);
 			return;
 		}
 
 		state.status.totalRequests += 1;
-		if (isNativeImageGenerationsRequest) {
+		if (nativePassThroughUpstreamPath !== null) {
 			const requestBody = await readRequestBody(req, state.maxRequestBodyBytes);
 			const upstreamUrl = buildUpstreamUrl(
 				req,
 				state.upstreamBaseUrl,
-				NATIVE_IMAGE_GENERATIONS_UPSTREAM_PATH,
+				nativePassThroughUpstreamPath,
 			);
 			const fetchAbortController = new AbortController();
-			const imageFetchTimeoutMs = Math.max(
-				state.fetchTimeoutMs,
-				NATIVE_IMAGE_GENERATION_FETCH_TIMEOUT_MS,
-			);
+			const isNativeImageRequest =
+				authorizedPathname === NATIVE_IMAGE_GENERATIONS_PATH ||
+				authorizedPathname === NATIVE_IMAGE_EDITS_PATH;
+			const nativeFetchTimeoutMs = isNativeImageRequest
+				? Math.max(state.fetchTimeoutMs, NATIVE_IMAGE_FETCH_TIMEOUT_MS)
+				: state.fetchTimeoutMs;
 			state.status.upstreamRequests += 1;
 			const upstream = await withTimeout(
 				state.fetchImpl(upstreamUrl, {
@@ -1396,9 +1422,9 @@ async function handleRequestInner(
 					body: requestBody,
 					signal: fetchAbortController.signal,
 				}),
-				imageFetchTimeoutMs,
+				nativeFetchTimeoutMs,
 				() => fetchAbortController.abort(),
-				`native image generation fetch timed out after ${imageFetchTimeoutMs}ms`,
+				`native pass-through fetch timed out after ${nativeFetchTimeoutMs}ms`,
 			);
 			await forwardStreamingResponse(
 				upstream,
@@ -1797,7 +1823,11 @@ async function handleRequestInner(
 				continue;
 			}
 
-			if (upstream.status === 402 || upstream.status === HTTP_STATUS.FORBIDDEN) {
+			if (
+				upstream.status === 402 ||
+				upstream.status === HTTP_STATUS.FORBIDDEN ||
+				(isThreadGoalRequest && isThreadGoalFallbackStatus(upstream.status))
+			) {
 				const bodyText = await readErrorBody(upstream, state.streamStallTimeoutMs);
 				const errorCode = extractErrorCodeFromBody(bodyText);
 				if (isWorkspaceDisabledError(upstream.status, errorCode, bodyText)) {
