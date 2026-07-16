@@ -57,6 +57,48 @@ The package does not publish a global `codex` binary. `codex-multi-auth ...` is 
 | `refresh_token_reused` | The token pair rotated in another context | Re-login the affected account |
 | `Your refresh token has already been used...` | The saved refresh token is permanently invalid and the account was quarantined from routing | Run `codex-multi-auth login`; completing login re-enables the account |
 | `token_expired` | The refresh token is no longer valid | Re-login the affected account |
+| Login hangs in WSL, or breaks after installing on both Windows and WSL | Windows and WSL contend for callback port `1455` | See [Windows And WSL Side By Side](#windows-and-wsl-side-by-side) |
+
+### Windows And WSL Side By Side
+
+Installing `codex-multi-auth` on a Windows host **and** inside WSL is supported, but
+only one of them can run a browser login at a time.
+
+The OAuth redirect URI is registered with the provider as
+`http://localhost:1455/auth/callback`, so the callback port is fixed and cannot be
+changed. A browser launched from WSL still runs on the Windows host, and Windows
+resolves `localhost:1455` against its own loopback first. If anything on the Windows
+side is holding that port — an in-progress login, a leftover callback server, a
+running proxy — it will receive the redirect that the WSL listener is waiting for.
+
+The failure is silent from inside the distro: the WSL listener binds cleanly and
+simply never sees the callback, so login appears to hang. It is waiting — the
+callback poll runs for five minutes before giving up, and `codex-multi-auth` then
+explains the likely conflict and drops you into the manual-paste fallback. If you
+would rather not wait it out, press Ctrl+C and use `--device-auth` below.
+
+To find the listener, check **both** sides:
+
+```powershell
+# Windows (PowerShell)
+Get-NetTCPConnection -LocalPort 1455
+```
+
+```bash
+# WSL
+ss -lptn 'sport = :1455'
+```
+
+Close the login or proxy on the other side, then retry. If you need both environments
+signed in without coordinating the port, use the device-code flow, which never binds
+a callback port:
+
+```bash
+codex-multi-auth login --device-auth
+```
+
+Accounts are stored per environment: the Windows and WSL installs keep separate state
+directories and do not share saved accounts. Sign in to each one independently.
 
 ---
 
@@ -86,9 +128,24 @@ The package does not publish a global `codex` binary. `codex-multi-auth ...` is 
 | Desktop repeatedly shows `stream disconnected before completion` for its saved localhost `/responses` URL after an app restart | The app bind exists, but its persistent router is not listening yet or its startup entry is missing | Run `codex-multi-auth doctor`; it now checks the bind, TCP endpoint, and startup entry. Run `codex-multi-auth doctor --fix` to restart the same endpoint in place without rebooting |
 | Codex history disappears after app bind, or `/resume` shows only some sessions | Current Codex Desktop and CLI builds can filter local threads by the active `model_provider`; app bind uses `codex-multi-auth-runtime-proxy`, while older native threads use `openai`. The sessions remain in the same shared history tree | Enable the ilysenko Desktop feature `unified-provider-history` to send `modelProviders: []` for thread lists and keep both groups visible while routing stays enabled. Use `codex-multi-auth history list --json` to verify all stored sessions on any build; do not disable rotation merely to recover visibility |
 | Model speed controls are not visible with rotation | Speed/reasoning controls remain owned by Codex config or CLI flags; the app bind only routes Responses traffic | Set `model_reasoning_effort` in `~/.codex/config.toml` or pass `-c model_reasoning_effort=<level>` for wrapper-launched CLI sessions |
-| App bind needs to be removed | You intentionally want the official app config restored and multi-account Desktop routing removed | Run `codex-multi-auth rotation unbind-app` |
+| App bind needs to be removed | You want the official app config restored and multi-account Desktop routing removed | Run `codex-multi-auth rotation unbind-app` or `codex-multi-auth rotation disable` |
+| Newest models (e.g. GPT-5.6) are missing from the Codex CLI/VS Code model picker after an upgrade, even though `codex-multi-auth check` and CLI requests resolve them | The picker lists the models in your installed Codex config (`Codex.json` / `config.toml`), and an existing config is preserved across upgrades rather than wholly replaced. Older configs written before a model shipped do not contain it, so the picker omits it while code-level model resolution still works | Re-run the config install step you originally used to write the template (it now merges newly shipped template models on top of your existing config while preserving your customizations), then restart the Codex app/extension. If you use app bind, run `codex-multi-auth rotation bind-app` afterwards to refresh the router. See [config templates](../config/README.md) |
+| Cascading `429` / rate-limit errors under many parallel agents | Too many concurrent requests for the number of accounts, all leaning on the same account | See [High parallelism / swarms of agents](#high-parallelism--swarms-of-agents) below: add more accounts, keep `pidOffsetEnabled` on (the default), and optionally enable `retryAllAccountsRateLimited` with a bounded `retryAllAccountsMaxRetries` |
+| `Provider response headers timed out after 10000ms` (subagents pause until you press OK) | This message comes from **your host client's own provider header timeout (~10s)** — the tool that forwards requests through this plugin — not from this plugin. This plugin's request timeout is `fetchTimeoutMs` (default `60000`) and emits a different message. Under heavy concurrency the upstream is slow enough to trip the host client's 10s header guard | Raise the header/response timeout in your host client's provider configuration (users report `60000` resolves it), and reduce upstream slowness by spreading load — see [High parallelism / swarms of agents](#high-parallelism--swarms-of-agents) |
 
 The runtime proxy is loopback-only and default-on. It routes Responses traffic only for forwarded request-bearing official Codex sessions and supported app launches.
+
+### High parallelism / swarms of agents
+
+Running many parallel agents (for example a swarm of 10-20 deep agents) against a small number of accounts concentrates rate-limit pressure. Each agent is typically a separate `codex-multi-auth-codex` process with its own in-process rotation state, so the levers that help are the ones that coordinate *across processes* and reduce per-account contention:
+
+- **Add more accounts.** This is the only structural fix. With 2 accounts and ~20 agents, ~10 agents share each account, so `429`s are inevitable no matter how you tune. Contention falls roughly linearly as you add accounts.
+- **`pidOffsetEnabled`** (on by default) — gives each process a small deterministic account-selection bias so different processes lean toward different accounts instead of all hammering the same one. This is the primary knob for the multi-process swarm case; leave it enabled. Set it `false` only if you deliberately want every process to score accounts identically.
+- **`retryAllAccountsRateLimited: true`** with a bounded **`retryAllAccountsMaxRetries`** and **`retryAllAccountsMaxWaitMs`** — when every account is momentarily rate-limited, the proxy waits for the soonest quota window and retries instead of returning pool-exhaustion immediately (which otherwise cascades into agent failures). Keep the wait bounded: a long blocking wait can itself trip the host client's 10s header timeout.
+- **`routingMutex: "enabled"`** — serializes account selection *within a single process*. Useful when one process issues many concurrent requests, but it does **not** coordinate across separate agent processes.
+- **`fetchTimeoutMs` / `streamStallTimeoutMs`** are this plugin's own request and stream-stall timeouts (defaults `60000` / `45000`). They are unrelated to the host client's 10s header timeout above; raise them only if you see this plugin's own `Request timeout` errors.
+
+The `Provider response headers timed out after 10000ms` message specifically is emitted by the host client, not this plugin, and cannot be changed from this plugin's config — only made less frequent by spreading load with the levers above and by raising the host client's own provider header timeout.
 
 ---
 
